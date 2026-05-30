@@ -1,5 +1,9 @@
 # stoandl
 
+> **⚠️ Early work in progress.** Only notification sync is implemented so far. Expect rough edges, missing features, and breaking changes.
+
+> **Note:** This project was built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI). Treat the code accordingly — review carefully before deploying.
+
 Headless Pebble smartwatch companion daemon for Linux and postmarketOS.
 
 *Stoandl* is Bavarian dialect for "Steinchen" (little stone / pebble).
