@@ -1,0 +1,55 @@
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>/tmp/stoandl.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <fileNamePattern>/tmp/stoandl.%i.log</fileNamePattern>
+            <minIndex>1</minIndex>
+            <maxIndex>3</maxIndex>
+        </rollingPolicy>
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>5MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- dbus-java is very chatty at DEBUG; keep it quiet -->
+    <logger name="org.freedesktop.dbus" level="WARN"/>
+    <!-- stoandl and libpebble at DEBUG for full diagnostics -->
+    <logger name="de.yoxcu.stoandl" level="DEBUG"/>
+    <logger name="io.rebble.libpebblecommon" level="DEBUG"/>
+
+    <!-- Kermit tags (via KermitSlf4jWriter) — suppress high-frequency noise -->
+    <!-- Device JSON on every BLE advertisement while connected -->
+    <logger name="WatchManager" level="WARN"/>
+    <!-- Per-packet protocol spam; keep INFO for connection-level events -->
+    <logger name="PebbleProtocol" level="INFO"/>
+    <logger name="PebbleProtocolRunner" level="INFO"/>
+    <!-- BlobDB sync details; INFO still shows insert/result summaries -->
+    <logger name="BlobDB" level="INFO"/>
+    <!-- These fire constantly during normal operation -->
+    <logger name="ConnectivityWatcher" level="INFO"/>
+    <logger name="KableConnectedGattClient" level="WARN"/>
+    <logger name="AppOrderManager" level="WARN"/>
+    <logger name="MusicControlManager" level="WARN"/>
+    <logger name="HealthDataProcessor" level="WARN"/>
+    <logger name="Health" level="WARN"/>
+    <logger name="FirmwareUpdateManager" level="INFO"/>
+    <logger name="PhoneCalendarSyncer" level="WARN"/>
+    <logger name="SystemService" level="INFO"/>
+    <logger name="Negotiator" level="INFO"/>
+    <!-- Keep these at DEBUG — useful for diagnosing connection/notification issues -->
+    <!-- PPoG, BluezGattServer, GattServerManager, PairingJvm, PebbleBle, PebbleConnector -->
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>
