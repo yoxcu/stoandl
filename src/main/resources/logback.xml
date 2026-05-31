@@ -45,8 +45,14 @@
     <logger name="PhoneCalendarSyncer" level="WARN"/>
     <logger name="SystemService" level="INFO"/>
     <logger name="Negotiator" level="INFO"/>
-    <!-- Keep these at DEBUG — useful for diagnosing connection/notification issues -->
-    <!-- PPoG, BluezGattServer, GattServerManager, PairingJvm, PebbleBle, PebbleConnector -->
+    <!-- Connection/notification diagnostics — keep at DEBUG -->
+    <logger name="PPoG" level="DEBUG"/>
+    <logger name="BluezGattServer" level="DEBUG"/>
+    <logger name="GattServerManager" level="DEBUG"/>
+    <logger name="PebbleBle" level="DEBUG"/>
+    <logger name="PebbleConnector" level="DEBUG"/>
+    <logger name="PairingJvm" level="DEBUG"/>
+    <logger name="KableGattConnector" level="DEBUG"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
