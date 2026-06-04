@@ -1,0 +1,169 @@
+
+> Configure project :libpebble3:libpebble3
+w: [33m[1m⚠️ Unsupported API dependency types in test source sets[0m[0m
+API dependency types are used in test source sets
+Dependencies:
+    - org.jetbrains.kotlinx:atomicfu:0.29.0 (source sets: iosArm64Test, iosSimulatorArm64Test, iosX64Test)
+
+Adding API dependency types to test source sets is not supported and will removed in a future version of Kotlin.
+
+API dependencies are transitively exposed to consumers, but test source sets should not be consumable.
+[32m[1mSolutions:[0m[0m
+[32m • [3mReplace API dependency types in test source sets with implementation dependencies.[0m[0m
+[32m • [3mFor Kotlin/JVM projects, consider using Test Fixtures https://docs.gradle.org/current/userguide/java_testing.html#sec:java_test_fixtures[0m[0m
+[32m • [3mFor Test Fixtures support in non-Kotlin/JVM projects, please add your use-case to https://youtrack.jetbrains.com/issue/KT-63142[0m[0m
+
+
+> Task :libpebble3:blobdbgen:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :libpebble3:libpebble3:convertXmlValueResourcesForCommonMain NO-SOURCE
+> Task :libpebble3:blobannotations:kmpPartiallyResolvedDependenciesChecker
+> Task :libpebble3:blobannotations:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :libpebble3:libpebble3:copyNonXmlValueResourcesForCommonMain NO-SOURCE
+> Task :processResources UP-TO-DATE
+> Task :libpebble3:libpebble3:prepareComposeResourcesTaskForCommonMain NO-SOURCE
+> Task :libpebble3:libpebble3:convertXmlValueResourcesForJvmMain NO-SOURCE
+> Task :libpebble3:libpebble3:copyNonXmlValueResourcesForJvmMain NO-SOURCE
+> Task :libpebble3:libpebble3:prepareComposeResourcesTaskForJvmMain NO-SOURCE
+> Task :libpebble3:libpebble3:assembleJvmMainResources UP-TO-DATE
+> Task :libpebble3:libpebble3:generateResourceAccessorsForCommonMain SKIPPED
+> Task :libpebble3:libpebble3:generateResourceAccessorsForJvmMain SKIPPED
+> Task :libpebble3:libpebble3:generateActualResourceCollectorsForJvmMain SKIPPED
+> Task :libpebble3:libpebble3:generateComposeResClass SKIPPED
+> Task :libpebble3:libpebble3:generateExpectResourceCollectorsForCommonMain SKIPPED
+> Task :libpebble3:libpebble3:kmpPartiallyResolvedDependenciesChecker
+> Task :libpebble3:libpebble3:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :libpebble3:blobannotations:compileKotlinJvm UP-TO-DATE
+> Task :libpebble3:blobannotations:compileJvmMainJava NO-SOURCE
+> Task :libpebble3:blobannotations:jvmProcessResources NO-SOURCE
+> Task :libpebble3:blobannotations:processJvmMainResources SKIPPED
+> Task :libpebble3:blobannotations:jvmMainClasses UP-TO-DATE
+> Task :libpebble3:blobannotations:jvmJar UP-TO-DATE
+> Task :libpebble3:blobdbgen:kspKotlin SKIPPED
+> Task :libpebble3:blobannotations:transformCommonMainDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:compileCommonMainKotlinMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:generateProjectStructureMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:metadataCommonMainProcessResources NO-SOURCE
+> Task :libpebble3:blobannotations:metadataCommonMainClasses UP-TO-DATE
+> Task :libpebble3:blobannotations:allMetadataJar UP-TO-DATE
+> Task :libpebble3:blobdbgen:compileKotlin UP-TO-DATE
+> Task :libpebble3:blobdbgen:compileJava NO-SOURCE
+> Task :libpebble3:blobdbgen:processResources UP-TO-DATE
+> Task :libpebble3:blobdbgen:classes UP-TO-DATE
+> Task :libpebble3:blobdbgen:jar UP-TO-DATE
+> Task :libpebble3:blobannotations:commonizeNativeDistribution UP-TO-DATE
+> Task :libpebble3:blobannotations:transformNativeMainCInteropDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:transformNativeMainDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:compileNativeMainKotlinMetadata NO-SOURCE
+> Task :libpebble3:blobannotations:metadataNativeMainProcessResources NO-SOURCE
+> Task :libpebble3:blobannotations:metadataNativeMainClasses UP-TO-DATE
+> Task :libpebble3:blobannotations:transformAppleMainCInteropDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:transformAppleMainDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:compileAppleMainKotlinMetadata NO-SOURCE
+> Task :libpebble3:blobannotations:metadataAppleMainProcessResources NO-SOURCE
+> Task :libpebble3:blobannotations:metadataAppleMainClasses UP-TO-DATE
+> Task :libpebble3:blobannotations:transformIosMainCInteropDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:transformIosMainDependenciesMetadata UP-TO-DATE
+> Task :libpebble3:blobannotations:compileIosMainKotlinMetadata NO-SOURCE
+> Task :libpebble3:blobannotations:metadataIosMainProcessResources NO-SOURCE
+> Task :libpebble3:blobannotations:metadataIosMainClasses UP-TO-DATE
+> Task :libpebble3:blobannotations:exportCommonSourceSetsMetadataLocationsForMetadataApiElements UP-TO-DATE
+> Task :libpebble3:blobannotations:iosArm64MetadataElements UP-TO-DATE
+> Task :libpebble3:blobannotations:iosSimulatorArm64MetadataElements UP-TO-DATE
+> Task :libpebble3:blobannotations:iosX64MetadataElements UP-TO-DATE
+> Task :libpebble3:libpebble3:transformCommonMainDependenciesMetadata UP-TO-DATE
+
+> Task :libpebble3:libpebble3:kspCommonMainKotlinMetadata
+w: [ksp] process
+w: [ksp] visitClassDeclaration: AppPrefsEntry
+w: [ksp] creating AppPrefsEntryEntity
+w: [ksp] visitClassDeclaration: HealthStat
+w: [ksp] creating HealthStatEntity
+w: [ksp] visitClassDeclaration: LockerEntry
+w: [ksp] creating LockerEntryEntity
+w: [ksp] visitClassDeclaration: NotificationAppItem
+w: [ksp] creating NotificationAppItemEntity
+w: [ksp] visitClassDeclaration: TimelineNotification
+w: [ksp] creating TimelineNotificationEntity
+w: [ksp] visitClassDeclaration: TimelinePin
+w: [ksp] creating TimelinePinEntity
+w: [ksp] visitClassDeclaration: TimelineReminder
+w: [ksp] creating TimelineReminderEntity
+w: [ksp] visitClassDeclaration: WatchPrefItem
+w: [ksp] creating WatchPrefItemEntity
+w: [ksp] visitClassDeclaration: HealthSettingsEntry
+w: [ksp] creating HealthSettingsEntryEntity
+w: [ksp] visitClassDeclaration: WeatherAppEntry
+w: [ksp] creating WeatherAppEntryEntity
+w: [ksp] process
+
+> Task :libpebble3:libpebble3:kspKotlinJvm UP-TO-DATE
+> Task :libpebble3:libpebble3:copyRoomSchemas NO-SOURCE
+> Task :libpebble3:libpebble3:jvmProcessResources UP-TO-DATE
+> Task :libpebble3:libpebble3:compileKotlinJvm UP-TO-DATE
+> Task :libpebble3:libpebble3:compileJvmMainJava NO-SOURCE
+> Task :libpebble3:libpebble3:processJvmMainResources SKIPPED
+> Task :libpebble3:libpebble3:jvmMainClasses UP-TO-DATE
+> Task :libpebble3:libpebble3:transformJvmMainAtomicfu
+> Task :libpebble3:libpebble3:jvmJar UP-TO-DATE
+> Task :compileKotlin UP-TO-DATE
+> Task :compileJava NO-SOURCE
+> Task :classes UP-TO-DATE
+
+> Task :run
+21:23:44.100 INFO  [main] de.yoxcu.stoandl.Main - stoandl starting
+21:23:44.713 WARN  [main] PhoneContactsSyncer - No permission
+21:23:44.713 DEBUG [DefaultDispatcher-worker-2] GattServerManager - Bluetooth state: Disabled
+21:23:44.713 WARN  [main] MissedCallSyncer - No permission
+21:23:44.714 INFO  [main] d.y.s.p.DbusNotificationListenerConnection - DBus notification listener connection initialized
+21:23:44.714 DEBUG [DefaultDispatcher-worker-2] GattServerManager - close gatt server
+21:23:44.715 DEBUG [DefaultDispatcher-worker-2] GattServerManager - Bluetooth state: Enabled
+21:23:44.716 DEBUG [DefaultDispatcher-worker-2] GattServerManager - open gatt server
+21:23:44.721 DEBUG [DefaultDispatcher-worker-6] d.y.stoandl.pebble.PebbleIntegration - Starting BLE scan
+21:23:44.728 INFO  [main] d.y.stoandl.pebble.PebbleIntegration - libpebble3 initialized
+21:23:44.736 INFO  [main] de.yoxcu.stoandl.Main - stoandl running — press Ctrl-C to stop
+21:23:44.880 INFO  [DefaultDispatcher-worker-4] d.y.s.dbus.DbusNotificationMonitor - Notification monitor: BecomeMonitor active
+21:23:44.882 DEBUG [DefaultDispatcher-worker-2] BluezGattServer - BlueZ GATT objects exported at /io/gravel/gatt
+21:23:44.903 INFO  [DefaultDispatcher-worker-2] BluezGattServer - BlueZ GATT application registered
+21:23:48.732 INFO  [DefaultDispatcher-worker-9] d.y.stoandl.pebble.PebbleIntegration - Requesting connection to {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:23:48.733 INFO  [DefaultDispatcher-worker-9] d.y.stoandl.pebble.PebbleIntegration - Requesting connection to {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:23:48.773 DEBUG [DefaultDispatcher-worker-2] PebbleBle - connect() reversedPPoG = false
+21:23:48.774 INFO  [DefaultDispatcher-worker-2] BluezGattServer - registerDevice: {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:23:50.117 DEBUG [DefaultDispatcher-worker-2] PebbleBle - services = true
+21:23:50.118 ERROR [DefaultDispatcher-worker-2] KableConnectedGattClient - couldn't find characteristic: 00000005-328e-0fbb-c642-1aa6699bdada
+21:23:50.118 ERROR [DefaultDispatcher-worker-2]  - error subscribing to connection params
+21:23:50.118 INFO  [DefaultDispatcher-worker-2] PebbleBle - error setting up connection params
+21:23:50.118 DEBUG [DefaultDispatcher-worker-2] PebbleBle - done connectionParams
+21:23:50.120 DEBUG [DefaultDispatcher-worker-2] PebbleBle - done mtu update
+21:23:50.120 DEBUG [DefaultDispatcher-worker-7] PebbleBle - newMtu = 23
+21:23:50.121 DEBUG [DefaultDispatcher-worker-2] PebbleBle - subscribed connectivity d
+21:23:50.541 INFO  [DBus-Signal-Receiver-1] BluezGattServer - PropertiesChanged LOOPBACK #1 path=/org/bluez/hci0/dev_73_56_FE_93_FA_5C/service0019/char001a confirmed — signal reached D-Bus system bus (sent=0)
+21:23:50.544 DEBUG [DefaultDispatcher-worker-2] PebbleBle - connectionStatus = < ConnectivityStatus connected = true paired = false encrypted = false hasBondedGateway = false supportsPinningWithoutSlaveSecurity = false hasRemoteAttemptedToUseStalePairing = false pairingErrorCode = NO_ERROR>
+21:23:50.545 ERROR [DefaultDispatcher-worker-2] KableConnectedGattClient - couldn't find characteristic: 00002a19-0000-1000-8000-00805f9b34fb
+21:23:50.545 ERROR [DefaultDispatcher-worker-2] BatteryWatcher - batterySub is null
+21:23:50.556 DEBUG [DefaultDispatcher-worker-2] PebbleBle - needs pairing
+21:23:50.565 INFO  [bluez-pair] PairingJvm - Calling Pair() on /org/bluez/hci0/dev_73_56_FE_93_FA_5C
+21:23:52.042 DEBUG [DBus-Signal-Receiver-1] PairingJvm - Paired property changed: true
+21:23:52.042 INFO  [bluez-pair] PairingJvm - Pair() completed for /org/bluez/hci0/dev_73_56_FE_93_FA_5C
+21:23:52.046 INFO  [DefaultDispatcher-worker-14] BluezGattServer - registerDevice: {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:23:52.046 DEBUG [DefaultDispatcher-worker-14] PebbleBle - services after pairing = true
+21:23:52.047 DEBUG [DefaultDispatcher-worker-14] PebbleBle - requestedPpogResetViaCharacteristic = false
+21:23:52.047 INFO  [DefaultDispatcher-worker-14] PPoG - run(): waiting for PPoG RESET_REQUEST
+21:23:52.049 DEBUG [DefaultDispatcher-worker-14] PebbleConnector - Success
+21:23:52.050 INFO  [DefaultDispatcher-worker-2] PPoG - initWaitingForResetRequest: waiting for RESET_REQUEST
+21:23:52.608 INFO  [DBus-Signal-Receiver-1] BluezGattServer - PropertiesChanged LOOPBACK #2 path=/org/bluez/hci0/dev_73_56_FE_93_FA_5C/service0019/char001a confirmed — signal reached D-Bus system bus (sent=0)
+21:24:12.056 WARN  [DefaultDispatcher-worker-13] Negotiator - negotiation timed out
+21:24:12.057 WARN  [DefaultDispatcher-worker-13] PebbleConnector - negotiation failed: disconnecting
+21:24:12.058 DEBUG [DefaultDispatcher-worker-13] PPoG - close
+21:24:12.060 DEBUG [DefaultDispatcher-worker-13] KableGattConnector - disconnect()...
+21:24:14.544 INFO  [DefaultDispatcher-worker-7] KableGattConnector - Disconnection: status=null
+21:24:14.545 DEBUG [DefaultDispatcher-worker-13] KableGattConnector - /disconnect()...
+21:24:14.545 INFO  [DefaultDispatcher-worker-13] BluezGattServer - unregisterDevice: {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:24:14.546 INFO  [DefaultDispatcher-worker-13] BluezGattServer - unregisterDevice: cleared notifySubscribed (no more devices)
+21:24:14.548 DEBUG [DefaultDispatcher-worker-14] KableGattConnector - disconnect()...
+21:24:14.549 DEBUG [DefaultDispatcher-worker-14] KableGattConnector - /disconnect()...
+21:24:14.550 INFO  [DefaultDispatcher-worker-14] BluezGattServer - unregisterDevice: {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:24:14.551 INFO  [DefaultDispatcher-worker-14] BluezGattServer - unregisterDevice: cleared notifySubscribed (no more devices)
+21:24:14.554 DEBUG [DefaultDispatcher-worker-14] PebbleBle - connect() reversedPPoG = false
+21:24:14.554 INFO  [DefaultDispatcher-worker-14] BluezGattServer - registerDevice: {"object_path":"/org/bluez/hci0/dev_73_56_FE_93_FA_5C"}
+21:24:19.744 DEBUG [DefaultDispatcher-worker-15] d.y.stoandl.pebble.PebbleIntegration - Starting BLE scan
