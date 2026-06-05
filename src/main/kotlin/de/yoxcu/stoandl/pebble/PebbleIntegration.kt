@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.pebble
 
+import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.IncomingNotification
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
@@ -13,26 +14,36 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.WatchConnector
 import io.rebble.libpebblecommon.connection.WebServices
+import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
+import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
 import io.rebble.libpebblecommon.di.initKoin
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
+import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.WatchInfo
+import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.voice.TranscriptionProvider
 import io.rebble.libpebblecommon.voice.TranscriptionResult
 import io.rebble.libpebblecommon.voice.VoiceEncoderInfo
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
+import org.freedesktop.dbus.connections.impl.DBusConnection
+import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import org.freedesktop.dbus.types.UInt32
 import org.koin.dsl.module
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
+import java.util.concurrent.ConcurrentHashMap
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
 
@@ -63,13 +74,18 @@ class PebbleIntegration(
             injectedPKJSHttpInterceptors = InjectedPKJSHttpInterceptors(emptyList()),
         )
 
+        // Shared map: watch-side timeline item UUID → daemon-assigned D-Bus notification ID.
+        // Populated by DbusNotificationListenerConnection; consumed by DbusNotificationActionHandler.
+        val itemIdToDbusId = ConcurrentHashMap<Uuid, UInt32>()
+
         // Override modules: use our DBus notification bridge, and pin BleConfigFlow so any
         // persisted Java Preferences value cannot override reversedPPoG=false.
         koin.loadModules(listOf(module {
             single<NotificationListenerConnection> {
-                DbusNotificationListenerConnection(notificationFlow, scope)
+                DbusNotificationListenerConnection(notificationFlow, scope, itemIdToDbusId)
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
+            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId) }
         }), allowOverride = true)
 
         libPebble = koin.get()
@@ -112,6 +128,7 @@ class PebbleIntegration(
 private class DbusNotificationListenerConnection(
     private val notificationFlow: Flow<IncomingNotification>,
     private val scope: CoroutineScope,
+    private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
@@ -128,9 +145,15 @@ private class DbusNotificationListenerConnection(
                             title { notification.summary }
                             if (notification.body.isNotEmpty()) body { notification.body }
                             if (notification.appName.isNotEmpty()) subtitle { notification.appName }
-                            tinyIcon { TimelineIcon.NotificationGeneric }
+                            tinyIcon { iconForApp(notification.appName) }
+                        }
+                        actions {
+                            action(TimelineItem.Action.Type.Dismiss) {
+                                attributes { title { "Dismiss" } }
+                            }
                         }
                     }
+                    itemIdToDbusId[timelineNotification.itemId] = notification.id
                     libPebble.sendNotification(timelineNotification)
                     log.info { "Sent notification to watch: ${notification.summary}" }
                 } catch (e: Exception) {
@@ -152,6 +175,126 @@ private object NoOpWebServices : WebServices {
 
 private object NoOpTokenProvider : TokenProvider {
     override suspend fun getDevToken(): String? = null
+}
+
+private class DbusNotificationActionHandler(
+    private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
+) : PlatformNotificationActionHandler {
+    private val log = KotlinLogging.logger {}
+    @Volatile private var dbusConn: DBusConnection? = null
+
+    private fun notifService(): FreedesktopNotifications? = try {
+        val existing = dbusConn
+        val conn = if (existing != null && existing.isConnected()) existing else {
+            existing?.disconnect()
+            (DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection)
+                .also { dbusConn = it }
+        }
+        conn.getRemoteObject(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            FreedesktopNotifications::class.java,
+        )
+    } catch (e: Exception) {
+        log.warn { "Cannot reach notification service: ${e.message}" }
+        dbusConn = null
+        null
+    }
+
+    override suspend fun invoke(
+        itemId: Uuid,
+        action: BaseAction,
+        attributes: List<TimelineItem.Attribute>,
+    ): TimelineActionResult = when (action.type) {
+        TimelineItem.Action.Type.Dismiss,
+        TimelineItem.Action.Type.AncsDismiss -> {
+            val dbusId = itemIdToDbusId.remove(itemId)
+            if (dbusId != null) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        notifService()?.CloseNotification(dbusId)
+                        log.debug { "Closed D-Bus notification $dbusId for watch item $itemId" }
+                    } catch (e: Exception) {
+                        log.warn { "CloseNotification($dbusId) failed: ${e.message}" }
+                        dbusConn = null
+                    }
+                }
+            }
+            TimelineActionResult(true, TimelineIcon.ResultDismissed, "Dismissed")
+        }
+        else -> TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
+    }
+}
+
+private val appIconMappings: List<Pair<String, TimelineIcon>> = listOf(
+    // Messaging — specific compound names before their components
+    "facebook messenger" to TimelineIcon.NotificationFacebookMessenger,
+    "google hangouts" to TimelineIcon.NotificationGoogleHangouts,
+    "google messenger" to TimelineIcon.NotificationGoogleMessenger,
+    "google chat" to TimelineIcon.NotificationGoogleChat,
+    "google inbox" to TimelineIcon.NotificationGoogleInbox,
+    "google maps" to TimelineIcon.NotificationGoogleMaps,
+    "google tasks" to TimelineIcon.NotificationGoogleTasks,
+    "google photos" to TimelineIcon.NotificationGooglePhotos,
+    "home assistant" to TimelineIcon.NotificationHomeAssistant,
+    "kakaotalk" to TimelineIcon.NotificationKakaoTalk,
+    "blackberry" to TimelineIcon.NotificationBlackberryMessenger,
+    "unifi" to TimelineIcon.NotificationUnifiProtect,
+    "yahoo mail" to TimelineIcon.NotificationYahooMail,
+    // Individual apps
+    "signal" to TimelineIcon.NotificationSignal,
+    "discord" to TimelineIcon.NotificationDiscord,
+    "telegram" to TimelineIcon.NotificationTelegram,
+    "slack" to TimelineIcon.NotificationSlack,
+    "whatsapp" to TimelineIcon.NotificationWhatsapp,
+    "skype" to TimelineIcon.NotificationSkype,
+    "zoom" to TimelineIcon.NotificationZoom,
+    "teams" to TimelineIcon.NotificationTeams,
+    "element" to TimelineIcon.NotificationElement,
+    "bluesky" to TimelineIcon.NotificationBluesky,
+    "twitter" to TimelineIcon.NotificationTwitter,
+    "instagram" to TimelineIcon.NotificationInstagram,
+    "facebook" to TimelineIcon.NotificationFacebook,
+    "linkedin" to TimelineIcon.NotificationLinkedIn,
+    "snapchat" to TimelineIcon.NotificationSnapchat,
+    "viber" to TimelineIcon.NotificationViber,
+    "wechat" to TimelineIcon.NotificationWeChat,
+    "hipchat" to TimelineIcon.NotificationHipChat,
+    "hangouts" to TimelineIcon.NotificationGoogleHangouts,
+    "kik" to TimelineIcon.NotificationKik,
+    "kakao" to TimelineIcon.NotificationKakaoTalk,
+    "line" to TimelineIcon.NotificationLine,
+    "gmail" to TimelineIcon.NotificationGmail,
+    "outlook" to TimelineIcon.NotificationOutlook,
+    "yahoo" to TimelineIcon.NotificationYahooMail,
+    "steam" to TimelineIcon.NotificationSteam,
+    "twitch" to TimelineIcon.NotificationTwitch,
+    "youtube" to TimelineIcon.NotificationYoutube,
+    "duolingo" to TimelineIcon.NotificationDuolingo,
+    "threads" to TimelineIcon.NotificationThreads,
+    "amazon" to TimelineIcon.NotificationAmazon,
+    "ebay" to TimelineIcon.NotificationEbay,
+    "beeper" to TimelineIcon.NotificationBeeper,
+    "lighthouse" to TimelineIcon.NotificationLighthouse,
+    // Generic categories
+    "calendar" to TimelineIcon.TimelineCalendar,
+    "alarm" to TimelineIcon.AlarmClock,
+    "clock" to TimelineIcon.AlarmClock,
+    "mail" to TimelineIcon.GenericEmail,
+    "email" to TimelineIcon.GenericEmail,
+    "thunderbird" to TimelineIcon.GenericEmail,
+    "evolution" to TimelineIcon.GenericEmail,
+    "geary" to TimelineIcon.GenericEmail,
+    "kmail" to TimelineIcon.GenericEmail,
+    "sms" to TimelineIcon.GenericSms,
+    "messages" to TimelineIcon.GenericSms,
+    "phone" to TimelineIcon.IncomingPhoneCall,
+)
+
+private fun iconForApp(appName: String): TimelineIcon {
+    val lower = appName.lowercase()
+    return appIconMappings.firstOrNull { (keyword, _) -> lower.contains(keyword) }?.second
+        ?: TimelineIcon.NotificationGeneric
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {
