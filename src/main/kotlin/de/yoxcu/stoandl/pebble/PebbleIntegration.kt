@@ -44,8 +44,14 @@ class PebbleIntegration(
 ) {
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
+    // Headless BlueZ pairing agent so MITM/Secure-Connections pairing (newer Pebble firmware,
+    // e.g. Time 2) can complete without a desktop UI — the user just confirms the code on the watch.
+    private val pairingAgent = BluezPairingAgent()
 
     fun init() {
+        // Register the pairing agent before any connection so MITM pairing has an answerer.
+        pairingAgent.register()
+
         val bleConfig = LibPebbleConfig(bleConfig = BleConfig(reversedPPoG = false))
         val koin = initKoin(
             defaultConfig = bleConfig,

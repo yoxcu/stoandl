@@ -30,12 +30,50 @@ stoandl ──► libpebble3 ──► BlueZ ──► Pebble watch (BLE/PPoG)
 
 **Watch connection** — [libpebble3](https://github.com/matejdro/libpebble3) handles the BLE stack: BlueZ GATT server (phone-as-peripheral, `reversedPPoG=false`), PPoG (Pebble Protocol over GATT) framing, and the Pebble protocol itself. stoandl scans for a known watch and reconnects automatically.
 
+## Compatibility
+
+stoandl is **BLE-only** (it does not implement Bluetooth Classic). Pebble support therefore depends on the watch's transport:
+
+| Watch | Platform | Status |
+|-------|----------|--------|
+| Pebble Time 2 | EMERY | ✅ Works — pairing, bonded reconnect, notifications (confirmed) |
+| Pebble 2 | DIORITE | ⚠️ Expected to work (same BLE-native class; untested) |
+| Pebble Time / Time Steel | BASALT | ❌ Connects & bonds but the PPoG data channel doesn't come up yet (gateway-pairing not triggered for these models) — work in progress |
+| Pebble Time Round | CHALK | ❌ Same as above (untested) |
+| original Pebble / Pebble Steel | APLITE | ❌ Classic-only hardware — not reachable over BLE; would need Bluetooth Classic support |
+
+In short: **BLE-native watches (Pebble 2 / Time 2) work; classic-primary watches don't yet.** See `debug.md` for the full investigation.
+
 ## Requirements
 
 - JDK 21
-- BlueZ (bluetoothd running)
+- BlueZ (bluetoothd running), **in LE-only mode** (see below)
 - A D-Bus session bus with a notification daemon (dunst, mako, GNOME notifications, etc.)
-- A Pebble watch (tested with Pebble Time)
+- A BLE-native Pebble (tested with Pebble Time 2; see [Compatibility](#compatibility))
+
+## Bluetooth setup (required: LE-only mode)
+
+stoandl connects over BLE only, but some Pebbles advertise as dual-mode (BR/EDR + LE). On such a watch BlueZ will try a **Bluetooth Classic** connection first, which times out and never falls back to LE — so the watch never connects. Put the controller in **LE-only mode** so BlueZ always uses LE:
+
+```sh
+# temporary (until reboot), to try it out:
+sudo btmgmt power off
+sudo btmgmt bredr off
+sudo btmgmt power on
+```
+
+Make it persistent in `/etc/bluetooth/main.conf`:
+
+```ini
+[General]
+ControllerMode = le
+```
+
+then `sudo systemctl restart bluetooth`. Note this disables Bluetooth Classic for the whole adapter (fine for a headless companion host, but it will stop classic devices like BT speakers from working on that adapter).
+
+## Pairing
+
+On first connection the watch shows a **6-digit code**. stoandl registers a headless BlueZ pairing agent (`DisplayYesNo`, auto-confirm), so you only need to **confirm the code on the watch** — there is no prompt on the Linux side. Subsequent reconnects are automatic (no re-pairing).
 
 ## Building
 

@@ -1,93 +1,151 @@
-# BLE Bonded Reconnect Debug Summary
+# Pebble BLE Connection Debug — Diagnosis & State
 
-## Problem
-Pebble watch (Time Steel, identity addr `B0:B4:48:B6:1E:81`) connects fine on fresh pairing
-but fails on every bonded reconnect with `TimeoutInitializingPpog`.
+_Last updated 2026-06-04 (session "stoandl"). Supersedes the earlier reAddServices/CCCD notes._
 
-Architecture: `reversedPPoG=false` — phone is BLE peripheral (GATT server), watch is GATT client.
-Phone exposes PPoG characteristic; watch writes to it and subscribes for notifications (CCCD).
+## Symptom
 
-## Root cause
-On bonded reconnect the watch sends **zero** WriteValue or StartNotify calls — confirmed by logs
-(no `WriteValue: X bytes` or `StartNotify` lines between GATT discovery and timeout).
-The watch trusts the peripheral to restore its CCCD subscription.
+Connecting a **Pebble Time Steel** (identity `B0:B4:48:B6:1E:81`, firmware **4.4.3-rbl**) over
+BLE is intermittent: ~1 in 6 fresh pairings reaches a working PPoG session and forwards
+notifications; the rest connect, bond, encrypt — then drop after ~20–40 s. Every bonded
+reconnect (e.g. after airplane-mode toggle) fails.
 
-BlueZ does **not** restore CCCD for externally-registered GATT apps (`RegisterApplication`) on
-reconnect. Without CCCD active, BlueZ silently drops our `PropertiesChanged` notifications
-(RESET_REQUEST never reaches the watch → 10s timeout → `TimeoutInitializingPpog`).
+## How it was diagnosed
+
+Correlated host captures: `sudo btmon -w X.snoop` + `./gradlew run | tee X.log`, decoded in the
+sandbox with `btmon -r`. Captures kept in repo root: `good.snoop/good.log` (the rare success),
+`bad.snoop/bad.log` and `fix.snoop/fix.log` (typical failures).
+
+## What actually happens (evidence)
+
+1. **The drop is ours, not the watch's and not RF.** btmon shows the link bonds + encrypts fine
+   (supervision timeout healthy at 6 s), then libpebble's `Negotiator` times out after 20 s
+   (`negotiation timed out` → `negotiation failed: disconnecting`) and **the phone** sends the
+   HCI Disconnect (MGMT "terminated by local host"). Not a supervision timeout, not 0x13 from the
+   watch.
+
+2. **PPoG never starts because the watch never engages our GATT server.** In a failing run the
+   watch does **zero** service discovery of the phone and **zero** CCCD subscribe / RESET_REQUEST
+   write. Decisive counts (watch→phone): good run = 3 `Read By Group Type` + Find Information +
+   2 Write (CCCD + RESET); bad run = **0** of each (only reads Device Name). Phone (`BluezGattServer`,
+   service `10000000-328e…`, char `10000001`) exposes everything correctly; the watch just never asks.
+
+3. **Root cause is upstream of PPoG/GATT: the watch never accepts the phone as a bonded gateway.**
+   The `ConnectivityStatus` the *watch* reports is, on every failing connection:
+   `paired = false  hasBondedGateway = false` — even after `Pair() completed` and `encrypted = true`.
+   In the one good run's reconnect it was `hasBondedGateway = true`. Until the watch considers
+   itself gateway-bonded it refuses to discover/engage PPoG. The GATT-cache symptom is downstream
+   of this.
+
+## Why this watch is the wrong target for a BLE-only daemon
+
+- The **Pebble Time Steel is BASALT**, a *classic* (dual-mode) Pebble. The official/Rebble app talks
+  to it over **Bluetooth Classic (BR/EDR)**; BLE is its *secondary* transport. (Two BT entries
+  exist: `Pebble XXXX` = classic, `Pebble-LE XXXX` = BLE.)
+- This daemon is **BLE-only** (`supportsBtClassic = false` in `LibPebbleModule.jvm.kt`,
+  `reversedPPoG = false`). So we're forcing the non-primary transport on this watch.
+- In libpebble, gateway-pairing is gated by `WatchType.needsPairingTrigger()`:
+  `BASALT = false`, `EMERY = true`, `DIORITE = true`. So for the Time Steel the **pairing-trigger
+  write is skipped entirely** (no `makePairingTriggerValue`, no write to char `00000002`) — which
+  matches the observed `hasBondedGateway = false`. BLE-native watches (Pebble 2 = DIORITE,
+  **Time 2 = EMERY**, Time Round = CHALK… note CHALK=false) get the trigger written.
+
+- Corroboration: Gadgetbridge requires pairing the **non-LE (classic) entry first** for dual-mode
+  Pebbles (issue #3597), and Time Steel BLE pairing is a known pain point (#3596) — classic is the
+  primary/expected transport for this watch.
+
+### Strong hypothesis / next test
+A **Pebble Time 2** (EMERY, firmware 4.9.178) is BLE-native (BLE is its *only* transport) and
+`needsPairingTrigger(EMERY) = true`, so the gateway-pairing write should fire and the bond should
+take. **Test the Time 2** — it is very likely to work where the Time Steel can't with this daemon.
+
+## Open question to confirm with logging
+`needsPairingTrigger()` reads `scopeProps.color.platform`, but **no watch platform is detected in
+the failing logs** (connection dies before negotiation). Need to confirm what platform the daemon
+believes it has *before* pairing (from scan record? default?). If misdetected, even the Time 2
+could skip the trigger. The next capture (root=DEBUG, see below) will show
+`Requesting pairing: needsPairingTrigger = …` and `makePairingTriggerValue …`.
+
+## Time 2 (EMERY, fw 4.9.178) result — different failure: wrong BT transport
+
+`time2.snoop/log` (2026-06-05): the Time 2 **never connects over LE**. Sequence:
+`Add Device (BR/EDR ED:86:0A:D4:B3:49)` → `Create Connection (0x01|0x0005)` [CLASSIC] →
+`Connect Complete: Page Timeout (0x04)` → `Connect Failed`; then LE *scanning* but **0 LE Create
+Connections** → Kable/btleplug 60 s `ConnectTimeout`. Zero ATT/SMP — never reached GATT, no pairing
+popup. So `reversedPPoG` is irrelevant here (we never reach PPoG).
+
+Cause: BlueZ has the Time 2 **typed as a BR/EDR device**, so `Device1.Connect()` (Kable's btleplug
+backend → BlueZ) pages it over classic and never falls back to LE. Contrast: Time Steel connected
+via LE (2 LE-connect events). The daemon's JVM classic scanner is a no-op (`emptyFlow()`), so this
+is BlueZ's own knowledge of the device — likely a stale BR/EDR entry.
+
+Note the client/server split: **client (phone→watch) = Kable + btleplug (Rust)**; **server
+(BluezGattServer) = BlueZ D-Bus**. btleplug does not LE-fallback after a classic page timeout.
+
+ROOT CAUSE (confirmed): Time 2 advertises **Public address + Flags 0x02** (BR/EDR-Not-Supported bit
+NOT set → claims dual-mode). `bluetoothctl info` = "not available" (NOT a stale bond). BlueZ pages
+it over classic and btleplug never falls back to LE. This stack can't force LE per-connection
+(no equivalent of Android `connectGatt(TRANSPORT_LE)`).
+
+FIX: put the controller in **LE-only mode** (daemon is BLE-only anyway):
+`sudo btmgmt power off && sudo btmgmt bredr off && sudo btmgmt power on` (test), or persistent
+`/etc/bluetooth/main.conf` → `[General] ControllerMode = le` + restart bluetooth. Then BlueZ must
+connect LE. Caveat: disables ALL classic on the adapter (other devices here are BLE, so fine).
+Only after the Time 2 connects over LE can the gateway-pairing / reversedPPoG question be tested.
+
+## Time 2 over LE (after LE-only mode) — SMP MITM pairing, no agent
+
+After `ControllerMode=le`, the Time 2 connects over LE, discovers services, and (EMERY ⇒
+`needsPairingTrigger=true`) **writes the pairing trigger** + calls `Pair()`. But bonding fails:
+`createBond Pair() ended: No reply within specified time`, ATT 0x0e. snoop SMP shows
+**LE Secure Connections + MITM** (`Auth: Bonding, MITM, SC`) → public-key exchange → Confirm/Random
+→ watch terminates (`0x13`) / `SMP Pairing Failed (0x05)`. The watch DOES show its pairing popup
+(user confirmed); the official Android app shows a 6-digit code — this is **Numeric Comparison**.
+
+Root cause: **the daemon registered no BlueZ pairing agent**, so BlueZ had nothing to answer
+`RequestConfirmation` → pairing times out. (Time Steel bonded because it used older LE *Legacy*
+pairing, no agent needed.)
+
+FIX (implemented, stoandl-side, no PebbleOS/BlueZ change): `BluezPairingAgent.kt` — an
+`org.bluez.Agent1` exported via dbus-java, registered as the **default** agent with capability
+**DisplayYesNo**, auto-accepting `RequestConfirmation`/`RequestAuthorization`/`AuthorizeService`.
+Wired into `PebbleIntegration.init()`. User confirms the matching code on the watch; phone
+auto-accepts. If logs show `RequestPasskey` instead (watch-displays/phone-enters Passkey Entry),
+that can't be answered headlessly and we'd revisit.
 
 ## Dead ends (do not revisit)
 
-### CCC file approach
-Tried writing `/var/lib/bluetooth/<hci>/<device>/ccc` with CCCD handle range 0x000a–0x1000.
-**Failed:** BlueZ ignores CCC file entries for external `RegisterApplication` GATT objects.
-The file mechanism only works for BlueZ's own internal characteristics (e.g. Service Changed).
-Even manually copying the file to the identity-address directory did nothing.
-
-### setfacl / permissions
-`bluetooth.service` has `ProtectSystem=strict` + `StateDirectoryMode=0700`.
-`ExecStartPost` drop-ins run in the service's mount namespace — setfacl changes don't persist
-to the host view. A separate `bluetooth-acl.service` also had timing issues with bluetoothd
-creating device dirs with explicit `chmod(0700)` during pairing. Moot anyway since CCC files
-don't work for external apps.
-
-### Passive wait for StartNotify
-Tried waiting 3s / 15s for watch to call StartNotify on its own. Watch never does — it
-expects notifications to be "already on" via CCCD restoration.
-
-## What works: reAddServices → Service Changed
-
-`gattServerManager.reAddServices()` (UnregisterApplication + RegisterApplication) causes BlueZ
-to send a **Service Changed** indication to the watch. The watch responds by re-discovering
-our GATT service and re-writing the CCCD descriptor, which causes BlueZ to call `StartNotify`
-on our application. After that, `notifySubscribed=true` and PropertiesChanged is delivered.
-
-Evidence in `good.log`: reAddServices at 08:55:54, StartNotify at 08:55:56 (~2s later) → full
-PPoG session established, data flowing.
+- **Service Changed via reAddServices** (the kept experiment, see below): proven not to work for
+  the failing case. btmon shows **zero Service Changed indications transmitted** — because the
+  watch did no discovery, it never subscribed to *anything* (incl. Service Changed), so there is no
+  CCCD channel to deliver the indication through. Catch-22.
+- **CCC-file / setfacl bond-DB editing** (prior session): BlueZ ignores CCC files for externally
+  -registered GATT apps. Confirmed irrelevant.
+- **Waiting longer for the watch to act**: it stays fully passive; waiting just delays the timeout.
 
 ## Current code state
 
-**`PebbleBle.kt`** (both paths now call reAddServices when `!notifySubscribed`):
+- **Kept (not working, scheduled to revert):** `PebbleBle.connect()` grace-then-Service-Changed
+  logic + `GattServer.notifySubscribed` StateFlow + `GattServerManager.waitForSubscription()`
+  (3 files in `libs/libpebble3`). Adds ~14 s/attempt with no benefit on this watch. Kept only
+  because investigation is ongoing.
+- **Logging (this session):** `logback.xml` root set to **DEBUG** and `ConnectivityWatcher` to
+  DEBUG, so the bare-Kermit-`Logger` classes (`PebblePairing`, `PpogClient` → empty tag → root)
+  and connectivity transitions become visible. Revert root→INFO when done.
 
-```kotlin
-// Bonded reconnect path:
-if (!gattServerManager.notifySubscribed) {
-    gattServerManager.reRegisterApplication()
-    val subscribed = gattServerManager.waitForSubscription(NOTIFY_SUBSCRIBE_TIMEOUT)
-    logger.d { "alreadyBonded: notifySubscribed=$subscribed" }
-}
-phoneInitiatesReset = true
+## Next steps (in order)
 
-// After fresh pairing path (same pattern):
-if (!gattServerManager.notifySubscribed) {
-    gattServerManager.reRegisterApplication()
-    val subscribed = gattServerManager.waitForSubscription(NOTIFY_SUBSCRIBE_TIMEOUT)
-    logger.d { "after pairing: notifySubscribed=$subscribed" }
-}
-phoneInitiatesReset = false
+1. **Test with the Pebble Time 2** (EMERY) using the current daemon. Capture btmon + log.
+   Expect to see `needsPairingTrigger = true`, `wrote pairing trigger`, then watch discovers PPoG.
+2. If Time 2 works → the Time Steel needs **Bluetooth Classic** support (a much larger effort), or
+   is simply out of scope for a BLE daemon. Decide scope.
+3. If Time 2 *also* fails the same way → re-examine gateway pairing / `pinAddress` /
+   `reversedPPoG` ("GATT client only") knobs with the new DEBUG logs.
 
-companion object {
-    private val CONNECTIVITY_UPDATE_TIMEOUT = 10.seconds
-    private val NOTIFY_SUBSCRIBE_TIMEOUT = 5.seconds  // was 3s
-}
-```
+## Key files / refs
 
-**Important caveat**: reAddServices changes GATT handle numbers on every call. There was
-previously a "death spiral" where handles kept changing and the watch could never establish
-a stable CCCD. The current approach avoids this by calling reAddServices **once per
-connection attempt** and then waiting for StartNotify. The watch updates its handle cache
-via the re-discovery triggered by Service Changed.
-
-## Current status
-
-- Initial pairing: **confirmed working** (good.log shows full PPoG session)
-- Bonded reconnect: **NOT YET TESTED** — the mechanism is coded but no successful bonded
-  reconnect log exists yet. This is the next thing to test.
-
-## Key files
-- `libs/libpebble3/libpebble3/src/commonMain/kotlin/.../pebble/PebbleBle.kt` — connection flow
-- `libs/libpebble3/libpebble3/src/jvmMain/kotlin/.../transport/GattServer.jvm.kt` — GATT server,
-  `reAddServices()`, `StartNotify()`, `sendData()`
-- `good.log` — successful initial pairing session log
-- Run with: `./gradlew run` (see CLAUDE.md for required JVM flags)
-- **Always ask before running** — user requirement
+- Connection flow: `libs/libpebble3/…/connection/bt/ble/pebble/PebbleBle.kt`
+- Pairing/gateway: `…/pebble/PebblePairing.kt` (`needsPairingTrigger()`, `makePairingTriggerValue`)
+- GATT server: `…/jvmMain/…/transport/GattServer.jvm.kt`
+- Transport/pairing config: `…/jvmMain/…/di/LibPebbleModule.jvm.kt`, `…/ble/BlePlatformConfig.kt`
+- Sandbox build (NEVER `./gradlew` in /workspace — it's a bind mount of the host repo; use
+  `~/check-build.sh` which builds an isolated copy). btmon decodes snoops offline: `btmon -r X.snoop`.
