@@ -44,6 +44,7 @@ import org.koin.dsl.module
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
 
@@ -55,6 +56,7 @@ class PebbleIntegration(
 ) {
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
+    private val libPebbleRef = AtomicReference<LibPebble?>(null)
     // Headless BlueZ pairing agent so MITM/Secure-Connections pairing (newer Pebble firmware,
     // e.g. Time 2) can complete without a desktop UI — the user just confirms the code on the watch.
     private val pairingAgent = BluezPairingAgent()
@@ -85,10 +87,11 @@ class PebbleIntegration(
                 DbusNotificationListenerConnection(notificationFlow, scope, itemIdToDbusId)
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
-            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId) }
+            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
         }), allowOverride = true)
 
         libPebble = koin.get()
+        libPebbleRef.set(libPebble)
         watchConnector = koin.get()
         libPebble.init()
         startScanLoop()
@@ -179,6 +182,7 @@ private object NoOpTokenProvider : TokenProvider {
 
 private class DbusNotificationActionHandler(
     private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
+    private val libPebbleRef: AtomicReference<LibPebble?>,
 ) : PlatformNotificationActionHandler {
     private val log = KotlinLogging.logger {}
     @Volatile private var dbusConn: DBusConnection? = null
@@ -196,7 +200,7 @@ private class DbusNotificationActionHandler(
             FreedesktopNotifications::class.java,
         )
     } catch (e: Exception) {
-        log.warn { "Cannot reach notification service: ${e.message}" }
+        log.warn { "Cannot reach D-Bus notification service: ${e.message}" }
         dbusConn = null
         null
     }
@@ -205,24 +209,36 @@ private class DbusNotificationActionHandler(
         itemId: Uuid,
         action: BaseAction,
         attributes: List<TimelineItem.Attribute>,
-    ): TimelineActionResult = when (action.type) {
-        TimelineItem.Action.Type.Dismiss,
-        TimelineItem.Action.Type.AncsDismiss -> {
-            val dbusId = itemIdToDbusId.remove(itemId)
-            if (dbusId != null) {
-                withContext(Dispatchers.IO) {
-                    try {
-                        notifService()?.CloseNotification(dbusId)
-                        log.debug { "Closed D-Bus notification $dbusId for watch item $itemId" }
-                    } catch (e: Exception) {
-                        log.warn { "CloseNotification($dbusId) failed: ${e.message}" }
-                        dbusConn = null
+    ): TimelineActionResult {
+        log.info { "Watch action: type=${action.type} itemId=$itemId" }
+        return when (action.type) {
+            TimelineItem.Action.Type.Dismiss,
+            TimelineItem.Action.Type.AncsDismiss -> {
+                // Remove from watch notification centre
+                libPebbleRef.get()?.markNotificationRead(itemId)
+
+                // Close the corresponding desktop notification
+                val dbusId = itemIdToDbusId.remove(itemId)
+                if (dbusId != null) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            notifService()?.CloseNotification(dbusId)
+                            log.info { "Closed D-Bus notification $dbusId for watch item $itemId" }
+                        } catch (e: Exception) {
+                            log.warn { "CloseNotification($dbusId) failed: ${e.message}" }
+                            dbusConn = null
+                        }
                     }
+                } else {
+                    log.warn { "No D-Bus ID found for watch item $itemId — desktop notification not closed" }
                 }
+                TimelineActionResult(true, TimelineIcon.ResultDismissed, "Dismissed")
             }
-            TimelineActionResult(true, TimelineIcon.ResultDismissed, "Dismissed")
+            else -> {
+                log.info { "Unhandled watch action type ${action.type} on $itemId" }
+                TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
+            }
         }
-        else -> TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
     }
 }
 
