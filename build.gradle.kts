@@ -20,6 +20,8 @@ dependencies {
     implementation("io.ktor:ktor-client-cio:3.4.0")
 
     // DBus — listen to org.freedesktop.Notifications on the session bus
+    implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.8.2")
+
     implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
     implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
 

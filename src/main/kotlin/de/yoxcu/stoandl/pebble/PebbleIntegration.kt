@@ -4,6 +4,9 @@ package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.IncomingNotification
+import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
+import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
+import de.yoxcu.stoandl.dbus.StoandlControl
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
@@ -35,8 +38,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
+import kotlinx.io.files.Path
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.types.UInt32
@@ -53,6 +58,7 @@ private val log = KotlinLogging.logger {}
 class PebbleIntegration(
     private val notificationFlow: Flow<IncomingNotification>,
     private val scope: CoroutineScope,
+    private val serviceConn: DBusConnection,
 ) {
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
@@ -96,6 +102,7 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
+        registerControlService()
 
         log.info { "libpebble3 initialized" }
     }
@@ -107,6 +114,15 @@ class PebbleIntegration(
                 libPebble.startBleScan()
                 delay(35.seconds) // slightly longer than the 30s scan timeout
             }
+        }
+    }
+
+    private fun registerControlService() {
+        try {
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef))
+            log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
+        } catch (e: Exception) {
+            log.warn(e) { "Failed to register D-Bus control service" }
         }
     }
 
@@ -311,6 +327,29 @@ private fun iconForApp(appName: String): TimelineIcon {
     val lower = appName.lowercase()
     return appIconMappings.firstOrNull { (keyword, _) -> lower.contains(keyword) }?.second
         ?: TimelineIcon.NotificationGeneric
+}
+
+private class StoandlControlImpl(
+    private val libPebbleRef: AtomicReference<LibPebble?>,
+) : StoandlControl {
+    private val log = KotlinLogging.logger {}
+
+    override fun isRemote() = false
+    override fun getObjectPath() = STOANDL_OBJECT_PATH
+
+    override fun SideloadApp(path: String): Boolean {
+        val lp = libPebbleRef.get() ?: run {
+            log.warn { "SideloadApp($path): libPebble not ready" }
+            return false
+        }
+        log.info { "SideloadApp: $path" }
+        return try {
+            runBlocking { lp.sideloadApp(Path(path)) }
+        } catch (e: Exception) {
+            log.warn(e) { "SideloadApp($path) failed" }
+            false
+        }
+    }
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {
