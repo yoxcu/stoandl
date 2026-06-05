@@ -122,24 +122,27 @@ that can't be answered headlessly and we'd revisit.
   -registered GATT apps. Confirmed irrelevant.
 - **Waiting longer for the watch to act**: it stays fully passive; waiting just delays the timeout.
 
-## Current code state
+## Outcome & decisions
 
-- **Kept (not working, scheduled to revert):** `PebbleBle.connect()` grace-then-Service-Changed
-  logic + `GattServer.notifySubscribed` StateFlow + `GattServerManager.waitForSubscription()`
-  (3 files in `libs/libpebble3`). Adds ~14 s/attempt with no benefit on this watch. Kept only
-  because investigation is ongoing.
-- **Logging (this session):** `logback.xml` root set to **DEBUG** and `ConnectivityWatcher` to
-  DEBUG, so the bare-Kermit-`Logger` classes (`PebblePairing`, `PpogClient` → empty tag → root)
-  and connectivity transitions become visible. Revert root→INFO when done.
-
-## Next steps (in order)
-
-1. **Test with the Pebble Time 2** (EMERY) using the current daemon. Capture btmon + log.
-   Expect to see `needsPairingTrigger = true`, `wrote pairing trigger`, then watch discovers PPoG.
-2. If Time 2 works → the Time Steel needs **Bluetooth Classic** support (a much larger effort), or
-   is simply out of scope for a BLE daemon. Decide scope.
-3. If Time 2 *also* fails the same way → re-examine gateway pairing / `pinAddress` /
-   `reversedPPoG` ("GATT client only") knobs with the new DEBUG logs.
+- **BLE-native watches work (Time 2 confirmed).** The fix was a **headless BlueZ pairing agent**
+  (`BluezPairingAgent.kt`, `DisplayYesNo`, auto-confirm) — newer firmware needs Secure-Connections/MITM
+  pairing, which timed out with no agent. With it: pair (confirm on watch) → PPoG → notifications, incl.
+  bonded reconnect. Committed.
+- **Service-Changed experiment: reverted.** The grace-then-`reAddServices` attempt never helped (it
+  fired 0× on the Time 2 and can't reach the Time Steel — catch-22) and is gone; submodule is back to
+  baseline.
+- **BASALT force-pairing-trigger: tried and reverted.** Forcing `needsPairingTrigger=true` for BASALT
+  made the *bond* complete but **not** PPoG — the watch still skipped GATT discovery (the firmware race),
+  so no payoff.
+- **Time Steel firmware fix: not deployable.** `coredevices/PebbleOS` has no snowy/basalt board (tags
+  v4.9+); the Time Steel runs Rebble's binary-patched `v4.4.3-rbl`; `google/pebble` is readable but
+  won't compile. So the watch-side race can't be fixed from our side.
+- **Bluetooth Classic: parked (intentional).** It's the reliable transport for classic watches, but it's
+  more power-hungry than BLE and stoandl targets battery-constrained phones — so it's out of scope. Full
+  design retained in `bt-classic-scope.md` if ever wanted.
+- **Upstream PebbleOS advertising-flag fix: filed + PR'd.** Once a watch runs firmware with it, the
+  LE-only controller workaround is no longer needed for BLE-native watches.
+- **Logging:** `logback.xml` restored to INFO (DEBUG was diagnostic-only).
 
 ## Key files / refs
 

@@ -32,17 +32,35 @@ stoandl ──► libpebble3 ──► BlueZ ──► Pebble watch (BLE/PPoG)
 
 ## Compatibility
 
-stoandl is **BLE-only** (it does not implement Bluetooth Classic). Pebble support therefore depends on the watch's transport:
+stoandl is **BLE-only by design** — it targets battery-constrained Linux phones (postmarketOS),
+where Bluetooth Classic's always-on RFCOMM link costs more power than BLE. Bluetooth Classic is
+therefore **intentionally out of scope** (a scoping note lives in `bt-classic-scope.md` if anyone
+ever wants it). Watch support depends on the watch's transport and firmware:
 
 | Watch | Platform | Status |
 |-------|----------|--------|
 | Pebble Time 2 | EMERY | ✅ Works — pairing, bonded reconnect, notifications (confirmed) |
 | Pebble 2 | DIORITE | ⚠️ Expected to work (same BLE-native class; untested) |
-| Pebble Time / Time Steel | BASALT | ❌ Connects & bonds but the PPoG data channel doesn't come up yet (gateway-pairing not triggered for these models) — work in progress |
-| Pebble Time Round | CHALK | ❌ Same as above (untested) |
-| original Pebble / Pebble Steel | APLITE | ❌ Classic-only hardware — not reachable over BLE; would need Bluetooth Classic support |
+| Pebble Time / Time Steel | BASALT | ⚠️ Best-effort — pairs, but the data channel comes up only intermittently (~1 in 5); see cause below |
+| Pebble Time Round | CHALK | ⚠️ Same class as BASALT (untested; expect the same flakiness) |
+| original Pebble / Pebble Steel | APLITE | ❌ Classic-only hardware — no usable BLE data path; not supported |
 
-In short: **BLE-native watches (Pebble 2 / Time 2) work; classic-primary watches don't yet.** See `debug.md` for the full investigation.
+**In short: BLE-native watches (Pebble 2 / Time 2) work reliably. Older classic watches (Time / Time
+Steel) are best-effort over BLE.**
+
+### Why the older watches are flaky over BLE
+
+The PPoGATT data channel needs the **watch** to discover the phone's GATT service and subscribe to it
+after pairing. On the modern firmware that BLE-native watches run (e.g. Pebble Time 2 on Core Devices
+PebbleOS), this happens reliably — including on reconnect. On the **old firmware of the Time / Time
+Steel** (e.g. Rebble `v4.4.3-rbl`), the watch does this only intermittently: roughly 4 of 5 fresh
+pairs, it bonds and encrypts but never discovers/subscribes to the phone's PPoGATT service, so the
+connection times out. The two outcomes are byte-for-byte identical up to that point — it's a
+**race inside the watch firmware**, with no influence available from the phone side. Those watches'
+reliable transport is Bluetooth Classic, which stoandl deliberately doesn't implement (see above).
+
+Workaround for a Time / Time Steel: forget the pairing on both watch and phone, then re-pair; repeat
+until the data channel comes up (often a few tries). See `debug.md` for the full investigation.
 
 ## Requirements
 
@@ -53,7 +71,12 @@ In short: **BLE-native watches (Pebble 2 / Time 2) work; classic-primary watches
 
 ## Bluetooth setup (required: LE-only mode)
 
-stoandl connects over BLE only, but some Pebbles advertise as dual-mode (BR/EDR + LE). On such a watch BlueZ will try a **Bluetooth Classic** connection first, which times out and never falls back to LE — so the watch never connects. Put the controller in **LE-only mode** so BlueZ always uses LE:
+stoandl connects over BLE only, but some Pebbles advertise as dual-mode (BR/EDR + LE) — they set the
+advertising flags without "BR/EDR Not Supported". BlueZ then tries a **Bluetooth Classic** connection
+first, which times out and never falls back to LE, so the watch never connects. (This is a watch
+firmware advertising bug; a PebbleOS fix is in progress — once a watch runs firmware with that fix,
+LE-only mode is no longer needed.) Until then, put the controller in **LE-only mode** so BlueZ always
+uses LE:
 
 ```sh
 # temporary (until reboot), to try it out:
