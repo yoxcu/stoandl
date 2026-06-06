@@ -1,9 +1,9 @@
 #!/bin/sh
 set -e
 
-./gradlew jar
+./gradlew shadowJar
 
-JAR=$(ls build/libs/stoandl-*.jar | head -1)
+JAR=$(ls build/libs/stoandl-*-all.jar | head -1)
 
 sudo install -Dm644 "$JAR"                  /usr/lib/stoandl/stoandl.jar
 sudo install -Dm644 packaging/stoandl.service /usr/lib/systemd/user/stoandl.service

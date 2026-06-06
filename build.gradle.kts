@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "2.3.10"
     application
+    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "de.yoxcu.stoandl"
@@ -50,11 +51,11 @@ application {
     applicationDefaultJvmArgs = monitorOpenFlags
 }
 
-// Fat JAR for deployment to postmarketOS
-tasks.named<Jar>("jar") {
+// Fat JAR for deployment to postmarketOS.
+// Shadow plugin merges META-INF/services/* files so GraalVM Truffle language discovery works.
+tasks.shadowJar {
     manifest {
         attributes["Main-Class"] = "de.yoxcu.stoandl.MainKt"
     }
-    from({ configurations.runtimeClasspath.get().map { if (it.isDirectory) it else if (it.name.endsWith(".jar")) zipTree(it) else null }.filterNotNull() })
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    mergeServiceFiles()
 }

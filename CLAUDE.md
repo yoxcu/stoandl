@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```sh
 ./gradlew run          # run locally (includes required --add-opens JVM flags)
-./gradlew jar          # build fat JAR → build/libs/stoandl-<version>.jar
+./gradlew shadowJar    # build fat JAR → build/libs/stoandl-<version>-all.jar
 ```
 
 To run the fat JAR manually, the `--add-opens` flags are required:
