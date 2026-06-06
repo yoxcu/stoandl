@@ -13,6 +13,7 @@ import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.LibPebbleConfig
+import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -171,7 +172,11 @@ private class DbusNotificationListenerConnection(
             notificationFlow.collect { notification ->
                 try {
                     val timelineNotification = buildTimelineNotification(
-                        parentId = Uuid.random(),
+                        // Pin to the same parent UUID the official Android app uses for phone
+                        // notifications. The firmware keys "dismiss should round-trip to the phone"
+                        // off a recognized notification-source app; a random parentId is treated as
+                        // a local-only item, so SELECT→Dismiss never sends a TimelineAction back.
+                        parentId = SystemAppIDs.ANDROID_NOTIFICATIONS_UUID,
                         timestamp = Clock.System.now(),
                     ) {
                         attributes {
