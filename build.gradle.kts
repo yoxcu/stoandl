@@ -55,6 +55,6 @@ tasks.named<Jar>("jar") {
     manifest {
         attributes["Main-Class"] = "de.yoxcu.stoandl.MainKt"
     }
-    from({ configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) } })
+    from({ configurations.runtimeClasspath.get().map { if (it.isDirectory) it else if (it.name.endsWith(".jar")) zipTree(it) else null }.filterNotNull() })
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
