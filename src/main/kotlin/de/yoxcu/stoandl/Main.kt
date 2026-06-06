@@ -210,11 +210,10 @@ private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
     server.start()
 
     val localUrl = "http://localhost:$port/"
+    println("Config URL: $localUrl")
     try {
         ProcessBuilder("xdg-open", localUrl).start()
-    } catch (e: Exception) {
-        println("Open this URL in your browser: $localUrl")
-    }
+    } catch (_: Exception) {}
     println("Waiting for settings to be saved...")
     latch.await()
     server.stop(0)
