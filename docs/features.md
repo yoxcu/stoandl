@@ -1,0 +1,39 @@
+# Features & Roadmap
+
+What stoandl supports today and what it doesn't. Doubles as a roadmap — the checkboxes are the
+TODO list.
+
+stoandl is a **headless, BLE-only daemon for Linux** — that's the whole point. Every other Pebble
+companion (the official Core Devices app, microPebble, Gadgetbridge) is an Android/iOS GUI app
+tied to a phone OS and usually a cloud account. stoandl runs as a systemd user service on a Linux
+phone (postmarketOS) with no UI and no sign-in. Many gaps below are deliberate consequences of
+that (no health dashboard, no account-backed app store); others are genuine TODOs.
+
+## stoandl status
+
+### Working today
+
+- [x] **Notification sync** (desktop → watch) — D-Bus `org.freedesktop.Notifications` → Pebble timeline
+- [x] **Notification dismiss** — `Dismiss`/`AncsDismiss` actions mark read on watch + `CloseNotification()` on D-Bus
+- [x] **Watchapp / watchface sideload** — `stoandl sideload <app.pbw>`
+- [x] **PKJS (PebbleKit JS)** — companion scripts run in GraalJS (XHR, AppMessage, webhooks)
+- [x] **App configuration pages (Clay)** — `stoandl settings [app]` serves the config page via a local proxy
+- [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
+- [x] **Automatic reconnect** — bonded reconnect after watch disconnect or daemon restart
+
+### Roadmap / not yet implemented
+
+- [ ] **Phone call notifications** — partially scaffolded (`MissedCallSyncer`/`currentCall` imported but never fed); needs a D-Bus telephony source (ModemManager / oFono)
+- [ ] **Notification actions / reply** — only dismiss is handled; reply & canned responses return "Not supported"
+- [ ] **Time / timezone sync** — handled by libpebble3 but not actively managed by stoandl
+- [ ] **Calendar sync / timeline pins** — `WebServices` is a no-op; no calendar source wired
+- [ ] **Weather** — no provider wired
+- [ ] **Music / now-playing control** — could bridge MPRIS over D-Bus → `MusicService`
+- [ ] **Find my phone / find my watch**
+- [ ] **App store / locker / app management** — `fetchLocker()` stubbed
+- [ ] **Firmware updates** — `checkForFirmwareUpdate()` stubbed
+- [ ] **Health / activity sync** (steps, sleep, HR) — likely out of scope (headless, no dashboard)
+- [ ] **Voice / dictation** — transcription provider explicitly stubbed (`Failed`)
+- [ ] **Send text / quick SMS** — no messaging integration
+- [ ] **Data logging** (PebbleKit datalog API)
+- [ ] **Bluetooth Classic transport** — intentionally out of scope; see [bt-classic-scope.md](../bt-classic-scope.md)

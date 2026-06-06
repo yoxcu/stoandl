@@ -62,52 +62,22 @@ Pebble watch over BLE/PPoG
 
 The dependency is a patched fork (`yoxcu/libpebble3`, branch `stoandl`) included as a git submodule at `libs/libpebble3`. It is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
 
-The fork adds: BlueZ GATT server, PPoG handshake fixes for Linux BLE, BlueZ pairing/bonding, PKJS/Rhino JS runtime for watchapp companion JS, and strips Android/iOS targets to speed up JVM builds.
+The fork adds: BlueZ GATT server, PPoG handshake fixes for Linux BLE, BlueZ pairing/bonding, PKJS/GraalJS runtime for watchapp companion JS, and strips Android/iOS targets to speed up JVM builds.
 
 ## PKJS (PebbleKit JS)
 
-Watchapps can ship a `pkjs/index.js` companion script. libpebble3 runs it in **Mozilla Rhino 1.7.15** via `RhinoJsRunner`. The JS bridge initialises when the watch connects and the app is launched; look for `Pebble JS Bridge initialized.` in the log.
+Watchapps can ship a `pkjs/index.js` companion script. libpebble3 runs it in **GraalJS** (GraalVM JS, 24.2.x) via `GraalJsRunner`. The JS bridge initialises when the watch connects and the app is launched; look for `Pebble JS Bridge initialized.` in the log.
 
-**Rhino 1.7.15 supported ES6 subset** — these work: arrow functions (no rest/default params), template literals, destructuring, `const`/`let`, `Map`/`Set`, `Array.from`, shorthand properties, rest params in regular `function` declarations.
+GraalJS is a full, spec-compliant ECMAScript engine — modern JS (classes, `for...of`, default/rest params, computed keys, etc.) all work. No Rhino-style syntax workarounds are needed.
 
-**Rhino 1.7.15 does NOT support** (fix pattern in parentheses):
-- `class` declarations — rewrite as constructor + `prototype` methods
-- Rest params in arrow functions: `(...args) =>` — use `function() { const args = Array.prototype.slice.call(arguments); }`
-- Default parameter values: `(x, y = {}) =>` — use explicit `if (y === undefined) y = {};`
-- `for...of` loops — use `.forEach()` or index-based `for`
-- Computed property keys: `{[k]: v}` — use `obj[k] = v` after construction
-- `const` in separate `if`-blocks in the same function scope triggers redeclaration — use unique names or `let`
+> **Note:** PKJS originally ran on Mozilla Rhino 1.7.15 and was migrated to GraalJS. The trigger was Clay's `tosource()`, which runs a 60-alternative regex on every object key — pathologically slow on Rhino's NFA, fine on GraalJS's TruffleRegex DFA.
 
-**Rhino test harness** — verify JS syntax without deploying. Requires Rhino JAR from the Gradle cache:
-```sh
-RHINO=/home/vscode/.gradle/caches/modules-2/files-2.1/org.mozilla/rhino/1.7.15/39e53f8e769ea9a7e799f266aa47c85edd99a29e/rhino-1.7.15.jar
-# Write TestPkjs.java (compile-only, no runtime stubs needed):
-cat > /tmp/TestPkjs.java << 'EOF'
-import org.mozilla.javascript.*;
-import java.io.*;
-import java.nio.file.*;
-public class TestPkjs {
-    public static void main(String[] args) throws Exception {
-        boolean ok = true;
-        String dir = args[0];
-        for (String f : new String[]{"JSTimeout.js","XMLHTTPRequest.js","startup.js"}) {
-            String src = new String(Files.readAllBytes(Paths.get(dir + "/" + f)));
-            Context cx = Context.enter();
-            try {
-                cx.setLanguageVersion(Context.VERSION_ES6);
-                cx.setOptimizationLevel(-1);
-                cx.compileString(src, f, 1, null);
-                System.out.println("OK  " + f);
-            } catch(Exception e) { System.out.println("ERR " + f + ": " + e.getMessage()); ok=false; }
-            finally { Context.exit(); }
-        }
-        System.exit(ok ? 0 : 1);
-    }
-}
-EOF
-javac -cp $RHINO /tmp/TestPkjs.java -d /tmp
-java -cp /tmp:$RHINO TestPkjs libs/libpebble3/libpebble3/src/jvmMain/resources/pkjs
-```
+**GraalJS gotchas (build/runtime, not syntax):**
+- The fat JAR **must** merge `META-INF/services/` (Shadow plugin `mergeServiceFiles()`). A plain `DuplicatesStrategy.EXCLUDE` silently drops the TruffleRegex service registration → `No language for id regex found` at runtime.
+- Don't set `js.esversion` as a `GraalJsRunner` option — it isn't a valid GraalJS option and throws.
+- When building JS strings to `eval` (e.g. injecting an XHR response body), JSON-encode the value (`Json.encodeToString(...)`) — don't hand-escape. Unescaped `\n`/`\r`/control chars cause a silent `PolyglotException` and the JS callbacks never fire.
+
+There is no offline syntax harness (the GraalJS language jars aren't in the Gradle module cache); verify PKJS changes by running the daemon and watching the log for `Pebble JS Bridge initialized.` and the script's `console.log` output.
 
 ## Deployment (postmarketOS / systemd user service)
 
