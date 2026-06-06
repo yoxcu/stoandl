@@ -4,12 +4,19 @@ package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.IncomingNotification
+import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
+import de.yoxcu.stoandl.calls.MissedCallLog
+import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.contacts.ContactResolver
+import de.yoxcu.stoandl.contacts.DialerNameCache
+import io.rebble.libpebblecommon.calls.SystemCallLog
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
+import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.LibPebbleConfig
@@ -50,6 +57,8 @@ import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.types.UInt32
 import org.koin.dsl.module
+import kotlin.random.Random
+import kotlin.random.nextUInt
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
@@ -67,6 +76,10 @@ class PebbleIntegration(
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
+    private val config = StoandlConfig.load()
+    private val contactResolver = ContactResolver(config.vcardPaths)
+    private val dialerNameCache = DialerNameCache()
+    private val missedCallLog = MissedCallLog()
     // Headless BlueZ pairing agent so MITM/Secure-Connections pairing (newer Pebble firmware,
     // e.g. Time 2) can complete without a desktop UI — the user just confirms the code on the watch.
     private val pairingAgent = BluezPairingAgent()
@@ -94,10 +107,17 @@ class PebbleIntegration(
         // persisted Java Preferences value cannot override reversedPPoG=false.
         koin.loadModules(listOf(module {
             single<NotificationListenerConnection> {
-                DbusNotificationListenerConnection(notificationFlow, scope, itemIdToDbusId)
+                DbusNotificationListenerConnection(
+                    notificationFlow, scope, itemIdToDbusId,
+                    blocklist = config.notificationBlocklist,
+                    dialerApps = config.dialerApps,
+                    dialerNameCache = dialerNameCache,
+                )
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
             single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
+            // Back MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
+            single<SystemCallLog> { missedCallLog }
         }), allowOverride = true)
 
         libPebble = koin.get()
@@ -107,6 +127,7 @@ class PebbleIntegration(
         startScanLoop()
         startAutoConnect()
         registerControlService()
+        startCallMonitor()
 
         log.info { "libpebble3 initialized" }
     }
@@ -129,6 +150,15 @@ class PebbleIntegration(
                 libPebble.startBleScan()
                 delay(35.seconds) // slightly longer than the 30s scan timeout
             }
+        }
+    }
+
+    private fun startCallMonitor() {
+        try {
+            ModemManagerCallMonitor(libPebble, scope, contactResolver, dialerNameCache, missedCallLog).start()
+            log.info { "ModemManager call monitor started" }
+        } catch (e: Exception) {
+            log.warn(e) { "Failed to start ModemManager call monitor (telephony notifications disabled)" }
         }
     }
 
@@ -163,6 +193,9 @@ private class DbusNotificationListenerConnection(
     private val notificationFlow: Flow<IncomingNotification>,
     private val scope: CoroutineScope,
     private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
+    private val blocklist: List<String>,
+    private val dialerApps: List<String>,
+    private val dialerNameCache: DialerNameCache,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
@@ -170,6 +203,18 @@ private class DbusNotificationListenerConnection(
         log.info { "DBus notification listener connection initialized" }
         scope.launch {
             notificationFlow.collect { notification ->
+                val appLower = notification.appName.lowercase()
+                // Dialer notifications: capture the title for caller-name fallback, then suppress
+                // them from the watch (the native call screen already shows the call).
+                if (dialerApps.any { appLower.contains(it.lowercase()) }) {
+                    dialerNameCache.record(notification.summary)
+                    log.info { "Suppressed dialer notification from ${notification.appName} (name='${notification.summary}')" }
+                    return@collect
+                }
+                if (blocklist.any { appLower.contains(it.lowercase()) }) {
+                    log.info { "Filtered notification from ${notification.appName} (blocklist)" }
+                    return@collect
+                }
                 try {
                     val timelineNotification = buildTimelineNotification(
                         // Pin to the same parent UUID the official Android app uses for phone
@@ -412,6 +457,45 @@ private class StoandlControlImpl(
             .filterIsInstance<ConnectedPebbleDevice>()
             .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
             .forEach { it.triggerOnWebviewClosed(data) }
+    }
+
+    override fun FakeCallRing(name: String, number: String): Boolean {
+        val lp = libPebbleRef.get() ?: run {
+            log.warn { "FakeCallRing: libPebble not ready" }
+            return false
+        }
+        val cookie = Random.nextUInt()
+        val contactName = name.ifEmpty { null }
+        log.info { "[fakecall] ringing: name=$name number=$number cookie=$cookie" }
+        lp.currentCall.value = Call.RingingCall(
+            contactName = contactName,
+            contactNumber = number,
+            cookie = cookie,
+            onCallEnd = {
+                log.info { "[fakecall] watch declined/ended ringing call (cookie=$cookie)" }
+                lp.currentCall.value = null
+            },
+            onCallAnswer = {
+                log.info { "[fakecall] watch answered (cookie=$cookie) → active call" }
+                lp.currentCall.value = Call.ActiveCall(
+                    contactName = contactName,
+                    contactNumber = number,
+                    cookie = cookie,
+                    onCallEnd = {
+                        log.info { "[fakecall] watch ended active call (cookie=$cookie)" }
+                        lp.currentCall.value = null
+                    },
+                )
+            },
+        )
+        return true
+    }
+
+    override fun FakeCallEnd(): Boolean {
+        val lp = libPebbleRef.get() ?: return false
+        log.info { "[fakecall] remote ended call" }
+        lp.currentCall.value = null
+        return true
     }
 
     private fun findPkjsApp(query: String): PKJSApp? {

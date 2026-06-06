@@ -21,9 +21,20 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
 - [x] **Automatic reconnect** — bonded reconnect after watch disconnect or daemon restart
 
+### Implemented but UNTESTED
+
+⚠️ The phone-call feature set is written but **not yet verified against real telephony**. Only the
+watch-side path is confirmed — `stoandl fakecall ring|end` correctly drives the native call screen
+and Answer/Decline round-trip on a Pebble Time 2. Everything that depends on ModemManager or the
+config file below is untested on hardware and may need fixing.
+
+- [x] **Phone call notifications** — ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive `Accept()`/`Hangup()`. _Untested against a real modem._
+- [x] **Missed-call sync** — unanswered incoming calls become timeline pins via libpebble3's `MissedCallSyncer` (backed by an in-memory `SystemCallLog` fed by the call monitor). _Untested._
+- [x] **Caller-ID resolution** — DE-agnostic vCard lookup (`contacts.vcard_paths`, suffix-matched), with the dialer's own notification title as fallback. See [configuration.md](configuration.md). _Untested._
+- [x] **Notification filtering** — `notification.blocklist` drops chosen apps; `call.dialer_apps` suppresses the dialer's redundant call notification. See [configuration.md](configuration.md). _Untested._
+
 ### Roadmap / not yet implemented
 
-- [ ] **Phone call notifications** — partially scaffolded (`MissedCallSyncer`/`currentCall` imported but never fed); needs a D-Bus telephony source (ModemManager / oFono)
 - [ ] **Notification actions / reply** — only dismiss is handled; reply & canned responses return "Not supported"
 - [ ] **Time / timezone sync** — handled by libpebble3 but not actively managed by stoandl
 - [ ] **Calendar sync / timeline pins** — `WebServices` is a no-op; no calendar source wired

@@ -20,7 +20,7 @@ import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "settings")
+private val CTL_COMMANDS = setOf("sideload", "settings", "fakecall")
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && (args[0] == "ctl" || args[0] in CTL_COMMANDS)) {
@@ -73,6 +73,8 @@ private fun ctl(args: Array<String>) {
         println("Commands:")
         println("  sideload <path>   Install a .pbw watchface or app onto the connected watch")
         println("  settings [app]    Open the configuration page for a running PKJS app")
+        println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
+        println("  fakecall end                    Debug: clear the synthetic call")
         return
     }
     when (args[0]) {
@@ -109,6 +111,34 @@ private fun ctl(args: Array<String>) {
                     return
                 }
                 runConfigProxy(configUrl) { data -> control.WebviewClose(data) }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "fakecall" -> {
+            val sub = args.getOrNull(1) ?: "ring"
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                when (sub) {
+                    "ring" -> {
+                        val name = args.getOrNull(2) ?: "Test Caller"
+                        val number = args.getOrNull(3) ?: "+15551234567"
+                        if (control.FakeCallRing(name, number)) println("Ringing watch: $name <$number>")
+                        else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
+                    }
+                    "end" -> {
+                        control.FakeCallEnd()
+                        println("Call ended")
+                    }
+                    else -> {
+                        System.err.println("Usage: stoandl fakecall [ring [name] [number] | end]")
+                        System.exit(1)
+                    }
+                }
+            } catch (e: Exception) {
+                System.err.println("Error: ${e.message}")
+                System.exit(1)
             } finally {
                 conn.disconnect()
             }
@@ -164,7 +194,7 @@ private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
                 else
                     java.net.URLDecoder.decode(encoded, "UTF-8")
             } else {
-                java.net.URL(configUrl).readText()
+                java.net.URI(configUrl).toURL().readText()
             }
         } catch (e: Exception) {
             System.err.println("Failed to fetch config page: ${e.message}")

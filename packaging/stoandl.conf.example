@@ -1,0 +1,22 @@
+# stoandl configuration
+#
+# Copy to ~/.config/stoandl/stoandl.conf (or $XDG_CONFIG_HOME/stoandl/stoandl.conf)
+# and restart the service:  systemctl --user restart stoandl
+#
+# Syntax: `key = value`, `#` starts a comment. List values are comma-separated.
+# All matching is case-insensitive substring matching against the notification app name.
+
+# Apps whose notifications are never forwarded to the watch.
+# Example: notification.blocklist = KDE Connect, Spotify, org.kde.discover.notifier
+notification.blocklist =
+
+# Telephony/dialer apps. Their notifications are suppressed from the watch (the native call
+# screen replaces them), and their notification title is used as a fallback caller name when
+# the number isn't found in the vCard files below.
+# Defaults to "spacebar, calls" (Plasma Mobile Spacebar + GNOME Calls) if unset.
+call.dialer_apps = spacebar, calls
+
+# vCard (.vcf) files or directories scanned for caller-ID resolution. Numbers are matched
+# digits-only by suffix, so +49… and local 0… forms both resolve. `~` expands to your home.
+# Plasma Mobile's kpeoplevcard backend stores contacts here by default:
+contacts.vcard_paths = ~/.local/share/kpeoplevcard
