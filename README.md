@@ -74,10 +74,10 @@ until the data channel comes up (often a few tries). See `debug.md` for the full
 
 stoandl connects over BLE only, but some Pebbles advertise as dual-mode (BR/EDR + LE) — they set the
 advertising flags without "BR/EDR Not Supported". BlueZ then tries a **Bluetooth Classic** connection
-first, which times out and never falls back to LE, so the watch never connects. (This is a watch
-firmware advertising bug; a PebbleOS fix is in progress — once a watch runs firmware with that fix,
-LE-only mode is no longer needed.) Until then, put the controller in **LE-only mode** so BlueZ always
-uses LE:
+first, which times out and never falls back to LE, so the watch never connects. This is a watch
+firmware advertising bug, fixed in [PebbleOS#1441](https://github.com/coredevices/PebbleOS/pull/1441)
+and included since **firmware v4.12.0** — if your watch runs v4.12.0 or later, LE-only mode is not
+needed. For older firmware, put the controller in **LE-only mode** so BlueZ always uses LE:
 
 ```sh
 # temporary (until reboot), to try it out:
