@@ -153,15 +153,28 @@ private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
             exchange.sendResponseHeaders(405, -1); exchange.responseBody.close(); return@createContext
         }
         val content = try {
-            java.net.URL(configUrl).readText()
+            if (configUrl.startsWith("data:")) {
+                // Clay encodes the entire config page as a data URI
+                val commaIdx = configUrl.indexOf(',')
+                require(commaIdx >= 0) { "malformed data URI" }
+                val meta = configUrl.substring(5, commaIdx)
+                val encoded = configUrl.substring(commaIdx + 1)
+                if (meta.contains("base64", ignoreCase = true))
+                    java.util.Base64.getDecoder().decode(encoded).toString(Charsets.UTF_8)
+                else
+                    java.net.URLDecoder.decode(encoded, "UTF-8")
+            } else {
+                java.net.URL(configUrl).readText()
+            }
         } catch (e: Exception) {
             System.err.println("Failed to fetch config page: ${e.message}")
             exchange.sendResponseHeaders(502, -1); exchange.responseBody.close(); return@createContext
         }
-        // Derive base URL for relative resources in the config page
-        val baseUrl = configUrl.substringBeforeLast('/') + '/'
+        // For http(s) URLs inject a <base> tag so relative resources resolve; not needed for data: URIs.
+        val baseTag = if (!configUrl.startsWith("data:"))
+            "<base href=\"${configUrl.substringBeforeLast('/') + '/'}\">\\n" else ""
         val interceptJs = buildString {
-            append("<base href=\"$baseUrl\">\n")
+            if (baseTag.isNotEmpty()) append(baseTag)
             append("<script>\n(function(){\n")
             append("  var d=Object.getOwnPropertyDescriptor(Location.prototype,'href');\n")
             append("  if(!d)return;\n")
