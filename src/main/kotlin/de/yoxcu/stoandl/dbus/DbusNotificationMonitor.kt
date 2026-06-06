@@ -49,10 +49,19 @@ private data class PendingNotify(val appName: String, val summary: String, val b
 // Notify call serials are recorded when the call is seen; when the corresponding
 // MethodReturn arrives the daemon-assigned notification ID is extracted and the
 // IncomingNotification is emitted. The existing Notify() fallback handler is a no-op.
+//
+// D-Bus serials are per-sender, but the monitor sees method_returns from every client
+// on the bus. Correlating by reply-serial alone therefore risks matching an unrelated
+// reply whose serial collides with a pending Notify, yielding a wrong notification ID —
+// which later makes CloseNotification() a silent no-op on the daemon. To avoid that we
+// only accept a method_return as a Notify reply when its sender is the notification
+// daemon (daemonOwner). If the owner could not be resolved, daemonOwner is null and we
+// fall back to the looser serial-only correlation.
 private class InterceptingReader(
     private val inner: IMessageReader,
     private val pending: ConcurrentHashMap<Long, PendingNotify>,
     private val lastSeen: ConcurrentHashMap<String, Long>,
+    private val daemonOwner: String?,
     private val emit: (IncomingNotification) -> Unit,
 ) : IMessageReader {
 
@@ -74,6 +83,7 @@ private class InterceptingReader(
                     }
 
                 is MethodReturn -> {
+                    if (daemonOwner != null && msg.getSource() != daemonOwner) return msg
                     val p = pending.remove(msg.getReplySerial()) ?: return msg
                     val params = try { msg.getParameters() } catch (_: Exception) { return msg }
                     val rawId = params?.firstOrNull() ?: return msg
@@ -150,20 +160,44 @@ fun monitorNotifications(): Flow<IncomingNotification> = callbackFlow {
                     "org.freedesktop.DBus", "/org/freedesktop/DBus", DBusMonitoring::class.java,
                 )
 
+                // Resolve the unique name owning org.freedesktop.Notifications so the reader can
+                // reject method_returns from other senders. Must happen before BecomeMonitor — the
+                // monitor connection can no longer make normal method calls afterwards.
+                val daemonOwner = try {
+                    val dbus = monitorConn.getRemoteObject(
+                        "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                        org.freedesktop.dbus.interfaces.DBus::class.java,
+                    )
+                    dbus.GetNameOwner(NOTIFICATIONS_IFACE)
+                } catch (e: Exception) {
+                    log.warn { "Could not resolve owner of $NOTIFICATIONS_IFACE (falling back to serial-only matching): ${e.message}" }
+                    null
+                }
+                log.info { "Notification daemon owner: ${daemonOwner ?: "unknown"}" }
+
                 val transport = getTransportMethod.invoke(monitorConn) as AbstractTransport
                 tc = transport.getTransportConnection()
 
                 // Install intercepting reader *before* BecomeMonitor so that the Notify call
                 // serial is captured before the matching MethodReturn can arrive.
                 val originalReader = tc.getReader()
-                readerField.set(tc, InterceptingReader(originalReader, pendingBySerial, lastSeen) { notif ->
+                readerField.set(tc, InterceptingReader(originalReader, pendingBySerial, lastSeen, daemonOwner) { notif ->
                     trySend(notif)
                 })
 
+                // Narrow the method_return rule to replies from the notification daemon when its
+                // unique name is known. Otherwise the monitor receives *every* reply on the bus —
+                // a firehose that makes the daemon drop the monitor for falling behind (EOF on the
+                // transport). The in-code sender check in InterceptingReader still guards correctness
+                // and covers the daemonOwner == null fallback.
+                val returnRule = if (daemonOwner != null)
+                    "type='method_return',sender='$daemonOwner'"
+                else
+                    "type='method_return'"
                 monitoring.BecomeMonitor(
                     arrayOf(
                         "type='method_call',interface='$NOTIFICATIONS_IFACE',member='$NOTIFY_MEMBER'",
-                        "type='method_return'",
+                        returnRule,
                     ),
                     UInt32(0),
                 )
