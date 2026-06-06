@@ -10,6 +10,8 @@ import de.yoxcu.stoandl.dbus.StoandlControl
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
+import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
+import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
@@ -40,6 +42,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 import kotlinx.io.files.Path
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -360,6 +363,53 @@ private class StoandlControlImpl(
             log.warn(e) { "SideloadApp($path) failed" }
             false
         }
+    }
+
+    override fun OpenConfig(app: String): String {
+        val pkjsApp = findPkjsApp(app) ?: run {
+            log.warn { "OpenConfig($app): no matching PKJS app running" }
+            return ""
+        }
+        if (!pkjsApp.lockerEntry.configurable) {
+            log.warn { "OpenConfig: ${pkjsApp.appInfo.shortName} is not configurable" }
+            return ""
+        }
+        log.info { "OpenConfig: requesting config URL from ${pkjsApp.appInfo.shortName}" }
+        return try {
+            runBlocking {
+                val url = withTimeoutOrNull(10_000) { pkjsApp.requestConfigurationUrl() }
+                if (url == null) {
+                    log.warn { "OpenConfig: timed out waiting for URL from ${pkjsApp.appInfo.shortName}" }
+                    ""
+                } else {
+                    log.info { "OpenConfig: got URL: $url" }
+                    url
+                }
+            }
+        } catch (e: Exception) {
+            log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) failed: ${e.message}" }
+            ""
+        }
+    }
+
+    override fun WebviewClose(data: String) {
+        val lp = libPebbleRef.get() ?: return
+        lp.watches.value
+            .filterIsInstance<ConnectedPebbleDevice>()
+            .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
+            .forEach { it.triggerOnWebviewClosed(data) }
+    }
+
+    private fun findPkjsApp(query: String): PKJSApp? {
+        val lp = libPebbleRef.get() ?: return null
+        return lp.watches.value
+            .filterIsInstance<ConnectedPebbleDevice>()
+            .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
+            .firstOrNull { app ->
+                query.isEmpty() ||
+                app.appInfo.shortName.contains(query, ignoreCase = true) ||
+                app.appInfo.uuid.equals(query, ignoreCase = true)
+            }
     }
 }
 
