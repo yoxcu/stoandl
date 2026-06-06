@@ -9,7 +9,10 @@ class KermitSlf4jWriter : LogWriter() {
     private val cache = ConcurrentHashMap<String, org.slf4j.Logger>()
 
     // Strip device-path suffix: "BlobDB-{...}" → "BlobDB", "PebbleBle/{...}" → "PebbleBle"
-    private fun cleanTag(tag: String) = tag.replace(Regex("[/-]\\{.*"), "")
+    // Also strip plain app-name suffix: "RhinoJsRunner-Hooky" → "RhinoJsRunner"
+    private fun cleanTag(tag: String) = tag
+        .replace(Regex("[/-]\\{.*"), "")
+        .replace(Regex("-[^{].*"), "")
 
     private fun slf4j(tag: String) = cache.getOrPut(cleanTag(tag)) { LoggerFactory.getLogger(cleanTag(tag)) }
 
