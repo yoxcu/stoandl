@@ -133,7 +133,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef))
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, scope))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -345,6 +345,7 @@ private fun iconForApp(appName: String): TimelineIcon {
 
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
+    private val scope: CoroutineScope,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
@@ -375,19 +376,27 @@ private class StoandlControlImpl(
             return ""
         }
         log.info { "OpenConfig: requesting config URL from ${pkjsApp.appInfo.shortName}" }
-        return try {
-            runBlocking {
+        // Run in the integration scope so coroutine exceptions never reach the D-Bus thread.
+        val future = java.util.concurrent.CompletableFuture<String>()
+        scope.launch {
+            try {
                 val url = withTimeoutOrNull(10_000) { pkjsApp.requestConfigurationUrl() }
                 if (url == null) {
                     log.warn { "OpenConfig: timed out waiting for URL from ${pkjsApp.appInfo.shortName}" }
-                    ""
+                    future.complete("")
                 } else {
                     log.info { "OpenConfig: got URL: $url" }
-                    url
+                    future.complete(url)
                 }
+            } catch (e: Throwable) {
+                log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) coroutine failed: ${e.message}" }
+                future.complete("")
             }
+        }
+        return try {
+            future.get(12, java.util.concurrent.TimeUnit.SECONDS)
         } catch (e: Exception) {
-            log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) failed: ${e.message}" }
+            log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) future timed out" }
             ""
         }
     }
