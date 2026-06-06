@@ -1,0 +1,16 @@
+# Configuration for the stoandl OpenRC service.
+#
+# stoandl is fundamentally a per-user daemon: it listens on the D-Bus *session*
+# bus for desktop notifications. Under OpenRC there is no system-wide session
+# bus, so the service runs as a specific user and points at that user's session
+# bus socket.
+
+# The user whose session bus and BlueZ/notifications stoandl bridges.
+STOANDL_USER="user"
+
+# That user's D-Bus session bus. On a logind/elogind system this is normally
+# unix:path=/run/user/<uid>/bus. Adjust the uid (1000 below) to STOANDL_USER's.
+STOANDL_DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
+
+# Set to DEBUG for verbose BLE/protocol packet traces.
+#STOANDL_LOG="INFO"

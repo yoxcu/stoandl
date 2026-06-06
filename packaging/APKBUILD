@@ -1,0 +1,88 @@
+# Contributor: Michael Auer <mick@yoxcu.de>
+# Maintainer: Michael Auer <mick@yoxcu.de>
+pkgname=stoandl
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Headless Pebble smartwatch companion daemon for Linux (D-Bus notifications over BLE)"
+url="https://github.com/yoxcu/stoandl"
+arch="noarch"   # pure-Java fat JAR — same artifact runs on any arch with a JDK 21 JRE
+license="GPL-3.0-or-later"
+# Runtime: a Java 21 JRE, plus BlueZ for the BLE GATT server and a D-Bus session bus.
+depends="openjdk21-jre-headless bluez dbus"
+# Build: full JDK 21. The Gradle wrapper downloads Gradle + the Kotlin/libpebble3
+# dependency graph from the network, so this package must be built with network
+# access (`abuild -P` / a builder that does not sandbox the network).
+makedepends="openjdk21-jdk"
+# Pinned upstream commits. stoandl pulls libpebble3 in as a Gradle composite build
+# (settings.gradle.kts -> includeBuild("libs/libpebble3")); we vendor it from a
+# second source tarball rather than relying on git submodules.
+_commit=64591144d19ddb088764053b83b449fbe7332a96
+_libpebble3_commit=3b5a53b79bc14ed9fb328b021b6bb94ec4ab1ac1
+# abuild's default_openrc (mainline) and pmOS abuild's default_systemd auto-split
+# the init-system files installed in package() into these subpackages, each
+# install_if its init system is present. No custom subpackage functions needed.
+subpackages="$pkgname-openrc $pkgname-systemd"
+source="$pkgname-$_commit.tar.gz::https://github.com/yoxcu/stoandl/archive/$_commit.tar.gz
+	libpebble3-$_libpebble3_commit.tar.gz::https://github.com/yoxcu/libpebble3/archive/$_libpebble3_commit.tar.gz
+	stoandl.openrc
+	stoandl.confd
+	"
+builddir="$srcdir/$pkgname-$_commit"
+
+# Keep Gradle's caches and the wrapper download inside the build tree.
+export GRADLE_USER_HOME="$srcdir/.gradle"
+export JAVA_HOME="/usr/lib/jvm/java-21-openjdk"
+
+prepare() {
+	default_prepare
+	# Drop the vendored libpebble3 into the composite-build path.
+	rmdir "$builddir/libs/libpebble3" 2>/dev/null || true
+	rm -rf "$builddir/libs/libpebble3"
+	mv "$srcdir/libpebble3-$_libpebble3_commit" "$builddir/libs/libpebble3"
+}
+
+build() {
+	./gradlew --no-daemon --console=plain shadowJar
+}
+
+package() {
+	local jar
+	jar="$(ls build/libs/$pkgname-*-all.jar | head -1)"
+
+	# Fat JAR.
+	install -Dm644 "$jar" "$pkgdir/usr/share/java/$pkgname/$pkgname.jar"
+
+	# `stoandl` CLI wrapper (sideload / settings / fakecall).
+	install -Dm755 /dev/stdin "$pkgdir/usr/bin/stoandl" <<-EOF
+		#!/bin/sh
+		# Thin wrapper: delegates to the stoandl fat JAR in ctl mode.
+		exec "$JAVA_HOME/bin/java" \\
+		  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.base=ALL-UNNAMED \\
+		  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.transports=ALL-UNNAMED \\
+		  -jar /usr/share/java/$pkgname/$pkgname.jar ctl "\$@"
+	EOF
+
+	# systemd *user* service (Plasma Mobile / Phosh on systemd). Patch the repo's
+	# unit so it calls the openjdk21 java by absolute path rather than /usr/bin/java,
+	# which Alpine does not put on PATH. default_systemd() splits this out into the
+	# -systemd subpackage.
+	sed "s|/usr/bin/java|$JAVA_HOME/bin/java|; s|/usr/lib/stoandl/stoandl.jar|/usr/share/java/$pkgname/$pkgname.jar|" \
+		packaging/stoandl.service \
+		> "$srcdir/stoandl.service.patched"
+	install -Dm644 "$srcdir/stoandl.service.patched" \
+		"$pkgdir/usr/lib/systemd/user/stoandl.service"
+
+	# OpenRC service. default_openrc() splits these out into the -openrc subpackage.
+	install -Dm755 "$srcdir/stoandl.openrc" "$pkgdir/etc/init.d/stoandl"
+	install -Dm644 "$srcdir/stoandl.confd" "$pkgdir/etc/conf.d/stoandl"
+
+	# Example config + docs.
+	install -Dm644 packaging/stoandl.conf.example \
+		"$pkgdir/usr/share/doc/$pkgname/stoandl.conf.example"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
+
+sha512sums="SKIP  $pkgname-$_commit.tar.gz
+SKIP  libpebble3-$_libpebble3_commit.tar.gz
+SKIP  stoandl.openrc
+SKIP  stoandl.confd"
