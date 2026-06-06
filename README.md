@@ -4,8 +4,8 @@
 
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
-Headless Pebble smartwatch companion daemon for Linux / postmarketOS. Bridges D-Bus desktop
-notifications to a Pebble watch over BLE.
+Headless Pebble smartwatch companion app / bridge for Linux / postmarketOS — a background
+daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 
 *Stoandl* is Bavarian dialect for "Steinchen" (little stone / pebble).
 
