@@ -394,7 +394,7 @@ private class StoandlControlImpl(
             }
         }
         return try {
-            future.get(12, java.util.concurrent.TimeUnit.SECONDS)
+            future.get(20, java.util.concurrent.TimeUnit.SECONDS)
         } catch (e: Exception) {
             log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) future timed out" }
             ""
