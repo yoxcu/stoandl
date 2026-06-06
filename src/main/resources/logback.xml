@@ -47,6 +47,10 @@
     <logger name="PebbleConnector" level="${logLevel}"/>
     <logger name="PairingJvm" level="${logLevel}"/>
     <logger name="KableGattConnector" level="${logLevel}"/>
+    <!-- Decoded Pebble-protocol packet traces (inbound + outbound) — DEBUG-only firehose,
+         but the only way to see what the watch actually sends (e.g. timeline actions). -->
+    <logger name="PebbleProtocol" level="${logLevel}"/>
+    <logger name="PebbleProtocolRunner" level="${logLevel}"/>
 
     <!-- Suppress permanently — these are never useful at normal verbosity -->
     <logger name="org.freedesktop.dbus" level="WARN"/>
@@ -58,8 +62,6 @@
     <logger name="PhoneCalendarSyncer" level="WARN"/>
     <logger name="KableConnectedGattClient" level="WARN"/>
     <logger name="ConnectivityWatcher" level="WARN"/>
-    <logger name="PebbleProtocol" level="WARN"/>
-    <logger name="PebbleProtocolRunner" level="WARN"/>
     <logger name="BlobDB" level="WARN"/>
     <logger name="SystemService" level="WARN"/>
     <logger name="Negotiator" level="WARN"/>

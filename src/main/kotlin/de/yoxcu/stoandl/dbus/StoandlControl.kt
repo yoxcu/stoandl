@@ -14,4 +14,13 @@ interface StoandlControl : DBusInterface {
     fun OpenConfig(app: String): String
     /** Signal the running PKJS app that the config webview closed with [data]. */
     fun WebviewClose(data: String)
+
+    /** Debug: inject a synthetic incoming (ringing) call so the watch shows the native call
+     *  screen. The watch's Answer button transitions it to an active call; Decline/Hangup ends
+     *  it. Lets the call path be exercised end-to-end without a real telephony source.
+     *  Returns false if libPebble is not ready. */
+    fun FakeCallRing(name: String, number: String): Boolean
+
+    /** Debug: clear the current synthetic call (simulates the remote party hanging up). */
+    fun FakeCallEnd(): Boolean
 }
