@@ -124,7 +124,32 @@ java \
 
 The `--add-opens` flags are needed so stoandl can silence dbus-java's automatic replies on BecomeMonitor connections (otherwise the daemon closes the connection after each notification).
 
-Logs are written to `/tmp/stoandl.log`.
+## Logging
+
+Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout.
+
+The default level is **INFO**: startup, BLE scan, watch connected, notifications forwarded, and PKJS lifecycle events (JS bridge init, webhook fired, status sent back). That's typically 10–20 lines per session — enough to follow what's happening without noise.
+
+For full BLE/protocol packet traces, set `STOANDL_LOG=DEBUG`:
+
+```sh
+# dev run
+STOANDL_LOG=DEBUG ./gradlew run
+
+# fat JAR
+STOANDL_LOG=DEBUG java --add-opens=... -jar stoandl.jar
+# or equivalently
+java -DSTOANDL_LOG=DEBUG --add-opens=... -jar stoandl.jar
+```
+
+For the systemd service, add to the unit or a drop-in:
+
+```ini
+[Service]
+Environment=STOANDL_LOG=DEBUG
+```
+
+then `systemctl --user daemon-reload && systemctl --user restart stoandl`.
 
 ## systemd user service (postmarketOS)
 

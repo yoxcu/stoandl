@@ -1,4 +1,10 @@
 <configuration>
+    <!--
+        Default: INFO — startup, connection, notifications, PKJS lifecycle only.
+        Verbose: set STOANDL_LOG=DEBUG (env var or -DSTOANDL_LOG=DEBUG JVM flag).
+    -->
+    <property name="logLevel" value="${STOANDL_LOG:-INFO}"/>
+
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
@@ -20,47 +26,44 @@
         </encoder>
     </appender>
 
-    <!-- dbus-java is very chatty at DEBUG; keep it quiet -->
-    <logger name="org.freedesktop.dbus" level="WARN"/>
-    <!-- stoandl and libpebble at DEBUG for full diagnostics -->
-    <logger name="de.yoxcu.stoandl" level="DEBUG"/>
-    <logger name="io.rebble.libpebblecommon" level="DEBUG"/>
+    <!-- stoandl own code: startup, scan, connect, notify — always INFO -->
+    <logger name="de.yoxcu.stoandl" level="INFO"/>
 
-    <!-- Kermit tags (via KermitSlf4jWriter) — suppress high-frequency noise -->
-    <!-- Device JSON on every BLE advertisement while connected -->
+    <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
+    <logger name="PrivatePKJSInterface" level="INFO"/>
+    <logger name="CompanionAppLifecycleManager" level="INFO"/>
+    <logger name="PKJSApp" level="INFO"/>
+    <logger name="GraalJsRunner" level="INFO"/>
+    <logger name="RhinoJsRunner" level="INFO"/>
+    <!-- XHR: only log errors; PKJS console.log covers the normal case -->
+    <logger name="JvmXHR" level="WARN"/>
+    <logger name="JvmPKJS" level="INFO"/>
+
+    <!-- BLE / connection details: per-packet spam in debug mode only -->
+    <logger name="PPoG" level="${logLevel}"/>
+    <logger name="BluezGattServer" level="${logLevel}"/>
+    <logger name="GattServerManager" level="${logLevel}"/>
+    <logger name="PebbleBle" level="${logLevel}"/>
+    <logger name="PebbleConnector" level="${logLevel}"/>
+    <logger name="PairingJvm" level="${logLevel}"/>
+    <logger name="KableGattConnector" level="${logLevel}"/>
+
+    <!-- Suppress permanently — these are never useful at normal verbosity -->
+    <logger name="org.freedesktop.dbus" level="WARN"/>
     <logger name="WatchManager" level="WARN"/>
-    <!-- Per-packet protocol spam; keep INFO for connection-level events -->
-    <logger name="PebbleProtocol" level="INFO"/>
-    <logger name="PebbleProtocolRunner" level="INFO"/>
-    <!-- BlobDB sync details; INFO still shows insert/result summaries -->
-    <logger name="BlobDB" level="INFO"/>
-    <!-- These fire constantly during normal operation -->
-    <logger name="ConnectivityWatcher" level="INFO"/>
-    <logger name="KableConnectedGattClient" level="WARN"/>
     <logger name="AppOrderManager" level="WARN"/>
     <logger name="MusicControlManager" level="WARN"/>
     <logger name="HealthDataProcessor" level="WARN"/>
     <logger name="Health" level="WARN"/>
-    <logger name="FirmwareUpdateManager" level="INFO"/>
     <logger name="PhoneCalendarSyncer" level="WARN"/>
-    <logger name="SystemService" level="INFO"/>
-    <logger name="Negotiator" level="INFO"/>
-    <!-- PKJS JS runtime (Rhino + companion app lifecycle) -->
-    <logger name="CompanionAppLifecycleManager" level="DEBUG"/>
-    <logger name="PKJSApp" level="DEBUG"/>
-    <logger name="RhinoJsRunner" level="DEBUG"/>
-    <logger name="JvmXHR" level="DEBUG"/>
-    <logger name="JvmPKJS" level="DEBUG"/>
-    <logger name="PrivatePKJSInterface" level="DEBUG"/>
-
-    <!-- Connection/notification diagnostics — keep at DEBUG -->
-    <logger name="PPoG" level="DEBUG"/>
-    <logger name="BluezGattServer" level="DEBUG"/>
-    <logger name="GattServerManager" level="DEBUG"/>
-    <logger name="PebbleBle" level="DEBUG"/>
-    <logger name="PebbleConnector" level="DEBUG"/>
-    <logger name="PairingJvm" level="DEBUG"/>
-    <logger name="KableGattConnector" level="DEBUG"/>
+    <logger name="KableConnectedGattClient" level="WARN"/>
+    <logger name="ConnectivityWatcher" level="WARN"/>
+    <logger name="PebbleProtocol" level="WARN"/>
+    <logger name="PebbleProtocolRunner" level="WARN"/>
+    <logger name="BlobDB" level="WARN"/>
+    <logger name="SystemService" level="WARN"/>
+    <logger name="Negotiator" level="WARN"/>
+    <logger name="FirmwareUpdateManager" level="WARN"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

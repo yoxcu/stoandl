@@ -124,7 +124,7 @@ class PebbleIntegration(
     private fun startScanLoop() {
         scope.launch {
             while (true) {
-                log.debug { "Starting BLE scan" }
+                log.info { "Starting BLE scan" }
                 libPebble.startBleScan()
                 delay(35.seconds) // slightly longer than the 30s scan timeout
             }

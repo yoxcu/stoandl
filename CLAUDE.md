@@ -56,7 +56,7 @@ Pebble watch over BLE/PPoG
 
 - `KermitSlf4jWriter` bridges libpebble3's Kermit logger into SLF4J/Logback. Tag names are cleaned: strips `/{...}` and `-{...}` device-path suffixes, and also plain app-name suffixes (`RhinoJsRunner-Hooky` → `RhinoJsRunner`) so logback entries match without knowing the app name.
 
-- Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Log levels are tuned in `logback.xml` — libpebble3 internals are suppressed to INFO/WARN to reduce noise.
+- Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO: startup, scan, watch connected, notifications, PKJS lifecycle. Set `STOANDL_LOG=DEBUG` (env var or `-DSTOANDL_LOG=DEBUG` JVM flag) for full BLE/protocol packet traces.
 
 ## libpebble3 submodule
 
