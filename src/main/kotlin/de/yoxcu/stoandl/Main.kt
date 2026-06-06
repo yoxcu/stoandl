@@ -55,6 +55,7 @@ fun main(args: Array<String>) {
         val latch = java.util.concurrent.CountDownLatch(1)
         Runtime.getRuntime().addShutdownHook(Thread {
             log.info { "stoandl shutting down" }
+            pebble.gracefulShutdown()
             serviceConn.releaseBusName(STOANDL_BUS_NAME)
             serviceConn.disconnect()
             latch.countDown()

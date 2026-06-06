@@ -107,6 +107,17 @@ class PebbleIntegration(
         log.info { "libpebble3 initialized" }
     }
 
+    fun gracefulShutdown() {
+        if (!::libPebble.isInitialized) return
+        log.info { "graceful BLE shutdown: disconnecting watches" }
+        runBlocking {
+            libPebble.watches.value.forEach { device ->
+                watchConnector.requestDisconnection(device.identifier)
+            }
+            delay(1.5.seconds)
+        }
+    }
+
     private fun startScanLoop() {
         scope.launch {
             while (true) {

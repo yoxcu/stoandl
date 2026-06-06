@@ -12,6 +12,7 @@ Headless Pebble smartwatch companion daemon for Linux and postmarketOS.
 
 - Connects to a Pebble watch over BLE using BlueZ
 - Forwards desktop notifications (from any app via `org.freedesktop.Notifications`) to the watch
+- Reconnects automatically after watch-initiated disconnects or daemon restarts
 - Runs as a background daemon with no UI
 
 ## How it works
@@ -143,6 +144,8 @@ stoandl depends on a fork of [matejdro/libpebble3](https://github.com/matejdro/l
 - BlueZ GATT server implementation (phone acts as BLE peripheral)
 - PPoG handshake fixes for the Linux BLE stack
 - BlueZ pairing and bonding handling
+- Reliable reconnect: scan-result identifier is promoted so known devices are never spuriously forgotten at startup
+- Graceful disconnect: sends a PPoG reset to the watch on shutdown so it re-initiates the session cleanly on the next connection
 - Stripped Android/iOS targets to speed up JVM builds
 
 The fork is included as a git submodule under `libs/libpebble3` and wired in via Gradle composite build — no separate Maven publish step needed.
