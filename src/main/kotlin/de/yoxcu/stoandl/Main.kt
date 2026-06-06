@@ -44,7 +44,6 @@ fun main(args: Array<String>) {
     // Start DBus notification monitor and feed into libpebble3
     monitorNotifications()
         .onEach { notification ->
-            log.debug { "Forwarding notification to watch: ${notification.appName} – ${notification.summary}" }
             notificationBus.emit(notification)
         }
         .launchIn(scope)
@@ -66,7 +65,7 @@ fun main(args: Array<String>) {
 
 private fun ctl(args: Array<String>) {
     if (args.isEmpty()) {
-        println("Usage: stoandl ctl <command> [args]")
+        println("Usage: stoandl <command> [args]")
         println()
         println("Commands:")
         println("  sideload <path>   Install a .pbw watchface or app onto the connected watch")
@@ -75,7 +74,7 @@ private fun ctl(args: Array<String>) {
     when (args[0]) {
         "sideload" -> {
             if (args.size < 2) {
-                System.err.println("Usage: stoandl ctl sideload <path>")
+                System.err.println("Usage: stoandl sideload <path>")
                 System.exit(1)
             }
             val path = args[1]

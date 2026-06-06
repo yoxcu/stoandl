@@ -174,7 +174,7 @@ private class DbusNotificationListenerConnection(
                     }
                     itemIdToDbusId[timelineNotification.itemId] = notification.id
                     libPebble.sendNotification(timelineNotification)
-                    log.info { "Sent notification to watch: ${notification.summary}" }
+                    log.info { "Notification queued for watch: ${notification.appName} – ${notification.summary}" }
                 } catch (e: Exception) {
                     log.warn(e) { "Failed to send notification to watch" }
                 }
