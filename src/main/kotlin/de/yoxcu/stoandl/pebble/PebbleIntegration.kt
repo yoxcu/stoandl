@@ -19,10 +19,14 @@ import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.js.PKJSApp
+import io.rebble.libpebblecommon.locker.AppType
+import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
+import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
+import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.WatchConnector
@@ -45,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -59,12 +64,21 @@ import org.freedesktop.dbus.types.UInt32
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.system.exitProcess
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
+
+// Reconnect watchdog cadence and the stall window after which we treat the BLE stack as wedged
+// and restart the process. The window must comfortably exceed the gap between failed connection
+// attempts (~20-60s each) so an out-of-range watch — which keeps failing, i.e. shows activity —
+// never trips it; only a true stall (no attempts at all) does.
+private val WATCHDOG_INTERVAL = 60.seconds
+private val WATCHDOG_STALL_RESTART = 10.minutes
 
 private val log = KotlinLogging.logger {}
 
@@ -126,6 +140,7 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
+        startConnectionWatchdog()
         registerControlService()
         startCallMonitor()
 
@@ -146,9 +161,66 @@ class PebbleIntegration(
     private fun startScanLoop() {
         scope.launch {
             while (true) {
-                log.info { "Starting BLE scan" }
-                libPebble.startBleScan()
+                if (libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
+                    // No need to discover while connected; stop any lingering scan.
+                    if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                } else {
+                    // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
+                    // already has a discovery running returns org.bluez.Error.InProgress and the scan
+                    // then never refreshes, so a watch that comes back into range is never
+                    // re-discovered (this is what stranded the daemon overnight).
+                    if (libPebble.isScanningBle.value) {
+                        libPebble.stopBleScan()
+                        delay(1.seconds)
+                    }
+                    log.info { "Starting BLE scan" }
+                    libPebble.startBleScan()
+                }
                 delay(35.seconds) // slightly longer than the 30s scan timeout
+            }
+        }
+    }
+
+    /**
+     * Backstop for a wedged native BLE stack. A bonded watch that is merely out of range still shows
+     * "connection activity" (libpebble keeps attempting → ConnectingPebbleDevice transitions and an
+     * ever-incrementing failure counter); a wedged stack shows none at all. If a bonded, non-connected
+     * watch produces zero activity for [WATCHDOG_STALL_RESTART] while Bluetooth is on, exit so systemd
+     * restarts us with a fresh stack. The WatchManager fork fix should prevent the wedge we diagnosed;
+     * this also covers any residual wedge originating in the external kable/btleplug layer.
+     */
+    private fun startConnectionWatchdog() {
+        val lastActivityMs = AtomicReference(System.currentTimeMillis())
+        val lastFailureTimes = ConcurrentHashMap<String, Int>()
+        libPebble.watches.onEach { devices ->
+            var active = devices.any { it is ConnectedPebbleDevice || it is ConnectingPebbleDevice }
+            devices.filterIsInstance<KnownPebbleDevice>().forEach { d ->
+                val times = d.connectionFailureInfo?.times ?: 0
+                val prev = lastFailureTimes.put(d.identifier.asString, times)
+                if (prev == null || prev != times) active = true
+            }
+            if (active) lastActivityMs.set(System.currentTimeMillis())
+        }.launchIn(scope)
+
+        scope.launch {
+            while (true) {
+                delay(WATCHDOG_INTERVAL)
+                val devices = libPebble.watches.value
+                val connected = devices.any { it is ConnectedPebbleDevice }
+                val bondedDisconnected = devices.any { it is KnownPebbleDevice && it !is ConnectedPebbleDevice }
+                if (connected || !bondedDisconnected || !libPebble.bluetoothEnabled.value.enabled()) {
+                    lastActivityMs.set(System.currentTimeMillis())
+                    continue
+                }
+                val stalledMs = System.currentTimeMillis() - lastActivityMs.get()
+                if (stalledMs >= WATCHDOG_STALL_RESTART.inWholeMilliseconds) {
+                    log.error {
+                        "Watchdog: bonded watch shows no connection activity for ${stalledMs / 1000}s " +
+                            "— BLE stack appears wedged; exiting for systemd restart"
+                    }
+                    gracefulShutdown()
+                    exitProcess(1)
+                }
             }
         }
     }
@@ -249,7 +321,9 @@ private class DbusNotificationListenerConnection(
 
 private object NoOpWebServices : WebServices {
     override suspend fun fetchLocker() = null
-    override suspend fun removeFromLocker(id: Uuid) = false
+    // No Rebble account / remote locker in standalone mode: "removed from remote" is trivially
+    // true, so Locker.removeApp() proceeds to delete the local entry instead of bailing out.
+    override suspend fun removeFromLocker(id: Uuid) = true
     override suspend fun checkForFirmwareUpdate(watch: WatchInfo) =
         io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult.FoundNoUpdate
     override fun uploadMemfaultChunk(chunk: ByteArray, watchInfo: WatchInfo) {}
@@ -414,6 +488,88 @@ private class StoandlControlImpl(
             log.warn(e) { "SideloadApp($path) failed" }
             false
         }
+    }
+
+    override fun ListApps(): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        val active = lp.activeWatchface.value?.properties?.id
+        return allApps(lp).map { w ->
+            val p = w.properties
+            val flags = buildList {
+                if (p.id == active) add("active")
+                when (w) {
+                    is LockerWrapper.NormalApp -> {
+                        if (w.sideloaded) add("sideloaded")
+                        if (w.configurable) add("config")
+                    }
+                    is LockerWrapper.SystemApp -> add("system")
+                }
+            }.joinToString(",")
+            listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName)
+                .joinToString("\t")
+        }
+    }
+
+    override fun LaunchApp(query: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val matches = resolve(lp, query)
+        when {
+            matches.isEmpty() -> return "notfound:No app matching '$query'"
+            matches.size > 1 -> return "ambiguous:" +
+                matches.joinToString("; ") { "${it.properties.title} (${it.properties.id})" }
+        }
+        val app = matches.first()
+        log.info { "LaunchApp: ${app.properties.title} (${app.properties.id})" }
+        return try {
+            runBlocking { lp.launchApp(app.properties.id) }
+            "ok:Launched ${app.properties.title}"
+        } catch (e: Exception) {
+            log.warn(e) { "LaunchApp(${app.properties.id}) failed" }
+            "error:${e.message ?: "launch failed"}"
+        }
+    }
+
+    override fun RemoveApp(query: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val matches = resolve(lp, query)
+        when {
+            matches.isEmpty() -> return "notfound:No app matching '$query'"
+            matches.size > 1 -> return "ambiguous:" +
+                matches.joinToString("; ") { "${it.properties.title} (${it.properties.id})" }
+        }
+        val app = matches.first()
+        if (app is LockerWrapper.SystemApp) {
+            return "error:Refusing to remove system app ${app.properties.title}"
+        }
+        log.info { "RemoveApp: ${app.properties.title} (${app.properties.id})" }
+        return try {
+            val ok = runBlocking { lp.removeApp(app.properties.id) }
+            if (ok) "ok:Removed ${app.properties.title}"
+            else "error:Failed to remove ${app.properties.title}"
+        } catch (e: Exception) {
+            log.warn(e) { "RemoveApp(${app.properties.id}) failed" }
+            "error:${e.message ?: "remove failed"}"
+        }
+    }
+
+    /** Snapshot of the whole locker (watchfaces first, then watchapps). */
+    private fun allApps(lp: LibPebble): List<LockerWrapper> = runBlocking {
+        withTimeoutOrNull(5_000) {
+            val faces = lp.getLocker(AppType.Watchface, null, 1000).first()
+            val apps = lp.getLocker(AppType.Watchapp, null, 1000).first()
+            faces + apps
+        } ?: emptyList()
+    }
+
+    /** Resolve [query] to locker apps: by exact UUID, else exact (case-insensitive) title,
+     *  else title substring. May return 0, 1 or many. */
+    private fun resolve(lp: LibPebble, query: String): List<LockerWrapper> {
+        val all = allApps(lp)
+        val asUuid = runCatching { Uuid.parse(query) }.getOrNull()
+        if (asUuid != null) return all.filter { it.properties.id == asUuid }
+        val exact = all.filter { it.properties.title.equals(query, ignoreCase = true) }
+        if (exact.isNotEmpty()) return exact
+        return all.filter { it.properties.title.contains(query, ignoreCase = true) }
     }
 
     override fun OpenConfig(app: String): String {

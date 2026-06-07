@@ -17,10 +17,13 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "settings", "fakecall")
+private val CTL_COMMANDS = setOf("sideload", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore")
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && (args[0] == "ctl" || args[0] in CTL_COMMANDS)) {
@@ -71,8 +74,13 @@ private fun ctl(args: Array<String>) {
         println("Usage: stoandl <command> [args]")
         println()
         println("Commands:")
-        println("  sideload <path>   Install a .pbw watchface or app onto the connected watch")
-        println("  settings [app]    Open the configuration page for a running PKJS app")
+        println("  sideload <path>          Install a .pbw watchface or app onto the connected watch")
+        println("  apps                     List the apps and watchfaces in the watch locker")
+        println("  launch <name|uuid>       Launch an app or watchface on the watch")
+        println("  remove <name|uuid>       Uninstall an app or watchface from the locker")
+        println("  settings [app]           Open the configuration page for a running PKJS app")
+        println("  backup [out.tar.gz]      Archive the locker, app cache and PKJS settings")
+        println("  restore <in.tar.gz>      Restore a backup (daemon must be stopped)")
         println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
         println("  fakecall end                    Debug: clear the synthetic call")
         return
@@ -92,6 +100,49 @@ private fun ctl(args: Array<String>) {
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}")
                 System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "apps" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val records = try { control.ListApps() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                printAppList(records)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "backup" -> {
+            val out = args.drop(1).firstOrNull { !it.startsWith("-") }
+            doBackup(out)
+        }
+        "restore" -> {
+            val rest = args.drop(1)
+            val force = rest.any { it == "--force" || it == "-f" }
+            val path = rest.firstOrNull { !it.startsWith("-") }
+            if (path == null) {
+                System.err.println("Usage: stoandl restore <in.tar.gz> [--force]"); System.exit(1); return
+            }
+            doRestore(path, force)
+        }
+        "launch", "remove" -> {
+            if (args.size < 2) {
+                System.err.println("Usage: stoandl ${args[0]} <name|uuid>"); System.exit(1)
+            }
+            val query = args.drop(1).joinToString(" ")
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val resp = try {
+                    if (args[0] == "launch") control.LaunchApp(query) else control.RemoveApp(query)
+                } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                handleStatusResponse(resp)
             } finally {
                 conn.disconnect()
             }
@@ -148,6 +199,150 @@ private fun ctl(args: Array<String>) {
             System.exit(1)
         }
     }
+}
+
+/** Parse a `status:message` response from a control method and exit non-zero on failure. */
+private fun handleStatusResponse(resp: String) {
+    val idx = resp.indexOf(':')
+    val status = if (idx >= 0) resp.substring(0, idx) else resp
+    val message = if (idx >= 0) resp.substring(idx + 1) else ""
+    if (status == "ok") {
+        println(message)
+    } else {
+        System.err.println(message.ifEmpty { status })
+        System.exit(1)
+    }
+}
+
+/** Render the tab-separated locker records from ListApps() as an aligned table. */
+private fun printAppList(records: List<String>) {
+    if (records.isEmpty()) {
+        println("No apps in locker (is a watch connected and synced?)")
+        return
+    }
+    // record: uuid \t type \t order \t flags \t title \t developer
+    data class Row(val title: String, val type: String, val developer: String, val flags: String, val uuid: String)
+    val rows = records.mapNotNull { rec ->
+        val f = rec.split('\t')
+        if (f.size < 6) null else Row(title = f[4], type = f[1], developer = f[5], flags = f[3], uuid = f[0])
+    }
+    val header = Row("NAME", "TYPE", "DEVELOPER", "FLAGS", "UUID")
+    val all = listOf(header) + rows
+    val wName = all.maxOf { it.title.length }
+    val wType = all.maxOf { it.type.length }
+    val wDev = all.maxOf { it.developer.length }
+    val wFlags = all.maxOf { it.flags.length }
+    fun render(r: Row) = buildString {
+        append(r.title.padEnd(wName)); append("  ")
+        append(r.type.padEnd(wType)); append("  ")
+        append(r.developer.padEnd(wDev)); append("  ")
+        append(r.flags.padEnd(wFlags)); append("  ")
+        append(r.uuid)
+    }
+    println(render(header))
+    rows.forEach { println(render(it)) }
+}
+
+/** stoandl's data directory: locker DB, pbw cache and PKJS settings all live here. */
+private fun configDir(): File = File(System.getProperty("user.home"), ".config/stoandl")
+
+private fun timestamp(): String = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+
+/** True if the stoandl daemon currently owns its D-Bus name. Returns false (with a warning) if
+ *  the bus can't be reached, so a detection glitch doesn't block a restore. */
+private fun daemonRunning(): Boolean = try {
+    val conn = DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    try {
+        val bus = conn.getRemoteObject(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus",
+            org.freedesktop.dbus.interfaces.DBus::class.java,
+        )
+        bus.NameHasOwner(STOANDL_BUS_NAME)
+    } finally {
+        conn.disconnect()
+    }
+} catch (e: Exception) {
+    System.err.println("Warning: couldn't check daemon status: ${e.message}")
+    false
+}
+
+/** Run a command, passing its stdout/stderr straight through to ours. Returns the exit code. */
+private fun runProcess(vararg cmd: String): Int =
+    ProcessBuilder(*cmd).inheritIO().start().waitFor()
+
+private fun doBackup(outPath: String?) {
+    val dir = configDir()
+    if (!dir.isDirectory) {
+        System.err.println("Nothing to back up: ${dir.path} does not exist"); System.exit(1); return
+    }
+    val out = File(outPath ?: "stoandl-backup-${timestamp()}.tar.gz").absoluteFile
+    if (daemonRunning()) {
+        System.err.println("Note: daemon is running; for a guaranteed-consistent DB snapshot, stop it first.")
+    }
+    // Archive the directory by name relative to its parent so it restores as ~/.config/stoandl/.
+    val code = runProcess("tar", "czf", out.path, "-C", dir.parentFile.path, dir.name)
+    if (code != 0) {
+        System.err.println("Backup failed (tar exit $code)"); System.exit(1); return
+    }
+    val size = out.length()
+    println("Backed up ${dir.path} → ${out.path} (${size / 1024} KiB)")
+}
+
+private fun doRestore(inPath: String, force: Boolean) {
+    val archive = File(inPath)
+    if (!archive.isFile) {
+        System.err.println("Backup not found: ${archive.path}"); System.exit(1); return
+    }
+    if (daemonRunning() && !force) {
+        System.err.println("The stoandl daemon is running. Stop it before restoring:")
+        System.err.println("  systemctl --user stop stoandl")
+        System.err.println("(or pass --force to restore anyway — not recommended)")
+        System.exit(1); return
+    }
+    // Sanity-check the archive: every entry must live under stoandl/ so we never scatter files
+    // across ~/.config when handed the wrong tarball.
+    val listing = try {
+        val p = ProcessBuilder("tar", "tzf", archive.absolutePath).redirectErrorStream(true).start()
+        val lines = p.inputStream.bufferedReader().readLines()
+        if (p.waitFor() != 0) { System.err.println("Cannot read archive:\n${lines.joinToString("\n")}"); System.exit(1); return }
+        lines
+    } catch (e: Exception) {
+        System.err.println("Cannot read archive: ${e.message}"); System.exit(1); return
+    }
+    if (listing.isEmpty() || listing.any { !it.removePrefix("./").startsWith("stoandl/") && it.removePrefix("./").trimEnd('/') != "stoandl" }) {
+        System.err.println("Not a stoandl backup (expected all entries under stoandl/): ${archive.path}")
+        System.exit(1); return
+    }
+
+    val dir = configDir()
+    val configParent = dir.parentFile
+    configParent.mkdirs()
+
+    // Move any existing config aside (reversible) rather than merging over it.
+    var movedAside: File? = null
+    if (dir.exists()) {
+        val aside = File(configParent, "stoandl.old-${timestamp()}")
+        if (!dir.renameTo(aside)) {
+            System.err.println("Failed to move existing config aside (${dir.path} → ${aside.path})")
+            System.exit(1); return
+        }
+        movedAside = aside
+    }
+
+    val code = runProcess("tar", "xzf", archive.absolutePath, "-C", configParent.path)
+    if (code != 0 || !dir.isDirectory) {
+        System.err.println("Restore failed (tar exit $code)")
+        // Roll back: remove the half-extracted dir and put the original back.
+        if (movedAside != null) {
+            dir.deleteRecursively()
+            if (movedAside.renameTo(dir)) System.err.println("Original config restored.")
+            else System.err.println("Original config left at ${movedAside.path}")
+        }
+        System.exit(1); return
+    }
+    println("Restored ${dir.path} from ${archive.path}")
+    if (movedAside != null) println("Previous config kept at ${movedAside.path}")
+    println("Start the daemon to pick it up: systemctl --user start stoandl")
 }
 
 private fun connectDbusOrExit(): DBusConnection? = try {

@@ -85,6 +85,43 @@ java \
   -jar build/libs/stoandl-*-all.jar
 ```
 
+## Managing apps
+
+With the daemon running and a watch connected, the `stoandl` CLI talks to it over D-Bus:
+
+```sh
+stoandl apps                 # list watchfaces and apps in the locker
+stoandl launch <name|uuid>   # launch an app or watchface on the watch
+stoandl remove <name|uuid>   # uninstall an app or watchface from the locker
+stoandl sideload app.pbw     # install a .pbw onto the connected watch
+stoandl settings [app]       # open a running PKJS app's Clay config page
+```
+
+`launch`/`remove` match a watch app by UUID or by (case-insensitive) name — exact name first,
+then substring. If the name is ambiguous the command lists the candidates so you can pick the
+UUID. `apps` flags each entry as `active` (current watchface), `sideloaded`, `config`
+(has a settings page) or `system`. System apps cannot be removed.
+
+## Backup & restore
+
+stoandl keeps your whole setup — the locker, the cached `.pbw` binaries, app order, the active
+watchface, and PKJS/Clay settings — under `~/.config/stoandl/`. None of it is tied to a specific
+watch, so it survives unpairing: when you re-pair a watch, libpebble3 re-syncs the locker back
+onto it automatically. Back that state up (or move it to another machine) with:
+
+```sh
+stoandl backup [out.tar.gz]   # default: ./stoandl-backup-<timestamp>.tar.gz
+stoandl restore <in.tar.gz>   # stop the daemon first; --force to override
+```
+
+For a guaranteed-consistent snapshot, stop the daemon before `backup` (it's safe to run live,
+but the SQLite DB is captured mid-write). `restore` moves any existing `~/.config/stoandl/`
+aside to `stoandl.old-<timestamp>` rather than overwriting it, and refuses to run while the
+daemon is up.
+
+Note: settings a watchapp writes *directly on the watch* (the C `persist_write` API, as opposed
+to Clay/PKJS config) live only on the watch and are not part of this backup.
+
 ## Logging
 
 Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO.
