@@ -288,6 +288,7 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
             System.err.println("Unknown command: ${args[0]}")
