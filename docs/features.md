@@ -35,7 +35,7 @@ Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md)
 
 ### Roadmap / not yet implemented
 
-- [ ] **Notification actions / reply** — only dismiss is handled; reply & canned responses return "Not supported"
+- [ ] **Notification actions / reply** — ❌ *not viable as a generic feature* ([why](#why-generic-notification-reply-isnt-viable)). Only `Dismiss` works (it rides on `CloseNotification()`, the one method a third party may call on a notification it didn't post); other actions return "Not supported". Per-channel reply (Matrix, SMS) is the viable path — see *Send text / quick reply* below.
 - [ ] **Time / timezone sync** — handled by libpebble3 but not actively managed by stoandl
 - [ ] **Calendar sync / timeline pins** — `WebServices` is a no-op; no calendar source wired
 - [ ] **Weather timeline pins** — sunrise/sunset forecast pins (the Weather *app* data is synced; the timeline pins are not yet)
@@ -45,6 +45,39 @@ Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md)
 - [ ] **Firmware updates** — `checkForFirmwareUpdate()` stubbed
 - [ ] **Health / activity sync** (steps, sleep, HR) — likely out of scope (headless, no dashboard)
 - [ ] **Voice / dictation** — transcription provider explicitly stubbed (`Failed`)
-- [ ] **Send text / quick SMS** — no messaging integration
+- [ ] **Send text / quick reply** — reply to messages from the watch via per-channel backends that bypass the notification bus (see [note](#why-generic-notification-reply-isnt-viable)): **Matrix** via `matrix-commander`/matrix-nio (`--listen` → watch, reply → same room; E2EE handled), and **SMS** via the ModemManager Messaging interface (reuses the telephony integration). No generic per-app reply.
 - [ ] **Data logging** (PebbleKit datalog API)
 - [ ] **Bluetooth Classic transport** — intentionally out of scope; see [bt-classic-scope.md](../bt-classic-scope.md)
+
+### Why generic notification reply isn't viable
+
+_Investigated 2026-06; parked. Recorded here so it isn't re-litigated._
+
+Replying to a desktop notification means delivering text **back to the originating app**. On the
+freedesktop bus that happens via the daemon→app `ActionInvoked` / `NotificationReplied` *signal*,
+which clients only accept from the **owner** of `org.freedesktop.Notifications`. stoandl is a passive
+`BecomeMonitor` copy, not the owner, so any reply signal it emits is dropped. (Dismiss is the lone
+exception: `CloseNotification()` is a real *method* that any client may call on any notification.)
+
+Becoming the owner — a transparent MITM proxy sitting in front of the real daemon — was evaluated and
+rejected:
+
+- **GNOME and KDE/Plasma both refuse name takeover.** Each shell owns `org.freedesktop.Notifications`
+  *without* `DBUS_NAME_FLAG_ALLOW_REPLACEMENT`, acquired at login before any user service.
+  `RequestName(org.freedesktop.Notifications, REPLACE_EXISTING)` returns `3` (exists) on both. The only
+  sanctioned way to run a different server is to *manually disable* the shell's built-in notifications —
+  which on Plasma Mobile means losing the phone's own notification UI. Unacceptable as a default.
+- **xdg-desktop-portal doesn't help.** Its Notification portal is send-side only (app → portal → the
+  *one* configured backend → reply routed back to the app); it is not an interception API, and replacing
+  the backend is itself a desktop-config change that only catches portal/flatpak apps.
+- **Prior art (KDE Connect) can only reply because it is integrated with Plasma's notification-server
+  internals** — not a portable mechanism a third-party daemon can reuse.
+
+So a proxy works *only* where no shell server is entrenched (bare wlroots/sxmo compositors, or a desktop
+whose server is manually disabled), making it an opt-in niche rather than a feature. Parked.
+
+**The viable path is per-channel reply that bypasses the notification bus** and talks to the messaging
+backend directly, where the reply target (room / phone number) is unambiguous — tracked under *Send
+text / quick reply*. The watch side is shared by every channel: a `Response` action carrying the canned
+replies, with the chosen text arriving back as the action's `Title` attribute. Built once, reused per
+channel.
