@@ -6,7 +6,22 @@ plugins {
 }
 
 group = "de.yoxcu.stoandl"
-version = "0.1.0"
+
+// Version comes from `git describe`: the exact tag (e.g. 0.1.0) when built on a release tag with a
+// clean tree, otherwise <tag>-<commits>-g<hash> with a `-dirty` suffix for uncommitted changes
+// (falls back to a bare commit hash when there are no tags yet).
+val projectVersion: String = run {
+    try {
+        val proc = ProcessBuilder("git", "describe", "--tags", "--always", "--dirty")
+            .directory(projectDir).redirectErrorStream(true).start()
+        val text = proc.inputStream.bufferedReader().readText().trim()
+        proc.waitFor()
+        if (proc.exitValue() == 0 && text.isNotEmpty()) text.removePrefix("v") else "0.1.0-nogit"
+    } catch (e: Exception) {
+        "0.1.0-nogit"
+    }
+}
+version = projectVersion
 
 kotlin {
     jvmToolchain(21)
@@ -38,6 +53,21 @@ dependencies {
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
 }
+
+// Bake the version into a classpath resource so the daemon/CLI can report it (`stoandl version`).
+val generateVersionFile by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/version")
+    inputs.property("version", projectVersion)
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get().file("de/yoxcu/stoandl/version.txt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(projectVersion)
+    }
+}
+
+sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/version"))
+tasks.named("processResources") { dependsOn(generateVersionFile) }
 
 // Note: the BecomeMonitor no-reply fix (DbusNotificationMonitor.kt) reflects into dbus-java
 // internals, but needs no `--add-opens`: the fat JAR runs on the classpath, where dbus-java is in

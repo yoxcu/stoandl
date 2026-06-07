@@ -8,6 +8,9 @@ const val STOANDL_OBJECT_PATH = "/de/yoxcu/stoandl"
 
 @DBusInterfaceName("de.yoxcu.stoandl.Control")
 interface StoandlControl : DBusInterface {
+    /** The version of the running daemon (from `git describe` at build time). */
+    fun Version(): String
+
     /** Install a `.pbw` from [path] onto the watch. Returns a status-prefixed string
      *  (`ok:<msg>` / `error:<msg>` / `notready:<msg>`) so the real failure reason — e.g. an
      *  invalid .pbw — reaches the CLI instead of a bare boolean. */

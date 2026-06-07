@@ -26,10 +26,15 @@ private val log = KotlinLogging.logger {}
 private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
+private val VERSION_FLAGS = setOf("version", "--version", "-v")
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty() && args[0] in HELP_FLAGS) {
         printUsage()
+        return
+    }
+    if (args.isNotEmpty() && args[0] in VERSION_FLAGS) {
+        printVersion()
         return
     }
     if (args.isNotEmpty() && (args[0] == "ctl" || args[0] in CTL_COMMANDS)) {
@@ -38,7 +43,7 @@ fun main(args: Array<String>) {
     }
 
     Logger.setLogWriters(KermitSlf4jWriter())
-    log.info { "stoandl starting" }
+    log.info { "stoandl ${BuildInfo.version} starting" }
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val notificationBus = MutableSharedFlow<IncomingNotification>(extraBufferCapacity = 64)
@@ -92,10 +97,33 @@ private fun printUsage() {
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
     println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
     println("  fakecall end               Debug: clear the synthetic call")
+    println("  version                    Show the running daemon's version (and this CLI's)")
     println("  weather                    Fetch weather now and push it to the watch")
     println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
     println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
     println("  help                       Show this help")
+}
+
+/** Report the running daemon's version (over D-Bus), falling back to this CLI's own embedded version. */
+private fun printVersion() {
+    val cliVersion = BuildInfo.version
+    val conn = try {
+        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    } catch (e: Exception) {
+        println("stoandl $cliVersion (couldn't reach D-Bus to query the service)")
+        return
+    }
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        val daemon = try { control.Version() } catch (e: Exception) { null }
+        when {
+            daemon == null -> println("stoandl $cliVersion (daemon not running)")
+            daemon == cliVersion -> println("stoandl $daemon")
+            else -> println("stoandl $cliVersion (this CLI) · service running $daemon — restart it to match")
+        }
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun ctl(args: Array<String>) {

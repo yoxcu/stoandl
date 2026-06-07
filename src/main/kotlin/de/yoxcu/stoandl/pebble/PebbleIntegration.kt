@@ -665,6 +665,8 @@ private class StoandlControlImpl(
     override fun isRemote() = false
     override fun getObjectPath() = STOANDL_OBJECT_PATH
 
+    override fun Version(): String = de.yoxcu.stoandl.BuildInfo.version
+
     override fun ListWatchPrefs(): List<String> =
         watchPrefsControlRef.get()?.list() ?: emptyList()
 

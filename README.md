@@ -97,6 +97,7 @@ stoandl sideload app.pbw     # install a .pbw onto the connected watch
 stoandl config [app]         # open a PKJS app's Clay config page (launches it if needed)
 stoandl settings [filter]    # list the watch's advanced settings (quick-launch, backlight, …)
 stoandl set-setting <id> <v> # set one, e.g. set-setting lightAmbientThreshold 200
+stoandl version              # version of the running daemon (and this CLI)
 ```
 
 `launch`/`remove` match a watch app by UUID or by (case-insensitive) name — exact name first,
