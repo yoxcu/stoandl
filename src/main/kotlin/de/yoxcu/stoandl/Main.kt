@@ -23,9 +23,15 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore")
+private val CTL_COMMANDS = setOf("sideload", "add", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore")
+
+private val HELP_FLAGS = setOf("help", "--help", "-h")
 
 fun main(args: Array<String>) {
+    if (args.isNotEmpty() && args[0] in HELP_FLAGS) {
+        printUsage()
+        return
+    }
     if (args.isNotEmpty() && (args[0] == "ctl" || args[0] in CTL_COMMANDS)) {
         ctl(if (args[0] == "ctl") args.drop(1).toTypedArray() else args)
         return
@@ -69,26 +75,35 @@ fun main(args: Array<String>) {
     }
 }
 
+private fun printUsage() {
+    println("stoandl — Pebble companion daemon for Linux")
+    println()
+    println("Usage:")
+    println("  stoandl                    Run the daemon (foreground; used by the systemd service)")
+    println("  stoandl <command> [args]")
+    println()
+    println("Commands:")
+    println("  apps                       List the apps and watchfaces in the watch locker")
+    println("  launch <name|uuid>         Launch an app or watchface on the watch")
+    println("  remove <name|uuid>         Uninstall an app or watchface from the locker")
+    println("  sideload <path>            Install a .pbw watchface or app onto the watch (alias: add)")
+    println("  settings [app]             Open the configuration page for a running PKJS app")
+    println("  backup [out.tar.gz]        Archive the locker, app cache and PKJS settings")
+    println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
+    println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
+    println("  fakecall end               Debug: clear the synthetic call")
+    println("  help                       Show this help")
+}
+
 private fun ctl(args: Array<String>) {
     if (args.isEmpty()) {
-        println("Usage: stoandl <command> [args]")
-        println()
-        println("Commands:")
-        println("  sideload <path>          Install a .pbw watchface or app onto the connected watch")
-        println("  apps                     List the apps and watchfaces in the watch locker")
-        println("  launch <name|uuid>       Launch an app or watchface on the watch")
-        println("  remove <name|uuid>       Uninstall an app or watchface from the locker")
-        println("  settings [app]           Open the configuration page for a running PKJS app")
-        println("  backup [out.tar.gz]      Archive the locker, app cache and PKJS settings")
-        println("  restore <in.tar.gz>      Restore a backup (daemon must be stopped)")
-        println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
-        println("  fakecall end                    Debug: clear the synthetic call")
+        printUsage()
         return
     }
     when (args[0]) {
-        "sideload" -> {
+        "sideload", "add" -> {
             if (args.size < 2) {
-                System.err.println("Usage: stoandl sideload <path>")
+                System.err.println("Usage: stoandl ${args[0]} <path>")
                 System.exit(1)
             }
             val path = args[1]
@@ -194,8 +209,11 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        in HELP_FLAGS -> printUsage()
         else -> {
             System.err.println("Unknown command: ${args[0]}")
+            System.err.println()
+            printUsage()
             System.exit(1)
         }
     }

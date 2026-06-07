@@ -1,6 +1,6 @@
 # stoandl
 
-> **⚠️ Early work in progress.** Only notification sync is implemented. Expect rough edges and breaking changes.
+> **⚠️ Early work in progress.** Notification sync, app/locker management, backup/restore and PKJS are working; phone-call support is written but untested on real hardware. Expect rough edges and breaking changes.
 
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
@@ -12,10 +12,12 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 ## What it does
 
 - Forwards desktop notifications (`org.freedesktop.Notifications`) to the watch over BLE
-- Reconnects automatically after watch-initiated disconnects or daemon restarts
+- Manages the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces
+- Backs up and restores your locker, app cache and PKJS/Clay settings
+- Reconnects automatically — after watch disconnects, daemon restarts, or coming back into range
 - Runs as a background daemon with no UI
 
-It also sideloads watchapps, runs PKJS companion scripts, and serves Clay config pages.
+It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
 → [docs/features.md](docs/features.md) — full feature list, comparison with other companion apps, and roadmap.
 
 ## Compatibility

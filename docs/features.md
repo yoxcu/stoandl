@@ -15,11 +15,12 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 
 - [x] **Notification sync** (desktop → watch) — D-Bus `org.freedesktop.Notifications` → Pebble timeline
 - [x] **Notification dismiss** — `Dismiss`/`AncsDismiss` actions mark read on watch + `CloseNotification()` on D-Bus
-- [x] **Watchapp / watchface sideload** — `stoandl sideload <app.pbw>`
+- [x] **App / watchface management** — `stoandl apps` lists the locker; `launch`, `remove`; install with `sideload <app.pbw>` (alias `add`)
+- [x] **Backup & restore** — `stoandl backup` / `restore` of the locker DB, `.pbw` cache and PKJS/Clay settings (`~/.config/stoandl/`)
 - [x] **PKJS (PebbleKit JS)** — companion scripts run in GraalJS (XHR, AppMessage, webhooks)
 - [x] **App configuration pages (Clay)** — `stoandl settings [app]` serves the config page via a local proxy
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
-- [x] **Automatic reconnect** — bonded reconnect after watch disconnect or daemon restart
+- [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; a watchdog self-restarts (via systemd) if the native BLE stack wedges
 
 ### Implemented but UNTESTED
 
@@ -41,7 +42,7 @@ config file below is untested on hardware and may need fixing.
 - [ ] **Weather** — no provider wired
 - [ ] **Music / now-playing control** — could bridge MPRIS over D-Bus → `MusicService`
 - [ ] **Find my phone / find my watch**
-- [ ] **App store / locker / app management** — `fetchLocker()` stubbed
+- [ ] **Account-backed app store** — Rebble appstore browse/install and cloud locker sync (`fetchLocker()`) still stubbed; needs an account/token. (Local locker management — list/launch/remove/sideload/backup — is already done; see above.)
 - [ ] **Firmware updates** — `checkForFirmwareUpdate()` stubbed
 - [ ] **Health / activity sync** (steps, sleep, HR) — likely out of scope (headless, no dashboard)
 - [ ] **Voice / dictation** — transcription provider explicitly stubbed (`Failed`)
