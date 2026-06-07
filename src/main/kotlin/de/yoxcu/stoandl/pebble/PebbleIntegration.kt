@@ -64,7 +64,9 @@ import kotlin.time.Clock
 import kotlinx.io.files.Path
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.types.UInt32
+import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
@@ -84,6 +86,17 @@ private const val MAX_CONNECTION_ATTEMPTS = 5
 private val WATCHDOG_INTERVAL = 60.seconds
 private val WATCHDOG_STALL_RESTART = 10.minutes
 
+// Stale ("zombie") connection detection. libpebble/kable can hold a dead BLE link for many minutes
+// before emitting a Disconnection, during which the daemon neither scans (thinks it's connected) nor
+// reconnects — leaving the watch stuck disconnected even back in range. BlueZ knows the link is gone
+// within the BLE supervision timeout (≤32s), so we cross-check Device1.Connected and force recovery.
+private val STALE_CHECK_INTERVAL = 20.seconds
+private val STALE_GRACE = 40.seconds        // BlueZ disconnected this long while libpebble says connected → force
+private val STALE_ESCALATE = 30.seconds     // forced disconnect didn't take hold → restart for a clean stack
+
+private const val BLUEZ_BUS = "org.bluez"
+private const val BLUEZ_DEVICE_IFACE = "org.bluez.Device1"
+
 private val log = KotlinLogging.logger {}
 
 class PebbleIntegration(
@@ -95,6 +108,7 @@ class PebbleIntegration(
     private lateinit var watchConnector: WatchConnector
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
+    @Volatile private var bluezConn: DBusConnection? = null
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
@@ -146,6 +160,7 @@ class PebbleIntegration(
         startScanLoop()
         startAutoConnect()
         startConnectionWatchdog()
+        startStaleConnectionWatchdog()
         registerControlService()
         startCallMonitor()
         startWeatherSync()
@@ -228,6 +243,90 @@ class PebbleIntegration(
                     exitProcess(1)
                 }
             }
+        }
+    }
+
+    /**
+     * Detects a stale ("zombie") BLE connection: libpebble still reports the watch as
+     * [ConnectedPebbleDevice], but BlueZ's `Device1.Connected` says otherwise. kable/btleplug can sit on
+     * a dead link for many minutes before surfacing a disconnect, and while it does the daemon won't
+     * scan or reconnect (both treat "connected" as ground truth). BlueZ is authoritative — once the link
+     * is confirmed gone for [STALE_GRACE] we force a disconnect (which lets the scan loop find and
+     * reconnect the watch), and if that doesn't take hold we restart the process for a clean BLE stack.
+     */
+    private fun startStaleConnectionWatchdog() {
+        val staleSince = ConcurrentHashMap<String, Long>()
+        val forcedAt = ConcurrentHashMap<String, Long>()
+        scope.launch {
+            while (true) {
+                delay(STALE_CHECK_INTERVAL)
+                val connected = libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>()
+                val liveMacs = connected.map { it.identifier.asString }.toSet()
+                staleSince.keys.retainAll(liveMacs)
+                forcedAt.keys.retainAll(liveMacs)
+                for (device in connected) {
+                    val mac = device.identifier.asString
+                    // null = couldn't ask BlueZ (no system bus / error) — don't act on uncertainty.
+                    if (withContext(Dispatchers.IO) { bluezConnected(mac) } != false) {
+                        staleSince.remove(mac)
+                        forcedAt.remove(mac)
+                        continue
+                    }
+                    val now = System.currentTimeMillis()
+                    val since = staleSince.getOrPut(mac) { now }
+                    if (now - since < STALE_GRACE.inWholeMilliseconds) continue
+                    val forced = forcedAt[mac]
+                    if (forced == null) {
+                        log.warn {
+                            "Stale connection: libpebble reports $mac connected but BlueZ shows it " +
+                                "disconnected for ${(now - since) / 1000}s — forcing reconnect"
+                        }
+                        watchConnector.requestDisconnection(device.identifier)
+                        forcedAt[mac] = now
+                    } else if (now - forced >= STALE_ESCALATE.inWholeMilliseconds) {
+                        log.error {
+                            "Stale connection for $mac persists ${(now - forced) / 1000}s after a forced " +
+                                "disconnect — restarting for a clean BLE stack"
+                        }
+                        gracefulShutdown()
+                        exitProcess(1)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Ask BlueZ whether the device with [mac] is actually connected: true/false from `Device1.Connected`,
+     *  false if BlueZ doesn't know the device, or null if BlueZ can't be reached (don't act on null). */
+    private fun bluezConnected(mac: String): Boolean? {
+        val conn = bluezConnection() ?: return null
+        return try {
+            val om = conn.getRemoteObject(BLUEZ_BUS, "/", ObjectManager::class.java)
+            for ((_, ifaces) in om.GetManagedObjects()) {
+                val device = ifaces[BLUEZ_DEVICE_IFACE] ?: continue
+                val address = (device["Address"] as? Variant<*>)?.value as? String ?: continue
+                if (address.equals(mac, ignoreCase = true)) {
+                    return (device["Connected"] as? Variant<*>)?.value as? Boolean ?: false
+                }
+            }
+            false // BlueZ has no object for this MAC → not connected
+        } catch (e: Exception) {
+            log.debug { "stale-check: BlueZ query failed: ${e.message}" }
+            try { bluezConn?.disconnect() } catch (_: Exception) {}
+            bluezConn = null
+            null
+        }
+    }
+
+    private fun bluezConnection(): DBusConnection? {
+        val existing = bluezConn
+        if (existing != null && existing.isConnected) return existing
+        return try {
+            (DBusConnectionBuilder.forSystemBus().build() as DBusConnection).also { bluezConn = it }
+        } catch (e: Exception) {
+            log.debug { "stale-check: cannot open system bus: ${e.message}" }
+            bluezConn = null
+            null
         }
     }
 
@@ -532,17 +631,26 @@ private class StoandlControlImpl(
         }
     }
 
-    override fun SideloadApp(path: String): Boolean {
+    override fun SideloadApp(path: String): String {
         val lp = libPebbleRef.get() ?: run {
             log.warn { "SideloadApp($path): libPebble not ready" }
-            return false
+            return "notready:libPebble not ready"
         }
         log.info { "SideloadApp: $path" }
+        // The daemon's cwd differs from the caller's, so a relative path resolves wrong here; reject
+        // it with a clear message rather than the misleading "Pbw does not contain manifest" that a
+        // missing file would otherwise produce. (The CLI already sends an absolute path.)
+        if (!java.io.File(path).isFile) {
+            log.warn { "SideloadApp($path): no such file (paths must be absolute on the daemon side)" }
+            return "error:No such file: $path"
+        }
         return try {
-            runBlocking { lp.sideloadApp(Path(path)) }
+            val ok = runBlocking { lp.sideloadApp(Path(path)) }
+            if (ok) "ok:Sideloaded ${Path(path).name}"
+            else "error:Sideload rejected (not a valid .pbw, or no watch connected)"
         } catch (e: Exception) {
             log.warn(e) { "SideloadApp($path) failed" }
-            false
+            "error:${e.message ?: "sideload failed"}"
         }
     }
 

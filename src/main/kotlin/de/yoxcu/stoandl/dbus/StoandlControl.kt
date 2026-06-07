@@ -8,7 +8,10 @@ const val STOANDL_OBJECT_PATH = "/de/yoxcu/stoandl"
 
 @DBusInterfaceName("de.yoxcu.stoandl.Control")
 interface StoandlControl : DBusInterface {
-    fun SideloadApp(path: String): Boolean
+    /** Install a `.pbw` from [path] onto the watch. Returns a status-prefixed string
+     *  (`ok:<msg>` / `error:<msg>` / `notready:<msg>`) so the real failure reason — e.g. an
+     *  invalid .pbw — reaches the CLI instead of a bare boolean. */
+    fun SideloadApp(path: String): String
 
     /** List the apps in the watch locker. Each entry is a tab-separated record:
      *  `uuid \t type \t order \t flags \t title \t developer`, where flags is a comma-joined

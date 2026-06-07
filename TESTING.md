@@ -39,6 +39,8 @@ as test targets.
 | 1.8 | Remove refuses system app | `stoandl remove "<system app>"` | Non-zero exit; `Refusing to remove system app <title>`; app still present. |
 | 1.9 | Re-add after remove | `stoandl sideload <that>.pbw` then `stoandl apps` | App is back (confirms remove was clean, not corrupting). |
 | 1.10 | Daemon down | `systemctl --user stop stoandl; stoandl apps` | Clear error (can't reach D-Bus), non-zero exit — not a stack trace. Restart after. |
+| 1.11 | Sideload relative path | `cd` to a dir holding `x.pbw`, then `stoandl sideload x.pbw` | Installs — the CLI resolves the path absolutely before handing it to the daemon (whose cwd is `$HOME`). Prints `Sideloaded x.pbw`. |
+| 1.12 | Sideload missing file | `stoandl sideload /nope/x.pbw` | Non-zero exit; `No such file: /nope/x.pbw` (not a misleading "Pbw does not contain manifest"). |
 
 **Watch-side check for 1.7:** the removed app should be gone from the watch
 menu, not just the list — confirms `removeApp` synced the deletion.
@@ -130,6 +132,29 @@ build a temporary copy with a short timeout:
   process exits 1, `systemctl --user status` shows it restarted
   (`RestartSec=5`), and the fresh process reconnects.
 - **Revert** the throwaway changes afterward.
+
+### 3e. Stale ("zombie") connection recovery
+
+Symptom this guards against: after a marginal-range stretch, kable/btleplug can hold a **dead** link
+for many minutes without emitting a disconnect, so the daemon neither scans nor reconnects and the
+watch stays disconnected even back in range (observed: ~26 min stuck, then a 15 s reconnect once kable
+finally noticed). A BlueZ cross-check now forces recovery in ~1 min instead.
+
+- Reproduce the stuck state (walk out of range mid-connection until the log goes silent on a
+  `Watch connected` with no following `Disconnection`). While stuck, confirm the split view:
+
+  ```sh
+  bluetoothctl info <MAC>            # Connected: no   ← BlueZ knows it's gone
+  tail -f /tmp/stoandl.log           # daemon silent, NOT scanning ← it still thinks it's connected
+  ```
+
+- **Expected:** within ~40–60 s the stale-connection watchdog logs
+  `Stale connection: libpebble reports <MAC> connected but BlueZ shows it disconnected … — forcing reconnect`,
+  then the normal teardown / `Starting BLE scan` / reconnect follows. If the forced disconnect doesn't take,
+  ~30 s later: `… persists … after a forced disconnect — restarting for a clean BLE stack` and systemd
+  restarts it. Either way the watch is back in well under the old multi-minute wait.
+- **Negative:** during a *healthy* connection, `bluetoothctl info` shows `Connected: yes`, so the
+  watchdog never fires — no spurious `Stale connection` lines or restarts.
 
 ---
 

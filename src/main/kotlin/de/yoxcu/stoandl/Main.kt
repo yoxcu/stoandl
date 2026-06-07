@@ -105,17 +105,23 @@ private fun ctl(args: Array<String>) {
         "sideload", "add" -> {
             if (args.size < 2) {
                 System.err.println("Usage: stoandl ${args[0]} <path>")
-                System.exit(1)
+                System.exit(1); return
             }
-            val path = args[1]
+            // Resolve against THIS process's working directory and send an absolute path: the daemon
+            // runs as a systemd user service with its own cwd ($HOME), so a relative path would be
+            // looked up in the wrong place (and surface as a misleading "Pbw does not contain manifest").
+            val file = File(args[1])
+            if (!file.isFile) {
+                System.err.println("No such file: ${args[1]}"); System.exit(1); return
+            }
+            val path = file.absolutePath
             val conn = connectDbusOrExit() ?: return
             try {
                 val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                val ok = control.SideloadApp(path)
-                if (ok) println("Sideloaded: $path") else { System.err.println("Sideload failed"); System.exit(1) }
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}")
-                System.exit(1)
+                val resp = try { control.SideloadApp(path) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                handleStatusResponse(resp)
             } finally {
                 conn.disconnect()
             }

@@ -20,7 +20,7 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **PKJS (PebbleKit JS)** — companion scripts run in GraalJS (XHR, AppMessage, webhooks)
 - [x] **App configuration pages (Clay)** — `stoandl settings [app]` serves the config page via a local proxy
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
-- [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; a watchdog self-restarts (via systemd) if the native BLE stack wedges
+- [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; a watchdog self-restarts (via systemd) if the native BLE stack wedges, and a BlueZ cross-check forces recovery from a stale/"zombie" connection (libpebble still thinks it's connected after the link died) instead of waiting minutes for kable to notice
 
 ### Implemented — to be tested
 
