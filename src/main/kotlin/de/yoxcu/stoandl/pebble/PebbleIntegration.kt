@@ -25,6 +25,8 @@ import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
+import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
+import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.WatchConnector
@@ -62,12 +64,21 @@ import org.freedesktop.dbus.types.UInt32
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.system.exitProcess
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
+
+// Reconnect watchdog cadence and the stall window after which we treat the BLE stack as wedged
+// and restart the process. The window must comfortably exceed the gap between failed connection
+// attempts (~20-60s each) so an out-of-range watch — which keeps failing, i.e. shows activity —
+// never trips it; only a true stall (no attempts at all) does.
+private val WATCHDOG_INTERVAL = 60.seconds
+private val WATCHDOG_STALL_RESTART = 10.minutes
 
 private val log = KotlinLogging.logger {}
 
@@ -129,6 +140,7 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
+        startConnectionWatchdog()
         registerControlService()
         startCallMonitor()
 
@@ -149,9 +161,66 @@ class PebbleIntegration(
     private fun startScanLoop() {
         scope.launch {
             while (true) {
-                log.info { "Starting BLE scan" }
-                libPebble.startBleScan()
+                if (libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
+                    // No need to discover while connected; stop any lingering scan.
+                    if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                } else {
+                    // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
+                    // already has a discovery running returns org.bluez.Error.InProgress and the scan
+                    // then never refreshes, so a watch that comes back into range is never
+                    // re-discovered (this is what stranded the daemon overnight).
+                    if (libPebble.isScanningBle.value) {
+                        libPebble.stopBleScan()
+                        delay(1.seconds)
+                    }
+                    log.info { "Starting BLE scan" }
+                    libPebble.startBleScan()
+                }
                 delay(35.seconds) // slightly longer than the 30s scan timeout
+            }
+        }
+    }
+
+    /**
+     * Backstop for a wedged native BLE stack. A bonded watch that is merely out of range still shows
+     * "connection activity" (libpebble keeps attempting → ConnectingPebbleDevice transitions and an
+     * ever-incrementing failure counter); a wedged stack shows none at all. If a bonded, non-connected
+     * watch produces zero activity for [WATCHDOG_STALL_RESTART] while Bluetooth is on, exit so systemd
+     * restarts us with a fresh stack. The WatchManager fork fix should prevent the wedge we diagnosed;
+     * this also covers any residual wedge originating in the external kable/btleplug layer.
+     */
+    private fun startConnectionWatchdog() {
+        val lastActivityMs = AtomicReference(System.currentTimeMillis())
+        val lastFailureTimes = ConcurrentHashMap<String, Int>()
+        libPebble.watches.onEach { devices ->
+            var active = devices.any { it is ConnectedPebbleDevice || it is ConnectingPebbleDevice }
+            devices.filterIsInstance<KnownPebbleDevice>().forEach { d ->
+                val times = d.connectionFailureInfo?.times ?: 0
+                val prev = lastFailureTimes.put(d.identifier.asString, times)
+                if (prev == null || prev != times) active = true
+            }
+            if (active) lastActivityMs.set(System.currentTimeMillis())
+        }.launchIn(scope)
+
+        scope.launch {
+            while (true) {
+                delay(WATCHDOG_INTERVAL)
+                val devices = libPebble.watches.value
+                val connected = devices.any { it is ConnectedPebbleDevice }
+                val bondedDisconnected = devices.any { it is KnownPebbleDevice && it !is ConnectedPebbleDevice }
+                if (connected || !bondedDisconnected || !libPebble.bluetoothEnabled.value.enabled()) {
+                    lastActivityMs.set(System.currentTimeMillis())
+                    continue
+                }
+                val stalledMs = System.currentTimeMillis() - lastActivityMs.get()
+                if (stalledMs >= WATCHDOG_STALL_RESTART.inWholeMilliseconds) {
+                    log.error {
+                        "Watchdog: bonded watch shows no connection activity for ${stalledMs / 1000}s " +
+                            "— BLE stack appears wedged; exiting for systemd restart"
+                    }
+                    gracefulShutdown()
+                    exitProcess(1)
+                }
             }
         }
     }
