@@ -66,7 +66,6 @@ import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.types.UInt32
-import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
@@ -304,9 +303,9 @@ class PebbleIntegration(
             val om = conn.getRemoteObject(BLUEZ_BUS, "/", ObjectManager::class.java)
             for ((_, ifaces) in om.GetManagedObjects()) {
                 val device = ifaces[BLUEZ_DEVICE_IFACE] ?: continue
-                val address = (device["Address"] as? Variant<*>)?.value as? String ?: continue
+                val address = device["Address"]?.value as? String ?: continue
                 if (address.equals(mac, ignoreCase = true)) {
-                    return (device["Connected"] as? Variant<*>)?.value as? Boolean ?: false
+                    return device["Connected"]?.value as? Boolean ?: false
                 }
             }
             false // BlueZ has no object for this MAC → not connected
