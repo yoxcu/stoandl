@@ -14,6 +14,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Forwards desktop notifications (`org.freedesktop.Notifications`) to the watch over BLE
 - Manages the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces
 - Backs up and restores your locker, app cache and PKJS/Clay settings
+- Syncs weather to the watch's Weather app (Open-Meteo — free, no account)
 - Reconnects automatically — after watch disconnects, daemon restarts, or coming back into range
 - Runs as a background daemon with no UI
 

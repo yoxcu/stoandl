@@ -7,6 +7,10 @@ import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.weather.DeLocationSource
+import de.yoxcu.stoandl.weather.GeoClueLocationProvider
+import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.rebble.libpebblecommon.calls.SystemCallLog
@@ -90,6 +94,7 @@ class PebbleIntegration(
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
+    private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
@@ -143,6 +148,7 @@ class PebbleIntegration(
         startConnectionWatchdog()
         registerControlService()
         startCallMonitor()
+        startWeatherSync()
 
         log.info { "libpebble3 initialized" }
     }
@@ -234,9 +240,46 @@ class PebbleIntegration(
         }
     }
 
+    private fun startWeatherSync() {
+        val hasSource = config.weatherLocationSource != WeatherLocationSource.MANUAL
+        if (config.weatherLocations.isEmpty() && !config.weatherGps && !hasSource) {
+            log.info { "Weather sync disabled (no weather.locations, no source, weather.gps off)" }
+            return
+        }
+        val gps = if (config.weatherGps) {
+            GeoClueLocationProvider(config.weatherGpsDesktopId).also { it.start() }
+        } else null
+        val deSource = when (config.weatherLocationSource) {
+            WeatherLocationSource.MANUAL -> null
+            WeatherLocationSource.GNOME -> DeLocationSource(DeLocationSource.Mode.GNOME, "")
+            WeatherLocationSource.COMMAND -> DeLocationSource(DeLocationSource.Mode.COMMAND, config.weatherLocationCommand)
+        }
+        val extraLocations: (suspend () -> List<StoandlConfig.WeatherLocation>)? =
+            if (deSource != null) ({ deSource.locations() }) else null
+        val ws = WeatherSync(
+            libPebble = libPebble,
+            scope = scope,
+            locations = config.weatherLocations,
+            units = config.weatherUnits,
+            intervalMinutes = config.weatherIntervalMinutes,
+            gps = gps,
+            gpsFallbackName = config.weatherGpsName,
+            reverseGeocodeEnabled = config.weatherReverseGeocode,
+            extraLocations = extraLocations,
+        )
+        ws.start()
+        weatherSyncRef.set(ws)
+        log.info {
+            "Weather sync started: ${config.weatherLocations.size} manual location(s)" +
+                (if (hasSource) " + ${config.weatherLocationSource} source" else "") +
+                (if (config.weatherGps) " + GPS current location" else "") +
+                ", units=${config.weatherUnits}, every ${config.weatherIntervalMinutes}m"
+        }
+    }
+
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, scope))
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, scope))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -469,12 +512,25 @@ private fun iconForApp(appName: String): TimelineIcon {
 
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
+    private val weatherSyncRef: AtomicReference<WeatherSync?>,
     private val scope: CoroutineScope,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
     override fun isRemote() = false
     override fun getObjectPath() = STOANDL_OBJECT_PATH
+
+    override fun SyncWeather(): String {
+        val ws = weatherSyncRef.get()
+            ?: return "error:Weather sync not enabled (set weather.locations in stoandl.conf)"
+        return try {
+            val n = runBlocking { ws.syncNow() }
+            "ok:Weather synced ($n location(s) updated)"
+        } catch (e: Exception) {
+            log.warn(e) { "SyncWeather failed" }
+            "error:${e.message ?: "weather sync failed"}"
+        }
+    }
 
     override fun SideloadApp(path: String): Boolean {
         val lp = libPebbleRef.get() ?: run {

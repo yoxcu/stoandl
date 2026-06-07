@@ -20,3 +20,44 @@ call.dialer_apps = spacebar, calls
 # digits-only by suffix, so +49… and local 0… forms both resolve. `~` expands to your home.
 # Plasma Mobile's kpeoplevcard backend stores contacts here by default:
 contacts.vcard_paths = ~/.local/share/kpeoplevcard
+
+# Weather, pushed to the watch's built-in Weather app. Source is Open-Meteo (free, no API key,
+# no account). There's no GPS on a headless daemon, so list fixed locations as Name:lat:lon.
+# Leave empty to disable. The first location is shown most prominently on the watch.
+# Example: weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278
+weather.locations =
+
+# Optionally import extra locations from your desktop instead of typing coordinates. No DE shares its
+# weather data, but the chosen place is readable:
+#   manual  - only weather.locations above (default)
+#   gnome   - read GNOME/Phosh weather GSettings (org.gnome.shell.weather / org.gnome.Weather)
+#   command - run weather.location_command, which must print Name:lat:lon lines (DE-agnostic)
+# Imported locations are merged with weather.locations and re-read on every refresh.
+weather.location_source = manual
+# weather.location_command = echo "Munich:48.137:11.575"
+#
+# KDE/Plasma has no coordinate store, so resolve a city name to coordinates via Open-Meteo's free
+# geocoder (needs curl + jq); swap Munich for your city (or splice it from KWeather's config):
+# weather.location_command = curl -s "https://geocoding-api.open-meteo.com/v1/search?name=Munich&count=1" | jq -r '.results[0] | "\(.name):\(.latitude):\(.longitude)"'
+
+# Temperature unit sent to the watch: metric (°C) or imperial (°F).
+weather.units = metric
+
+# Minutes between weather refreshes (also refreshes immediately when a watch connects).
+weather.interval = 30
+
+# Optional GPS: add a "current location" entry tracked via GeoClue2 (modem GPS / Wi-Fi / A-GPS).
+# It's shown first on the watch and re-resolved every refresh. The place name is reverse-geocoded
+# from the coordinates (OSM Nominatim), falling back to weather.gps_name.
+# GeoClue must allow this daemon — add to /etc/geoclue/geoclue.conf (id matches weather.gps_desktop_id):
+#   [stoandl]
+#   allowed=true
+#   system=true
+#   users=
+weather.gps = false
+weather.gps_desktop_id = stoandl
+weather.gps_name = Current location
+
+# Reverse-geocode the GPS coordinates to a place name via OSM Nominatim. Off by default: it sends
+# your coordinates to a third-party web service. When off, the GPS entry uses weather.gps_name.
+weather.reverse_geocode = false

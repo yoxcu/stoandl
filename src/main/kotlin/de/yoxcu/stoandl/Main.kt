@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore")
+private val CTL_COMMANDS = setOf("sideload", "add", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 
@@ -92,6 +92,7 @@ private fun printUsage() {
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
     println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
     println("  fakecall end               Debug: clear the synthetic call")
+    println("  weather                    Fetch weather now and push it to the watch")
     println("  help                       Show this help")
 }
 
@@ -205,6 +206,18 @@ private fun ctl(args: Array<String>) {
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}")
                 System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "weather" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val resp = try { control.SyncWeather() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                handleStatusResponse(resp)
             } finally {
                 conn.disconnect()
             }

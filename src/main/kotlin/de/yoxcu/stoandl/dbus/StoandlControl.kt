@@ -38,4 +38,9 @@ interface StoandlControl : DBusInterface {
 
     /** Debug: clear the current synthetic call (simulates the remote party hanging up). */
     fun FakeCallEnd(): Boolean
+
+    /** Force an immediate weather fetch for the configured locations and push it to the watch.
+     *  Same status-prefixed return convention as [LaunchApp]. Returns `error:` if weather sync is
+     *  not enabled (no `weather.locations` configured). */
+    fun SyncWeather(): String
 }
