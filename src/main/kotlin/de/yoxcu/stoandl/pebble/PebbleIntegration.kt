@@ -19,6 +19,8 @@ import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.js.PKJSApp
+import io.rebble.libpebblecommon.locker.AppType
+import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.AppContext
@@ -45,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -249,7 +252,9 @@ private class DbusNotificationListenerConnection(
 
 private object NoOpWebServices : WebServices {
     override suspend fun fetchLocker() = null
-    override suspend fun removeFromLocker(id: Uuid) = false
+    // No Rebble account / remote locker in standalone mode: "removed from remote" is trivially
+    // true, so Locker.removeApp() proceeds to delete the local entry instead of bailing out.
+    override suspend fun removeFromLocker(id: Uuid) = true
     override suspend fun checkForFirmwareUpdate(watch: WatchInfo) =
         io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult.FoundNoUpdate
     override fun uploadMemfaultChunk(chunk: ByteArray, watchInfo: WatchInfo) {}
@@ -414,6 +419,88 @@ private class StoandlControlImpl(
             log.warn(e) { "SideloadApp($path) failed" }
             false
         }
+    }
+
+    override fun ListApps(): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        val active = lp.activeWatchface.value?.properties?.id
+        return allApps(lp).map { w ->
+            val p = w.properties
+            val flags = buildList {
+                if (p.id == active) add("active")
+                when (w) {
+                    is LockerWrapper.NormalApp -> {
+                        if (w.sideloaded) add("sideloaded")
+                        if (w.configurable) add("config")
+                    }
+                    is LockerWrapper.SystemApp -> add("system")
+                }
+            }.joinToString(",")
+            listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName)
+                .joinToString("\t")
+        }
+    }
+
+    override fun LaunchApp(query: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val matches = resolve(lp, query)
+        when {
+            matches.isEmpty() -> return "notfound:No app matching '$query'"
+            matches.size > 1 -> return "ambiguous:" +
+                matches.joinToString("; ") { "${it.properties.title} (${it.properties.id})" }
+        }
+        val app = matches.first()
+        log.info { "LaunchApp: ${app.properties.title} (${app.properties.id})" }
+        return try {
+            runBlocking { lp.launchApp(app.properties.id) }
+            "ok:Launched ${app.properties.title}"
+        } catch (e: Exception) {
+            log.warn(e) { "LaunchApp(${app.properties.id}) failed" }
+            "error:${e.message ?: "launch failed"}"
+        }
+    }
+
+    override fun RemoveApp(query: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val matches = resolve(lp, query)
+        when {
+            matches.isEmpty() -> return "notfound:No app matching '$query'"
+            matches.size > 1 -> return "ambiguous:" +
+                matches.joinToString("; ") { "${it.properties.title} (${it.properties.id})" }
+        }
+        val app = matches.first()
+        if (app is LockerWrapper.SystemApp) {
+            return "error:Refusing to remove system app ${app.properties.title}"
+        }
+        log.info { "RemoveApp: ${app.properties.title} (${app.properties.id})" }
+        return try {
+            val ok = runBlocking { lp.removeApp(app.properties.id) }
+            if (ok) "ok:Removed ${app.properties.title}"
+            else "error:Failed to remove ${app.properties.title}"
+        } catch (e: Exception) {
+            log.warn(e) { "RemoveApp(${app.properties.id}) failed" }
+            "error:${e.message ?: "remove failed"}"
+        }
+    }
+
+    /** Snapshot of the whole locker (watchfaces first, then watchapps). */
+    private fun allApps(lp: LibPebble): List<LockerWrapper> = runBlocking {
+        withTimeoutOrNull(5_000) {
+            val faces = lp.getLocker(AppType.Watchface, null, 1000).first()
+            val apps = lp.getLocker(AppType.Watchapp, null, 1000).first()
+            faces + apps
+        } ?: emptyList()
+    }
+
+    /** Resolve [query] to locker apps: by exact UUID, else exact (case-insensitive) title,
+     *  else title substring. May return 0, 1 or many. */
+    private fun resolve(lp: LibPebble, query: String): List<LockerWrapper> {
+        val all = allApps(lp)
+        val asUuid = runCatching { Uuid.parse(query) }.getOrNull()
+        if (asUuid != null) return all.filter { it.properties.id == asUuid }
+        val exact = all.filter { it.properties.title.equals(query, ignoreCase = true) }
+        if (exact.isNotEmpty()) return exact
+        return all.filter { it.properties.title.contains(query, ignoreCase = true) }
     }
 
     override fun OpenConfig(app: String): String {
