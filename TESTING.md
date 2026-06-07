@@ -252,3 +252,13 @@ call monitor's in-memory log).
   in log).
 - Watch→desktop dismissal still works.
 - `stoandl fakecall ring` / `settings` still function.
+
+### 6.1 `settings` launches the app if needed
+
+- With a **configurable** PKJS app **not** open on the watch, run
+  `stoandl settings "<app>"`. The watch should **launch the app**, and the
+  config page should still open. Log: `OpenConfig: <app> not running —
+  launching it for its config page`, then `OpenConfig: got URL: …`.
+- With the app already open, it should behave as before (no relaunch).
+- A non-configurable or unknown app → `No config page available (app not
+  found, not configurable, or it didn't start in time)`, non-zero exit.

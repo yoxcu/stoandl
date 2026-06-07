@@ -629,38 +629,92 @@ private class StoandlControlImpl(
     }
 
     override fun OpenConfig(app: String): String {
-        val pkjsApp = findPkjsApp(app) ?: run {
-            log.warn { "OpenConfig($app): no matching PKJS app running" }
+        val lp = libPebbleRef.get() ?: run {
+            log.warn { "OpenConfig($app): libPebble not ready" }
             return ""
+        }
+        // Run the whole flow (launch-if-needed → await bridge → request URL) in the integration
+        // scope so coroutine exceptions never reach the D-Bus thread.
+        val future = java.util.concurrent.CompletableFuture<String>()
+        scope.launch {
+            try {
+                future.complete(resolveConfigUrl(lp, app))
+            } catch (e: Throwable) {
+                log.warn(e) { "OpenConfig($app) failed: ${e.message}" }
+                future.complete("")
+            }
+        }
+        return try {
+            // Bounded so the daemon always replies inside the D-Bus reply window (the launch path's
+            // await-bridge + URL sub-timeouts below sum to less than this).
+            future.get(20, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            log.warn(e) { "OpenConfig($app) future timed out" }
+            ""
+        }
+    }
+
+    /** Find the running PKJS session for [app], or — if it isn't running — launch the matching
+     *  configurable locker app and wait for its bridge to come up, then return its config URL.
+     *  Returns "" (no config page) on any miss: not found, ambiguous, not configurable, launch/bridge
+     *  timeout, or URL timeout. */
+    private suspend fun resolveConfigUrl(lp: LibPebble, app: String): String {
+        var pkjsApp = findPkjsApp(app)
+        if (pkjsApp == null) {
+            if (app.isEmpty()) {
+                log.warn { "OpenConfig: no PKJS app running and no app specified" }
+                return ""
+            }
+            // Only configurable watchapps/watchfaces have a config page worth launching for.
+            val candidates = resolve(lp, app)
+                .filterIsInstance<LockerWrapper.NormalApp>()
+                .filter { it.configurable }
+            val target = when {
+                candidates.isEmpty() -> {
+                    log.warn { "OpenConfig: no configurable app matching '$app'" }
+                    return ""
+                }
+                candidates.size > 1 -> {
+                    log.warn { "OpenConfig: '$app' is ambiguous: ${candidates.joinToString { it.properties.title }}" }
+                    return ""
+                }
+                else -> candidates.first()
+            }
+            log.info { "OpenConfig: ${target.properties.title} not running — launching it for its config page" }
+            lp.launchApp(target.properties.id)
+            pkjsApp = awaitPkjsApp(target.properties.id, 9_000)
+            if (pkjsApp == null) {
+                log.warn { "OpenConfig: PKJS bridge for ${target.properties.title} didn't come up in time" }
+                return ""
+            }
         }
         if (!pkjsApp.lockerEntry.configurable) {
             log.warn { "OpenConfig: ${pkjsApp.appInfo.shortName} is not configurable" }
             return ""
         }
         log.info { "OpenConfig: requesting config URL from ${pkjsApp.appInfo.shortName}" }
-        // Run in the integration scope so coroutine exceptions never reach the D-Bus thread.
-        val future = java.util.concurrent.CompletableFuture<String>()
-        scope.launch {
-            try {
-                val url = withTimeoutOrNull(10_000) { pkjsApp.requestConfigurationUrl() }
-                if (url == null) {
-                    log.warn { "OpenConfig: timed out waiting for URL from ${pkjsApp.appInfo.shortName}" }
-                    future.complete("")
-                } else {
-                    log.info { "OpenConfig: got URL: $url" }
-                    future.complete(url)
-                }
-            } catch (e: Throwable) {
-                log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) coroutine failed: ${e.message}" }
-                future.complete("")
-            }
-        }
-        return try {
-            future.get(20, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            log.warn(e) { "OpenConfig(${pkjsApp.appInfo.shortName}) future timed out" }
+        val url = withTimeoutOrNull(9_000) { pkjsApp.requestConfigurationUrl() }
+        return if (url == null) {
+            log.warn { "OpenConfig: timed out waiting for URL from ${pkjsApp.appInfo.shortName}" }
             ""
+        } else {
+            log.info { "OpenConfig: got URL: $url" }
+            url
         }
+    }
+
+    /** Poll for the PKJS session of the app with [uuid] (it appears a few seconds after launch, once
+     *  the JS bridge initialises), up to [timeoutMs]. */
+    private suspend fun awaitPkjsApp(uuid: Uuid, timeoutMs: Long): PKJSApp? = withTimeoutOrNull(timeoutMs) {
+        while (true) {
+            val match = libPebbleRef.get()?.watches?.value
+                ?.filterIsInstance<ConnectedPebbleDevice>()
+                ?.flatMap { it.currentCompanionAppSessions.value }?.filterIsInstance<PKJSApp>()
+                ?.firstOrNull { it.appInfo.uuid.equals(uuid.toString(), ignoreCase = true) }
+            if (match != null) return@withTimeoutOrNull match
+            delay(300)
+        }
+        @Suppress("UNREACHABLE_CODE") null
     }
 
     override fun WebviewClose(data: String) {

@@ -97,7 +97,7 @@ stoandl apps                 # list watchfaces and apps in the locker
 stoandl launch <name|uuid>   # launch an app or watchface on the watch
 stoandl remove <name|uuid>   # uninstall an app or watchface from the locker
 stoandl sideload app.pbw     # install a .pbw onto the connected watch
-stoandl settings [app]       # open a running PKJS app's Clay config page
+stoandl settings [app]       # open a PKJS app's Clay config page (launches it if needed)
 ```
 
 `launch`/`remove` match a watch app by UUID or by (case-insensitive) name — exact name first,

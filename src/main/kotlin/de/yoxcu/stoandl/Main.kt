@@ -87,7 +87,7 @@ private fun printUsage() {
     println("  launch <name|uuid>         Launch an app or watchface on the watch")
     println("  remove <name|uuid>         Uninstall an app or watchface from the locker")
     println("  sideload <path>            Install a .pbw watchface or app onto the watch (alias: add)")
-    println("  settings [app]             Open the configuration page for a running PKJS app")
+    println("  settings [app]             Open a PKJS app's config page (launches the app if needed)")
     println("  backup [out.tar.gz]        Archive the locker, app cache and PKJS settings")
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
     println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
@@ -173,7 +173,7 @@ private fun ctl(args: Array<String>) {
                     System.exit(1); return
                 }
                 if (configUrl.isEmpty()) {
-                    System.err.println("No config page available (app not running or has no configuration page)")
+                    System.err.println("No config page available (app not found, not configurable, or it didn't start in time)")
                     System.exit(1)
                     return
                 }
