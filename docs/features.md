@@ -21,15 +21,13 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **App configuration pages (Clay)** — `stoandl settings [app]` serves the config page via a local proxy
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
 - [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; a watchdog self-restarts (via systemd) if the native BLE stack wedges
-- [x] **Weather** — fixed locations (and an optional GeoClue2 GPS "current location") from Open-Meteo (free, no account) pushed to the watch's Weather app; refreshes on an interval and on connect (`stoandl weather` to force). See [configuration.md](configuration.md).
 
 ### Implemented — to be tested
 
-Written and working on the watch side (`stoandl fakecall` drives the native call screen and the
-Answer/Decline round-trip), but not yet verified against real telephony hardware. Test plan:
-[TESTING.md §5](../TESTING.md). _TBT = to be tested._
+Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md). _TBT = to be tested._
 
-- [x] **Phone call notifications** — ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive `Accept()`/`Hangup()`. _TBT._
+- [x] **Weather** — fixed locations (and an optional GeoClue2 GPS "current location") from Open-Meteo (free, no account) pushed to the watch's Weather app; refreshes on an interval and on connect (`stoandl weather` to force). See [configuration.md](configuration.md). _TBT — [TESTING.md §4](../TESTING.md)._
+- [x] **Phone call notifications** — ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive `Accept()`/`Hangup()`. _TBT — [TESTING.md §5](../TESTING.md)._
 - [x] **Missed-call sync** — unanswered incoming calls become timeline pins via libpebble3's `MissedCallSyncer` (backed by an in-memory `SystemCallLog` fed by the call monitor). _TBT._
 - [x] **Caller-ID resolution** — DE-agnostic vCard lookup (`contacts.vcard_paths`, suffix-matched), with the dialer's own notification title as fallback. See [configuration.md](configuration.md). _TBT._
 - [x] **Notification filtering** — `notification.blocklist` drops chosen apps; `call.dialer_apps` suppresses the dialer's redundant call notification. See [configuration.md](configuration.md). _TBT._
