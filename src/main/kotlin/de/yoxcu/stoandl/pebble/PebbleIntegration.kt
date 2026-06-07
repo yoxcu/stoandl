@@ -53,8 +53,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -107,6 +109,7 @@ class PebbleIntegration(
     private lateinit var watchConnector: WatchConnector
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
+    private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
     @Volatile private var bluezConn: DBusConnection? = null
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
@@ -163,6 +166,7 @@ class PebbleIntegration(
         registerControlService()
         startCallMonitor()
         startWeatherSync()
+        startWatchPrefsSync()
 
         log.info { "libpebble3 initialized" }
     }
@@ -375,9 +379,31 @@ class PebbleIntegration(
         }
     }
 
+    private fun startWatchPrefsSync() {
+        // Always build the control (the `settings`/`set-setting` CLI works even with nothing in the config).
+        val control = WatchPrefsControl(
+            libPebble = libPebble,
+            resolveAppUuid = { q -> resolve(libPebble, q).map { it.properties.id }.distinct().singleOrNull() },
+            appName = { uuid -> allApps(libPebble).firstOrNull { it.properties.id == uuid }?.properties?.title },
+        )
+        watchPrefsControlRef.set(control)
+        if (config.watchPrefs.isEmpty()) {
+            log.info { "No watch.* prefs configured (set them in stoandl.conf or via 'stoandl set-setting')" }
+            return
+        }
+        // Config is authoritative: re-apply the listed prefs on every connect so they win over any
+        // on-watch change (most have no on-watch UI anyway).
+        log.info { "Watch prefs: ${config.watchPrefs.size} configured (${config.watchPrefs.keys}), applied on connect" }
+        libPebble.watches
+            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
+            .distinctUntilChanged()
+            .onEach { connected -> if (connected) control.applyConfigured(config.watchPrefs) }
+            .launchIn(scope)
+    }
+
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, scope))
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -608,15 +634,44 @@ private fun iconForApp(appName: String): TimelineIcon {
         ?: TimelineIcon.NotificationGeneric
 }
 
+/** Snapshot of the whole locker (watchfaces first, then watchapps). */
+private fun allApps(lp: LibPebble): List<LockerWrapper> = runBlocking {
+    withTimeoutOrNull(5_000) {
+        val faces = lp.getLocker(AppType.Watchface, null, 1000).first()
+        val apps = lp.getLocker(AppType.Watchapp, null, 1000).first()
+        faces + apps
+    } ?: emptyList()
+}
+
+/** Resolve [query] to locker apps: by exact UUID, else exact (case-insensitive) title,
+ *  else title substring. May return 0, 1 or many. */
+private fun resolve(lp: LibPebble, query: String): List<LockerWrapper> {
+    val all = allApps(lp)
+    val asUuid = runCatching { Uuid.parse(query) }.getOrNull()
+    if (asUuid != null) return all.filter { it.properties.id == asUuid }
+    val exact = all.filter { it.properties.title.equals(query, ignoreCase = true) }
+    if (exact.isNotEmpty()) return exact
+    return all.filter { it.properties.title.contains(query, ignoreCase = true) }
+}
+
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
+    private val watchPrefsControlRef: AtomicReference<WatchPrefsControl?>,
     private val scope: CoroutineScope,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
     override fun isRemote() = false
     override fun getObjectPath() = STOANDL_OBJECT_PATH
+
+    override fun ListWatchPrefs(): List<String> =
+        watchPrefsControlRef.get()?.list() ?: emptyList()
+
+    override fun SetWatchPref(id: String, value: String): String {
+        val control = watchPrefsControlRef.get() ?: return "notready:libPebble not ready"
+        return control.setOne(id, value)
+    }
 
     override fun SyncWeather(): String {
         val ws = weatherSyncRef.get()
@@ -713,26 +768,6 @@ private class StoandlControlImpl(
             log.warn(e) { "RemoveApp(${app.properties.id}) failed" }
             "error:${e.message ?: "remove failed"}"
         }
-    }
-
-    /** Snapshot of the whole locker (watchfaces first, then watchapps). */
-    private fun allApps(lp: LibPebble): List<LockerWrapper> = runBlocking {
-        withTimeoutOrNull(5_000) {
-            val faces = lp.getLocker(AppType.Watchface, null, 1000).first()
-            val apps = lp.getLocker(AppType.Watchapp, null, 1000).first()
-            faces + apps
-        } ?: emptyList()
-    }
-
-    /** Resolve [query] to locker apps: by exact UUID, else exact (case-insensitive) title,
-     *  else title substring. May return 0, 1 or many. */
-    private fun resolve(lp: LibPebble, query: String): List<LockerWrapper> {
-        val all = allApps(lp)
-        val asUuid = runCatching { Uuid.parse(query) }.getOrNull()
-        if (asUuid != null) return all.filter { it.properties.id == asUuid }
-        val exact = all.filter { it.properties.title.equals(query, ignoreCase = true) }
-        if (exact.isNotEmpty()) return exact
-        return all.filter { it.properties.title.contains(query, ignoreCase = true) }
     }
 
     override fun OpenConfig(app: String): String {

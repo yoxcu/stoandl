@@ -58,7 +58,7 @@ menu, not just the list — confirms `removeApp` synced the deletion.
 | 2.5 | Missing file | `stoandl restore /tmp/nope.tar.gz` | `Backup not found …`. |
 | 2.6 | **Round-trip integrity** | (a) `stoandl backup /tmp/snap.tar.gz` → (b) `stoandl remove "<an app>"` → (c) `systemctl --user stop stoandl` → (d) `stoandl restore /tmp/snap.tar.gz` → (e) start service | Restore prints the `stoandl.old-<ts>` location + "Start the daemon…". After restart, `stoandl apps` shows the removed app **back**. Confirms DB+cache restored. |
 | 2.7 | Non-destructive | after 2.6 | `~/.config/stoandl.old-<ts>/` exists (your pre-restore state, recoverable). |
-| 2.8 | PKJS settings survive | configure a Clay app (`stoandl settings <app>`, save) → backup → change a setting → restore → reopen settings | The backed-up values are back (verifies `pkjs/<uuid>.properties` round-trips). |
+| 2.8 | PKJS settings survive | configure a Clay app (`stoandl config <app>`, save) → backup → change a setting → restore → reopen config | The backed-up values are back (verifies `pkjs/<uuid>.properties` round-trips). |
 
 **Real-world scenario** (unpair → other phone → re-pair): you don't need
 restore for that — `~/.config/stoandl` persists and re-pair re-syncs. To
@@ -271,17 +271,36 @@ call monitor's in-memory log).
 
 ---
 
+## 5.5 Watch settings (advanced prefs)  ⚠️ UNVERIFIED
+
+Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backlight, etc.).
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 5.21 | List | `stoandl settings` | Aligned table of settings (SETTING/NAME/CURRENT/ALLOWED); `*` marks debug ones. Works even with no watch connected (shows defaults). |
+| 5.22 | Filter | `stoandl settings light` | Only rows whose id/name contains "light". |
+| 5.23 | Set number | `stoandl set-setting lightAmbientThreshold 200` | `Set lightAmbientThreshold = 200 …`; `stoandl settings light` shows current=200; watch behaviour changes. |
+| 5.24 | Range check | `stoandl set-setting lightAmbientThreshold 99999` | Non-zero exit; `lightAmbientThreshold must be 1..4096 …`. |
+| 5.25 | Set bool | `stoandl set-setting clock24h true` | Clock switches to 24h on the watch. |
+| 5.26 | Quick launch by name | `stoandl set-setting qlUp "Music"` | Holding Up on the watch launches Music. `off` clears it. Bad name → `no single app matching …`. |
+| 5.27 | Enum by name | `stoandl set-setting textStyle Larger` | Text size changes; a bad value lists the allowed names. |
+| 5.28 | Config applied on connect | put `watch.clock24h = true` in stoandl.conf, restart, reconnect | Log: `Applied watch pref clock24h = true`; watch shows 24h. |
+| 5.29 | Config is authoritative | with `watch.clock24h = true` set, change it on the watch, reconnect | Reverts to 24h (config wins). |
+| 5.30 | Unknown id | `stoandl set-setting nope 1` | `Unknown watch pref 'nope' …`, non-zero. |
+
+---
+
 ## 6. Regression sanity
 
 - Notifications still bridge to the watch (`Notification queued for watch`
   in log).
 - Watch→desktop dismissal still works.
-- `stoandl fakecall ring` / `settings` still function.
+- `stoandl fakecall ring` / `config` still function.
 
-### 6.1 `settings` launches the app if needed
+### 6.1 `config` launches the app if needed
 
 - With a **configurable** PKJS app **not** open on the watch, run
-  `stoandl settings "<app>"`. The watch should **launch the app**, and the
+  `stoandl config "<app>"`. The watch should **launch the app**, and the
   config page should still open. Log: `OpenConfig: <app> not running —
   launching it for its config page`, then `OpenConfig: got URL: …`.
 - With the app already open, it should behave as before (no relaunch).

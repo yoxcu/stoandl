@@ -82,10 +82,7 @@ just confirm the code on the watch. Subsequent reconnects are automatic.
 Or with the fat JAR:
 
 ```sh
-java \
-  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.base=ALL-UNNAMED \
-  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.transports=ALL-UNNAMED \
-  -jar build/libs/stoandl-*-all.jar
+java -jar build/libs/stoandl-*-all.jar
 ```
 
 ## Managing apps
@@ -97,7 +94,9 @@ stoandl apps                 # list watchfaces and apps in the locker
 stoandl launch <name|uuid>   # launch an app or watchface on the watch
 stoandl remove <name|uuid>   # uninstall an app or watchface from the locker
 stoandl sideload app.pbw     # install a .pbw onto the connected watch
-stoandl settings [app]       # open a PKJS app's Clay config page (launches it if needed)
+stoandl config [app]         # open a PKJS app's Clay config page (launches it if needed)
+stoandl settings [filter]    # list the watch's advanced settings (quick-launch, backlight, …)
+stoandl set-setting <id> <v> # set one, e.g. set-setting lightAmbientThreshold 200
 ```
 
 `launch`/`remove` match a watch app by UUID or by (case-insensitive) name — exact name first,

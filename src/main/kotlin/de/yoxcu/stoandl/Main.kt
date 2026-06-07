@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "settings", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 
@@ -87,12 +87,14 @@ private fun printUsage() {
     println("  launch <name|uuid>         Launch an app or watchface on the watch")
     println("  remove <name|uuid>         Uninstall an app or watchface from the locker")
     println("  sideload <path>            Install a .pbw watchface or app onto the watch (alias: add)")
-    println("  settings [app]             Open a PKJS app's config page (launches the app if needed)")
+    println("  config [app]               Open a PKJS app's Clay config page (launches the app if needed)")
     println("  backup [out.tar.gz]        Archive the locker, app cache and PKJS settings")
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
     println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
     println("  fakecall end               Debug: clear the synthetic call")
     println("  weather                    Fetch weather now and push it to the watch")
+    println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
+    println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
     println("  help                       Show this help")
 }
 
@@ -169,7 +171,7 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
-        "settings" -> {
+        "config" -> {
             val app = args.getOrNull(1) ?: ""
             val conn = connectDbusOrExit() ?: return
             try {
@@ -228,6 +230,36 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        "settings" -> {
+            val filter = args.getOrNull(1)
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val records = try { control.ListWatchPrefs() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                printWatchPrefs(records, filter)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "set-setting" -> {
+            if (args.size < 3) {
+                System.err.println("Usage: stoandl set-setting <id> <value>"); System.exit(1); return
+            }
+            val id = args[1]
+            val value = args.drop(2).joinToString(" ")
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val resp = try { control.SetWatchPref(id, value) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                handleStatusResponse(resp)
+            } finally {
+                conn.disconnect()
+            }
+        }
         in HELP_FLAGS -> printUsage()
         else -> {
             System.err.println("Unknown command: ${args[0]}")
@@ -278,6 +310,55 @@ private fun printAppList(records: List<String>) {
     }
     println(render(header))
     rows.forEach { println(render(it)) }
+}
+
+/** Render the watch-pref records from ListWatchPrefs() as an aligned table.
+ *  Record: id \t type \t current \t default \t allowed \t flags \t name \t description */
+private fun printWatchPrefs(records: List<String>, filter: String?) {
+    if (records.isEmpty()) {
+        println("No watch settings available (is a watch connected and synced?)")
+        return
+    }
+    data class Row(
+        val id: String, val name: String, val current: String,
+        val default: String, val allowed: String, val description: String, val debug: Boolean,
+    )
+    val rows = records.mapNotNull { rec ->
+        val f = rec.split('\t')
+        if (f.size < 8) null
+        else Row(id = f[0], name = f[6], current = f[2], default = f[3], allowed = f[4], description = f[7], debug = f[5] == "debug")
+    }.let { all ->
+        if (filter.isNullOrBlank()) all
+        else all.filter { it.id.contains(filter, true) || it.name.contains(filter, true) }
+    }
+    if (rows.isEmpty()) {
+        println("No watch settings matching '$filter'")
+        return
+    }
+    fun idCol(r: Row) = r.id + if (r.debug) " *" else ""
+    if (!filter.isNullOrBlank()) {
+        // Narrowed down: show the full detail (name + description) for each match.
+        rows.forEach { r ->
+            println(idCol(r))
+            println("    ${r.name}" + if (r.description.isNotEmpty()) " — ${r.description}" else "")
+            println("    current: ${r.current}    default: ${r.default}    allowed: ${r.allowed}")
+        }
+    } else {
+        // Overview: SETTING / NAME / CURRENT (filter to also see allowed values + descriptions).
+        val header = Row("SETTING", "NAME", "CURRENT", "", "", "", false)
+        val all = listOf(header) + rows
+        val wId = all.maxOf { idCol(it).length }
+        val wName = all.maxOf { it.name.length }
+        fun render(r: Row) = buildString {
+            append(idCol(r).padEnd(wId)); append("  ")
+            append(r.name.padEnd(wName)); append("  ")
+            append(r.current)
+        }
+        println(render(header))
+        rows.forEach { println(render(it)) }
+        if (rows.any { it.debug }) println("\n* debug/advanced setting · allowed values + descriptions: stoandl settings <name>")
+    }
+    println("\nSet one with:  stoandl set-setting <SETTING> <value>")
 }
 
 /** stoandl's data directory: locker DB, pbw cache and PKJS settings all live here. */

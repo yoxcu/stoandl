@@ -46,4 +46,12 @@ interface StoandlControl : DBusInterface {
      *  Same status-prefixed return convention as [LaunchApp]. Returns `error:` if weather sync is
      *  not enabled (no `weather.locations` configured). */
     fun SyncWeather(): String
+
+    /** List the watch's advanced settings (WatchPrefs). Each entry is a tab-separated record:
+     *  `id \t type \t current \t default \t allowed \t flags \t name \t description`. */
+    fun ListWatchPrefs(): List<String>
+
+    /** Set a watch setting [id] to [value] (parsed per the pref's type). Status-prefixed return
+     *  (`ok:`/`error:`/`notready:`) as for [LaunchApp]. */
+    fun SetWatchPref(id: String, value: String): String
 }

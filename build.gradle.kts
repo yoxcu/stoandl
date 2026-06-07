@@ -39,21 +39,12 @@ dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.18")
 }
 
-// JVM flags required for the BecomeMonitor no-reply fix (see DbusNotificationMonitor.kt):
-// we replace the IMessageWriter in TransportConnection with a no-op via reflection so
-// dbus-java's auto-reply doesn't cause the daemon to close the monitor connection.
-// For the fat JAR, pass these flags to `java` manually:
-//   java --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.base=ALL-UNNAMED \
-//        --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.transports=ALL-UNNAMED \
-//        -jar stoandl.jar
-val monitorOpenFlags = listOf(
-    "--add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.base=ALL-UNNAMED",
-    "--add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.transports=ALL-UNNAMED",
-)
-
+// Note: the BecomeMonitor no-reply fix (DbusNotificationMonitor.kt) reflects into dbus-java
+// internals, but needs no `--add-opens`: the fat JAR runs on the classpath, where dbus-java is in
+// the unnamed module (no strong encapsulation). Passing those flags only triggered
+// "WARNING: Unknown module: org.freedesktop.dbus specified to --add-opens" — see packaging/.
 application {
     mainClass.set("de.yoxcu.stoandl.MainKt")
-    applicationDefaultJvmArgs = monitorOpenFlags
 }
 
 // Fat JAR for deployment to postmarketOS.

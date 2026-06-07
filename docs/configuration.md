@@ -28,6 +28,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
+| `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
 ## Weather
 
@@ -111,6 +112,39 @@ GeoClue (location) is a local system service, not a web call; importing a locati
 (`weather.location_source`) is local too (GSettings / your command). PKJS/Clay pages can make their own
 HTTP requests, but only for watchapps you install and (for config pages) only when you run `stoandl
 settings`.
+
+## Watch settings (advanced)
+
+The official companion app exposes "advanced" watch settings that the watch's own menus don't —
+quick-launch button mappings, ambient-light threshold, backlight, vibration patterns, etc. stoandl can
+set the same ones (they live in the watch's settings BlobDB).
+
+Discover them with the CLI — it lists every setting, its current value and allowed values:
+
+```sh
+stoandl settings                  # all settings (one row each)
+stoandl settings light            # filter by id/name substring
+stoandl set-setting lightAmbientThreshold 200
+stoandl set-setting qlUp "Music"  # hold-Up quick-launches the Music app (by name or UUID; "off" to clear)
+stoandl set-setting clock24h true
+```
+
+To make them stick across restarts, put them in the config as `watch.<id> = <value>`:
+
+```ini
+watch.lightAmbientThreshold = 200
+watch.clock24h = true
+watch.qlUp = Music
+watch.qlBack = off
+watch.textStyle = Larger
+```
+
+Values are parsed per the setting's type: booleans (`true`/`false`), numbers (validated against the
+setting's range), enums (by name — `stoandl settings` shows the choices), quick-launch (an app name/UUID, or
+`off`), and colors (hex `RRGGBB` or a preset name). **Configured settings are authoritative**: stoandl
+re-applies them on every connect, so a `watch.*` value wins over a change made on the watch. Settings you
+don't list are left untouched. `*` in `stoandl settings` marks debug/advanced settings (e.g. the ambient-light
+threshold) — they work the same, they're just hidden in the official app.
 
 ## Caller-ID resolution
 

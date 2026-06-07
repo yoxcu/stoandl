@@ -46,6 +46,15 @@ weather.units = metric
 # Minutes between weather refreshes (also refreshes immediately when a watch connects).
 weather.interval = 30
 
+# Advanced watch settings (the ones the official app exposes but the watch menus don't): quick-launch
+# button mappings, ambient-light threshold, backlight, vibration, etc. Run `stoandl settings` to see every
+# available id, its current value and allowed values. Set them as `watch.<id> = <value>`; they're
+# re-applied on every connect (config wins over on-watch changes). Examples:
+# watch.lightAmbientThreshold = 200
+# watch.clock24h = true
+# watch.qlUp = Music          # hold Up quick-launches Music (app name or UUID; "off" to clear)
+# watch.textStyle = Larger
+
 # Optional GPS: add a "current location" entry tracked via GeoClue2 (modem GPS / Wi-Fi / A-GPS).
 # It's shown first on the watch and re-resolved every refresh. The place name is reverse-geocoded
 # from the coordinates (OSM Nominatim), falling back to weather.gps_name.

@@ -18,7 +18,7 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **App / watchface management** — `stoandl apps` lists the locker; `launch`, `remove`; install with `sideload <app.pbw>` (alias `add`)
 - [x] **Backup & restore** — `stoandl backup` / `restore` of the locker DB, `.pbw` cache and PKJS/Clay settings (`~/.config/stoandl/`)
 - [x] **PKJS (PebbleKit JS)** — companion scripts run in GraalJS (XHR, AppMessage, webhooks)
-- [x] **App configuration pages (Clay)** — `stoandl settings [app]` serves the config page via a local proxy
+- [x] **App configuration pages (Clay)** — `stoandl config [app]` serves the config page via a local proxy
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
 - [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; a watchdog self-restarts (via systemd) if the native BLE stack wedges, and a BlueZ cross-check forces recovery from a stale/"zombie" connection (libpebble still thinks it's connected after the link died) instead of waiting minutes for kable to notice
 
@@ -27,6 +27,7 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md). _TBT = to be tested._
 
 - [x] **Weather** — fixed locations (and an optional GeoClue2 GPS "current location") from Open-Meteo (free, no account) pushed to the watch's Weather app; refreshes on an interval and on connect (`stoandl weather` to force). See [configuration.md](configuration.md). _TBT — [TESTING.md §4](../TESTING.md)._
+- [x] **Watch settings** — set the "advanced" watch prefs the official app exposes (quick-launch buttons, ambient-light threshold, backlight, vibration, etc.) via `stoandl settings` / `set-setting` or `watch.<id>` config keys, applied authoritatively on connect. See [configuration.md](configuration.md). _TBT._
 - [x] **Phone call notifications** — ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive `Accept()`/`Hangup()`. _TBT — [TESTING.md §5](../TESTING.md)._
 - [x] **Missed-call sync** — unanswered incoming calls become timeline pins via libpebble3's `MissedCallSyncer` (backed by an in-memory `SystemCallLog` fed by the call monitor). _TBT._
 - [x] **Caller-ID resolution** — DE-agnostic vCard lookup (`contacts.vcard_paths`, suffix-matched), with the dialer's own notification title as fallback. See [configuration.md](configuration.md). _TBT._

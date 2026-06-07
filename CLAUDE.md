@@ -9,17 +9,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-./gradlew run          # run locally (includes required --add-opens JVM flags)
+./gradlew run          # run locally
 ./gradlew shadowJar    # build fat JAR → build/libs/stoandl-<version>-all.jar
+java -jar build/libs/stoandl-*.jar   # run the fat JAR manually
 ```
 
-To run the fat JAR manually, the `--add-opens` flags are required:
-```sh
-java \
-  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.base=ALL-UNNAMED \
-  --add-opens=org.freedesktop.dbus/org.freedesktop.dbus.connections.transports=ALL-UNNAMED \
-  -jar build/libs/stoandl-*.jar
-```
+> Note: no `--add-opens` flags are needed. The BecomeMonitor fix reflects into dbus-java internals,
+> but the fat JAR runs on the classpath where dbus-java is in the unnamed module (no encapsulation).
+> Passing `--add-opens=org.freedesktop.dbus/...` only triggers a harmless
+> `WARNING: Unknown module: org.freedesktop.dbus` (no such named module), so it was dropped everywhere.
 
 Install and control (requires systemd service running):
 ```sh
