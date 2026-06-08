@@ -55,6 +55,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
@@ -128,6 +129,10 @@ class PebbleIntegration(
     private val pairingState = AtomicReference<String>("")
     // Bond-state cache keyed by identifier.asString — avoids repeated BlueZ D-Bus round-trips.
     private val bondCache = ConcurrentHashMap<String, Boolean>()
+    // Reflects org.bluez.Adapter1.Powered — set by watchBluetoothPowerState().
+    // Distinct from libPebble.bluetoothEnabled: covers rfkill/airplane-mode blocks where
+    // GattServerManager still reports Enabled but the radio is actually off.
+    private val btAdapterPowered = MutableStateFlow(true)
 
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer.
@@ -196,11 +201,24 @@ class PebbleIntegration(
         scope.launch {
             var consecutiveScanFailures = 0
             while (true) {
+                // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
+                // (covers rfkill / airplane mode where GattServerManager may still report Enabled).
+                // Wait for BOTH sources to agree BT is on before attempting anything.
+                val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                if (!btOn) {
+                    if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                    consecutiveScanFailures = 0
+                    combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
+                        bt.enabled() && powered
+                    }.first { it }
+                    delay(2.seconds) // brief settle so BlueZ is ready before we scan
+                    continue
+                }
+
                 // Fix A: don't scan while connected OR while a connect attempt is in flight. A scan
                 // started during a connect collides with it on BlueZ's single discovery slot
                 // (org.bluez.Error.InProgress); the connect then never completes — the watch sits in
-                // ConnectingPebbleDevice for the full timeout and the cycle repeats forever (wedge #3,
-                // which the connect-retry churn also hides from the connection watchdog).
+                // ConnectingPebbleDevice for the full timeout and the cycle repeats forever (wedge #3).
                 val busy = libPebble.watches.value.any {
                     it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                 }
@@ -211,8 +229,7 @@ class PebbleIntegration(
                 } else {
                     // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
                     // already has a discovery running returns org.bluez.Error.InProgress and the scan
-                    // then never refreshes, so a watch that comes back into range is never
-                    // re-discovered (this is what stranded the daemon overnight).
+                    // then never refreshes, so a watch that comes back into range is never re-discovered.
                     if (libPebble.isScanningBle.value) {
                         libPebble.stopBleScan()
                         delay(1.seconds)
@@ -221,21 +238,16 @@ class PebbleIntegration(
                     libPebble.startBleScan()
 
                     // Fix B: detect a wedged BLE stack the connection watchdog can't see. startBleScan()
-                    // sets isScanningBle=true synchronously; on org.bluez.Error.InProgress the scan flow
-                    // throws and flips it back to false within moments, whereas a healthy scan stays active
-                    // for ~30s. If scans repeatedly fail to take while we're still disconnected, the stack is
-                    // wedged — restart for a clean one. Clean out-of-range scans succeed, so this never fires
-                    // for mere distance.
+                    // sets isScanningBle=true synchronously; if the scan flow throws (e.g. another process
+                    // holds the BlueZ discovery slot) it flips back to false within moments, whereas a
+                    // healthy scan stays active for ~30s. Repeated failures → stack is wedged → restart.
                     delay(3.seconds)
                     val stillIdle = libPebble.watches.value.none {
                         it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                     }
                     if (stillIdle && !libPebble.isScanningBle.value) {
                         consecutiveScanFailures++
-                        log.warn {
-                            "BLE scan failed to start ($consecutiveScanFailures consecutive — " +
-                                "likely org.bluez.Error.InProgress)"
-                        }
+                        log.warn { "BLE scan failed to start ($consecutiveScanFailures consecutive)" }
                         if (consecutiveScanFailures >= SCAN_FAILURE_RESTART_THRESHOLD) {
                             log.error {
                                 "BLE scan stack wedged ($consecutiveScanFailures consecutive scan " +
@@ -307,6 +319,7 @@ class PebbleIntegration(
                         val props = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", Properties::class.java)
                         @Suppress("UNCHECKED_CAST")
                         val powered = props.Get<Any>("org.bluez.Adapter1", "Powered") as? Boolean
+                        if (powered != null) btAdapterPowered.value = powered
                         if (powered == false) {
                             log.info { "Bluetooth is currently disabled — will start scanning when Bluetooth is re-enabled" }
                         }
@@ -327,6 +340,7 @@ class PebbleIntegration(
                             val raw = changed["Powered"]
                             val powered = (if (raw is Variant<*>) raw.value else raw) as? Boolean
                                 ?: return@addGenericSigHandler
+                            btAdapterPowered.value = powered
                             if (powered) {
                                 log.info { "Bluetooth re-enabled — resuming" }
                             } else {
