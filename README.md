@@ -16,7 +16,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app (Open-Meteo — free, no account)
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
-- Reconnects automatically — after watch disconnects, daemon restarts, or coming back into range (with a BlueZ cross-check to recover from stale connections)
+- Reconnects automatically — after watch disconnects, daemon restarts, or coming back into range; a watchdog self-restarts via systemd if the BLE stack wedges
 - Runs as a background daemon with no UI
 
 It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
