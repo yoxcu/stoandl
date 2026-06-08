@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -101,6 +101,7 @@ private fun printUsage() {
     println("  weather                    Fetch weather now and push it to the watch")
     println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
     println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
+    println("  pair                       Pair a new Pebble watch (opens a ~2 min window; blocks until done)")
     println("  help                       Show this help")
 }
 
@@ -284,6 +285,41 @@ private fun ctl(args: Array<String>) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
                 handleStatusResponse(resp)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "pair" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val startResp = try { control.Pair() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+                println("Searching for watch to pair (up to 2 minutes)...")
+                var lastPendingMsg = ""
+                val startMs = System.currentTimeMillis()
+                while (true) {
+                    Thread.sleep(1_500)
+                    val status = try { control.PairStatus() } catch (e: Exception) {
+                        System.err.println("Error: ${e.message}"); System.exit(1); return
+                    }
+                    if (status.startsWith("pending:")) {
+                        val msg = status.removePrefix("pending:")
+                        if (msg.isNotEmpty() && msg != lastPendingMsg) {
+                            println(msg)
+                            lastPendingMsg = msg
+                        }
+                    } else {
+                        handleStatusResponse(status); return
+                    }
+                    if (System.currentTimeMillis() - startMs > 145_000) {
+                        System.err.println("Pairing timed out"); System.exit(1); return
+                    }
+                }
+            } catch (e: Exception) {
+                System.err.println("Error: ${e.message}"); System.exit(1)
             } finally {
                 conn.disconnect()
             }

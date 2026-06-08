@@ -22,6 +22,8 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
+import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
+import io.rebble.libpebblecommon.connection.bt.isBonded
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.locker.LockerWrapper
@@ -54,10 +56,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -66,7 +70,11 @@ import kotlin.time.Clock
 import kotlinx.io.files.Path
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import org.freedesktop.dbus.interfaces.Properties
+import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
+import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.UInt32
+import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
@@ -78,6 +86,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
+private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
+
+/** Allows pairing with unbonded watches only while the window is open. */
+private class PairingGate {
+    private val expiryMs = java.util.concurrent.atomic.AtomicLong(0L)
+    fun open() { expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS) }
+    fun close() { expiryMs.set(0L) }
+    fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.get()
+}
 
 // Reconnect watchdog cadence and the stall window after which we treat the BLE stack as wedged
 // and restart the process. The window must comfortably exceed the gap between failed connection
@@ -106,6 +123,11 @@ class PebbleIntegration(
     // Headless BlueZ pairing agent so MITM/Secure-Connections pairing (newer Pebble firmware,
     // e.g. Time 2) can complete without a desktop UI — the user just confirms the code on the watch.
     private val pairingAgent = BluezPairingAgent()
+    private val pairingGate = PairingGate()
+    // "pending:" while pairing is in progress; "ok:…" / "error:…" / "timeout:…" when done.
+    private val pairingState = AtomicReference<String>("")
+    // Bond-state cache keyed by identifier.asString — avoids repeated BlueZ D-Bus round-trips.
+    private val bondCache = ConcurrentHashMap<String, Boolean>()
 
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer.
@@ -146,6 +168,7 @@ class PebbleIntegration(
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
         watchConnector = koin.get()
+        watchBluetoothPowerState()
         libPebble.init()
         startScanLoop()
         startAutoConnect()
@@ -274,6 +297,53 @@ class PebbleIntegration(
         }
     }
 
+    private fun watchBluetoothPowerState() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
+                try {
+                    // Check state at startup so we log immediately if BT is already off.
+                    try {
+                        val props = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", Properties::class.java)
+                        @Suppress("UNCHECKED_CAST")
+                        val powered = props.Get<Any>("org.bluez.Adapter1", "Powered") as? Boolean
+                        if (powered == false) {
+                            log.info { "Bluetooth is currently disabled — will start scanning when Bluetooth is re-enabled" }
+                        }
+                    } catch (_: Exception) {}
+                    // Subscribe to power state changes while the daemon runs.
+                    val matchRule = DBusMatchRuleBuilder.create()
+                        .withType("signal")
+                        .withInterface("org.freedesktop.DBus.Properties")
+                        .withMember("PropertiesChanged")
+                        .withPath("/org/bluez/hci0")
+                        .build()
+                    conn.addGenericSigHandler(matchRule) { msg: DBusSignal ->
+                        try {
+                            val params = msg.getParameters() ?: return@addGenericSigHandler
+                            if (params.size < 2 || params[0] as? String != "org.bluez.Adapter1") return@addGenericSigHandler
+                            @Suppress("UNCHECKED_CAST")
+                            val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
+                            val raw = changed["Powered"]
+                            val powered = (if (raw is Variant<*>) raw.value else raw) as? Boolean
+                                ?: return@addGenericSigHandler
+                            if (powered) {
+                                log.info { "Bluetooth re-enabled — resuming" }
+                            } else {
+                                log.info { "Bluetooth disabled — pausing (will resume automatically when Bluetooth is re-enabled)" }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    awaitCancellation()
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                log.debug { "Bluetooth power state monitor unavailable: $e" }
+            }
+        }
+    }
+
     private fun startCallMonitor() {
         try {
             ModemManagerCallMonitor(libPebble, scope, contactResolver, dialerNameCache, missedCallLog).start()
@@ -344,7 +414,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope))
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope, pairingGate, pairingState, bondCache))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -353,18 +423,44 @@ class PebbleIntegration(
 
     private fun startAutoConnect() {
         libPebble.watches.onEach { devices ->
-            devices
-                .filterIsInstance<BleDiscoveredPebbleDevice>()
-                .forEach { device ->
-                    val failures = device.connectionFailureInfo
-                    if (failures != null && failures.times >= MAX_CONNECTION_ATTEMPTS) {
-                        log.warn { "Giving up on ${device.identifier} after ${failures.times} attempts (${failures.reason})" }
-                        watchConnector.requestDisconnection(device.identifier)
-                        return@forEach
-                    }
-                    log.info { "Requesting connection to ${device.identifier}" }
-                    watchConnector.requestConnection(device.identifier)
+            for (device in devices.filterIsInstance<BleDiscoveredPebbleDevice>()) {
+                val failures = device.connectionFailureInfo
+                if (failures != null && failures.times >= MAX_CONNECTION_ATTEMPTS) {
+                    log.warn { "Giving up on ${device.identifier} after ${failures.times} attempts (${failures.reason})" }
+                    (device.identifier as? PebbleBleIdentifier)?.let { bondCache.remove(it.asString) }
+                    watchConnector.requestDisconnection(device.identifier)
+                    continue
                 }
+                // Gate: skip unbonded watches unless a pairing window is open.
+                if (!pairingGate.isOpen()) {
+                    val bleId = device.identifier as? PebbleBleIdentifier ?: continue
+                    val key = bleId.asString
+                    val cached = bondCache[key]
+                    val bonded = if (cached != null) {
+                        cached
+                    } else {
+                        val result = withContext(Dispatchers.IO) { isBonded(bleId) }
+                        bondCache[key] = result
+                        result
+                    }
+                    if (!bonded) {
+                        log.debug { "Skipping $bleId: not bonded, pairing mode inactive" }
+                        continue
+                    }
+                }
+                log.info { "Requesting connection to ${device.identifier}" }
+                // During a pairing window, emit "Found <name>" the first time we connect to
+                // what looks like an unbonded watch (not already in the bond cache as bonded).
+                if (pairingGate.isOpen()) {
+                    val bleId = device.identifier as? PebbleBleIdentifier
+                    val likelyUnbonded = bleId == null || bondCache[bleId.asString] != true
+                    if (likelyUnbonded && pairingState.get() == "pending:") {
+                        val label = device.displayName().takeIf { it.isNotBlank() } ?: "watch"
+                        pairingState.set("pending:Found $label — pairing...")
+                    }
+                }
+                watchConnector.requestConnection(device.identifier)
+            }
         }.launchIn(scope)
     }
 }
@@ -600,6 +696,9 @@ private class StoandlControlImpl(
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
     private val watchPrefsControlRef: AtomicReference<WatchPrefsControl?>,
     private val scope: CoroutineScope,
+    private val pairingGate: PairingGate,
+    private val pairingState: AtomicReference<String>,
+    private val bondCache: ConcurrentHashMap<String, Boolean>,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
@@ -860,6 +959,62 @@ private class StoandlControlImpl(
                 app.appInfo.uuid.equals(query, ignoreCase = true)
             }
     }
+
+    override fun Pair(): String {
+        val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
+        // Already connected — report immediately without a pairing window.
+        if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
+            pairingState.set("ok:Watch already connected")
+            return "ok:Pairing started"
+        }
+        // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
+        val alreadyBonded = lp.watches.value
+            .mapNotNull { it.identifier as? PebbleBleIdentifier }
+            .filter { isBonded(it) }
+            .map { it.asString }
+            .toSet()
+        pairingGate.open()
+        pairingState.set("pending:")
+        log.info { "Pairing mode opened (${PAIRING_WINDOW_MS / 1000}s window)" }
+        scope.launch {
+            val result = CompletableDeferred<String>()
+            // Fast path: detect full connection via StateFlow collection.
+            val connectedJob = launch {
+                lp.watches.first { devices -> devices.any { it is ConnectedPebbleDevice } }
+                result.complete("ok:Paired and connected")
+            }
+            // Bond-poll path: detect bonding every 2 s so we return as soon as the BLE bond
+            // completes, even if the PPoG negotiation is still in progress or keeps failing.
+            val bondedJob = launch {
+                while (!result.isCompleted) {
+                    delay(2_000)
+                    val newlyBonded = withContext(Dispatchers.IO) {
+                        lp.watches.value
+                            .mapNotNull { it.identifier as? PebbleBleIdentifier }
+                            .filter { it.asString !in alreadyBonded }
+                            .any { bleId -> isBonded(bleId).also { b -> if (b) bondCache[bleId.asString] = true } }
+                    }
+                    if (newlyBonded) result.complete("ok:Paired")
+                }
+            }
+            // Overall timeout.
+            val timeoutJob = launch {
+                delay(PAIRING_WINDOW_MS + 10_000L)
+                result.complete("timeout:Pairing timed out")
+            }
+            val newState = result.await()
+            connectedJob.cancel()
+            bondedJob.cancel()
+            timeoutJob.cancel()
+            pairingState.set(newState)
+            pairingGate.close()
+            log.info { "Pairing result: $newState" }
+        }
+        return "ok:Pairing started"
+    }
+
+    override fun PairStatus(): String =
+        pairingState.get().ifEmpty { "error:No pairing in progress" }
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {

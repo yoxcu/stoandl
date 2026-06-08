@@ -22,6 +22,14 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
 - [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; kable surfaces disconnects within seconds of the BLE supervision timeout firing; a 10-min stall watchdog self-restarts (via systemd) if the native BLE stack genuinely wedges
 
+### Implemented — to be tested (multi-watch)
+
+- [x] **Multiple concurrent Pebble watches** — `libPebble.watches` is a `List<PebbleDevice>`; scan, auto-connect, notifications, and calls all iterate the full list. Core architecture is multi-watch by design. _TBT — needs two Pebbles to verify. Known gaps before multi-watch is fully usable:_
+  - _BlueZ GATT server multi-client: whether BlueZ allows two Pebbles as simultaneous GATT clients to the same application is untested._
+  - _CLI commands (`launch`, `sideload`, `remove`, `settings`) target the single connected watch with no disambiguation flag (`--watch <name|address>`). With two watches the behaviour is unspecified._
+  - _`stoandl pair` with a bonded-but-absent watch works — the absent watch is `KnownPebbleDevice`, not `ConnectedPebbleDevice`, so the guard doesn't fire, and the `alreadyBonded` snapshot prevents the bond-detector from misfiring on it._
+  - _`stoandl pair` with a watch already **connected** is broken: the early-return guard exits immediately with "Watch already connected". Fixing it requires removing that guard and scoping the `connectedJob` to newly connected devices only._
+
 ### Implemented — to be tested
 
 Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md). _TBT = to be tested._

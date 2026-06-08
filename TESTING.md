@@ -290,7 +290,27 @@ Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backl
 
 ---
 
-## 6. Regression sanity
+## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
+
+The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect
+iterate all discovered devices; notifications fan out to all connected watches). Whether BlueZ actually
+allows two Pebbles as simultaneous GATT clients to the same application is unknown.
+
+**Prerequisite:** two bonded Pebbles and a host with a Bluetooth adapter that accepts two BLE
+peripheral connections at once.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 6.1 | Both connect | restart daemon with two bonded Pebbles in range | Log shows two `Watch connected` entries with distinct identifiers. `stoandl apps` (against whichever watch happens to answer first) lists that watch's locker. |
+| 6.2 | Notifications fan out | trigger a desktop notification | Log: `Notification queued for watch` once per connected watch; **both** watches show the notification. |
+| 6.3 | One disconnects | power off one watch | That watch's disconnect appears in the log; the other stays connected; notifications still reach the remaining watch. |
+| 6.4 | Reconnect | power the disconnected watch back on | It reconnects cleanly; both are connected again. |
+| 6.5 | `stoandl pair` — bonded watch absent | one watch bonded but out of range, run `stoandl pair` for a new (unbonded) watch | Should work: the absent watch is `KnownPebbleDevice` (not `ConnectedPebbleDevice`), so the guard doesn't fire; the `alreadyBonded` snapshot prevents false-positive completion on the old watch. New watch bonds and `pair` returns `"ok:Paired"`. |
+| 6.6 | `stoandl pair` — watch already connected | one watch actively connected, run `stoandl pair` for a second (unbonded) watch | **Known broken**: the early-return guard in `Pair()` exits immediately with `"Watch already connected"`. Fix requires removing that guard and scoping the connected-detector to newly connected devices only. |
+
+---
+
+## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`
   in log).

@@ -57,4 +57,12 @@ interface StoandlControl : DBusInterface {
     /** Set a watch setting [id] to [value] (parsed per the pref's type). Status-prefixed return
      *  (`ok:`/`error:`/`notready:`) as for [LaunchApp]. */
     fun SetWatchPref(id: String, value: String): String
+
+    /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
+     *  `ok:` immediately; poll [PairStatus] for the outcome. */
+    fun Pair(): String
+
+    /** Return the current pairing status: `pending:`, `ok:<msg>`, `error:<msg>`, or
+     *  `timeout:<msg>`. Returns `error:No pairing in progress` if [Pair] was never called. */
+    fun PairStatus(): String
 }
