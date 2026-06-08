@@ -86,6 +86,7 @@ private const val MAX_CONNECTION_ATTEMPTS = 5
 // never trips it; only a true stall (no attempts at all) does.
 private val WATCHDOG_INTERVAL = 60.seconds
 private val WATCHDOG_STALL_RESTART = 10.minutes
+private const val SCAN_FAILURE_RESTART_THRESHOLD = 5  // ~5 failed scan cycles (~3min) → restart for a clean stack
 
 // Stale ("zombie") connection detection. libpebble/kable can hold a dead BLE link for many minutes
 // before emitting a Disconnection, during which the daemon neither scans (thinks it's connected) nor
@@ -184,10 +185,20 @@ class PebbleIntegration(
 
     private fun startScanLoop() {
         scope.launch {
+            var consecutiveScanFailures = 0
             while (true) {
-                if (libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
-                    // No need to discover while connected; stop any lingering scan.
+                // Fix A: don't scan while connected OR while a connect attempt is in flight. A scan
+                // started during a connect collides with it on BlueZ's single discovery slot
+                // (org.bluez.Error.InProgress); the connect then never completes — the watch sits in
+                // ConnectingPebbleDevice for the full timeout and the cycle repeats forever (wedge #3,
+                // which the connect-retry churn also hides from the connection watchdog).
+                val busy = libPebble.watches.value.any {
+                    it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
+                }
+                if (busy) {
+                    // No need to discover while connected/connecting; stop any lingering scan.
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                    consecutiveScanFailures = 0
                 } else {
                     // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
                     // already has a discovery running returns org.bluez.Error.InProgress and the scan
@@ -199,6 +210,34 @@ class PebbleIntegration(
                     }
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
+
+                    // Fix B: detect a wedged BLE stack the connection watchdog can't see. startBleScan()
+                    // sets isScanningBle=true synchronously; on org.bluez.Error.InProgress the scan flow
+                    // throws and flips it back to false within moments, whereas a healthy scan stays active
+                    // for ~30s. If scans repeatedly fail to take while we're still disconnected, the stack is
+                    // wedged — restart for a clean one. Clean out-of-range scans succeed, so this never fires
+                    // for mere distance.
+                    delay(3.seconds)
+                    val stillIdle = libPebble.watches.value.none {
+                        it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
+                    }
+                    if (stillIdle && !libPebble.isScanningBle.value) {
+                        consecutiveScanFailures++
+                        log.warn {
+                            "BLE scan failed to start ($consecutiveScanFailures consecutive — " +
+                                "likely org.bluez.Error.InProgress)"
+                        }
+                        if (consecutiveScanFailures >= SCAN_FAILURE_RESTART_THRESHOLD) {
+                            log.error {
+                                "BLE scan stack wedged ($consecutiveScanFailures consecutive scan " +
+                                    "failures); exiting for systemd restart"
+                            }
+                            gracefulShutdown()
+                            exitProcess(1)
+                        }
+                    } else {
+                        consecutiveScanFailures = 0
+                    }
                 }
                 delay(35.seconds) // slightly longer than the 30s scan timeout
             }
