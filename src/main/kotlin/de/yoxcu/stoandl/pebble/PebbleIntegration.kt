@@ -69,9 +69,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 import kotlinx.io.files.Path
+import org.freedesktop.dbus.DBusPath
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
-import org.freedesktop.dbus.interfaces.Properties
+import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.UInt32
@@ -199,6 +200,9 @@ class PebbleIntegration(
 
     private fun startScanLoop() {
         scope.launch {
+            // Wait for watchBluetoothPowerState() to complete its initial GetManagedObjects() check
+            // before the first scan attempt so btAdapterPowered reflects reality from the start.
+            delay(1.seconds)
             var consecutiveScanFailures = 0
             while (true) {
                 // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
@@ -314,46 +318,73 @@ class PebbleIntegration(
             try {
                 val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
                 try {
-                    // Check state at startup so we log immediately if BT is already off.
-                    try {
-                        val props = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", Properties::class.java)
+                    // Use presence of org.bluez.GattManager1 on the adapter as the "BT ready" signal.
+                    // More reliable than the Powered property: GNOME/KDE disable BT via rfkill which
+                    // leaves Powered=true but removes GattManager1 from the adapter's managed interfaces.
+                    fun isGattReady(): Boolean = try {
+                        val objMgr = conn.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
                         @Suppress("UNCHECKED_CAST")
-                        val powered = props.Get<Any>("org.bluez.Adapter1", "Powered") as? Boolean
-                        if (powered != null) btAdapterPowered.value = powered
-                        if (powered == false) {
-                            log.info { "Bluetooth is currently disabled — will start scanning when Bluetooth is re-enabled" }
+                        (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>).any { (path, ifaces) ->
+                            path.toString() == "/org/bluez/hci0" && "org.bluez.GattManager1" in ifaces
                         }
-                    } catch (_: Exception) {}
-                    // Subscribe to power state changes while the daemon runs.
-                    val matchRule = DBusMatchRuleBuilder.create()
+                    } catch (_: Exception) { true } // assume ready on error; scan will fail if not
+
+                    val ready = isGattReady()
+                    btAdapterPowered.value = ready
+                    if (!ready) {
+                        log.info { "Bluetooth is currently disabled — will start scanning when Bluetooth is re-enabled" }
+                    }
+
+                    // InterfacesAdded: GattManager1 appeared → BT became operational
+                    val addedRule = DBusMatchRuleBuilder.create()
                         .withType("signal")
-                        .withInterface("org.freedesktop.DBus.Properties")
-                        .withMember("PropertiesChanged")
-                        .withPath("/org/bluez/hci0")
+                        .withInterface("org.freedesktop.DBus.ObjectManager")
+                        .withMember("InterfacesAdded")
                         .build()
-                    conn.addGenericSigHandler(matchRule) { msg: DBusSignal ->
+                    conn.addGenericSigHandler(addedRule) { msg: DBusSignal ->
                         try {
                             val params = msg.getParameters() ?: return@addGenericSigHandler
-                            if (params.size < 2 || params[0] as? String != "org.bluez.Adapter1") return@addGenericSigHandler
+                            if (params.size < 2) return@addGenericSigHandler
+                            if (params[0].toString() != "/org/bluez/hci0") return@addGenericSigHandler
                             @Suppress("UNCHECKED_CAST")
-                            val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                            val raw = changed["Powered"]
-                            val powered = (if (raw is Variant<*>) raw.value else raw) as? Boolean
-                                ?: return@addGenericSigHandler
-                            btAdapterPowered.value = powered
-                            if (powered) {
+                            val ifaces = params[1] as? Map<*, *> ?: return@addGenericSigHandler
+                            if ("org.bluez.GattManager1" in ifaces) {
+                                btAdapterPowered.value = true
                                 log.info { "Bluetooth re-enabled — resuming" }
-                            } else {
+                            }
+                        } catch (_: Exception) {}
+                    }
+
+                    // InterfacesRemoved: GattManager1 removed → BT is off or blocked
+                    val removedRule = DBusMatchRuleBuilder.create()
+                        .withType("signal")
+                        .withInterface("org.freedesktop.DBus.ObjectManager")
+                        .withMember("InterfacesRemoved")
+                        .build()
+                    conn.addGenericSigHandler(removedRule) { msg: DBusSignal ->
+                        try {
+                            val params = msg.getParameters() ?: return@addGenericSigHandler
+                            if (params.size < 2) return@addGenericSigHandler
+                            if (params[0].toString() != "/org/bluez/hci0") return@addGenericSigHandler
+                            val removed = params[1]
+                            val ifaces = when (removed) {
+                                is Array<*> -> removed.filterIsInstance<String>()
+                                is List<*>  -> removed.filterIsInstance<String>()
+                                else        -> return@addGenericSigHandler
+                            }
+                            if ("org.bluez.GattManager1" in ifaces) {
+                                btAdapterPowered.value = false
                                 log.info { "Bluetooth disabled — pausing (will resume automatically when Bluetooth is re-enabled)" }
                             }
                         } catch (_: Exception) {}
                     }
+
                     awaitCancellation()
                 } finally {
                     conn.disconnect()
                 }
             } catch (e: Exception) {
-                log.debug { "Bluetooth power state monitor unavailable: $e" }
+                log.debug { "Bluetooth state monitor unavailable: $e" }
             }
         }
     }
