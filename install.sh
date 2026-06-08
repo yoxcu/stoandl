@@ -8,9 +8,13 @@ for arg in "$@"; do
     esac
 done
 
-./gradlew shadowJar
+# clean first so build/libs holds only the freshly built jar. Without it, jars from
+# previous builds linger and the selection below can grab a stale one.
+./gradlew clean shadowJar
 
-JAR=$(ls build/libs/stoandl-*-all.jar | head -1)
+# Newest jar by mtime. A plain `ls | head -1` sorts alphabetically, so an older
+# ...-1-gad779b8-... jar sorts before a newer ...-3-gc45a25c-... one and gets installed.
+JAR=$(ls -t build/libs/stoandl-*-all.jar | head -1)
 
 sudo install -Dm644 "$JAR"                    /usr/lib/stoandl/stoandl.jar
 sudo install -Dm644 packaging/stoandl.service /usr/lib/systemd/user/stoandl.service
