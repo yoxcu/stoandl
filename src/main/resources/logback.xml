@@ -52,6 +52,11 @@
     <logger name="PebbleProtocol" level="${logLevel}"/>
     <logger name="PebbleProtocolRunner" level="${logLevel}"/>
 
+    <!-- Watch-side blobdb write-back for pref keys libpebble3 doesn't map (DnD schedule,
+         HRM prefs, etc.). Harmless — watch firmware has more pref types than we know about. -->
+    <logger name="WatchPrefItem" level="WARN"/>
+    <logger name="WatchPrefRealDao" level="WARN"/>
+
     <!-- Suppress permanently — these are never useful at normal verbosity -->
     <logger name="org.freedesktop.dbus" level="WARN"/>
     <logger name="WatchManager" level="WARN"/>
