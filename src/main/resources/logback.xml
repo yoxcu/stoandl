@@ -67,7 +67,10 @@
     <logger name="PhoneCalendarSyncer" level="WARN"/>
     <logger name="KableConnectedGattClient" level="WARN"/>
     <logger name="ConnectivityWatcher" level="WARN"/>
-    <logger name="BlobDB" level="WARN"/>
+    <!-- Follows STOANDL_LOG: at DEBUG it logs each watch insert ("insert: Weather …") and, crucially,
+         "handleInsert: value is null: Weather …" when a record is dropped for a missing watch
+         capability (e.g. SupportsWeatherApp) — the decisive signal for diagnosing empty weather. -->
+    <logger name="BlobDB" level="${logLevel}"/>
     <logger name="SystemService" level="WARN"/>
     <logger name="Negotiator" level="WARN"/>
     <logger name="FirmwareUpdateManager" level="WARN"/>
