@@ -43,6 +43,11 @@ watches (Time, Time Steel) are best-effort over BLE.
 - BlueZ (bluetoothd running), in LE-only mode (see below)
 - D-Bus session bus with a notification daemon (dunst, mako, GNOME, etc.)
 
+> BLE is driven entirely through BlueZ over D-Bus — no glibc-only native
+> libraries — so stoandl runs on **musl** (postmarketOS / Alpine) as well as
+> glibc distros. Verified end-to-end (pair, connect, notifications) on both a
+> glibc laptop and a OnePlus 6 running postmarketOS.
+
 ## Bluetooth setup
 
 Some Pebbles advertise as dual-mode — BlueZ tries a Classic connection first and never falls back
@@ -144,6 +149,21 @@ Environment=STOANDL_LOG=DEBUG
 ```
 
 ## Install (systemd user service)
+
+The `install.sh` script builds the fat JAR, installs the service + `stoandl` CLI,
+and (re)starts it:
+
+```sh
+./install.sh                     # build + install on this machine
+./install.sh -d                  # also enable DEBUG logging
+./install.sh --remote user@host  # build locally, scp + install over SSH
+```
+
+`--remote` is handy for a phone (e.g. postmarketOS) where building on-device is
+slow — it builds the architecture-independent JAR on your fast machine and pushes
+it. (It uses `ssh -t` so `sudo` can prompt for a password.)
+
+Or install manually:
 
 ```sh
 sudo install -Dm644 build/libs/stoandl-*-all.jar /usr/lib/stoandl/stoandl.jar
