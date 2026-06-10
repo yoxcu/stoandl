@@ -472,7 +472,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope, pairingGate, pairingState, bondCache))
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -757,6 +757,8 @@ private class StoandlControlImpl(
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
     private val bondCache: ConcurrentHashMap<String, Boolean>,
+    // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
+    private val btOn: () -> Boolean,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
@@ -1046,6 +1048,11 @@ private class StoandlControlImpl(
             val bondedJob = launch {
                 while (!result.isCompleted) {
                     delay(2_000)
+                    // Skip the poll while Bluetooth is off: BlueZ removes the device object when the
+                    // adapter is disabled, so isBonded() can only throw ("Method Get ... doesn't
+                    // exist") and would spam the log every 2 s for the whole pairing window. The
+                    // window stays open, so polling resumes once BT comes back.
+                    if (!btOn()) continue
                     val newlyBonded = withContext(Dispatchers.IO) {
                         lp.watches.value
                             .mapNotNull { it.identifier as? PebbleBleIdentifier }
