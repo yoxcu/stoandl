@@ -318,17 +318,30 @@ class PebbleIntegration(
             try {
                 val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
                 try {
-                    // Use presence of org.bluez.GattManager1 on the adapter as the "BT ready" signal.
-                    // More reliable than the Powered property: GNOME/KDE disable BT via rfkill which
-                    // leaves Powered=true but removes GattManager1 from the adapter's managed interfaces.
+                    // Use presence of org.bluez.GattManager1 on any hci adapter as the "BT ready"
+                    // signal. More reliable than the Powered property: GNOME/KDE disable BT via rfkill
+                    // which leaves Powered=true but removes GattManager1 from the adapter's interfaces.
+                    // Don't hardcode hci0 — phones may expose the adapter under a different index.
+                    fun isHciAdapter(path: String) = Regex("/org/bluez/hci\\d+$").matches(path)
+
                     fun isGattReady(): Boolean = try {
                         val objMgr = conn.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
                         @Suppress("UNCHECKED_CAST")
                         (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>).any { (path, ifaces) ->
-                            path.toString() == "/org/bluez/hci0" && "org.bluez.GattManager1" in ifaces
+                            isHciAdapter(path.toString()) && "org.bluez.GattManager1" in ifaces
                         }
                     } catch (_: Exception) { true } // assume ready on error; scan will fail if not
 
+                    fun logAdapters() = try {
+                        val objMgr = conn.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
+                        @Suppress("UNCHECKED_CAST")
+                        val adapters = (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>)
+                            .filter { (path, _) -> isHciAdapter(path.toString()) }
+                            .map { (path, ifaces) -> "$path [${ifaces.keys.joinToString()}]" }
+                        log.info { "BlueZ adapters: ${if (adapters.isEmpty()) "none found" else adapters.joinToString()}" }
+                    } catch (_: Exception) {}
+
+                    logAdapters()
                     val ready = isGattReady()
                     btAdapterPowered.value = ready
                     if (!ready) {
@@ -345,7 +358,7 @@ class PebbleIntegration(
                         try {
                             val params = msg.getParameters() ?: return@addGenericSigHandler
                             if (params.size < 2) return@addGenericSigHandler
-                            if (params[0].toString() != "/org/bluez/hci0") return@addGenericSigHandler
+                            if (!isHciAdapter(params[0].toString())) return@addGenericSigHandler
                             @Suppress("UNCHECKED_CAST")
                             val ifaces = params[1] as? Map<*, *> ?: return@addGenericSigHandler
                             if ("org.bluez.GattManager1" in ifaces) {
@@ -365,7 +378,7 @@ class PebbleIntegration(
                         try {
                             val params = msg.getParameters() ?: return@addGenericSigHandler
                             if (params.size < 2) return@addGenericSigHandler
-                            if (params[0].toString() != "/org/bluez/hci0") return@addGenericSigHandler
+                            if (!isHciAdapter(params[0].toString())) return@addGenericSigHandler
                             val removed = params[1]
                             val ifaces = when (removed) {
                                 is Array<*> -> removed.filterIsInstance<String>()

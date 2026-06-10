@@ -21,8 +21,10 @@ java -jar build/libs/stoandl-*.jar   # run the fat JAR manually
 
 Install and control (requires systemd service running):
 ```sh
-./install.sh              # build jar, install service, restart
-stoandl sideload app.pbw  # sideload a .pbw onto the connected watch
+./install.sh                          # build jar, install service, restart
+./install.sh --remote user@host       # build locally, scp + install on remote via SSH
+./install.sh --remote user@host -d    # same, with debug logging drop-in
+stoandl sideload app.pbw              # sideload a .pbw onto the connected watch
 ```
 
 There are no automated tests in this project.
