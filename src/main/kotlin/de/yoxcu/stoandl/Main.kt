@@ -23,7 +23,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -102,6 +102,7 @@ private fun printUsage() {
     println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
     println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
     println("  pair                       Pair a new Pebble watch (opens a ~2 min window; blocks until done)")
+    println("  unpair                     Forget the watch on this host (use after moving it to another device)")
     println("  help                       Show this help")
 }
 
@@ -318,6 +319,17 @@ private fun ctl(args: Array<String>) {
                         System.err.println("Pairing timed out"); System.exit(1); return
                     }
                 }
+            } catch (e: Exception) {
+                System.err.println("Error: ${e.message}"); System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "unpair" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                handleStatusResponse(control.Unpair())
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
             } finally {

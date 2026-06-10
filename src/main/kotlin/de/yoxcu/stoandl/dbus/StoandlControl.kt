@@ -65,4 +65,9 @@ interface StoandlControl : DBusInterface {
     /** Return the current pairing status: `pending:`, `ok:<msg>`, `error:<msg>`, or
      *  `timeout:<msg>`. Returns `error:No pairing in progress` if [Pair] was never called. */
     fun PairStatus(): String
+
+    /** Forget the paired watch on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
+     *  RemoveDevice (clears the bond). Use on the host you've moved the watch away from, to stop it
+     *  endlessly retrying a watch that's now bonded elsewhere. Status-prefixed return. */
+    fun Unpair(): String
 }

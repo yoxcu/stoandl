@@ -22,6 +22,7 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
+import io.rebble.libpebblecommon.connection.ConnectionFailureReason
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.bt.isBonded
 import io.rebble.libpebblecommon.js.PKJSApp
@@ -106,7 +107,20 @@ private class PairingGate {
 // never trips it; only a true stall (no attempts at all) does.
 private val WATCHDOG_INTERVAL = 60.seconds
 private val WATCHDOG_STALL_RESTART = 10.minutes
+// How long a bonded watch may be unreachable *while the BLE stack is actively retrying* before we
+// nudge the user (once) to run `stoandl unpair`. Purely informational — it never touches the bond —
+// so it's safe to keep short; the only cost of a low value is an ignorable nudge when the watch is
+// merely out of range for a while.
+private val UNREACHABLE_NOTIFY = 5.minutes
 private const val SCAN_FAILURE_RESTART_THRESHOLD = 5  // ~5 failed scan cycles (~3min) → restart for a clean stack
+
+// Stale-bond reaper: a bonded watch that is in range but keeps failing to connect (the watch no
+// longer honours BlueZ's bond — wiped, re-paired elsewhere, or a phantom object). Acts only on
+// FailedToConnect (link established/attempted then rejected = watch present); ConnectTimeout
+// (out of range) is ignored, so an away watch is never disturbed.
+private val REAPER_INTERVAL = 30.seconds
+private const val STALE_FAILS_THRESHOLD = 5      // consecutive present-but-failed connects before clearing
+private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto re-pair before forgetting
 
 private val log = KotlinLogging.logger {}
 
@@ -181,6 +195,7 @@ class PebbleIntegration(
         startScanLoop()
         startAutoConnect()
         startConnectionWatchdog()
+        startStaleBondReaper()
         registerControlService()
         startCallMonitor()
         startWeatherSync()
@@ -280,37 +295,120 @@ class PebbleIntegration(
      * this also covers any residual wedge originating in the external kable/btleplug layer.
      */
     private fun startConnectionWatchdog() {
-        val lastActivityMs = AtomicReference(System.currentTimeMillis())
-        val lastFailureTimes = ConcurrentHashMap<String, Int>()
-        libPebble.watches.onEach { devices ->
-            var active = devices.any { it is ConnectedPebbleDevice || it is ConnectingPebbleDevice }
-            devices.filterIsInstance<KnownPebbleDevice>().forEach { d ->
-                val times = d.connectionFailureInfo?.times ?: 0
-                val prev = lastFailureTimes.put(d.identifier.asString, times)
-                if (prev == null || prev != times) active = true
-            }
-            if (active) lastActivityMs.set(System.currentTimeMillis())
-        }.launchIn(scope)
+        val lastHealthyMs = AtomicReference(System.currentTimeMillis())
+        // Per-watch last-seen attempt counter, polled directly in the loop so we don't depend on the
+        // timing of libPebble.watches emissions (which previously let the wedge check false-positive).
+        val lastFailTimes = ConcurrentHashMap<String, Int>()
+        var notifiedUnreachable = false
 
         scope.launch {
             while (true) {
                 delay(WATCHDOG_INTERVAL)
                 val devices = libPebble.watches.value
                 val connected = devices.any { it is ConnectedPebbleDevice }
-                val bondedDisconnected = devices.any { it is KnownPebbleDevice && it !is ConnectedPebbleDevice }
-                if (connected || !bondedDisconnected || !libPebble.bluetoothEnabled.value.enabled()) {
-                    lastActivityMs.set(System.currentTimeMillis())
+                val bonded = devices.filterIsInstance<KnownPebbleDevice>().filter { it !is ConnectedPebbleDevice }
+                if (connected || bonded.isEmpty() || !libPebble.bluetoothEnabled.value.enabled()) {
+                    lastHealthyMs.set(System.currentTimeMillis())
+                    lastFailTimes.clear()
+                    notifiedUnreachable = false
                     continue
                 }
-                val stalledMs = System.currentTimeMillis() - lastActivityMs.get()
-                if (stalledMs >= WATCHDOG_STALL_RESTART.inWholeMilliseconds) {
+                // Is the BLE stack actively (re)trying? A connect in progress, or any bonded watch's
+                // attempt counter moving since the last check, means the stack is alive — the watch is
+                // just unreachable (out of range, or bonded to another host). Restarting can't fix that.
+                var attempting = devices.any { it is ConnectingPebbleDevice }
+                bonded.forEach { d ->
+                    val t = d.connectionFailureInfo?.times ?: 0
+                    if (lastFailTimes.put(d.identifier.asString, t) != t) attempting = true
+                }
+                val stalledMs = System.currentTimeMillis() - lastHealthyMs.get()
+
+                if (attempting) {
+                    // Stack works, watch won't connect → never restart (futile). Nudge the user once
+                    // after the (short, harmless) notify window.
+                    if (stalledMs >= UNREACHABLE_NOTIFY.inWholeMilliseconds && !notifiedUnreachable) {
+                        notifiedUnreachable = true
+                        val name = bonded.firstOrNull()?.displayName() ?: "Your Pebble"
+                        log.warn {
+                            "Bonded watch unreachable for ${stalledMs / 1000}s but BLE stack is active " +
+                                "(still attempting) — not restarting. If you've paired it elsewhere, run 'stoandl unpair'."
+                        }
+                        sendDesktopNotification(
+                            "Pebble not connecting",
+                            "$name hasn't connected in ${stalledMs / 60000} min. If you've paired it to " +
+                                "another device, run 'stoandl unpair' on this host.",
+                        )
+                    }
+                } else if (stalledMs >= WATCHDOG_STALL_RESTART.inWholeMilliseconds) {
+                    // No connection attempts at all → the BLE stack itself is wedged → restart.
                     log.error {
-                        "Watchdog: bonded watch shows no connection activity for ${stalledMs / 1000}s " +
-                            "— BLE stack appears wedged; exiting for systemd restart"
+                        "Watchdog: no connection activity for ${stalledMs / 1000}s — BLE stack appears " +
+                            "wedged; exiting for systemd restart"
                     }
                     gracefulShutdown()
                     exitProcess(1)
                 }
+            }
+        }
+    }
+
+    /**
+     * Stale-bond reaper — one mechanism for the whole "BlueZ holds a bond the watch no longer
+     * honours" family (wiped watch, re-paired-to-another-host watch, phantom device object), instead
+     * of matching individual BlueZ error strings.
+     *
+     * A bonded watch that is *in range but persistently failing to connect* has a stale bond. The
+     * signal is [ConnectionFailureReason.FailedToConnect] — the link established (or the phantom
+     * "doesn't exist" object, which the connector maps to the same reason) then the watch rejected
+     * us. We clear the bond ([removeBluezBond]) and let libpebble3 attempt a fresh pairing, which
+     * auto-heals a wiped+pairable watch. If it still hasn't connected after [REPAIR_GRACE], the watch
+     * won't re-pair with us (it's bonded elsewhere), so we [KnownPebbleDevice.forget] it and notify —
+     * stopping the reconnect storm and the futile watchdog restarts.
+     *
+     * Out-of-range watches fail with [ConnectionFailureReason.ConnectTimeout], never FailedToConnect,
+     * so an away (but still-wanted) watch's bond is never touched.
+     */
+    private fun startStaleBondReaper() {
+        val clearedAt = ConcurrentHashMap<String, Long>() // identifier -> when we removed its bond
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(REAPER_INTERVAL)
+                if (!(libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value)) continue
+                val devices = libPebble.watches.value
+                val now = System.currentTimeMillis()
+                for (d in devices.filterIsInstance<KnownPebbleDevice>()) {
+                    val key = d.identifier.asString
+                    if (d is ConnectedPebbleDevice) { clearedAt.remove(key); continue }
+                    val id = d.identifier as? PebbleBleIdentifier ?: continue
+                    val cleared = clearedAt[key]
+                    if (cleared != null) {
+                        // Phase 2: bond already cleared and it still hasn't reconnected — the watch
+                        // won't re-pair with us (bonded elsewhere). Forget + notify, stop storming.
+                        if (now - cleared >= REPAIR_GRACE.inWholeMilliseconds) {
+                            log.info { "Stale-bond reaper: ${d.displayName()} did not re-pair within ${REPAIR_GRACE.inWholeSeconds}s — forgetting" }
+                            bluezObjectPath(key)?.let { removeBluezBond(it) } // ensure bond gone (usually already)
+                            d.forget()
+                            sendDesktopNotification(
+                                "Pebble unpaired",
+                                "${d.displayName()} is nearby but no longer paired with this device. " +
+                                    "Run 'stoandl pair' to use it here.",
+                            )
+                            clearedAt.remove(key)
+                        }
+                        continue
+                    }
+                    val info = d.connectionFailureInfo ?: continue
+                    if (info.reason == ConnectionFailureReason.FailedToConnect &&
+                        info.times >= STALE_FAILS_THRESHOLD && isBonded(id)
+                    ) {
+                        // Phase 1: bonded + in range + persistently rejecting us → stale bond. Clear it
+                        // and let libpebble3 try a fresh pairing (auto-heals a wiped, pairable watch).
+                        val path = bluezObjectPath(key) ?: continue
+                        log.info { "Stale-bond reaper: ${d.displayName()} present but failing (${info.times}x ${info.reason}) — clearing stale bond" }
+                        if (removeBluezBond(path)) clearedAt[key] = now
+                    }
+                }
+                clearedAt.keys.retainAll(devices.map { it.identifier.asString }.toSet())
             }
         }
     }
@@ -815,6 +913,32 @@ private fun clearStalePebbleBonds(): List<String> {
     return removed
 }
 
+/** Extracts /org/bluez/hciN/dev_XX… from a PebbleBleIdentifier asString ({"object_path":"…"}). */
+private fun bluezObjectPath(identifierAsString: String): String? =
+    Regex(""""object_path"\s*:\s*"([^"]+)"""").find(identifierAsString)?.groupValues?.get(1)
+
+/** Removes a single BlueZ bond by device object path via Adapter1.RemoveDevice. Returns true on success. */
+private fun removeBluezBond(devicePath: String): Boolean {
+    val adapterPath = devicePath.substringBeforeLast("/dev_") // -> /org/bluez/hciN
+    val conn = try {
+        DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    } catch (e: Exception) {
+        log.warn { "removeBluezBond: cannot reach system bus: ${e.message}" }
+        return false
+    }
+    return try {
+        conn.getRemoteObject(ORG_BLUEZ, adapterPath, BluezAdapter1Ctl::class.java)
+            .RemoveDevice(DBusPath(devicePath))
+        log.info { "Removed stale BlueZ bond: $devicePath" }
+        true
+    } catch (e: Exception) {
+        log.warn { "removeBluezBond($devicePath) failed: ${e.message}" }
+        false
+    } finally {
+        conn.disconnect()
+    }
+}
+
 /** Posts a desktop notification on the session bus (best-effort). */
 private fun sendDesktopNotification(summary: String, body: String) {
     try {
@@ -1177,6 +1301,24 @@ private class StoandlControlImpl(
 
     override fun PairStatus(): String =
         pairingState.get().ifEmpty { "error:No pairing in progress" }
+
+    override fun Unpair(): String {
+        val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
+        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        // forget() each known watch (stops libpebble3 auto-connect) and clear its BlueZ bond.
+        val names = known.map { d ->
+            (d.identifier as? PebbleBleIdentifier)?.let { id -> bluezObjectPath(id.asString)?.let(::removeBluezBond) }
+            d.forget()
+            d.displayName()
+        }
+        // Also sweep any leftover bonded Pebble in BlueZ that libpebble3 no longer tracks.
+        val swept = clearStalePebbleBonds()
+        return when {
+            names.isNotEmpty() -> "ok:Unpaired ${names.joinToString(", ")}"
+            swept.isNotEmpty() -> "ok:Cleared ${swept.size} stale bond(s)"
+            else -> "ok:No paired watch"
+        }
+    }
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {
