@@ -70,8 +70,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 import kotlinx.io.files.Path
 import org.freedesktop.dbus.DBusPath
+import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
@@ -749,6 +751,88 @@ private fun resolve(lp: LibPebble, query: String): List<LockerWrapper> {
     return all.filter { it.properties.title.contains(query, ignoreCase = true) }
 }
 
+@DBusInterfaceName("org.bluez.Adapter1")
+private interface BluezAdapter1Ctl : DBusInterface {
+    @Suppress("FunctionName")
+    fun RemoveDevice(device: DBusPath)
+}
+
+private const val ORG_BLUEZ = "org.bluez"
+private const val BLUEZ_DEVICE1 = "org.bluez.Device1"
+// Pebble BLE manufacturer-data company IDs (mirrors libpebble3's BluezBleScanner).
+private val PEBBLE_VENDOR_IDS = setOf(0x0154, 0x0EEA)
+
+private fun variantValue(v: Any?): Any? = if (v is Variant<*>) v.value else v
+
+/**
+ * Removes stale BlueZ bonds for Pebble watches that are bonded but NOT currently connected.
+ *
+ * When the watch side is wiped (factory reset / "forget" on the watch) but BlueZ still holds the
+ * old bond, `Device1.Pair()` short-circuits with "Already Paired" and the watch refuses the stale
+ * encryption — so a fresh pairing never completes and re-pairing silently fails. Restarting
+ * Bluetooth does NOT help: bonds live in /var/lib/bluetooth and survive a BT restart. The only fix
+ * is to delete BlueZ's side of the bond so the next pairing runs a genuine SMP exchange.
+ *
+ * Called at the start of an explicit `stoandl pair`, where a non-connected bonded Pebble can only be
+ * a leftover. Connected devices are never touched. Returns the display names of the bonds cleared.
+ */
+private fun clearStalePebbleBonds(): List<String> {
+    val removed = mutableListOf<String>()
+    val conn = try {
+        DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    } catch (e: Exception) {
+        log.warn { "clearStalePebbleBonds: cannot reach system bus: ${e.message}" }
+        return removed
+    }
+    try {
+        val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
+        for ((path, ifaces) in objMgr.GetManagedObjects()) {
+            val props = ifaces[BLUEZ_DEVICE1] ?: continue
+            if (variantValue(props["Paired"]) as? Boolean != true) continue
+            if (variantValue(props["Connected"]) as? Boolean == true) continue // never disturb a live link
+            val name = (variantValue(props["Name"]) as? String)
+                ?: (variantValue(props["Alias"]) as? String) ?: ""
+            val md = variantValue(props["ManufacturerData"]) as? Map<*, *>
+            val isPebble = name.startsWith("Pebble", ignoreCase = true) ||
+                md?.keys?.any { (it as? Number)?.toInt() in PEBBLE_VENDOR_IDS } == true
+            if (!isPebble) continue
+            val adapterPath = path.toString().substringBeforeLast("/dev_") // -> /org/bluez/hciN
+            try {
+                conn.getRemoteObject(ORG_BLUEZ, adapterPath, BluezAdapter1Ctl::class.java)
+                    .RemoveDevice(DBusPath(path.toString()))
+                val label = name.ifEmpty { path.toString() }
+                log.info { "Cleared stale Pebble bond: $label ($path)" }
+                removed += label
+            } catch (e: Exception) {
+                log.warn { "RemoveDevice($path) failed: ${e.message}" }
+            }
+        }
+    } catch (e: Exception) {
+        log.warn { "clearStalePebbleBonds failed: ${e.message}" }
+    } finally {
+        conn.disconnect()
+    }
+    return removed
+}
+
+/** Posts a desktop notification on the session bus (best-effort). */
+private fun sendDesktopNotification(summary: String, body: String) {
+    try {
+        val conn = DBusConnectionBuilder.forSessionBus().withShared(false).build()
+        try {
+            conn.getRemoteObject(
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                FreedesktopNotifications::class.java,
+            ).Notify("stoandl", UInt32(0), "phone", summary, body, emptyList(), emptyMap(), 15_000)
+        } finally {
+            conn.disconnect()
+        }
+    } catch (e: Exception) {
+        log.warn { "sendDesktopNotification failed: ${e.message}" }
+    }
+}
+
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
@@ -1026,6 +1110,19 @@ private class StoandlControlImpl(
         if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
             pairingState.set("ok:Watch already connected")
             return "ok:Pairing started"
+        }
+        // Clear stale BlueZ bonds before pairing. If the watch was wiped but BlueZ still holds the
+        // old bond, Pair() returns "Already Paired" and the watch refuses the stale encryption, so
+        // re-pairing never completes (and a BT restart won't fix it — bonds persist on disk). We've
+        // already returned above if a watch is connected, so any bonded-but-disconnected Pebble here
+        // is leftover and safe to forget. Notify so the user knows to put the watch in pairing mode.
+        val cleared = clearStalePebbleBonds()
+        if (cleared.isNotEmpty()) {
+            sendDesktopNotification(
+                "Pebble pairing reset",
+                "Cleared a stale pairing (${cleared.joinToString(", ")}). " +
+                    "Put your watch in pairing mode to reconnect.",
+            )
         }
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
         val alreadyBonded = lp.watches.value
