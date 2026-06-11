@@ -206,7 +206,7 @@ class PebbleIntegration(
         startStaleBondReaper()
         startDiscoveryInterferenceWarning()
         startNotificationActionListener()
-        startBrokenBondDetector()
+        startChurnDetector()
         registerControlService()
         startCallMonitor()
         startWeatherSync()
@@ -409,45 +409,72 @@ class PebbleIntegration(
     }
 
     /**
-     * Detects a watch that's present but can never establish a usable session — the signature of a
-     * bond the watch no longer honours (e.g. unpaired ON THE WATCH): the link comes up and is rejected
-     * ([ConnectionFailureReason.FailedToConnect]) over and over without ever reaching a full
-     * connection. It only NOTIFIES (with a one-tap Re-pair action) — it never forgets a watch on its
-     * own, because a watch that connects-then-drops can just as easily be a perfectly-good bond on a
-     * flaky link (it reaches a full connection, which clears the count here). So we never risk nuking a
-     * good bond, including a second watch that's merely out of range (that fails with ConnectTimeout,
-     * which is excluded). The user decides via the button (or 'stoandl repair <name>').
+     * Detects the one-sided-bond churn that is INVISIBLE to libpebble's device state: after the watch
+     * is unpaired ON THE WATCH, its still-Trusted bond makes BlueZ autonomously re-establish a dead
+     * link every few seconds — `Device1.Connected` flaps true/false — without ever completing a Pebble
+     * session. libPebble.watches never flaps for this, so we watch `Device1.Connected` directly over
+     * D-Bus. After [BROKEN_BOND_FLAPS] drops within [BROKEN_BOND_WINDOW] for a known watch that is NOT
+     * fully connected, NOTIFY with a one-tap Re-pair action.
+     *
+     * It never auto-forgets: a watch that reaches a full session (ConnectedPebbleDevice) has its count
+     * cleared, so a good bond — even a flaky one — is never flagged; an out-of-range watch produces no
+     * Connected=true and therefore no drops, so it's ignored too.
      */
-    private fun startBrokenBondDetector() {
-        val lastClass = mutableMapOf<String, String>()
-        val flaps = mutableMapOf<String, MutableList<Long>>()
-        val notified = mutableSetOf<String>()
-        scope.launch {
-            libPebble.watches.collect { devices ->
-                val now = System.currentTimeMillis()
-                val present = mutableSetOf<String>()
-                for (d in devices.filterIsInstance<KnownPebbleDevice>()) {
-                    val key = d.identifier.asString
-                    present += key
-                    if (d is ConnectedPebbleDevice) {
-                        // Reached a full connection → the bond is fine (any churn is just a flaky
-                        // link). Clear its history so a genuinely-bonded watch is never flagged.
-                        flaps.remove(key); notified.remove(key); lastClass[key] = "connected"; continue
-                    }
-                    // Only count a watch that is PRESENT but rejecting us (link came up then failed);
-                    // never an out-of-range watch (ConnectTimeout) or one with no failure yet.
-                    if (d.connectionFailureInfo?.reason != ConnectionFailureReason.FailedToConnect) continue
-                    val cls = if (d is ConnectingPebbleDevice) "connecting" else "known"
-                    val prev = lastClass.put(key, cls)
-                    if (prev == null || prev == cls) continue
-                    val hist = flaps.getOrPut(key) { mutableListOf() }
-                    hist += now
-                    hist.removeAll { now - it > BROKEN_BOND_WINDOW.inWholeMilliseconds }
-                    if (hist.size >= BROKEN_BOND_FLAPS && notified.add(key)) {
-                        notifyBrokenBond(d)
+    private fun startChurnDetector() {
+        val drops = ConcurrentHashMap<String, MutableList<Long>>() // device object path -> drop timestamps
+        val notified = ConcurrentHashMap.newKeySet<String>()
+        scope.launch(Dispatchers.IO) {
+            val conn = try {
+                DBusConnectionBuilder.forSystemBus().withShared(false).build()
+            } catch (e: Exception) {
+                log.debug { "Churn detector unavailable: ${e.message}" }
+                return@launch
+            }
+            try {
+                // Record every org.bluez.Device1 Connected=false (a link drop), keyed by device path.
+                val rule = DBusMatchRuleBuilder.create()
+                    .withType("signal").withInterface("org.freedesktop.DBus.Properties")
+                    .withMember("PropertiesChanged").build()
+                conn.addGenericSigHandler(rule) { msg: DBusSignal ->
+                    try {
+                        val path = msg.getPath() ?: return@addGenericSigHandler
+                        if (!path.contains("/dev_")) return@addGenericSigHandler
+                        val params = msg.getParameters() ?: return@addGenericSigHandler
+                        if (params.size < 2 || params[0] != "org.bluez.Device1") return@addGenericSigHandler
+                        val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
+                        val connected = variantValue(changed["Connected"]) as? Boolean ?: return@addGenericSigHandler
+                        if (!connected) {
+                            drops.getOrPut(path) { java.util.Collections.synchronizedList(ArrayList()) }
+                                .add(System.currentTimeMillis())
+                        }
+                    } catch (_: Exception) {}
+                }
+                // Poll: a known watch that's NOT fully connected yet keeps dropping = the broken-bond churn.
+                while (true) {
+                    delay(15.seconds)
+                    val now = System.currentTimeMillis()
+                    val watchByPath = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
+                        .filter { it !is ConnectedPebbleDevice }
+                        .mapNotNull { w ->
+                            (w.identifier as? PebbleBleIdentifier)?.asString
+                                ?.let { bluezObjectPath(it) }?.let { p -> p to w }
+                        }.toMap()
+                    drops.keys.retainAll(watchByPath.keys) // forget paths now fully connected / unknown
+                    notified.retainAll(watchByPath.keys)
+                    for ((path, w) in watchByPath) {
+                        val list = drops[path] ?: continue
+                        val recent = synchronized(list) {
+                            list.removeAll { now - it > BROKEN_BOND_WINDOW.inWholeMilliseconds }; list.size
+                        }
+                        if (recent >= BROKEN_BOND_FLAPS) {
+                            if (notified.add(path)) notifyBrokenBond(w)
+                        } else if (recent == 0) {
+                            notified.remove(path) // churn subsided — allow a fresh notification later
+                        }
                     }
                 }
-                lastClass.keys.retainAll(present); flaps.keys.retainAll(present); notified.retainAll(present)
+            } finally {
+                conn.disconnect()
             }
         }
     }
@@ -455,8 +482,8 @@ class PebbleIntegration(
     private fun notifyBrokenBond(device: KnownPebbleDevice) {
         val name = device.displayName()
         log.warn {
-            "Broken-bond detector: $name keeps connecting and being rejected (FailedToConnect, never " +
-                "a full session) — likely unpaired on the watch. Notifying; not forgetting it on its own."
+            "Broken-bond detector: $name — BlueZ keeps re-establishing a dead link (Connected flapping, " +
+                "never a full session) — likely unpaired on the watch. Notifying; not forgetting it on its own."
         }
         sendActionableNotification(
             "Pebble won't stay connected",
@@ -1391,6 +1418,16 @@ private class StoandlControlImpl(
         // known-but-broken watch (e.g. one unpaired on the watch), use 'stoandl repair <name>', which
         // forgets only that watch first. The broken-bond detector triggers the same targeted recovery
         // automatically + offers a one-tap re-pair notification.
+        log.info { "Pairing mode opened (${PAIRING_WINDOW_MS / 1000}s window)" }
+        openPairingWindowAndMonitor(lp)
+        return "ok:Pairing started"
+    }
+
+    /** Opens the pairing window and launches the monitor that resolves [pairingState] to `ok:`/`timeout:`
+     *  when the watch connects or bonds. Shared by Pair() and Repair() — otherwise Repair would leave
+     *  PairStatus() stuck on `pending:` and the CLI would hang until its own timeout even though the
+     *  watch re-paired fine. */
+    private fun openPairingWindowAndMonitor(lp: LibPebble) {
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
         val alreadyBonded = lp.watches.value
             .mapNotNull { it.identifier as? PebbleBleIdentifier }
@@ -1399,7 +1436,6 @@ private class StoandlControlImpl(
             .toSet()
         pairingGate.open()
         pairingState.set("pending:")
-        log.info { "Pairing mode opened (${PAIRING_WINDOW_MS / 1000}s window)" }
         scope.launch {
             val result = CompletableDeferred<String>()
             // Fast path: detect full connection via StateFlow collection.
@@ -1439,7 +1475,6 @@ private class StoandlControlImpl(
             pairingGate.close()
             log.info { "Pairing result: $newState" }
         }
-        return "ok:Pairing started"
     }
 
     override fun PairStatus(): String =
@@ -1486,9 +1521,8 @@ private class StoandlControlImpl(
             bondCache.remove(id.asString)
         }
         match.forget()
-        pairingGate.open()
-        pairingState.set("pending:")
-        log.info { "Re-pairing ${match.displayName()}: forgot the stale bond, opened pairing window (${PAIRING_WINDOW_MS / 1000}s)" }
+        log.info { "Re-pairing ${match.displayName()}: forgot the stale bond, opening pairing window (${PAIRING_WINDOW_MS / 1000}s)" }
+        openPairingWindowAndMonitor(lp)
         return "ok:Re-pairing ${match.displayName()} — put the watch in pairing mode"
     }
 
