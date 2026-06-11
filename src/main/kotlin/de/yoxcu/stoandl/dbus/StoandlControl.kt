@@ -70,4 +70,14 @@ interface StoandlControl : DBusInterface {
      *  RemoveDevice (clears the bond). Use on the host you've moved the watch away from, to stop it
      *  endlessly retrying a watch that's now bonded elsewhere. Status-prefixed return. */
     fun Unpair(): String
+
+    /** Re-pair a SPECIFIC known watch by name: forget just that watch (clears its state, Trusted
+     *  intent and BlueZ bond) and open the pairing window — leaving any other watches untouched
+     *  (multi-watch safe). Use when a watch was unpaired on the watch side and now churns. Returns
+     *  `ok:` immediately; poll [PairStatus] for the outcome. */
+    fun Repair(watch: String): String
+
+    /** List known watches, one per entry, tab-separated `name\tstate` (state: connected / connecting /
+     *  disconnected). Empty list if none are known. */
+    fun ListWatches(): List<String>
 }

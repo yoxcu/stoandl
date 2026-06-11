@@ -83,6 +83,7 @@ import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
@@ -118,6 +119,14 @@ private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto r
 // How often to check whether an external process's Bluetooth discovery is blocking reconnection.
 private val DISCOVERY_WARN_INTERVAL = 60.seconds
 
+// Broken-bond / one-sided-bond churn: after the watch is unpaired ON THE WATCH, the host still holds
+// the bond (and Trusted), so BlueZ endlessly re-establishes a dead link (connect→drop every few
+// seconds). Detect that rapid flapping and recover: forget + remove the host bond (stops the churn)
+// and notify with a one-tap re-pair action. A normal connect settles after 2-3 state changes, so a
+// continuously-churning watch is unambiguous.
+private val BROKEN_BOND_WINDOW = 3.minutes
+private const val BROKEN_BOND_FLAPS = 5   // present-but-rejected (FailedToConnect) attempts → notify
+
 private val log = KotlinLogging.logger {}
 
 class PebbleIntegration(
@@ -146,6 +155,10 @@ class PebbleIntegration(
     // Distinct from libPebble.bluetoothEnabled: covers rfkill/airplane-mode blocks where
     // GattServerManager still reports Enabled but the radio is actually off.
     private val btAdapterPowered = MutableStateFlow(true)
+    // Long-lived session-bus connection for notifications that carry an action button, plus a map of
+    // notification id → callback to run when the user taps it (org.freedesktop.Notifications.ActionInvoked).
+    @Volatile private var notifConn: DBusConnection? = null
+    private val notificationActions = ConcurrentHashMap<UInt32, () -> Unit>()
 
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer.
@@ -192,6 +205,8 @@ class PebbleIntegration(
         startAutoConnect()
         startStaleBondReaper()
         startDiscoveryInterferenceWarning()
+        startNotificationActionListener()
+        startBrokenBondDetector()
         registerControlService()
         startCallMonitor()
         startWeatherSync()
@@ -257,7 +272,14 @@ class PebbleIntegration(
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
                 }
-                delay(35.seconds) // slightly longer than the 30s scan timeout
+                // Sleep ~35s (a bit longer than the 30s scan timeout), but re-check every second so a
+                // freshly-opened pairing window kicks discovery within ~1s instead of waiting out the
+                // full cycle (otherwise 'stoandl pair' could sit up to 35s before scanning).
+                val until = System.currentTimeMillis() + 35_000
+                while (System.currentTimeMillis() < until) {
+                    delay(1.seconds)
+                    if (pairingGate.isOpen() && !libPebble.isScanningBle.value) break
+                }
             }
         }
     }
@@ -383,6 +405,132 @@ class PebbleIntegration(
             } finally {
                 conn.disconnect()
             }
+        }
+    }
+
+    /**
+     * Detects a watch that's present but can never establish a usable session — the signature of a
+     * bond the watch no longer honours (e.g. unpaired ON THE WATCH): the link comes up and is rejected
+     * ([ConnectionFailureReason.FailedToConnect]) over and over without ever reaching a full
+     * connection. It only NOTIFIES (with a one-tap Re-pair action) — it never forgets a watch on its
+     * own, because a watch that connects-then-drops can just as easily be a perfectly-good bond on a
+     * flaky link (it reaches a full connection, which clears the count here). So we never risk nuking a
+     * good bond, including a second watch that's merely out of range (that fails with ConnectTimeout,
+     * which is excluded). The user decides via the button (or 'stoandl repair <name>').
+     */
+    private fun startBrokenBondDetector() {
+        val lastClass = mutableMapOf<String, String>()
+        val flaps = mutableMapOf<String, MutableList<Long>>()
+        val notified = mutableSetOf<String>()
+        scope.launch {
+            libPebble.watches.collect { devices ->
+                val now = System.currentTimeMillis()
+                val present = mutableSetOf<String>()
+                for (d in devices.filterIsInstance<KnownPebbleDevice>()) {
+                    val key = d.identifier.asString
+                    present += key
+                    if (d is ConnectedPebbleDevice) {
+                        // Reached a full connection → the bond is fine (any churn is just a flaky
+                        // link). Clear its history so a genuinely-bonded watch is never flagged.
+                        flaps.remove(key); notified.remove(key); lastClass[key] = "connected"; continue
+                    }
+                    // Only count a watch that is PRESENT but rejecting us (link came up then failed);
+                    // never an out-of-range watch (ConnectTimeout) or one with no failure yet.
+                    if (d.connectionFailureInfo?.reason != ConnectionFailureReason.FailedToConnect) continue
+                    val cls = if (d is ConnectingPebbleDevice) "connecting" else "known"
+                    val prev = lastClass.put(key, cls)
+                    if (prev == null || prev == cls) continue
+                    val hist = flaps.getOrPut(key) { mutableListOf() }
+                    hist += now
+                    hist.removeAll { now - it > BROKEN_BOND_WINDOW.inWholeMilliseconds }
+                    if (hist.size >= BROKEN_BOND_FLAPS && notified.add(key)) {
+                        notifyBrokenBond(d)
+                    }
+                }
+                lastClass.keys.retainAll(present); flaps.keys.retainAll(present); notified.retainAll(present)
+            }
+        }
+    }
+
+    private fun notifyBrokenBond(device: KnownPebbleDevice) {
+        val name = device.displayName()
+        log.warn {
+            "Broken-bond detector: $name keeps connecting and being rejected (FailedToConnect, never " +
+                "a full session) — likely unpaired on the watch. Notifying; not forgetting it on its own."
+        }
+        sendActionableNotification(
+            "Pebble won't stay connected",
+            "$name keeps connecting then dropping without finishing — if you unpaired it on the watch, " +
+                "tap Re-pair (or run 'stoandl repair $name') and put the watch in pairing mode.",
+            actionLabel = "Re-pair",
+        ) { repairByName(name) }
+    }
+
+    /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and
+     *  open the pairing window — used by the broken-bond notification's Re-pair button. Multi-watch safe. */
+    private fun repairByName(name: String) {
+        val match = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
+            .firstOrNull { it.displayName().equals(name, ignoreCase = true) } ?: return
+        (match.identifier as? PebbleBleIdentifier)?.let { id ->
+            bluezObjectPath(id.asString)?.let(::removeBluezBond)
+            bondCache.remove(id.asString)
+        }
+        match.forget()
+        openPairingWindow()
+    }
+
+    /** Opens the pairing window (the same gate 'stoandl pair' uses) so a watch in pairing mode re-pairs. */
+    private fun openPairingWindow() {
+        pairingGate.open()
+        pairingState.set("pending:")
+        log.info { "Pairing window opened via notification action (${PAIRING_WINDOW_MS / 1000}s)" }
+    }
+
+    /**
+     * Long-lived session-bus listener for org.freedesktop.Notifications.ActionInvoked, so a
+     * notification we send with an action button (see [sendActionableNotification]) can run a callback
+     * when the user taps it.
+     */
+    private fun startNotificationActionListener() {
+        scope.launch(Dispatchers.IO) {
+            val conn = try {
+                DBusConnectionBuilder.forSessionBus().withShared(false).build()
+            } catch (e: Exception) {
+                log.debug { "Notification action listener unavailable: ${e.message}" }
+                return@launch
+            }
+            try {
+                conn.addSigHandler(FreedesktopNotifications.ActionInvoked::class.java) { sig ->
+                    notificationActions.remove(sig.id)?.let { cb ->
+                        log.info { "Notification action '${sig.action_key}' invoked (id=${sig.id})" }
+                        try { cb() } catch (e: Exception) { log.warn { "notification action handler failed: ${e.message}" } }
+                    }
+                }
+                notifConn = conn
+                awaitCancellation()
+            } finally {
+                notifConn = null
+                conn.disconnect()
+            }
+        }
+    }
+
+    /**
+     * Posts a desktop notification carrying a single action button; [onInvoke] runs when it's tapped.
+     * timeout=0 so it persists until acted on/dismissed. Falls back to a plain notification if the
+     * action listener isn't up — the body's "run 'stoandl pair'" hint is then the recovery path.
+     */
+    private fun sendActionableNotification(summary: String, body: String, actionLabel: String, onInvoke: () -> Unit) {
+        val conn = notifConn ?: run { sendDesktopNotification(summary, body); return }
+        try {
+            val id = conn.getRemoteObject(
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                FreedesktopNotifications::class.java,
+            ).Notify("stoandl", UInt32(0), "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
+            notificationActions[id] = onInvoke
+        } catch (e: Exception) {
+            log.warn { "sendActionableNotification failed: ${e.message}" }
+            sendDesktopNotification(summary, body)
         }
     }
 
@@ -1237,19 +1385,12 @@ private class StoandlControlImpl(
             pairingState.set("ok:Watch already connected")
             return "ok:Pairing started"
         }
-        // Clear stale BlueZ bonds before pairing. If the watch was wiped but BlueZ still holds the
-        // old bond, Pair() returns "Already Paired" and the watch refuses the stale encryption, so
-        // re-pairing never completes (and a BT restart won't fix it — bonds persist on disk). We've
-        // already returned above if a watch is connected, so any bonded-but-disconnected Pebble here
-        // is leftover and safe to forget. Notify so the user knows to put the watch in pairing mode.
-        val cleared = clearStalePebbleBonds()
-        if (cleared.isNotEmpty()) {
-            sendDesktopNotification(
-                "Pebble pairing reset",
-                "Cleared a stale pairing (${cleared.joinToString(", ")}). " +
-                    "Put your watch in pairing mode to reconnect.",
-            )
-        }
+        // NB: 'pair' deliberately does NOT touch existing known watches or their bonds — that would
+        // break multi-watch (it'd nuke a second watch that's merely out of range). It just opens the
+        // pairing window to discover + pair whatever watch is in pairing mode. To re-pair a specific
+        // known-but-broken watch (e.g. one unpaired on the watch), use 'stoandl repair <name>', which
+        // forgets only that watch first. The broken-bond detector triggers the same targeted recovery
+        // automatically + offers a one-tap re-pair notification.
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
         val alreadyBonded = lp.watches.value
             .mapNotNull { it.identifier as? PebbleBleIdentifier }
@@ -1319,6 +1460,47 @@ private class StoandlControlImpl(
             names.isNotEmpty() -> "ok:Unpaired ${names.joinToString(", ")}"
             swept.isNotEmpty() -> "ok:Cleared ${swept.size} stale bond(s)"
             else -> "ok:No paired watch"
+        }
+    }
+
+    override fun Repair(watch: String): String {
+        val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
+        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        if (known.isEmpty()) return "error:No known watches — use 'stoandl pair' to add one"
+        // Substring match (case-insensitive) so 'repair B349' matches "Pebble B349" — no need to type
+        // (and shell-escape) the full name. Prefer an exact match if one exists; else require a unique
+        // substring hit so we never re-pair the wrong watch.
+        val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
+            .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
+        val match = when {
+            matches.size == 1 -> matches[0]
+            matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
+                known.joinToString(", ") { it.displayName() }
+            else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
+        }
+        // Forget ONLY this watch — its libpebble3 state, standing (Trusted) connect intent and BlueZ
+        // bond — leaving any other watches untouched (multi-watch safe). Then open the pairing window
+        // so the watch (put in pairing mode) re-pairs fresh.
+        (match.identifier as? PebbleBleIdentifier)?.let { id ->
+            bluezObjectPath(id.asString)?.let(::removeBluezBond)
+            bondCache.remove(id.asString)
+        }
+        match.forget()
+        pairingGate.open()
+        pairingState.set("pending:")
+        log.info { "Re-pairing ${match.displayName()}: forgot the stale bond, opened pairing window (${PAIRING_WINDOW_MS / 1000}s)" }
+        return "ok:Re-pairing ${match.displayName()} — put the watch in pairing mode"
+    }
+
+    override fun ListWatches(): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        return lp.watches.value.filterIsInstance<KnownPebbleDevice>().map { d ->
+            val state = when (d) {
+                is ConnectedPebbleDevice -> "connected"
+                is ConnectingPebbleDevice -> "connecting"
+                else -> "disconnected"
+            }
+            "${d.displayName()}\t$state"
         }
     }
 }
