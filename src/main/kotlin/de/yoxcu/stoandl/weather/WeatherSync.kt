@@ -12,6 +12,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.isSuccess
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.weather.WeatherLocationData
@@ -190,7 +191,7 @@ class WeatherSync(
         isCurrentLocation: Boolean,
     ): WeatherLocationData {
         val tempUnit = if (units == WeatherUnits.IMPERIAL) "fahrenheit" else "celsius"
-        val body = client.get("https://api.open-meteo.com/v1/forecast") {
+        val response = client.get("https://api.open-meteo.com/v1/forecast") {
             parameter("latitude", latitude)
             parameter("longitude", longitude)
             parameter("current", "temperature_2m,weather_code")
@@ -198,9 +199,14 @@ class WeatherSync(
             parameter("temperature_unit", tempUnit)
             parameter("timezone", "auto")
             parameter("forecast_days", 2)
-        }.bodyAsText()
-
-        val resp = json.decodeFromString<OpenMeteoResponse>(body)
+        }
+        // Non-2xx (e.g. Open-Meteo 502 Bad Gateway) returns an HTML error page — surface the real
+        // cause instead of letting JSON parsing choke on "<" and look like a parse bug.
+        if (!response.status.isSuccess()) {
+            log.warn { "Open-Meteo returned HTTP ${response.status} for $name" }
+            return WeatherLocationData.WeatherLocationDataFailed(key)
+        }
+        val resp = json.decodeFromString<OpenMeteoResponse>(response.bodyAsText())
         val daily = resp.daily
         val currentTemp = resp.current?.temperature
         if (currentTemp == null || daily == null ||
