@@ -39,10 +39,16 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.security.MessageDigest
 import kotlin.math.roundToInt
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
+
+// On a failed/partial sync, retry sooner than the configured interval, backing off each time before
+// falling back to the normal cadence on success. Covers transient blips (cold-start DNS, a slow API).
+private val WEATHER_RETRY_BACKOFF = listOf(30.seconds, 1.minutes, 5.minutes)
 
 /**
  * Fetches weather for the configured fixed locations from Open-Meteo (free, no API key, no account —
@@ -73,13 +79,15 @@ class WeatherSync(
 ) {
     private val client = HttpClient(CIO) {
         install(HttpTimeout) {
-            requestTimeoutMillis = 15_000
-            connectTimeoutMillis = 10_000
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 15_000
         }
     }
     private val json = Json { ignoreUnknownKeys = true }
     // Serialise syncs: the periodic loop and the on-connect trigger must never overlap.
     private val syncMutex = Mutex()
+    // Whether the last sync populated every location; drives the periodic loop's retry backoff.
+    @Volatile private var lastSyncOk = false
 
     // Stable BlobDB key for the GPS-tracked current location (its coordinates change, but it is one entry).
     private val currentLocationKey = keyFor("stoandl::current-location")
@@ -97,16 +105,27 @@ class WeatherSync(
             .onEach { connected ->
                 if (connected) {
                     log.info { "Watch connected — refreshing weather" }
-                    runCatching { syncNow() }.onFailure { log.warn(it) { "On-connect weather sync failed" } }
+                    runCatching { syncNow() }.onFailure { log.warn { "On-connect weather sync failed: ${it.message}" } }
                 }
             }
             .launchIn(scope)
 
-        // Periodic refresh so the Weather BlobDB stays current even across long connections.
+        // Periodic refresh so the Weather BlobDB stays current even across long connections. On a
+        // failed/partial fetch, retry sooner with backoff instead of waiting the full interval.
         scope.launch {
+            var failStreak = 0
             while (true) {
-                runCatching { syncNow() }.onFailure { log.warn(it) { "Periodic weather sync failed" } }
-                delay(intervalMinutes.minutes)
+                runCatching { syncNow() }.onFailure { log.warn { "Periodic weather sync failed: ${it.message}" } }
+                val wait = if (lastSyncOk) {
+                    failStreak = 0
+                    intervalMinutes.minutes
+                } else {
+                    val backoff = WEATHER_RETRY_BACKOFF.getOrElse(failStreak) { WEATHER_RETRY_BACKOFF.last() }
+                    failStreak++
+                    log.info { "Weather incomplete — retrying in $backoff" }
+                    backoff
+                }
+                delay(wait)
             }
         }
     }
@@ -134,7 +153,7 @@ class WeatherSync(
                     val name = (if (reverseGeocodeEnabled) reverseGeocode(lat, lon) else null) ?: gpsFallbackName
                     runCatching { fetchAt(currentLocationKey, name, lat, lon, isCurrentLocation = true) }
                         .getOrElse {
-                            log.warn(it) { "Weather fetch failed for current location" }
+                            log.warn { "Weather fetch failed for current location: ${it.message}" }
                             WeatherLocationData.WeatherLocationDataFailed(currentLocationKey)
                         }
                 }
@@ -143,13 +162,13 @@ class WeatherSync(
 
         // Manual locations plus any imported from the DE/command source, de-duplicated by name.
         val deLocations = runCatching { extraLocations?.invoke() ?: emptyList() }
-            .getOrElse { log.warn(it) { "Importing DE locations failed" }; emptyList() }
+            .getOrElse { log.warn { "Importing DE locations failed: ${it.message}" }; emptyList() }
         val fixed = (locations + deLocations).distinctBy { it.name.lowercase() }
         fixed.forEach { location ->
             tasks += scope.async {
                 runCatching { fetchAt(keyFor(location.name), location.name, location.latitude, location.longitude, false) }
                     .getOrElse {
-                        log.warn(it) { "Weather fetch failed for ${location.name}" }
+                        log.warn { "Weather fetch failed for ${location.name}: ${it.message}" }
                         WeatherLocationData.WeatherLocationDataFailed(keyFor(location.name))
                     }
             }
@@ -158,6 +177,7 @@ class WeatherSync(
         val results = tasks.awaitAll()
         libPebble.updateWeatherData(results)
         val populated = results.count { it is WeatherLocationData.WeatherLocationDataPopulated }
+        lastSyncOk = populated == results.size
         log.info { "Weather updated: $populated/${results.size} location(s) populated" }
         populated
     }
