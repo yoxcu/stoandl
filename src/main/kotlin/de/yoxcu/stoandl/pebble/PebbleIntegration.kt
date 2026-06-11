@@ -83,9 +83,7 @@ import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
-import kotlin.system.exitProcess
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -101,18 +99,13 @@ private class PairingGate {
     fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.get()
 }
 
-// Reconnect watchdog cadence and the stall window after which we treat the BLE stack as wedged
-// and restart the process. The window must comfortably exceed the gap between failed connection
-// attempts (~20-60s each) so an out-of-range watch — which keeps failing, i.e. shows activity —
-// never trips it; only a true stall (no attempts at all) does.
-private val WATCHDOG_INTERVAL = 60.seconds
-private val WATCHDOG_STALL_RESTART = 10.minutes
-// How long a bonded watch may be unreachable *while the BLE stack is actively retrying* before we
-// nudge the user (once) to run `stoandl unpair`. Purely informational — it never touches the bond —
-// so it's safe to keep short; the only cost of a low value is an ignorable nudge when the watch is
-// merely out of range for a while.
-private val UNREACHABLE_NOTIFY = 5.minutes
-private const val SCAN_FAILURE_RESTART_THRESHOLD = 5  // ~5 failed scan cycles (~3min) → restart for a clean stack
+// Reconnection is delegated to BlueZ's kernel background auto-connect (a bonded watch is marked
+// Trusted and a single standing Device1.Connect() intent is left in place — BlueZ reconnects it the
+// instant it advertises). There is therefore no reconnect poll to stall, and no process-restart
+// watchdog: a process restart can't fix a wedged bluetoothd anyway (we're a --user service; the only
+// real remedy is `systemctl restart bluetooth` or an adapter reset), and the empirical record showed
+// such restarts looping uselessly against an out-of-range watch. Genuine crashes are still caught by
+// systemd Restart=on-failure; stale bonds are handled by the reaper below.
 
 // Stale-bond reaper: a bonded watch that is in range but keeps failing to connect (the watch no
 // longer honours BlueZ's bond — wiped, re-paired elsewhere, or a phantom object). Acts only on
@@ -121,6 +114,9 @@ private const val SCAN_FAILURE_RESTART_THRESHOLD = 5  // ~5 failed scan cycles (
 private val REAPER_INTERVAL = 30.seconds
 private const val STALE_FAILS_THRESHOLD = 5      // consecutive present-but-failed connects before clearing
 private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto re-pair before forgetting
+
+// How often to check whether an external process's Bluetooth discovery is blocking reconnection.
+private val DISCOVERY_WARN_INTERVAL = 60.seconds
 
 private val log = KotlinLogging.logger {}
 
@@ -194,8 +190,8 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
-        startConnectionWatchdog()
         startStaleBondReaper()
+        startDiscoveryInterferenceWarning()
         registerControlService()
         startCallMonitor()
         startWeatherSync()
@@ -225,7 +221,6 @@ class PebbleIntegration(
             // Wait for watchBluetoothPowerState() to complete its initial GetManagedObjects() check
             // before the first scan attempt so btAdapterPowered reflects reality from the start.
             delay(1.seconds)
-            var consecutiveScanFailures = 0
             while (true) {
                 // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
                 // (covers rfkill / airplane mode where GattServerManager may still report Enabled).
@@ -233,7 +228,6 @@ class PebbleIntegration(
                 val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                 if (!btOn) {
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
-                    consecutiveScanFailures = 0
                     combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
                         bt.enabled() && powered
                     }.first { it }
@@ -241,17 +235,17 @@ class PebbleIntegration(
                     continue
                 }
 
-                // Fix A: don't scan while connected OR while a connect attempt is in flight. A scan
-                // started during a connect collides with it on BlueZ's single discovery slot
-                // (org.bluez.Error.InProgress); the connect then never completes — the watch sits in
-                // ConnectingPebbleDevice for the full timeout and the cycle repeats forever (wedge #3).
+                // Don't scan while connected OR while a connect attempt is in flight: a scan started
+                // during a connect collides with it on BlueZ's single discovery slot
+                // (org.bluez.Error.InProgress). With BlueZ-native auto-connect a bonded watch is always
+                // "connecting" (a standing kernel intent), so this keeps the scanner quiet in steady
+                // state — scanning is only needed to discover an *unbonded* watch during pairing.
                 val busy = libPebble.watches.value.any {
                     it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                 }
                 if (busy) {
                     // No need to discover while connected/connecting; stop any lingering scan.
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
-                    consecutiveScanFailures = 0
                 } else {
                     // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
                     // already has a discovery running returns org.bluez.Error.InProgress and the scan
@@ -262,97 +256,8 @@ class PebbleIntegration(
                     }
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
-
-                    // Fix B: detect a wedged BLE stack the connection watchdog can't see. startBleScan()
-                    // sets isScanningBle=true synchronously; if the scan flow throws (e.g. another process
-                    // holds the BlueZ discovery slot) it flips back to false within moments, whereas a
-                    // healthy scan stays active for ~30s. Repeated failures → stack is wedged → restart.
-                    delay(3.seconds)
-                    val stillIdle = libPebble.watches.value.none {
-                        it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
-                    }
-                    if (stillIdle && !libPebble.isScanningBle.value) {
-                        consecutiveScanFailures++
-                        log.warn { "BLE scan failed to start ($consecutiveScanFailures consecutive)" }
-                        if (consecutiveScanFailures >= SCAN_FAILURE_RESTART_THRESHOLD) {
-                            log.error {
-                                "BLE scan stack wedged ($consecutiveScanFailures consecutive scan " +
-                                    "failures); exiting for systemd restart"
-                            }
-                            gracefulShutdown()
-                            exitProcess(1)
-                        }
-                    } else {
-                        consecutiveScanFailures = 0
-                    }
                 }
                 delay(35.seconds) // slightly longer than the 30s scan timeout
-            }
-        }
-    }
-
-    /**
-     * Backstop for a wedged native BLE stack. A bonded watch that is merely out of range still shows
-     * "connection activity" (libpebble keeps attempting → ConnectingPebbleDevice transitions and an
-     * ever-incrementing failure counter); a wedged stack shows none at all. If a bonded, non-connected
-     * watch produces zero activity for [WATCHDOG_STALL_RESTART] while Bluetooth is on, exit so systemd
-     * restarts us with a fresh stack. The WatchManager fork fix should prevent the wedge we diagnosed;
-     * this also covers any residual wedge originating in the external kable/btleplug layer.
-     */
-    private fun startConnectionWatchdog() {
-        val lastHealthyMs = AtomicReference(System.currentTimeMillis())
-        // Per-watch last-seen attempt counter, polled directly in the loop so we don't depend on the
-        // timing of libPebble.watches emissions (which previously let the wedge check false-positive).
-        val lastFailTimes = ConcurrentHashMap<String, Int>()
-        var notifiedUnreachable = false
-
-        scope.launch {
-            while (true) {
-                delay(WATCHDOG_INTERVAL)
-                val devices = libPebble.watches.value
-                val connected = devices.any { it is ConnectedPebbleDevice }
-                val bonded = devices.filterIsInstance<KnownPebbleDevice>().filter { it !is ConnectedPebbleDevice }
-                if (connected || bonded.isEmpty() || !libPebble.bluetoothEnabled.value.enabled()) {
-                    lastHealthyMs.set(System.currentTimeMillis())
-                    lastFailTimes.clear()
-                    notifiedUnreachable = false
-                    continue
-                }
-                // Is the BLE stack actively (re)trying? A connect in progress, or any bonded watch's
-                // attempt counter moving since the last check, means the stack is alive — the watch is
-                // just unreachable (out of range, or bonded to another host). Restarting can't fix that.
-                var attempting = devices.any { it is ConnectingPebbleDevice }
-                bonded.forEach { d ->
-                    val t = d.connectionFailureInfo?.times ?: 0
-                    if (lastFailTimes.put(d.identifier.asString, t) != t) attempting = true
-                }
-                val stalledMs = System.currentTimeMillis() - lastHealthyMs.get()
-
-                if (attempting) {
-                    // Stack works, watch won't connect → never restart (futile). Nudge the user once
-                    // after the (short, harmless) notify window.
-                    if (stalledMs >= UNREACHABLE_NOTIFY.inWholeMilliseconds && !notifiedUnreachable) {
-                        notifiedUnreachable = true
-                        val name = bonded.firstOrNull()?.displayName() ?: "Your Pebble"
-                        log.warn {
-                            "Bonded watch unreachable for ${stalledMs / 1000}s but BLE stack is active " +
-                                "(still attempting) — not restarting. If you've paired it elsewhere, run 'stoandl unpair'."
-                        }
-                        sendDesktopNotification(
-                            "Pebble not connecting",
-                            "$name hasn't connected in ${stalledMs / 60000} min. If you've paired it to " +
-                                "another device, run 'stoandl unpair' on this host.",
-                        )
-                    }
-                } else if (stalledMs >= WATCHDOG_STALL_RESTART.inWholeMilliseconds) {
-                    // No connection attempts at all → the BLE stack itself is wedged → restart.
-                    log.error {
-                        "Watchdog: no connection activity for ${stalledMs / 1000}s — BLE stack appears " +
-                            "wedged; exiting for systemd restart"
-                    }
-                    gracefulShutdown()
-                    exitProcess(1)
-                }
             }
         }
     }
@@ -414,6 +319,69 @@ class PebbleIntegration(
                     }
                 }
                 clearedAt.keys.retainAll(devices.map { it.identifier.asString }.toSet())
+            }
+        }
+    }
+
+    /**
+     * Diagnostic: warn (once) when an *external* process is running Bluetooth discovery while a bonded
+     * watch is trying to reconnect. A discovery monopolizes the controller's single LE scanner, so
+     * BlueZ cannot issue our standing `Device1.Connect()` — the watch then can't reconnect even though
+     * everything on our side is correct. This is invisible without a btmon snoop and once cost a long
+     * debugging session; surfacing it turns a multi-hour mystery into a one-line hint. It cannot be
+     * *fixed* here (each client owns its own discovery session — we can't stop another process's scan),
+     * only reported. `Adapter1.Discovering` is true whenever ANY client (including us) holds discovery,
+     * so we only flag it when stoandl itself is NOT scanning.
+     */
+    private fun startDiscoveryInterferenceWarning() {
+        scope.launch(Dispatchers.IO) {
+            val conn = try {
+                DBusConnectionBuilder.forSystemBus().withShared(false).build()
+            } catch (e: Exception) {
+                log.debug { "Discovery-interference monitor unavailable: ${e.message}" }
+                return@launch
+            }
+            val hciAdapter = Regex("/org/bluez/hci\\d+$")
+            fun externalDiscoveryActive(): Boolean {
+                if (libPebble.isScanningBle.value) return false // our own scan, not interference
+                return try {
+                    val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
+                    objMgr.GetManagedObjects().any { (path, ifaces) ->
+                        hciAdapter.matches(path.toString()) &&
+                            variantValue(ifaces["org.bluez.Adapter1"]?.get("Discovering")) as? Boolean == true
+                    }
+                } catch (_: Exception) { false }
+            }
+
+            var warned = false
+            try {
+                while (true) {
+                    delay(DISCOVERY_WARN_INTERVAL)
+                    val devices = libPebble.watches.value
+                    if (devices.any { it is ConnectedPebbleDevice }) { warned = false; continue }
+                    val haveBonded = devices.filterIsInstance<KnownPebbleDevice>().any { it !is ConnectedPebbleDevice }
+                    val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                    if (haveBonded && btOn && externalDiscoveryActive()) {
+                        if (!warned) {
+                            warned = true
+                            log.warn {
+                                "Another process is running Bluetooth discovery (Adapter1.Discovering=true " +
+                                    "and stoandl is not scanning) — it monopolizes the controller's scanner, " +
+                                    "so the watch cannot reconnect. Close it (e.g. an open Bluetooth settings " +
+                                    "or pairing window) or stop the scan."
+                            }
+                            sendDesktopNotification(
+                                "Pebble blocked by a Bluetooth scan",
+                                "Another app is scanning for Bluetooth devices, which blocks your Pebble " +
+                                    "from reconnecting. Close any open Bluetooth settings or pairing window.",
+                            )
+                        }
+                    } else {
+                        warned = false
+                    }
+                }
+            } finally {
+                conn.disconnect()
             }
         }
     }

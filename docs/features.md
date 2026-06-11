@@ -20,7 +20,7 @@ that (no health dashboard, no account-backed app store); others are genuine TODO
 - [x] **PKJS (PebbleKit JS)** — companion scripts run in GraalJS (XHR, AppMessage, webhooks)
 - [x] **App configuration pages (Clay)** — `stoandl config [app]` serves the config page via a local proxy
 - [x] **BLE pairing / bonding** — headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC)
-- [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range; kable surfaces disconnects within seconds of the BLE supervision timeout firing; a 10-min stall watchdog self-restarts (via systemd) if the native BLE stack genuinely wedges
+- [x] **Automatic reconnect** — bonded reconnect after watch disconnect, daemon restart, or coming back into range. Reconnection is delegated to BlueZ's own background auto-connect: the watch is marked `Trusted` and a single standing `Device1.Connect()` intent is left in place, so BlueZ links it up the instant it's reachable — no polling, no Connect/Disconnect churn, no process-restart watchdog. (Reconnection needs the adapter's LE scanner free; another process running Bluetooth discovery blocks it — stoandl warns when it detects that.)
 
 ### Implemented — to be tested (multi-watch)
 

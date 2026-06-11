@@ -16,7 +16,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app (Open-Meteo — free, no account)
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
-- Reconnects automatically — after watch disconnects, daemon restarts, or coming back into range; a watchdog self-restarts via systemd if the BLE stack wedges
+- Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
 It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
@@ -72,6 +72,13 @@ Then `sudo systemctl restart bluetooth`. Note: disables Bluetooth Classic for th
 
 On first connection the watch shows a **6-digit code**. stoandl auto-accepts on the Linux side —
 just confirm the code on the watch. Subsequent reconnects are automatic.
+
+> **Won't reconnect?** The most common cause is *another process running Bluetooth discovery* — an
+> open Bluetooth settings panel or pairing window (GNOME/KDE), or a stray `bluetoothctl scan on`.
+> Discovery monopolizes the adapter's single LE scanner, so BlueZ can't issue the watch's connection
+> and it never links up. Check with `bluetoothctl show | grep Discovering`; if it's `yes` and you
+> didn't start it, close the scanner — the watch reconnects within a second. stoandl logs a warning
+> (and sends a desktop notification) when it detects this.
 
 ## Build
 

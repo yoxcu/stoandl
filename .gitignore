@@ -5,6 +5,7 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 *.pbw
 *.log
+*.snoop
 
 # Local config/locker backup archives (stoandl backup)
 stoandl-backup-*.tar.gz
