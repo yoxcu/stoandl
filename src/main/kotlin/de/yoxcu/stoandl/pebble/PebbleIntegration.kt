@@ -208,8 +208,13 @@ class PebbleIntegration(
         if (!::libPebble.isInitialized) return
         log.info { "graceful BLE shutdown: disconnecting watches" }
         runBlocking {
+            // Drop the BLE link at the BlueZ level (watch sees us go down → re-advertises), but do NOT
+            // use requestDisconnection(): it persists connectGoal=false, which makes the next launch
+            // refuse to reconnect to its own watch until a manual re-pair.
             libPebble.watches.value.forEach { device ->
-                watchConnector.requestDisconnection(device.identifier)
+                (device.identifier as? PebbleBleIdentifier)?.let { id ->
+                    bluezObjectPath(id.asString)?.let { withContext(Dispatchers.IO) { disconnectBluezDevice(it) } }
+                }
             }
             delay(1.5.seconds)
         }
@@ -855,6 +860,12 @@ private interface BluezAdapter1Ctl : DBusInterface {
     fun RemoveDevice(device: DBusPath)
 }
 
+@DBusInterfaceName("org.bluez.Device1")
+private interface BluezDevice1Ctl : DBusInterface {
+    @Suppress("FunctionName")
+    fun Disconnect()
+}
+
 private const val ORG_BLUEZ = "org.bluez"
 private const val BLUEZ_DEVICE1 = "org.bluez.Device1"
 // Pebble BLE manufacturer-data company IDs (mirrors libpebble3's BluezBleScanner).
@@ -934,6 +945,29 @@ private fun removeBluezBond(devicePath: String): Boolean {
     } catch (e: Exception) {
         log.warn { "removeBluezBond($devicePath) failed: ${e.message}" }
         false
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/**
+ * Drops the BLE link to a watch via BlueZ Device1.Disconnect, WITHOUT touching libpebble3's
+ * connectGoal. Used on shutdown so the watch sees us go down and re-advertises (otherwise it stays
+ * believing it's connected and ignores the next session's connection attempts) — but, unlike
+ * watchConnector.requestDisconnection(), it leaves connectGoal=true so the next launch reconnects.
+ */
+private fun disconnectBluezDevice(devicePath: String) {
+    val conn = try {
+        DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    } catch (e: Exception) {
+        log.warn { "disconnectBluezDevice: cannot reach system bus: ${e.message}" }
+        return
+    }
+    try {
+        conn.getRemoteObject(ORG_BLUEZ, devicePath, BluezDevice1Ctl::class.java).Disconnect()
+        log.info { "Disconnected BLE link on shutdown: $devicePath" }
+    } catch (e: Exception) {
+        log.warn { "disconnectBluezDevice($devicePath) failed: ${e.message}" }
     } finally {
         conn.disconnect()
     }
