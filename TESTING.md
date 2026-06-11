@@ -11,7 +11,7 @@ project — everything here is driven from the CLI, the watch, and
 tail -f /tmp/stoandl.log
 
 # Handy grep while testing reconnect:
-tail -f /tmp/stoandl.log | grep -E "Starting BLE scan|Ble scan failed|Already connecting|Watchdog|connected|connect\(\)"
+tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Discovering|Re-pairing|Pebble blocked"
 
 # Service control:
 systemctl --user restart stoandl
@@ -68,93 +68,93 @@ settings appear.
 
 ---
 
-## 3. Reconnect resilience (scan hygiene + fork fix + watchdog)
+## 3. Reconnect resilience (BlueZ-native auto-connect)
 
-### 3a. Scan hygiene (the overnight bug's visible symptom)
+Reconnection is delegated to BlueZ's own background auto-connect: the watch is
+marked `Trusted` and a single standing `Device1.Connect()` intent is left in
+place, so BlueZ reconnects it the instant it's reachable — no reconnect poll, no
+`Disconnect()`-on-failure, and **no process-restart watchdog**. The pieces below
+are **VERIFIED on GNOME**; the one outstanding item is a full pass on the real
+target — see **3f (phone)**.
 
 ```sh
-# While CONNECTED — should be quiet, no scanning:
-grep -c "Ble scan failed" /tmp/stoandl.log     # should stop growing
+tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Discovering|Re-pairing|Pebble blocked"
 ```
 
-- **Connected:** no `Starting BLE scan` lines (scan is suppressed), and
-  **zero** new `Ble scan failed` / `org.bluez.Error.InProgress`.
-- **Disconnected:** `Starting BLE scan` roughly every 35 s, each preceded
-  by a clean stop — and crucially **no** `InProgress` errors. Compare: the
-  old log had 817 `Ble scan failed` overnight; the new one should have
-  ~none.
+### 3a. Normal reconnect — VERIFIED (GNOME)
 
-### 3b. Normal reconnect (the core fix)
+Drop the link and bring the watch back: power-cycle it, walk out of range, toggle
+its airplane mode, or `bluetoothctl disconnect <MAC>`.
 
-Put the watch out of range, then bring it back:
+- **Expected:** it reconnects on its own within a second or two of the watch
+  being reachable — `connect() starting` → `connected and services resolved` →
+  `StartNotify on PPoG`; a test notification reaches the watch.
+- Repeat 5–10× (airplane toggles are easiest). Must NOT see
+  `Already connecting (this is a bug)`.
 
-- **Method A:** power the watch off, wait ~1 min, power on.
-- **Method B:** walk out of BLE range for a few minutes and return.
-- **Method C (forced disconnect):** `bluetoothctl disconnect <watch-mac>`.
+### 3b. No competing discovery (the real "won't reconnect" cause) — VERIFIED (GNOME)
 
-**Expected:** within a connect cycle the watch reconnects; log shows connect
-attempts resuming and a successful connection; `stoandl apps` works again; a
-test notification reaches the watch. **Must NOT** see
-`Already connecting (this is a bug)` — that's the wedge the fork fix removes.
+A second process running Bluetooth discovery monopolizes the controller's one LE
+scanner and blocks the watch's reconnect — the cause of the long ConnectTimeout
+saga.
 
-Run 3b **several times in a row** (especially Method A/B, which produce the
-"messy" disconnect that originally wedged it). The original failure was
-intermittent, so repeat 5–10×.
+```sh
+bluetoothctl show | grep Discovering    # 'yes' while a BT settings panel is open
+```
 
-### 3c. Watchdog — negative test (most important, no rebuild)
+- Open a desktop Bluetooth settings/pairing panel → `Discovering: yes` → the
+  watch can't reconnect. Within ~1 min stoandl warns and sends a **"Pebble blocked
+  by a Bluetooth scan"** notification.
+- Close it → `Discovering: no` → the watch reconnects within a second.
 
-Leave the watch out of range for **15–20 min** with host Bluetooth **on**:
+### 3c. Service restart — VERIFIED (GNOME)
 
-- **Expected:** the daemon keeps trying (connect attempts/failures =
-  "activity"), and the watchdog does **NOT** restart the process. Verify it
-  stayed up:
+`systemctl --user restart stoandl` with the watch in range.
 
-  ```sh
-  systemctl --user status stoandl     # "Active: active (running) since …" unchanged; no restart
-  grep "Watchdog" /tmp/stoandl.log    # no wedge line
-  ```
+- **Expected:** reconnects in ~5–10 s (`connect() starting` → `connected and
+  services resolved`), no churn. (Not ~60 s — that was the 0x3e-flap re-arm bug,
+  fixed.)
 
-- When you return, it reconnects (per 3b). This confirms the watchdog won't
-  churn-restart while you're simply away.
+### 3d. No process restart while away — VERIFIED (GNOME)
 
-### 3d. Watchdog — positive test (optional, needs a throwaway build)
+Leave the watch away for **20+ min** with host Bluetooth **on**.
 
-The restart only fires on a *true* wedge (no connection activity at all for
-10 min), which is hard to induce on purpose. To exercise the mechanism,
-build a temporary copy with a short timeout:
-
-- In `PebbleIntegration.kt` set `WATCHDOG_STALL_RESTART = 2.minutes`, and to
-  simulate "no activity" comment out the failure-count branch in the
-  activity tracker (so out-of-range no longer counts as activity). Rebuild,
-  run, disconnect the watch.
-- **Expected:** after ~2 min, log:
-  `Watchdog: bonded watch shows no connection activity … exiting for systemd restart`,
-  process exits 1, `systemctl --user status` shows it restarted
-  (`RestartSec=5`), and the fresh process reconnects.
-- **Revert** the throwaway changes afterward.
-
-### 3e. Stale ("zombie") connection recovery
-
-Symptom this guards against: after a marginal-range stretch, kable/btleplug can hold a **dead** link
-for many minutes without emitting a disconnect, so the daemon neither scans nor reconnects and the
-watch stays disconnected even back in range (observed: ~26 min stuck, then a 15 s reconnect once kable
-finally noticed). A BlueZ cross-check now forces recovery in ~1 min instead.
-
-- Reproduce the stuck state (walk out of range mid-connection until the log goes silent on a
-  `Watch connected` with no following `Disconnection`). While stuck, confirm the split view:
+- **Expected:** the daemon stays up (there is no `exitProcess` watchdog), BlueZ
+  holds the standing intent at ~zero cost, and it reconnects when the watch
+  returns.
 
   ```sh
-  bluetoothctl info <MAC>            # Connected: no   ← BlueZ knows it's gone
-  tail -f /tmp/stoandl.log           # daemon silent, NOT scanning ← it still thinks it's connected
+  systemctl --user status stoandl    # "Active: … since" unchanged; never restarted
+  grep -iE "wedged|exiting for systemd" /tmp/stoandl.log   # none
   ```
 
-- **Expected:** within ~40–60 s the stale-connection watchdog logs
-  `Stale connection: libpebble reports <MAC> connected but BlueZ shows it disconnected … — forcing reconnect`,
-  then the normal teardown / `Starting BLE scan` / reconnect follows. If the forced disconnect doesn't take,
-  ~30 s later: `… persists … after a forced disconnect — restarting for a clean BLE stack` and systemd
-  restarts it. Either way the watch is back in well under the old multi-minute wait.
-- **Negative:** during a *healthy* connection, `bluetoothctl info` shows `Connected: yes`, so the
-  watchdog never fires — no spurious `Stale connection` lines or restarts.
+### 3e. Unpaired-on-watch recovery — VERIFIED (GNOME, except the action button)
+
+Forget the host in the **watch's** Bluetooth settings (a one-sided bond: the host
+still holds it, the watch doesn't).
+
+- **Expected:** within ~25 s stoandl detects the churn (BlueZ re-establishing a
+  dead link every few seconds — `Broken-bond detector …`) and sends a **"Pebble
+  won't stay connected"** notification with a **Re-pair** button.
+- Tap **Re-pair** (with the watch in pairing mode) → it re-pairs. Or run
+  `stoandl repair <name>` (substring, e.g. `stoandl repair B349`).
+- `stoandl list` shows known watches + state. `stoandl pair` must NOT disturb a
+  second watch that's merely out of range (multi-watch safety).
+- ⚠️ **Still to verify:** the **Re-pair action button** depends on the
+  notification server supporting actions — confirmed on GNOME, **unverified on
+  Plasma Mobile**.
+
+### 3f. Full pass on the phone (Plasma Mobile)  ⚠️ STILL TO TEST
+
+The whole of section 3 has only been exercised on a GNOME desktop. The real
+deployment target is the phone, so re-run **3a–3e there**:
+
+- Reconnect after airplane/out-of-range (3a) and after `restart` (3c).
+- Confirm there's **no competing discovery** on the phone in normal use
+  (`bluetoothctl show | grep Discovering` → `no`); if Plasma Mobile keeps a
+  scanner running, that's the same collision (3b) and needs handling there.
+- Confirm the **action button** renders and `ActionInvoked` fires (3e).
+- Notifications, weather, and PKJS still flow after a phone-side reconnect.
 
 ---
 

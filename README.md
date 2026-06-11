@@ -73,6 +73,17 @@ Then `sudo systemctl restart bluetooth`. Note: disables Bluetooth Classic for th
 On first connection the watch shows a **6-digit code**. stoandl auto-accepts on the Linux side —
 just confirm the code on the watch. Subsequent reconnects are automatic.
 
+```sh
+stoandl pair                 # pair a new watch (opens a ~2 min window)
+stoandl list                 # known watches and their connection state
+stoandl repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
+stoandl unpair               # forget the watch on this host (e.g. moving it elsewhere)
+```
+
+If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
+re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
+`stoandl repair <name>`. `pair` never disturbs other watches, so it's safe with multiple Pebbles.
+
 > **Won't reconnect?** The most common cause is *another process running Bluetooth discovery* — an
 > open Bluetooth settings panel or pairing window (GNOME/KDE), or a stray `bluetoothctl scan on`.
 > Discovery monopolizes the adapter's single LE scanner, so BlueZ can't issue the watch's connection
