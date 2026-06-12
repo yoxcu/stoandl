@@ -84,6 +84,11 @@ If you forget the host **on the watch** (one-sided bond), stoandl notices the wa
 re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
 `stoandl repair <name>`. `pair` never disturbs other watches, so it's safe with multiple Pebbles.
 
+Conversely, if the pairing is removed **on this computer** (e.g. `bluetoothctl remove`, while the
+watch still holds its side), stoandl forgets the now-unusable watch and notifies you that the only
+way back is to unpair it on the watch too, then `stoandl pair` — a half-removed bond can't be
+restored. (To forget a watch cleanly in the first place, use `stoandl unpair`, not `bluetoothctl`.)
+
 > **Won't reconnect?** The most common cause is *another process running Bluetooth discovery* — an
 > open Bluetooth settings panel or pairing window (GNOME/KDE), or a stray `bluetoothctl scan on`.
 > Discovery monopolizes the adapter's single LE scanner, so BlueZ can't issue the watch's connection

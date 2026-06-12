@@ -11,7 +11,7 @@ project — everything here is driven from the CLI, the watch, and
 tail -f /tmp/stoandl.log
 
 # Handy grep while testing reconnect:
-tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Discovering|Re-pairing|Pebble blocked"
+tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Host bond lost|Starting BLE scan|Discovering|Re-pairing|Pebble blocked"
 
 # Service control:
 systemctl --user restart stoandl
@@ -78,7 +78,7 @@ are **VERIFIED on GNOME**; the one outstanding item is a full pass on the real
 target — see **3f (phone)**.
 
 ```sh
-tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Discovering|Re-pairing|Pebble blocked"
+tail -f /tmp/stoandl.log | grep -E "connect\(\) starting|connected and services resolved|link dropped|StartNotify|Broken-bond|Host bond lost|Starting BLE scan|Discovering|Re-pairing|Pebble blocked"
 ```
 
 ### 3a. Normal reconnect — VERIFIED (GNOME)
@@ -144,16 +144,57 @@ still holds it, the watch doesn't).
   notification server supporting actions — confirmed on GNOME, **unverified on
   Plasma Mobile**.
 
-### 3f. Full pass on the phone (Plasma Mobile)  ⚠️ STILL TO TEST
+### 3f. Pairing removed on the host — VERIFIED (GNOME, except the action button)
+
+The inverse of 3e: remove the pairing **on the host** while the watch still holds
+its side — BlueZ then has no bond, so the watch can never reconnect without a
+fresh pair.
+
+```sh
+bluetoothctl remove <MAC>     # external bond loss; the watch is NOT touched
+```
+
+> The *clean* way to forget a watch is `stoandl unpair` (removes it from both
+> BlueZ and stoandl's DB). This test is the messy case where an *external*
+> removal leaves stoandl's DB and the watch out of sync.
+
+- **Expected:** the connect loop fails (`failed to connect … FailedToConnect`,
+  `isBonded check failed …`); within ~15 s stoandl logs `Host bond lost for
+  <name> …`, sends a **"Pebble pairing removed"** notification (with a **Pair**
+  button), and **forgets** the watch — which stops the retry loop. The radio then
+  goes quiet (no scan storm — see 3g).
+- **Recover:** unpair the host on the **watch** too, then tap **Pair** (or run
+  `stoandl pair`) → it re-pairs and reconnects; data flows.
+- Must **not** fire for a healthy watch merely out of range (its bond is intact →
+  `isBonded` stays true), nor transiently during `systemctl restart bluetooth`
+  (BlueZ reloads bonds within the grace).
+
+### 3g. Idle radio is quiet (scan-gate) — VERIFIED (GNOME)
+
+The discovery scan runs **only while a pairing window is open** — a bonded watch
+reconnects via BlueZ auto-connect with no app scan, so scanning is needed only to
+discover an *unbonded* watch during pairing.
+
+- With **no watch connected and no pairing window** (idle, just-unpaired, or a
+  just-forgotten watch from 3f), the log shows **no** repeating `Starting BLE
+  scan` and a `btmon` capture stays quiet — not a flood of advertising reports.
+- `stoandl pair` / the **Pair** button still kicks discovery within ~1 s of
+  opening the window (`Starting BLE scan` → `pebble match count 0 -> 1`).
+- Sanity: this must not break 3a — a healthy watch still reconnects after
+  out-of-range/airplane **without** any `Starting BLE scan` (BlueZ does it).
+
+### 3h. Full pass on the phone (Plasma Mobile)  ⚠️ STILL TO TEST
 
 The whole of section 3 has only been exercised on a GNOME desktop. The real
-deployment target is the phone, so re-run **3a–3e there**:
+deployment target is the phone, so re-run **3a–3g there**:
 
 - Reconnect after airplane/out-of-range (3a) and after `restart` (3c).
 - Confirm there's **no competing discovery** on the phone in normal use
   (`bluetoothctl show | grep Discovering` → `no`); if Plasma Mobile keeps a
   scanner running, that's the same collision (3b) and needs handling there.
-- Confirm the **action button** renders and `ActionInvoked` fires (3e).
+- Confirm the **action buttons** render and `ActionInvoked` fires — both the
+  Re-pair (3e) and the Pair (3f) buttons.
+- Confirm the idle radio stays quiet (3g) and `stoandl pair` still discovers.
 - Notifications, weather, and PKJS still flow after a phone-side reconnect.
 
 ---
