@@ -128,6 +128,11 @@ private val BROKEN_BOND_WINDOW = 3.minutes
 private const val BROKEN_BOND_FLAPS = 5   // present-but-rejected (FailedToConnect) attempts → notify
 private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification this often while it persists
                                            // (in place, via replaces_id — it updates, never stacks)
+// The OTHER broken-bond direction: the host lost the BlueZ pairing (e.g. `bluetoothctl remove`) while
+// libpebble still wants the watch. It can never reconnect without a fresh pair, so once it's been
+// unbonded this long (fires on the 2nd consecutive poll), we forget it + notify. Short, but long enough
+// to outlast a `systemctl restart bluetooth` (BlueZ reloads bonds from disk in a few seconds).
+private val HOST_BOND_LOST_GRACE = 10.seconds
 
 private val log = KotlinLogging.logger {}
 
@@ -252,16 +257,18 @@ class PebbleIntegration(
                     continue
                 }
 
-                // Don't scan while connected OR while a connect attempt is in flight: a scan started
-                // during a connect collides with it on BlueZ's single discovery slot
-                // (org.bluez.Error.InProgress). With BlueZ-native auto-connect a bonded watch is always
-                // "connecting" (a standing kernel intent), so this keeps the scanner quiet in steady
-                // state — scanning is only needed to discover an *unbonded* watch during pairing.
+                // Scanning is ONLY needed to discover an *unbonded* watch during pairing — a bonded watch
+                // reconnects via BlueZ-native background auto-connect, no app scan. So scan only while a
+                // pairing window is open. This keeps the radio quiet in every idle state — no watch,
+                // post-unpair, or a host-bond-lost watch we just forgot — instead of flooding advertising
+                // reports (a btmon "storm") whenever nothing happens to be connecting. Also don't scan
+                // while connected/connecting: a scan collides with a connect on BlueZ's single discovery
+                // slot (org.bluez.Error.InProgress).
                 val busy = libPebble.watches.value.any {
                     it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                 }
-                if (busy) {
-                    // No need to discover while connected/connecting; stop any lingering scan.
+                if (!pairingGate.isOpen() || busy) {
+                    // Not pairing, or already connected/connecting → stop any lingering scan.
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
                 } else {
                     // Stop an in-flight scan before restarting it. Calling startBleScan() while BlueZ
@@ -411,21 +418,27 @@ class PebbleIntegration(
     }
 
     /**
-     * Detects the one-sided-bond churn that is INVISIBLE to libpebble's device state: after the watch
-     * is unpaired ON THE WATCH, its still-Trusted bond makes BlueZ autonomously re-establish a dead
-     * link every few seconds — `Device1.Connected` flaps true/false — without ever completing a Pebble
-     * session. libPebble.watches never flaps for this, so we watch `Device1.Connected` directly over
-     * D-Bus. After [BROKEN_BOND_FLAPS] drops within [BROKEN_BOND_WINDOW] for a known watch that is NOT
-     * fully connected, NOTIFY with a one-tap Re-pair action.
+     * Watches for the two broken-bond directions, both INVISIBLE to libpebble's normal device state:
      *
-     * It never auto-forgets: a watch that reaches a full session (ConnectedPebbleDevice) has its count
-     * cleared, so a good bond — even a flaky one — is never flagged; an out-of-range watch produces no
-     * Connected=true and therefore no drops, so it's ignored too.
+     * 1. Unpaired ON THE WATCH (host still bonded): the still-Trusted bond makes BlueZ autonomously
+     *    re-establish a dead link every few seconds — `Device1.Connected` flaps true/false — without ever
+     *    completing a Pebble session. libPebble.watches never flaps for this, so we watch
+     *    `Device1.Connected` directly over D-Bus; after [BROKEN_BOND_FLAPS] drops within
+     *    [BROKEN_BOND_WINDOW] for a known not-fully-connected watch, NOTIFY with a one-tap Re-pair action.
+     *    Never auto-forgets here — the bond might be a perfectly-good flaky one — and a watch that reaches
+     *    a full session (ConnectedPebbleDevice) has its count cleared, so good/flaky bonds and out-of-range
+     *    watches are never flagged.
+     *
+     * 2. Pairing removed ON THE HOST (e.g. `bluetoothctl remove`): `isBonded` goes false. The watch can
+     *    NEVER reconnect without a fresh pair, so after [HOST_BOND_LOST_GRACE] (and not mid-pairing) we
+     *    DO forget it — stopping libpebble's futile connect loop — and notify the user to unpair on the
+     *    watch + re-pair. Safe to forget because, unlike (1), the bond is already gone, not maybe-good.
      */
     private fun startChurnDetector() {
         val drops = ConcurrentHashMap<String, MutableList<Long>>() // device object path -> drop timestamps
         val notifiedAt = ConcurrentHashMap<String, Long>()         // path -> when we last (re-)notified
         val notifId = ConcurrentHashMap<String, UInt32>()          // path -> live notification id (replace/close)
+        val unbondedSince = ConcurrentHashMap<String, Long>()      // path -> first poll the host bond was gone
         scope.launch(Dispatchers.IO) {
             val conn = try {
                 DBusConnectionBuilder.forSystemBus().withShared(false).build()
@@ -482,12 +495,33 @@ class PebbleIntegration(
                                 ?.let { bluezObjectPath(it) }?.let { p -> p to w }
                         }.toMap()
                     drops.keys.retainAll(watchByPath.keys) // forget paths now fully connected / unknown
+                    unbondedSince.keys.retainAll(watchByPath.keys)
                     // A watch that left the not-connected set (fully connected now, or gone): clear its alert.
                     for (path in notifId.keys - watchByPath.keys) {
                         notifId.remove(path)?.let { closeChurnNotification(it) }
                         notifiedAt.remove(path)
                     }
                     for ((path, w) in watchByPath) {
+                        // The OTHER direction: the host has NO BlueZ pairing for this known watch (isBonded
+                        // checks Device1.Paired; false also when `bluetoothctl remove` deleted the object).
+                        // It can't reconnect without a fresh pair, so once that's held past the grace (and
+                        // we're not mid-pairing, when the bond is briefly absent by design) forget it — which
+                        // stops libpebble's futile connect loop — and tell the user how to bring it back.
+                        val id = w.identifier as? PebbleBleIdentifier
+                        if (id != null && !pairingGate.isOpen() && !isBonded(id)) {
+                            val since = unbondedSince.getOrPut(path) { now }
+                            if (now - since >= HOST_BOND_LOST_GRACE.inWholeMilliseconds) {
+                                notifyHostBondLost(w)
+                                bluezObjectPath(id.asString)?.let(::removeBluezBond)
+                                bondCache.remove(id.asString)
+                                w.forget()
+                                unbondedSince.remove(path); drops.remove(path)
+                                notifId.remove(path)?.let { closeChurnNotification(it) }; notifiedAt.remove(path)
+                            }
+                            continue // unbonded → not the flap case
+                        }
+                        unbondedSince.remove(path) // host bond present again → reset the grace timer
+
                         val list = drops[path] ?: continue
                         val recent = synchronized(list) {
                             list.removeAll { now - it > BROKEN_BOND_WINDOW.inWholeMilliseconds }; list.size
@@ -527,6 +561,23 @@ class PebbleIntegration(
             actionLabel = "Re-pair",
             replacesId = replacesId,
         ) { repairByName(name) }
+    }
+
+    /** Host has no BlueZ pairing for this watch (e.g. `bluetoothctl remove`). We've already forgotten it
+     *  (it could never reconnect as-is); tell the user the one path back. The watch still holds its own
+     *  bond, so it must be unpaired there first — only then does Pair (or 'stoandl pair') take. */
+    private fun notifyHostBondLost(device: KnownPebbleDevice) {
+        val name = device.displayName()
+        log.warn {
+            "Host bond lost for $name — BlueZ has no pairing (removed on this computer). Forgetting it; " +
+                "the watch must be unpaired on its side and re-paired to reconnect."
+        }
+        sendActionableNotification(
+            "Pebble pairing removed",
+            "$name's pairing was removed on this computer. To reconnect, unpair it on the watch " +
+                "(Settings → Bluetooth), then tap Pair (or run 'stoandl pair').",
+            actionLabel = "Pair",
+        ) { openPairingWindow() }
     }
 
     /** Close a churn notification once the watch reconnects / goes away (session bus, same conn as Notify). */
@@ -1143,8 +1194,16 @@ private fun removeBluezBond(devicePath: String): Boolean {
         log.info { "Removed stale BlueZ bond: $devicePath" }
         true
     } catch (e: Exception) {
-        log.warn { "removeBluezBond($devicePath) failed: ${e.message}" }
-        false
+        val m = e.message ?: ""
+        // The device object being already gone (e.g. `bluetoothctl remove`, or the host-bond-lost path
+        // where isBonded was already false) is the desired end state, not a failure — don't cry WARN.
+        if (m.contains("Does Not Exist") || m.contains("doesn't exist") || m.contains("UnknownObject")) {
+            log.debug { "removeBluezBond($devicePath): bond already gone" }
+            true
+        } else {
+            log.warn { "removeBluezBond($devicePath) failed: $m" }
+            false
+        }
     } finally {
         conn.disconnect()
     }
