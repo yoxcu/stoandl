@@ -90,9 +90,11 @@ calendar.discover = false
 # Example: calendar.ical_urls = https://example.com/cal.ics
 calendar.ical_urls =
 
-# CalDAV collections, each url|username|password (the collection URL + Basic auth). Opt-in egress.
+# CalDAV, each url|username|password (Basic auth). Opt-in egress. Point at an ACCOUNT/principal URL to
+# auto-discover and sync ALL the user's calendars; or a single collection URL for just that one.
+# (Use `stoandl calendar disable <id>` to drop discovered calendars you don't want.)
 # Credentials are stored here in plaintext — protect this file.
-# Example: calendar.caldav = https://dav.example.com/cal/me/work/|alice|s3cret
+# Example (account): calendar.caldav = https://dav.example.com/dav/alice@example.com/|alice|s3cret
 calendar.caldav =
 
 # Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).

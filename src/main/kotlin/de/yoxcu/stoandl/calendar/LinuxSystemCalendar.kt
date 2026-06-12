@@ -63,6 +63,7 @@ class LinuxSystemCalendar(
         // getCalendarEvents to resolve back to the right source.
         val unique = raws.associateBy { it.platformId }
         byPlatformId = unique
+        log.info { "Calendar: ${unique.size} calendar(s)${if (unique.isEmpty()) "" else " [" + unique.values.joinToString { it.name } + "]"}" }
         return unique.values.map { rc ->
             CalendarEntity(
                 platformId = rc.platformId,
@@ -84,7 +85,15 @@ class LinuxSystemCalendar(
         val rc = byPlatformId[calendar.platformId]
             ?: run { getCalendars(); byPlatformId[calendar.platformId] }
             ?: return emptyList()
-        return rc.fetchEvents(startDate, endDate) // already defensive: returns empty on failure
+        val events = rc.fetchEvents(startDate, endDate) // already defensive: returns empty on failure
+        log.info { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
+        log.debug {
+            "Calendar '${calendar.name}' events: " + events.sortedBy { it.startTime }.joinToString("; ") {
+                "${it.startTime}${if (it.allDay) " (all-day)" else ""} ${it.title}" +
+                    if (it.reminders.isEmpty()) "" else " [+${it.reminders.size} reminder(s)]"
+            }
+        }
+        return events
     }
 
     override suspend fun enableSyncForCalendar(calendar: CalendarEntity) {

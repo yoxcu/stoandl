@@ -61,16 +61,20 @@
     <logger name="org.freedesktop.dbus" level="WARN"/>
     <logger name="WatchManager" level="WARN"/>
     <logger name="AppOrderManager" level="WARN"/>
-    <logger name="MusicControlManager" level="WARN"/>
     <logger name="HealthDataProcessor" level="WARN"/>
     <logger name="Health" level="WARN"/>
-    <logger name="PhoneCalendarSyncer" level="WARN"/>
     <logger name="KableConnectedGattClient" level="WARN"/>
     <logger name="ConnectivityWatcher" level="WARN"/>
     <!-- Follows STOANDL_LOG: at DEBUG it logs each watch insert ("insert: Weather …") and, crucially,
          "handleInsert: value is null: Weather …" when a record is dropped for a missing watch
          capability (e.g. SupportsWeatherApp) — the decisive signal for diagnosing empty weather. -->
     <logger name="BlobDB" level="${logLevel}"/>
+    <!-- Calendar sync detail from libpebble3 (Got N calendars, New/Deleting Pin, Synced) — follows
+         STOANDL_LOG. stoandl's own calendar reader logs a per-sync summary at INFO regardless. -->
+    <logger name="PhoneCalendarSyncer" level="${logLevel}"/>
+    <!-- Music control (MPRIS bridge) watch-side protocol detail — follows STOANDL_LOG.
+         stoandl's MprisMusicControl logs the user-facing music activity at INFO regardless. -->
+    <logger name="MusicControlManager" level="${logLevel}"/>
     <logger name="SystemService" level="WARN"/>
     <logger name="Negotiator" level="WARN"/>
     <logger name="FirmwareUpdateManager" level="WARN"/>

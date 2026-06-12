@@ -358,7 +358,7 @@ drive one with `playerctl play-pause` / `metadata`. Open the **Music** app on th
 
 ---
 
-## 5.7 Calendar sync  ⚠️ UNVERIFIED (parser verified offline; not yet on hardware)
+## 5.7 Calendar sync  ✅ Verified on hardware (local .ics + CalDAV incl. auto-discovery, pins, reminders, enable/disable, deletion) — ⚠️ iCal-URL feeds (5.58) and local DE-discovery (5.60) still to test
 
 Syncs desktop calendar **events** to the watch **timeline** as native calendar pins (title, time,
 location, recurring marker). libpebble3's `PhoneCalendarSyncer` does the pin work; stoandl supplies
@@ -382,8 +382,8 @@ X-WR-CALNAME:stoandl test
 BEGIN:VEVENT
 UID:t-timed
 DTSTAMP:20200101T000000Z
-DTSTART:$(date -u -d 'tomorrow 14:00' +%Y%m%dT%H%M%SZ)
-DTEND:$(date -u -d 'tomorrow 15:00' +%Y%m%dT%H%M%SZ)
+DTSTART:$(date -u -d '+35 minutes' +%Y%m%dT%H%M%SZ)
+DTEND:$(date -u -d '+65 minutes' +%Y%m%dT%H%M%SZ)
 SUMMARY:Dentist
 LOCATION:123 Main St
 BEGIN:VALARM
@@ -395,8 +395,8 @@ END:VEVENT
 BEGIN:VEVENT
 UID:t-allday
 DTSTAMP:20200101T000000Z
-DTSTART;VALUE=DATE:$(date -u -d '+2 days' +%Y%m%d)
-DTEND;VALUE=DATE:$(date -u -d '+3 days' +%Y%m%d)
+DTSTART;VALUE=DATE:$(date -u -d 'today' +%Y%m%d)
+DTEND;VALUE=DATE:$(date -u -d 'tomorrow' +%Y%m%d)
 SUMMARY:Public holiday
 END:VEVENT
 BEGIN:VEVENT
@@ -423,6 +423,10 @@ EOF
 (busybox `date` on the phone doesn't do relative strings — generate this on the dev box, or dump one
 of your real `.ics` files instead.)
 
+This fixture is tuned for two on-watch checks: **Dentist** starts **+35 min** from generation with a
+−30 min alarm, so its **reminder fires ~5 min after you create the file**; and **Public holiday** is an
+**all-day event for today**, so it should appear right away (well inside the watch's ~2–3-day timeline view).
+
 ### 5.7a Offline parser (no watch/daemon — verifies recurrence, EXDATE, all-day, timezone, reminders)
 
 `stoandl calendar dump <file|url>` expands events into the window (yesterday → +30 d) and prints them.
@@ -434,7 +438,7 @@ stoandl calendar dump /tmp/stoandl-test.ics
 
 | # | Test | Command / Step | Expected |
 |---|------|----------------|----------|
-| 5.44 | Generated fixture | `stoandl calendar dump /tmp/stoandl-test.ics` | **9 occurrence(s)**: Dentist ×1 (`@123 Main St  reminders: 30m`), Public holiday ×1 (`(all-day)`), Weekly standup ×4 (`recurring`), Medication ×3 (`recurring`). One line each, sorted by start. |
+| 5.44 | Generated fixture | `stoandl calendar dump /tmp/stoandl-test.ics` | **9 occurrence(s)**: Dentist ×1 (today, ~now+35 min, `@123 Main St  reminders: 30m`), Public holiday ×1 (today, `(all-day)`), Weekly standup ×4 (`recurring`), Medication ×3 (`recurring`). One line each, sorted by start. |
 | 5.44r | Reminders parsed | (same output) | The Dentist line shows `reminders: 30m` (its `-PT30M` VALARM). Multiple VALARMs list each (e.g. `1440m,10m`); a `RELATED=END` alarm on a 1 h event shows `-45m`; an absolute trigger shows the minutes before start. |
 | 5.45 | EXDATE honoured | (same output) | "Weekly standup" appears at today, +14 d, +21 d, +28 d — **the +7-day one is absent** (5 instances would be in-window; EXDATE drops it to 4). |
 | 5.46 | Timezone / DST | dump a real `.ics` containing a `DTSTART;TZID=…` event (feeds ship a `VTIMEZONE`) | Time is converted to the host's local zone (e.g. `09:00 America/New_York` → `13:00` on a UTC host); **no `Unsupported unit` warning** in the log. |
@@ -462,19 +466,20 @@ For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging)). On t
 | 5.53 | Force sync | `stoandl calendar sync` | Prints `Calendar re-sync requested`; pins refresh within ~5 s. |
 | 5.54 | Live `.ics` change | add/edit an event in `/tmp/stoandl-test.ics` (e.g. re-run the generator) | A re-sync fires within seconds with no restart (filesystem watch); the new/changed pin appears. |
 | 5.55 | Event removed | delete an event from the source, wait for a sync | Its pin is removed from the watch (DEBUG: `Deleting pin … no longer exists in calendar`). |
-| 5.56 | All-day & recurring | (from the fixture) | The all-day "Public holiday" pin sits on its day; each "Medication"/"Weekly standup" instance is its own pin at the right time. |
+| 5.56 | All-day & recurring | (from the fixture) | The all-day "Public holiday" (today) shows right away — confirms all-day pins render; each "Medication"/"Weekly standup" instance is its own pin at the right time. |
 | 5.57 | Re-sync ≠ duplicate | `stoandl calendar sync` twice | No duplicate pins (backingId is stable); the watch timeline is unchanged. |
-| 5.58 | iCal URL | set `calendar.ical_urls = <published .ics URL>`, restart | That calendar's events sync; log shows the fetch. Opt-in egress only. |
-| 5.59 | CalDAV | set `calendar.caldav = <collection-url>\|<user>\|<pass>`, restart | The collection's in-window events sync; log shows a `REPORT`. Opt-in egress only. A bad URL/credentials warns and syncs nothing (no crash). |
-| 5.60 | Discovery (Plasma Mobile) | on the phone, `calendar.discover = yes` with Calindori in use | Calindori's local `.ics` (`~/.local/share/calindori`) are found and synced with no explicit paths. |
-| 5.61 | Reminder fires | add an event ~35 min out carrying `BEGIN:VALARM` / `TRIGGER:-PT30M` / `END:VALARM` (default `calendarReminders` is on) | ~30 min before its start the watch shows/vibrates a reminder. DEBUG: a `TimelineReminder` is inserted for the pin. (Skip if you don't want to wait — 5.44r already verifies parsing.) |
+| 5.58 | iCal URL ⚠️ _untested_ | set `calendar.ical_urls = <published .ics URL>`, restart | That calendar's events sync; log shows the fetch. Opt-in egress only. |
+| 5.59 | CalDAV (single collection) | set `calendar.caldav = <collection-url>\|<user>\|<pass>`, restart | That collection's in-window events sync; log shows a `REPORT`. Opt-in egress. Bad URL/creds warns, syncs nothing (no crash). |
+| 5.59d | CalDAV (auto-discover) | set `calendar.caldav = <account/principal-url>\|<user>\|<pass>` (e.g. SOGo `https://host/SOGo/dav/<user>/`), restart | Log: `CalDAV <url>: N calendar(s) [names…]` — the PROPFIND walk found **all** the account's calendars; each shows in `stoandl calendar list` and syncs. Disable any you don't want. |
+| 5.60 | Discovery (Plasma Mobile) ⚠️ _untested_ | on the phone, `calendar.discover = yes` with Calindori in use | Calindori's local `.ics` (`~/.local/share/calindori`) are found and synced with no explicit paths. |
+| 5.61 | Reminder fires | (from the fixture — Dentist is +35 min out with a −30 min alarm; `calendarReminders` is on by default) | **~5 min after you generate the fixture**, the watch shows/vibrates a reminder for "Dentist". DEBUG: a `TimelineReminder` is inserted for the pin. |
 
 ### Not covered / known limitations (don't file these as bugs)
 
 - **No RSVP write-back** — accept/decline from the watch isn't wired up.
 - **GNOME (EDS) / KDE (Akonadi) online calendars aren't read natively** — reach Google/Nextcloud/MS via `calendar.ical_urls` or `calendar.caldav`.
 - **A singly-edited occurrence of a recurring event shows at its original time** (detached `RECURRENCE-ID` overrides are skipped to avoid duplicates).
-- CalDAV is collection-URL + Basic-auth only (no discovery/Digest/OAuth); credentials are plaintext in the config.
+- CalDAV is **Basic-auth only** (no Digest/OAuth); credentials are plaintext in the config. (Account-URL auto-discovery of all calendars *is* supported.)
 
 ---
 

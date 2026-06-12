@@ -35,7 +35,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
-| `calendar.caldav` | list | _(empty)_ | CalDAV collections to read, each `url\|user\|password`. **Opt-in egress.** |
+| `calendar.caldav` | list | _(empty)_ | CalDAV calendars, each `url\|user\|password`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
@@ -171,8 +171,9 @@ calendar.discover  = yes
 # Published iCal feed URL — opt-in egress:
 calendar.ical_urls = https://example.com/cal.ics
 
-# CalDAV collection — url|user|password, opt-in egress:
-calendar.caldav    = https://dav.example.com/cal/me/work/|alice|s3cret
+# CalDAV — url|user|password, opt-in egress. An account/principal URL auto-discovers ALL the user's
+# calendars; a single collection URL syncs just that one:
+calendar.caldav    = https://dav.example.com/dav/alice@example.com/|alice|s3cret
 
 calendar.sync_interval = 30
 ```
@@ -203,11 +204,13 @@ There is no cross-desktop calendar API, so "reuse the DE's calendars" means diff
   providers offer a "secret iCal address") or `calendar.caldav`. A GNOME EDS reader is a possible
   future addition.
 
-CalDAV here is a **collection URL + Basic auth** only (no account discovery, Digest or OAuth), and
-the credentials sit in `stoandl.conf` in plaintext — protect the file (a Secret Service/libsecret
-backend is a possible follow-up). RSVP (accept/decline from the watch) isn't wired up yet. A single
-edited occurrence of a recurring event shows at its original time (detached overrides are skipped to
-avoid duplicates).
+Point `calendar.caldav` at an **account/principal URL** and stoandl auto-discovers every calendar
+(RFC 6764/4791: `current-user-principal` → `calendar-home-set` → `PROPFIND Depth:1`) and syncs them
+all — use `stoandl calendar disable` to drop any you don't want; a single **collection URL** syncs
+just that one. Auth is **Basic only** (no Digest/OAuth), and credentials sit in `stoandl.conf` in
+plaintext — protect the file (a Secret Service/libsecret backend is a possible follow-up). RSVP
+(accept/decline from the watch) isn't wired up yet. A single edited occurrence of a recurring event
+shows at its original time (detached overrides are skipped to avoid duplicates).
 
 ### Network / external services
 
@@ -216,7 +219,7 @@ Local `.ics` files and discovery make **no web requests.** The two network sourc
 | Service | What is sent | When it's called |
 |---------|--------------|------------------|
 | iCal feed URL(s) | an HTTP(S) GET to each `calendar.ical_urls` entry | only when `calendar.ical_urls` is set |
-| CalDAV server(s) | a `calendar-query` REPORT (+ Basic auth) to each `calendar.caldav` collection | only when `calendar.caldav` is set |
+| CalDAV server(s) | PROPFIND discovery + a `calendar-query` REPORT (Basic auth) for each `calendar.caldav` account's calendars | only when `calendar.caldav` is set |
 
 ## Watch settings (advanced)
 

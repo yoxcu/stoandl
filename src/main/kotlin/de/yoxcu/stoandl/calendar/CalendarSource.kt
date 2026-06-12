@@ -16,6 +16,8 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
 import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Document
+import org.w3c.dom.Element
 import kotlin.time.Instant
 
 private val log = KotlinLogging.logger {}
@@ -128,41 +130,111 @@ class IcalUrlSource(private val urls: List<String>, private val client: HttpClie
     }
 }
 
-/** A CalDAV calendar **collection** (the direct collection URL, not the principal). Issues a
- *  `calendar-query` REPORT with a VEVENT time-range and Basic auth. Opt-in egress (`calendar.caldav`).
- *  No principal/home-set discovery or Digest/OAuth — the user supplies the collection URL + creds. */
+/**
+ * CalDAV calendars. Point [Entry.url] at the account/principal/home URL and stoandl auto-discovers
+ * every calendar collection (RFC 6764/4791: current-user-principal → calendar-home-set → PROPFIND
+ * Depth:1); point it at a single calendar collection and only that one is used. Each collection is
+ * read with a `calendar-query` REPORT (VEVENT time-range) + Basic auth. Opt-in egress
+ * (`calendar.caldav`). No Digest/OAuth. Use `stoandl calendar disable` to drop discovered calendars
+ * you don't want.
+ */
 class CalDavSource(private val entries: List<Entry>, private val client: HttpClient) : CalendarSource {
     data class Entry(val url: String, val username: String, val password: String)
+    private data class Collection(val url: String, val name: String)
 
-    override suspend fun calendars(): List<RawCalendar> = entries.map { e ->
-        val auth = "Basic " + Base64.getEncoder().encodeToString("${e.username}:${e.password}".toByteArray())
-        RawCalendar(
-            platformId = e.url,
-            name = urlLabel(e.url),
-            fetchEvents = { start, end ->
-                try {
-                    val body = calendarQuery(start, end)
-                    val resp = client.request(e.url) {
-                        method = HttpMethod("REPORT")
-                        header("Depth", "1")
-                        header(HttpHeaders.Authorization, auth)
-                        header(HttpHeaders.ContentType, "application/xml; charset=utf-8")
-                        setBody(body)
-                    }
-                    if (!resp.status.isSuccess()) {
-                        log.warn { "CalDAV ${e.url} returned HTTP ${resp.status}" }
-                        emptyList()
-                    } else {
-                        extractCalendarData(resp.bodyAsText()).flatMap { ical ->
-                            ICalParser.parse(ical, calendarId = e.url, start = start, end = end)
-                        }
-                    }
-                } catch (ex: Exception) {
-                    log.warn { "Failed CalDAV query ${e.url}: ${ex.message}" }
-                    emptyList()
+    override suspend fun calendars(): List<RawCalendar> = entries.flatMap { e ->
+        val auth = e.username.takeIf { it.isNotBlank() }
+            ?.let { "Basic " + Base64.getEncoder().encodeToString("${e.username}:${e.password}".toByteArray()) }
+        val collections = discover(e.url, auth).ifEmpty {
+            // Not discoverable (or already a leaf collection) — use the URL as a single calendar.
+            listOf(Collection(e.url, urlLabel(e.url)))
+        }
+        log.info { "CalDAV ${e.url}: ${collections.size} calendar(s) [${collections.joinToString { it.name }}]" }
+        collections.map { col -> calendarFor(col, auth) }
+    }
+
+    private fun calendarFor(col: Collection, auth: String?): RawCalendar = RawCalendar(
+        platformId = col.url,
+        name = col.name,
+        fetchEvents = { start, end ->
+            try {
+                val resp = client.request(col.url) {
+                    method = HttpMethod("REPORT")
+                    header("Depth", "1")
+                    auth?.let { header(HttpHeaders.Authorization, it) }
+                    header(HttpHeaders.ContentType, "application/xml; charset=utf-8")
+                    setBody(calendarQuery(start, end))
                 }
-            },
-        )
+                if (!resp.status.isSuccess()) {
+                    log.warn { "CalDAV ${col.url} returned HTTP ${resp.status}" }
+                    emptyList()
+                } else {
+                    extractCalendarData(resp.bodyAsText()).flatMap { ical ->
+                        ICalParser.parse(ical, calendarId = col.url, start = start, end = end)
+                    }
+                }
+            } catch (ex: Exception) {
+                log.warn { "Failed CalDAV query ${col.url}: ${ex.message}" }
+                emptyList()
+            }
+        },
+    )
+
+    /**
+     * RFC 6764/4791 discovery from [baseUrl]: one PROPFIND for resourcetype + displayname +
+     * current-user-principal + calendar-home-set, then branch — the URL is itself a calendar (use it
+     * alone); it advertises a calendar-home-set (it's the principal → list that home); or it gives a
+     * current-user-principal (PROPFIND that for the home, then list). Best-effort: returns empty on any
+     * failure so the caller falls back to the raw URL.
+     */
+    private suspend fun discover(baseUrl: String, auth: String?): List<Collection> {
+        return try {
+            val xml = propfind(baseUrl, auth, "0", PROPFIND_DISCOVER) ?: return emptyList()
+            val info = withContext(Dispatchers.IO) { parseDiscover(xml) }
+            when {
+                info.selfIsCalendar -> listOf(Collection(baseUrl, info.selfName ?: urlLabel(baseUrl)))
+                info.homeHref != null -> listCalendars(resolveHref(baseUrl, info.homeHref), auth)
+                info.principalHref != null -> {
+                    val principalUrl = resolveHref(baseUrl, info.principalHref)
+                    val homeXml = propfind(principalUrl, auth, "0", PROPFIND_HOME_SET) ?: return emptyList()
+                    val home = withContext(Dispatchers.IO) { firstHomeHref(homeXml) } ?: return emptyList()
+                    listCalendars(resolveHref(principalUrl, home), auth)
+                }
+                else -> emptyList()
+            }
+        } catch (ex: Exception) {
+            log.warn { "CalDAV discovery failed for $baseUrl: ${ex.message}" }
+            emptyList()
+        }
+    }
+
+    /** PROPFIND Depth:1 on the calendar-home-set → every child that is a calendar collection. */
+    private suspend fun listCalendars(homeUrl: String, auth: String?): List<Collection> {
+        val xml = propfind(homeUrl, auth, "1", PROPFIND_LIST) ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            val responses = parseXml(xml).getElementsByTagNameNS(DAV_NS, "response")
+            (0 until responses.length).mapNotNull { i ->
+                val resp = responses.item(i) as? Element ?: return@mapNotNull null
+                if (!resp.isCalendarCollection()) return@mapNotNull null
+                val href = resp.firstTextNS(DAV_NS, "href") ?: return@mapNotNull null
+                Collection(resolveHref(homeUrl, href), resp.firstTextNS(DAV_NS, "displayname") ?: urlLabel(href))
+            }
+        }
+    }
+
+    private suspend fun propfind(url: String, auth: String?, depth: String, body: String): String? {
+        val resp = client.request(url) {
+            method = HttpMethod("PROPFIND")
+            header("Depth", depth)
+            auth?.let { header(HttpHeaders.Authorization, it) }
+            header(HttpHeaders.ContentType, "application/xml; charset=utf-8")
+            setBody(body)
+        }
+        if (!resp.status.isSuccess()) {
+            log.warn { "CalDAV PROPFIND $url returned HTTP ${resp.status}" }
+            return null
+        }
+        return resp.bodyAsText()
     }
 
     private fun calendarQuery(start: Instant, end: Instant): String {
@@ -184,14 +256,47 @@ class CalDavSource(private val entries: List<Entry>, private val client: HttpCli
     /** Pull every <C:calendar-data> payload (one VCALENDAR each) out of a 207 multistatus body. */
     private suspend fun extractCalendarData(xml: String): List<String> = try {
         withContext(Dispatchers.IO) {
-            val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-                .newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray()))
-            val nodes = doc.getElementsByTagNameNS("urn:ietf:params:xml:ns:caldav", "calendar-data")
+            val nodes = parseXml(xml).getElementsByTagNameNS(CALDAV_NS, "calendar-data")
             (0 until nodes.length).mapNotNull { nodes.item(it).textContent?.takeIf { t -> t.isNotBlank() } }
         }
     } catch (e: Exception) {
         log.warn { "Failed to parse CalDAV multistatus: ${e.message}" }
         emptyList()
+    }
+
+    private data class DiscoverInfo(
+        val selfIsCalendar: Boolean, val selfName: String?, val principalHref: String?, val homeHref: String?,
+    )
+
+    /** Parse the Depth:0 discovery PROPFIND: is the URL itself a calendar, and what principal/home does
+     *  it advertise? */
+    private fun parseDiscover(xml: String): DiscoverInfo {
+        val doc = parseXml(xml)
+        val self = doc.getElementsByTagNameNS(DAV_NS, "response").item(0) as? Element
+        return DiscoverInfo(
+            selfIsCalendar = self?.isCalendarCollection() == true,
+            selfName = self?.firstTextNS(DAV_NS, "displayname"),
+            principalHref = (doc.getElementsByTagNameNS(DAV_NS, "current-user-principal").item(0) as? Element)
+                ?.firstTextNS(DAV_NS, "href"),
+            homeHref = firstHomeHref(xml),
+        )
+    }
+
+    private fun firstHomeHref(xml: String): String? =
+        (parseXml(xml).getElementsByTagNameNS(CALDAV_NS, "calendar-home-set").item(0) as? Element)
+            ?.firstTextNS(DAV_NS, "href")
+
+    companion object {
+        private const val DAV_NS = "DAV:"
+        private const val CALDAV_NS = "urn:ietf:params:xml:ns:caldav"
+        private val PROPFIND_DISCOVER = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop>
+<d:resourcetype/><d:displayname/><d:current-user-principal/><c:calendar-home-set/>
+</d:prop></d:propfind>"""
+        private val PROPFIND_HOME_SET = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-home-set/></d:prop></d:propfind>"""
+        private val PROPFIND_LIST = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:resourcetype/><d:displayname/></d:prop></d:propfind>"""
     }
 }
 
@@ -207,4 +312,29 @@ private fun urlLabel(url: String): String = try {
     uri.path?.trimEnd('/')?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: uri.host ?: url
 } catch (e: Exception) {
     url
+}
+
+/** Resolve a (possibly absolute-path or relative) DAV href against a base URL. */
+private fun resolveHref(base: String, href: String): String = try {
+    java.net.URI(base).resolve(href.trim()).toString()
+} catch (e: Exception) {
+    href
+}
+
+private fun parseXml(xml: String): Document =
+    DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        .newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray()))
+
+/** First non-blank text of the first descendant [local] element in namespace [ns], or null. */
+private fun Element.firstTextNS(ns: String, local: String): String? =
+    getElementsByTagNameNS(ns, local).item(0)?.textContent?.trim()?.takeIf { it.isNotBlank() }
+
+/** True if any <D:resourcetype> under this element declares the CalDAV `<C:calendar/>` type. */
+private fun Element.isCalendarCollection(): Boolean {
+    val rts = getElementsByTagNameNS("DAV:", "resourcetype")
+    for (i in 0 until rts.length) {
+        val rt = rts.item(i) as? Element ?: continue
+        if (rt.getElementsByTagNameNS("urn:ietf:params:xml:ns:caldav", "calendar").length > 0) return true
+    }
+    return false
 }
