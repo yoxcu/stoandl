@@ -19,6 +19,10 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `notification.blocklist` | list | _(empty)_ | App-name substrings (case-insensitive) whose notifications are never forwarded to the watch. |
 | `call.dialer_apps` | list | `spacebar, calls` | Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the native call screen replaces them) and their title is used as a fallback caller name. |
 | `contacts.vcard_paths` | list | _(empty)_ | vCard (`.vcf`) files or directories scanned for caller-ID resolution. `~` expands to `$HOME`. |
+| `music.enabled` | bool | `true` | Bridge desktop media players (MPRIS) to the watch's Music app — now-playing display plus play/pause, next/previous and volume from the watch. Local-only; set `false` to disable. |
+| `music.volume` | string | `system` | What the watch's volume buttons control: `system` (master/output volume — auto-detects `wpctl`/`pactl`/`amixer`) or `player` (the active player's own MPRIS volume; pure D-Bus but ignored by players that don't expose it, e.g. most browsers). |
+| `music.volume_up_command` | string | _(empty)_ | For `music.volume = system`: an explicit shell command to raise volume, overriding the auto-detected backend. Only used if **both** up and down are set. |
+| `music.volume_down_command` | string | _(empty)_ | The matching volume-down command (see above). |
 | `weather.locations` | list | _(empty)_ | Locations to fetch weather for, each as `Name:lat:lon` (e.g. `Berlin:52.52:13.405`). Merged with `weather.location_source`. |
 | `weather.location_source` | string | `manual` | Where extra locations come from: `manual` (only the list above), `gnome` (read GNOME/Phosh's weather GSettings), or `command` (run `weather.location_command`). |
 | `weather.location_command` | string | _(empty)_ | For `weather.location_source = command`: a shell command that prints `Name:lat:lon` lines. |
@@ -112,6 +116,35 @@ GeoClue (location) is a local system service, not a web call; importing a locati
 (`weather.location_source`) is local too (GSettings / your command). PKJS/Clay pages can make their own
 HTTP requests, but only for watchapps you install and (for config pages) only when you run `stoandl
 settings`.
+
+## Music / now-playing
+
+stoandl bridges desktop media players to the watch's native **Music** app over
+[MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/) — the standard media-player D-Bus
+interface that VLC, mpv, Spotify, browsers and most Linux players implement on the session bus. The
+watch shows the current track (title / artist / album, play state, position) and its buttons drive the
+player: play/pause, next/previous and volume. It follows whichever player is actively playing; if you
+run `playerctld`, it's skipped so it doesn't show up twice.
+
+This is **local-only** — it reads and controls media players already running on your machine and makes
+no web requests. It's on by default; set `music.enabled = false` to turn it off.
+
+**Volume.** By default (`music.volume = system`) the watch's volume buttons change the **master/output
+volume**, just like a phone. There's no portable D-Bus volume API on Linux, so stoandl shells out to
+the first of these found on `PATH`: `wpctl` (PipeWire — Plasma Mobile, modern desktops), `pactl`
+(PulseAudio / pipewire-pulse) or `amixer` (ALSA). If your setup needs something else, set both
+`music.volume_up_command` and `music.volume_down_command` to override the backend, e.g.:
+
+```
+music.volume_up_command   = pactl set-sink-volume @DEFAULT_SINK@ +5%
+music.volume_down_command = pactl set-sink-volume @DEFAULT_SINK@ -5%
+```
+
+Set `music.volume = player` instead to control the **active player's own** MPRIS volume (pure D-Bus, no
+external tool). Note many players — most browsers — don't expose a `Volume` property, so player-volume
+is silently ignored there; mpv, VLC and Spotify do support it. If `system` is selected but no backend is
+found, stoandl logs a warning and falls back to player volume. (In `system` mode the now-playing volume
+bar on the watch still reflects the player, not the master level — only the buttons act on master.)
 
 ## Watch settings (advanced)
 

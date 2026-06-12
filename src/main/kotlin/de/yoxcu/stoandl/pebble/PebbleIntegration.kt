@@ -5,6 +5,8 @@ package de.yoxcu.stoandl.pebble
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
+import de.yoxcu.stoandl.dbus.MprisMusicControl
+import de.yoxcu.stoandl.dbus.SystemVolume
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
@@ -27,6 +29,7 @@ import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.bt.isBonded
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.locker.AppType
+import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.SystemAppIDs
@@ -201,6 +204,16 @@ class PebbleIntegration(
             single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
             // Back MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
             single<SystemCallLog> { missedCallLog }
+            // Replace the no-op JVM SystemMusicControl with the MPRIS bridge (unless disabled), so the
+            // watch's Music app shows now-playing and its buttons drive the desktop player. Volume buttons
+            // drive the system/master output (config.musicVolume == SYSTEM, the default) via an auto-
+            // detected backend, else the active player's own MPRIS volume.
+            if (config.musicControl) single<SystemMusicControl> {
+                val systemVol = if (config.musicVolume == StoandlConfig.MusicVolumeMode.SYSTEM) {
+                    SystemVolume.resolve(config.musicVolumeUpCommand, config.musicVolumeDownCommand)
+                } else null
+                MprisMusicControl(scope, systemVol)
+            }
         }), allowOverride = true)
 
         libPebble = koin.get()
@@ -218,6 +231,12 @@ class PebbleIntegration(
         startCallMonitor()
         startWeatherSync()
         startWatchPrefsSync()
+        // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
+        // injected (on the first watch connect); nothing to start here, just report the state.
+        log.info {
+            if (config.musicControl) "Music control enabled (MPRIS → watch Music app; volume: ${config.musicVolume.name.lowercase()})"
+            else "Music control disabled (music.enabled=false)"
+        }
 
         log.info { "libpebble3 initialized" }
     }

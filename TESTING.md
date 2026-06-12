@@ -331,6 +331,33 @@ Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backl
 
 ---
 
+## 5.6 Music / now-playing control  ⚠️ UNVERIFIED
+
+Bridges desktop media players (MPRIS over the session bus) to the watch's native **Music** app:
+now-playing display plus play/pause, next/previous and volume from the watch. On by default; set
+`music.enabled = false` to disable.
+
+**Test driver:** any MPRIS player works — `mpv some.mp3`, VLC, Spotify, a browser playing audio, or
+drive one with `playerctl play-pause` / `metadata`. Open the **Music** app on the watch to see it.
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 5.31 | Now-playing shows | start playback in a desktop player, then open the **Music** app on the watch | Watch shows the track title / artist (and album). Log: `MPRIS music monitor: connected to session bus` then `MPRIS player added: <name>`. |
+| 5.32 | Live track change | skip to the next track in the desktop player | The watch updates to the new title/artist within ~1–2 s (no watch button press needed). |
+| 5.33 | Play / pause from watch | press the watch's play/pause | Desktop playback toggles. Log: `MPRIS playPause → org.mpris.MediaPlayer2.<player>`. |
+| 5.34 | Next / previous from watch | press next / previous on the watch | Desktop player skips track. Log: `MPRIS next → …` / `MPRIS previous → …`. |
+| 5.35 | Volume from watch (default = system) | press volume up / down on the watch | The **master/output** volume changes (default `music.volume = system`). Startup log names the backend: `Music volume: system via wpctl` (or `pactl`/`amixer`). Per press: `system volume up (wpctl)`. Works regardless of which player is active. |
+| 5.36 | Target follows the active player | play in player A, then start playing in player B | The watch follows whichever is actively **Playing** (B). Pause B while A still plays → the watch switches back to A. |
+| 5.37 | Player quits | close the desktop player | Watch now-playing clears. Log: `MPRIS player removed: …`. |
+| 5.38 | Reconnect survives | stop, then restart the desktop player | Watch picks the player back up (the monitor re-enumerates / catches `NameOwnerChanged`). |
+| 5.39 | `playerctld` not duplicated | run `playerctld` alongside a real player | Only the real player drives the watch; `playerctld` (a proxy) is skipped — no duplicate now-playing. |
+| 5.40 | Disabled | set `music.enabled = false`, restart | Log: `Music control disabled (music.enabled=false)`. The watch Music app shows nothing from the desktop; no `MPRIS …` log lines. |
+| 5.41 | Player volume mode | set `music.volume = player`, restart, press volume | The **active player's** volume changes if it implements MPRIS `Volume` (mpv/VLC/Spotify); log `MPRIS volume up → NN% (…)`. A player without it → debug `… exposes no Volume property`, no crash. |
+| 5.42 | Custom volume command | set `music.volume_up_command` / `music.volume_down_command` (e.g. `pactl set-sink-volume @DEFAULT_SINK@ +5%`), restart, press volume | Log: `Music volume: system (custom command)` then `system volume up (custom command)`; the command runs. |
+| 5.43 | No backend found | `music.volume = system` on a host with no `wpctl`/`pactl`/`amixer` (and no override) | Log warns `music.volume=system but none of wpctl / pactl / amixer found on PATH — falling back to per-player volume`; volume buttons then act on the player. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

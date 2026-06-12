@@ -44,11 +44,24 @@ data class StoandlConfig(
     /** Watch "advanced settings" to push: `watch.<prefId>` config keys, mapped prefId → raw value.
      *  Applied (authoritatively) on each watch connect. See `stoandl settings` for the available ids. */
     val watchPrefs: Map<String, String>,
+    /** Bridge desktop media players (MPRIS over D-Bus) to the watch's Music app: now-playing display
+     *  plus play/pause, next/previous and volume control. Local-only (no egress), on by default. */
+    val musicControl: Boolean,
+    /** What the watch's volume buttons control: [MusicVolumeMode.SYSTEM] master/output volume (default)
+     *  or [MusicVolumeMode.PLAYER] the active player's own MPRIS volume. */
+    val musicVolume: MusicVolumeMode,
+    /** Optional explicit commands for system volume up/down (override the auto-detected backend).
+     *  Both must be set to take effect; only used when [musicVolume] is [MusicVolumeMode.SYSTEM]. */
+    val musicVolumeUpCommand: String,
+    val musicVolumeDownCommand: String,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
 
     enum class WeatherUnits { METRIC, IMPERIAL }
+
+    /** What the watch volume buttons drive: the system/master output, or the active player's own volume. */
+    enum class MusicVolumeMode { SYSTEM, PLAYER }
 
     /** Source for DE-imported locations: none (manual only), the GNOME/Phosh weather GSettings,
      *  or a user-provided command that prints `Name:lat:lon` lines (DE-agnostic escape hatch). */
@@ -75,6 +88,10 @@ data class StoandlConfig(
             weatherGpsName = DEFAULT_GPS_NAME,
             weatherReverseGeocode = false,
             watchPrefs = emptyMap(),
+            musicControl = true,
+            musicVolume = MusicVolumeMode.SYSTEM,
+            musicVolumeUpCommand = "",
+            musicVolumeDownCommand = "",
         )
 
         fun configFile(): File {
@@ -123,6 +140,11 @@ data class StoandlConfig(
                     .filter { it.key.startsWith("watch.") && it.key.length > "watch.".length }
                     .associate { it.key.removePrefix("watch.") to it.value }
                     .filterValues { it.isNotEmpty() },
+                // On by default; only an explicit falsey value disables it.
+                musicControl = map["music.enabled"]?.let { parseBool(it) } ?: true,
+                musicVolume = parseMusicVolume(map["music.volume"]),
+                musicVolumeUpCommand = map["music.volume_up_command"]?.trim().orEmpty(),
+                musicVolumeDownCommand = map["music.volume_down_command"]?.trim().orEmpty(),
             )
             log.info {
                 "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
@@ -130,7 +152,8 @@ data class StoandlConfig(
                     "weatherLocations=${cfg.weatherLocations.map { it.name }}, " +
                     "weatherUnits=${cfg.weatherUnits}, weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
                     "weatherGps=${cfg.weatherGps}, weatherLocationSource=${cfg.weatherLocationSource}, " +
-                    "watchPrefs=${cfg.watchPrefs.keys}"
+                    "watchPrefs=${cfg.watchPrefs.keys}, musicControl=${cfg.musicControl}, " +
+                    "musicVolume=${cfg.musicVolume}"
             }
             return cfg
         }
@@ -156,6 +179,15 @@ data class StoandlConfig(
 
         private fun parseBool(raw: String?): Boolean =
             raw?.trim()?.lowercase() in setOf("true", "yes", "1", "on")
+
+        private fun parseMusicVolume(raw: String?): MusicVolumeMode = when (raw?.trim()?.lowercase()) {
+            null, "", "system", "master" -> MusicVolumeMode.SYSTEM
+            "player", "mpris", "app" -> MusicVolumeMode.PLAYER
+            else -> {
+                log.warn { "Unknown music.volume '$raw'; defaulting to system" }
+                MusicVolumeMode.SYSTEM
+            }
+        }
 
         private fun parseLocationSource(raw: String?): WeatherLocationSource =
             when (raw?.trim()?.lowercase()) {

@@ -40,6 +40,7 @@ Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md)
 - [x] **Missed-call sync** — unanswered incoming calls become timeline pins via libpebble3's `MissedCallSyncer` (backed by an in-memory `SystemCallLog` fed by the call monitor). _TBT._
 - [x] **Caller-ID resolution** — DE-agnostic vCard lookup (`contacts.vcard_paths`, suffix-matched), with the dialer's own notification title as fallback. See [configuration.md](configuration.md). _TBT._
 - [x] **Notification filtering** — `notification.blocklist` drops chosen apps; `call.dialer_apps` suppresses the dialer's redundant call notification. See [configuration.md](configuration.md). _TBT._
+- [x] **Music / now-playing control** — bridges desktop media players (MPRIS over D-Bus, on the session bus) to the watch's native Music app: now-playing (title/artist/album, play state, position) plus play/pause, next/previous and volume from the watch. Volume drives the master/output level by default (auto-detected `wpctl`/`pactl`/`amixer`, configurable) or the active player's own MPRIS volume (`music.volume`). Follows the actively-playing player; `playerctld` is skipped so it doesn't duplicate. On by default (`music.enabled`); local-only, no egress. See [configuration.md](configuration.md). _TBT — [TESTING.md §5.6](../TESTING.md)._
 
 ### Roadmap / not yet implemented
 
@@ -47,7 +48,6 @@ Written but not yet verified on hardware. Test plan: [TESTING.md](../TESTING.md)
 - [ ] **Time / timezone sync** — handled by libpebble3 but not actively managed by stoandl
 - [ ] **Calendar sync / timeline pins** — `WebServices` is a no-op; no calendar source wired
 - [ ] **Weather timeline pins** — sunrise/sunset forecast pins (the Weather *app* data is synced; the timeline pins are not yet)
-- [ ] **Music / now-playing control** — could bridge MPRIS over D-Bus → `MusicService`
 - [ ] **Find my phone / find my watch**
 - [ ] **Account-backed app store** — Rebble appstore browse/install and cloud locker sync (`fetchLocker()`) still stubbed; needs an account/token. (Local locker management — list/launch/remove/sideload/backup — is already done; see above.)
 - [ ] **Firmware updates** — `checkForFirmwareUpdate()` stubbed

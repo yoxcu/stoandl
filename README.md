@@ -15,6 +15,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Manages the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app (Open-Meteo — free, no account)
+- Bridges desktop media players (MPRIS) to the watch's Music app — now-playing plus play/pause, next/previous and volume from the watch
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
