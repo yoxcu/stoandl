@@ -331,11 +331,20 @@ Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backl
 
 ---
 
-## 5.6 Music / now-playing control  ⚠️ UNVERIFIED
+## 5.6 Music / now-playing control  ✅ Verified on hardware (now-playing display + play/pause/next/prev/volume from the watch)
 
 Bridges desktop media players (MPRIS over the session bus) to the watch's native **Music** app:
 now-playing display plus play/pause, next/previous and volume from the watch. On by default; set
 `music.enabled = false` to disable.
+
+> **Why this needs `OSType.Android`:** the Pebble firmware gates its music handling on the phone's OS
+> type (iOS → AMS; Android → the legacy `MUSIC_CONTROL` endpoint libpebble3 drives). The JVM default
+> `OSType.Unknown` makes the firmware never engage music — the Music app launches but stays blank, never
+> sends `GetCurrentTrack`, and ignores its buttons (the watch PPoG-acks our packets but discards them).
+> `PebbleIntegration` overrides `PlatformFlags` to `OSType.Android` to fix this. Root-caused 2026-06-12
+> by diffing a btmon snoop of stoandl against a working Android `btsnoop_hci.log` — the only wire
+> difference was `platformFlags` (`0x00000002` Android vs `0x00000000` Unknown). If music ever goes
+> blank/dead again, that handshake byte is the first thing to check.
 
 **Test driver:** any MPRIS player works — `mpv some.mp3`, VLC, Spotify, a browser playing audio, or
 drive one with `playerctl play-pause` / `metadata`. Open the **Music** app on the watch to see it.

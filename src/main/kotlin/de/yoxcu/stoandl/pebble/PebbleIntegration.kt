@@ -41,12 +41,14 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.WatchConnector
 import io.rebble.libpebblecommon.connection.WebServices
+import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
 import io.rebble.libpebblecommon.di.initKoin
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
+import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.WatchInfo
@@ -219,7 +221,15 @@ class PebbleIntegration(
                 )
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
-            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
+            // Identify to the watch as an Android phone in the PhoneAppVersion handshake. The firmware
+            // branches music handling on the phone's OS type (iOS → AMS; Android → the legacy
+            // MUSIC_CONTROL endpoint that libpebble3 drives); the JVM module's default OSType.Unknown
+            // makes the firmware never engage that path — the Music app shows no now-playing, never
+            // sends GetCurrentTrack, and ignores its buttons, even though it PPoG-acks our packets.
+            // A btmon capture confirmed: same watch+firmware works instantly on Android, where the only
+            // wire difference is platformFlags carrying OSType.Android (2) vs our 0. We already mimic
+            // Android elsewhere (ANDROID_NOTIFICATIONS_UUID), so this is consistent.
+            single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
             // Back MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
             single<SystemCallLog> { missedCallLog }
             // Replace the no-op JVM SystemMusicControl with the MPRIS bridge (unless disabled), so the
