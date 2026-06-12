@@ -126,6 +126,8 @@ private val DISCOVERY_WARN_INTERVAL = 60.seconds
 // continuously-churning watch is unambiguous.
 private val BROKEN_BOND_WINDOW = 3.minutes
 private const val BROKEN_BOND_FLAPS = 5   // present-but-rejected (FailedToConnect) attempts → notify
+private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification this often while it persists
+                                           // (in place, via replaces_id — it updates, never stacks)
 
 private val log = KotlinLogging.logger {}
 
@@ -422,7 +424,8 @@ class PebbleIntegration(
      */
     private fun startChurnDetector() {
         val drops = ConcurrentHashMap<String, MutableList<Long>>() // device object path -> drop timestamps
-        val notified = ConcurrentHashMap.newKeySet<String>()
+        val notifiedAt = ConcurrentHashMap<String, Long>()         // path -> when we last (re-)notified
+        val notifId = ConcurrentHashMap<String, UInt32>()          // path -> live notification id (replace/close)
         scope.launch(Dispatchers.IO) {
             val conn = try {
                 DBusConnectionBuilder.forSystemBus().withShared(false).build()
@@ -449,6 +452,25 @@ class PebbleIntegration(
                         }
                     } catch (_: Exception) {}
                 }
+                // A full Pebble session (ConnectedPebbleDevice) PROVES the bond is intact, so reset that
+                // watch's drop history the instant it happens — and clear any active alert. This is the
+                // discriminator between a broken bond and mere weak-signal/out-of-range flapping: a
+                // one-sided bond NEVER completes a session (StartNotify/PPoG always fails) so its drops
+                // accumulate and fire; a flaky-but-good link keeps re-achieving sessions, so its count
+                // keeps resetting and never trips. Done continuously (not just at the 15s poll) so brief
+                // sessions between polls still count.
+                scope.launch {
+                    libPebble.watches.collect { list ->
+                        list.filterIsInstance<ConnectedPebbleDevice>().forEach { w ->
+                            (w.identifier as? PebbleBleIdentifier)?.asString
+                                ?.let { bluezObjectPath(it) }?.let { p ->
+                                    drops.remove(p)
+                                    notifId.remove(p)?.let { closeChurnNotification(it) }
+                                    notifiedAt.remove(p)
+                                }
+                        }
+                    }
+                }
                 // Poll: a known watch that's NOT fully connected yet keeps dropping = the broken-bond churn.
                 while (true) {
                     delay(15.seconds)
@@ -460,16 +482,28 @@ class PebbleIntegration(
                                 ?.let { bluezObjectPath(it) }?.let { p -> p to w }
                         }.toMap()
                     drops.keys.retainAll(watchByPath.keys) // forget paths now fully connected / unknown
-                    notified.retainAll(watchByPath.keys)
+                    // A watch that left the not-connected set (fully connected now, or gone): clear its alert.
+                    for (path in notifId.keys - watchByPath.keys) {
+                        notifId.remove(path)?.let { closeChurnNotification(it) }
+                        notifiedAt.remove(path)
+                    }
                     for ((path, w) in watchByPath) {
                         val list = drops[path] ?: continue
                         val recent = synchronized(list) {
                             list.removeAll { now - it > BROKEN_BOND_WINDOW.inWholeMilliseconds }; list.size
                         }
                         if (recent >= BROKEN_BOND_FLAPS) {
-                            if (notified.add(path)) notifyBrokenBond(w)
+                            // Re-show on first detection, then every RENOTIFY_INTERVAL while it persists.
+                            // replaces_id updates the SAME notification in place — it alerts but never stacks.
+                            val last = notifiedAt[path]
+                            if (last == null || now - last >= RENOTIFY_INTERVAL.inWholeMilliseconds) {
+                                notifiedAt[path] = now
+                                notifId[path] = notifyBrokenBond(w, notifId[path] ?: UInt32(0))
+                            }
                         } else if (recent == 0) {
-                            notified.remove(path) // churn subsided — allow a fresh notification later
+                            // Churn stopped (watch went out of range / quiet) — clear the alert.
+                            notifId.remove(path)?.let { closeChurnNotification(it) }
+                            notifiedAt.remove(path)
                         }
                     }
                 }
@@ -479,18 +513,33 @@ class PebbleIntegration(
         }
     }
 
-    private fun notifyBrokenBond(device: KnownPebbleDevice) {
+    /** (Re-)post the broken-bond alert. [replacesId] overwrites the existing one in place (0 = new). Returns its id. */
+    private fun notifyBrokenBond(device: KnownPebbleDevice, replacesId: UInt32): UInt32 {
         val name = device.displayName()
         log.warn {
             "Broken-bond detector: $name — BlueZ keeps re-establishing a dead link (Connected flapping, " +
                 "never a full session) — likely unpaired on the watch. Notifying; not forgetting it on its own."
         }
-        sendActionableNotification(
+        return sendActionableNotification(
             "Pebble won't stay connected",
             "$name keeps connecting then dropping without finishing — if you unpaired it on the watch, " +
                 "tap Re-pair (or run 'stoandl repair $name') and put the watch in pairing mode.",
             actionLabel = "Re-pair",
+            replacesId = replacesId,
         ) { repairByName(name) }
+    }
+
+    /** Close a churn notification once the watch reconnects / goes away (session bus, same conn as Notify). */
+    private fun closeChurnNotification(id: UInt32) {
+        if (id == UInt32(0)) return
+        try {
+            notifConn?.getRemoteObject(
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                FreedesktopNotifications::class.java,
+            )?.CloseNotification(id)
+        } catch (e: Exception) {
+            log.debug { "closeChurnNotification failed: ${e.message}" }
+        }
     }
 
     /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and
@@ -547,17 +596,25 @@ class PebbleIntegration(
      * timeout=0 so it persists until acted on/dismissed. Falls back to a plain notification if the
      * action listener isn't up — the body's "run 'stoandl pair'" hint is then the recovery path.
      */
-    private fun sendActionableNotification(summary: String, body: String, actionLabel: String, onInvoke: () -> Unit) {
-        val conn = notifConn ?: run { sendDesktopNotification(summary, body); return }
-        try {
+    private fun sendActionableNotification(
+        summary: String,
+        body: String,
+        actionLabel: String,
+        replacesId: UInt32 = UInt32(0),
+        onInvoke: () -> Unit,
+    ): UInt32 {
+        val conn = notifConn ?: run { sendDesktopNotification(summary, body); return UInt32(0) }
+        return try {
             val id = conn.getRemoteObject(
                 "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
                 FreedesktopNotifications::class.java,
-            ).Notify("stoandl", UInt32(0), "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
+            ).Notify("stoandl", replacesId, "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
             notificationActions[id] = onInvoke
+            id
         } catch (e: Exception) {
             log.warn { "sendActionableNotification failed: ${e.message}" }
             sendDesktopNotification(summary, body)
+            UInt32(0)
         }
     }
 
