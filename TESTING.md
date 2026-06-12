@@ -358,6 +358,126 @@ drive one with `playerctl play-pause` / `metadata`. Open the **Music** app on th
 
 ---
 
+## 5.7 Calendar sync  ⚠️ UNVERIFIED (parser verified offline; not yet on hardware)
+
+Syncs desktop calendar **events** to the watch **timeline** as native calendar pins (title, time,
+location, recurring marker). libpebble3's `PhoneCalendarSyncer` does the pin work; stoandl supplies
+events via the Linux `SystemCalendar` reader (local `.ics`, discovery, iCal feed URLs, CalDAV). Off
+until a `calendar.*` source is set. **5.7a needs no watch or daemon** — do it first.
+
+```sh
+tail -f /tmp/stoandl.log | grep -iE "Calendar sync|PhoneCalendarSyncer|Got .* calendars from device|REPORT|iCal feed"
+```
+
+### Setup — a test calendar
+
+Generate one with dates relative to *today* (GNU `date`), so every event lands in the sync window:
+
+```sh
+cat > /tmp/stoandl-test.ics <<EOF
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//stoandl//test//EN
+X-WR-CALNAME:stoandl test
+BEGIN:VEVENT
+UID:t-timed
+DTSTAMP:20200101T000000Z
+DTSTART:$(date -u -d 'tomorrow 14:00' +%Y%m%dT%H%M%SZ)
+DTEND:$(date -u -d 'tomorrow 15:00' +%Y%m%dT%H%M%SZ)
+SUMMARY:Dentist
+LOCATION:123 Main St
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER:-PT30M
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:t-allday
+DTSTAMP:20200101T000000Z
+DTSTART;VALUE=DATE:$(date -u -d '+2 days' +%Y%m%d)
+DTEND;VALUE=DATE:$(date -u -d '+3 days' +%Y%m%d)
+SUMMARY:Public holiday
+END:VEVENT
+BEGIN:VEVENT
+UID:t-weekly
+DTSTAMP:20200101T000000Z
+DTSTART:$(date -u -d 'today 09:00' +%Y%m%dT%H%M%SZ)
+DTEND:$(date -u -d 'today 09:30' +%Y%m%dT%H%M%SZ)
+RRULE:FREQ=WEEKLY
+EXDATE:$(date -u -d 'today +7 days 09:00' +%Y%m%dT%H%M%SZ)
+SUMMARY:Weekly standup
+END:VEVENT
+BEGIN:VEVENT
+UID:t-daily
+DTSTAMP:20200101T000000Z
+DTSTART:$(date -u -d 'tomorrow 20:00' +%Y%m%dT%H%M%SZ)
+DTEND:$(date -u -d 'tomorrow 20:15' +%Y%m%dT%H%M%SZ)
+RRULE:FREQ=DAILY;COUNT=3
+SUMMARY:Medication
+END:VEVENT
+END:VCALENDAR
+EOF
+```
+
+(busybox `date` on the phone doesn't do relative strings — generate this on the dev box, or dump one
+of your real `.ics` files instead.)
+
+### 5.7a Offline parser (no watch/daemon — verifies recurrence, EXDATE, all-day, timezone, reminders)
+
+`stoandl calendar dump <file|url>` expands events into the window (yesterday → +30 d) and prints them.
+(Before install, use `java -jar build/libs/stoandl-*-all.jar calendar dump <file>`.)
+
+```sh
+stoandl calendar dump /tmp/stoandl-test.ics
+```
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 5.44 | Generated fixture | `stoandl calendar dump /tmp/stoandl-test.ics` | **9 occurrence(s)**: Dentist ×1 (`@123 Main St  reminders: 30m`), Public holiday ×1 (`(all-day)`), Weekly standup ×4 (`recurring`), Medication ×3 (`recurring`). One line each, sorted by start. |
+| 5.44r | Reminders parsed | (same output) | The Dentist line shows `reminders: 30m` (its `-PT30M` VALARM). Multiple VALARMs list each (e.g. `1440m,10m`); a `RELATED=END` alarm on a 1 h event shows `-45m`; an absolute trigger shows the minutes before start. |
+| 5.45 | EXDATE honoured | (same output) | "Weekly standup" appears at today, +14 d, +21 d, +28 d — **the +7-day one is absent** (5 instances would be in-window; EXDATE drops it to 4). |
+| 5.46 | Timezone / DST | dump a real `.ics` containing a `DTSTART;TZID=…` event (feeds ship a `VTIMEZONE`) | Time is converted to the host's local zone (e.g. `09:00 America/New_York` → `13:00` on a UTC host); **no `Unsupported unit` warning** in the log. |
+| 5.47 | Malformed input | `stoandl calendar dump /etc/hostname` | Logs `Failed to parse iCalendar …`, prints `Parsed OK but 0 occurrences …` — no stack trace, no crash. |
+| 5.48 | URL source | `stoandl calendar dump <a published .ics URL>` | Same as a file, fetched over HTTP(S). A bad URL/host warns and yields 0 occurrences. |
+
+### 5.7b On hardware (needs a watch)
+
+Point a source at the fixture and restart:
+
+```ini
+calendar.ics_paths = /tmp/stoandl-test.ics
+calendar.sync_interval = 30
+```
+
+For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging)). On the watch, open the
+**timeline** by pressing **up** (past) / **down** or select (future) from the watchface.
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 5.49 | Startup gate | restart with a source set, then with none | Log: `Calendar sync enabled (timeline pins; refresh every 30m …)`; with nothing set: `Calendar sync disabled (set calendar.ics_paths / discover / ical_urls / caldav …)`. |
+| 5.50 | Pins appear | connect the watch | The watch's **future timeline** shows the fixture events as calendar pins (title, time, location). DEBUG log: `Got N calendars from device … New Pin: <uuid> … Synced … calendars to DB`. |
+| 5.51 | List | `stoandl calendar list` | One row per calendar: `id  name  enabled`. (`stoandl-test` for the fixture.) |
+| 5.52 | Disable / enable | `stoandl calendar disable <id\|name>` then `stoandl calendar enable <id\|name>` | Disabling drops that calendar's pins on the next sync (DEBUG: `Deleting pin …`); enabling brings them back. Persists across restarts. |
+| 5.53 | Force sync | `stoandl calendar sync` | Prints `Calendar re-sync requested`; pins refresh within ~5 s. |
+| 5.54 | Live `.ics` change | add/edit an event in `/tmp/stoandl-test.ics` (e.g. re-run the generator) | A re-sync fires within seconds with no restart (filesystem watch); the new/changed pin appears. |
+| 5.55 | Event removed | delete an event from the source, wait for a sync | Its pin is removed from the watch (DEBUG: `Deleting pin … no longer exists in calendar`). |
+| 5.56 | All-day & recurring | (from the fixture) | The all-day "Public holiday" pin sits on its day; each "Medication"/"Weekly standup" instance is its own pin at the right time. |
+| 5.57 | Re-sync ≠ duplicate | `stoandl calendar sync` twice | No duplicate pins (backingId is stable); the watch timeline is unchanged. |
+| 5.58 | iCal URL | set `calendar.ical_urls = <published .ics URL>`, restart | That calendar's events sync; log shows the fetch. Opt-in egress only. |
+| 5.59 | CalDAV | set `calendar.caldav = <collection-url>\|<user>\|<pass>`, restart | The collection's in-window events sync; log shows a `REPORT`. Opt-in egress only. A bad URL/credentials warns and syncs nothing (no crash). |
+| 5.60 | Discovery (Plasma Mobile) | on the phone, `calendar.discover = yes` with Calindori in use | Calindori's local `.ics` (`~/.local/share/calindori`) are found and synced with no explicit paths. |
+| 5.61 | Reminder fires | add an event ~35 min out carrying `BEGIN:VALARM` / `TRIGGER:-PT30M` / `END:VALARM` (default `calendarReminders` is on) | ~30 min before its start the watch shows/vibrates a reminder. DEBUG: a `TimelineReminder` is inserted for the pin. (Skip if you don't want to wait — 5.44r already verifies parsing.) |
+
+### Not covered / known limitations (don't file these as bugs)
+
+- **No RSVP write-back** — accept/decline from the watch isn't wired up.
+- **GNOME (EDS) / KDE (Akonadi) online calendars aren't read natively** — reach Google/Nextcloud/MS via `calendar.ical_urls` or `calendar.caldav`.
+- **A singly-edited occurrence of a recurring event shows at its original time** (detached `RECURRENCE-ID` overrides are skipped to avoid duplicates).
+- CalDAV is collection-URL + Basic-auth only (no discovery/Digest/OAuth); credentials are plaintext in the config.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

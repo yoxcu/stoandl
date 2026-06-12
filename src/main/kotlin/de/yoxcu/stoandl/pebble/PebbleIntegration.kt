@@ -91,6 +91,18 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
+import de.yoxcu.stoandl.calendar.CalDavSource
+import de.yoxcu.stoandl.calendar.CalendarSource
+import de.yoxcu.stoandl.calendar.DiscoverySource
+import de.yoxcu.stoandl.calendar.IcalUrlSource
+import de.yoxcu.stoandl.calendar.IcsPathSource
+import de.yoxcu.stoandl.calendar.LinuxSystemCalendar
+import de.yoxcu.stoandl.calendar.calendarDiscoveryDirs
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
+import io.rebble.libpebblecommon.calendar.SystemCalendar
+import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
@@ -149,6 +161,7 @@ class PebbleIntegration(
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
+    private val calendarSyncRef = AtomicReference<LinuxSystemCalendar?>(null)
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
@@ -189,6 +202,11 @@ class PebbleIntegration(
         // Populated by DbusNotificationListenerConnection; consumed by DbusNotificationActionHandler.
         val itemIdToDbusId = ConcurrentHashMap<Uuid, UInt32>()
 
+        // Build the Linux calendar source from config (null if nothing is configured). libpebble3's
+        // PhoneCalendarSyncer reads it and handles all pin creation/diffing/deletion itself.
+        val calendarSync = buildCalendarSync()
+        calendarSyncRef.set(calendarSync)
+
         // Override modules: use our DBus notification bridge, and pin BleConfigFlow so any
         // persisted Java Preferences value cannot override reversedPPoG=false.
         koin.loadModules(listOf(module {
@@ -214,6 +232,9 @@ class PebbleIntegration(
                 } else null
                 MprisMusicControl(scope, systemVol)
             }
+            // Replace the no-op JVM SystemCalendar with the Linux reader (when sources are configured),
+            // so PhoneCalendarSyncer turns desktop calendar events into watch timeline pins.
+            calendarSync?.let { cs -> single<SystemCalendar> { cs } }
         }), allowOverride = true)
 
         libPebble = koin.get()
@@ -236,6 +257,11 @@ class PebbleIntegration(
         log.info {
             if (config.musicControl) "Music control enabled (MPRIS → watch Music app; volume: ${config.musicVolume.name.lowercase()})"
             else "Music control disabled (music.enabled=false)"
+        }
+        log.info {
+            if (calendarSync != null)
+                "Calendar sync enabled (timeline pins; refresh every ${config.calendarSyncIntervalMinutes}m + on .ics change)"
+            else "Calendar sync disabled (set calendar.ics_paths / discover / ical_urls / caldav in stoandl.conf)"
         }
 
         log.info { "libpebble3 initialized" }
@@ -823,6 +849,36 @@ class PebbleIntegration(
         }
     }
 
+    /** Assemble the Linux calendar reader from config, or null when nothing is configured (then the
+     *  no-op SystemCalendar binding stays and nothing syncs) — mirrors startWeatherSync's gate.
+     *  Local .ics/discovery are egress-free; iCal URLs and CalDAV are opt-in egress. */
+    private fun buildCalendarSync(): LinuxSystemCalendar? {
+        val sources = mutableListOf<CalendarSource>()
+        if (config.calendarIcsPaths.isNotEmpty()) sources += IcsPathSource(config.calendarIcsPaths)
+        if (config.calendarDiscover) sources += DiscoverySource()
+        val needsHttp = config.calendarIcalUrls.isNotEmpty() || config.calendarCalDav.isNotEmpty()
+        val httpClient = if (needsHttp) HttpClient(CIO) {
+            install(HttpTimeout) { requestTimeoutMillis = 30_000; connectTimeoutMillis = 15_000 }
+        } else null
+        if (config.calendarIcalUrls.isNotEmpty()) {
+            sources += IcalUrlSource(config.calendarIcalUrls, httpClient!!)
+        }
+        if (config.calendarCalDav.isNotEmpty()) {
+            sources += CalDavSource(
+                config.calendarCalDav.map { CalDavSource.Entry(it.url, it.username, it.password) },
+                httpClient!!,
+            )
+        }
+        if (sources.isEmpty()) return null
+        // Directories to watch for near-instant updates: each ics_paths dir, the parent dir of each
+        // ics_paths file, plus the discovery dirs. Network sources rely on the periodic ticker.
+        val watchDirs = buildList {
+            config.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
+            if (config.calendarDiscover) addAll(calendarDiscoveryDirs())
+        }.filterNotNull().distinct()
+        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs)
+    }
+
     private fun startWatchPrefsSync() {
         // Always build the control (the `settings`/`set-setting` CLI works even with nothing in the config).
         val control = WatchPrefsControl(
@@ -847,7 +903,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1273,6 +1329,7 @@ private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
     private val watchPrefsControlRef: AtomicReference<WatchPrefsControl?>,
+    private val calendarSyncRef: AtomicReference<LinuxSystemCalendar?>,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1304,6 +1361,45 @@ private class StoandlControlImpl(
         } catch (e: Exception) {
             log.warn(e) { "SyncWeather failed" }
             "error:${e.message ?: "weather sync failed"}"
+        }
+    }
+
+    override fun SyncCalendar(): String {
+        val cal = calendarSyncRef.get()
+            ?: return "error:Calendar sync not enabled (set calendar.* in stoandl.conf)"
+        cal.requestRefresh()
+        return "ok:Calendar re-sync requested"
+    }
+
+    override fun ListCalendars(): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        return try {
+            runBlocking { lp.calendars().first() }
+                .map { "${it.id}\t${it.name}\t${if (it.enabled) "enabled" else "disabled"}" }
+        } catch (e: Exception) {
+            log.warn(e) { "ListCalendars failed" }
+            emptyList()
+        }
+    }
+
+    override fun SetCalendarEnabled(query: String, enabled: Boolean): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        return try {
+            val cals = runBlocking { lp.calendars().first() }
+            val matches = query.toIntOrNull()?.let { id -> cals.filter { it.id == id } }?.takeIf { it.isNotEmpty() }
+                ?: cals.filter { it.name.contains(query, ignoreCase = true) }
+            when {
+                matches.isEmpty() -> "notfound:No calendar matching '$query'"
+                matches.size > 1 -> "ambiguous:" + matches.joinToString("; ") { "${it.id}:${it.name}" }
+                else -> {
+                    lp.updateCalendarEnabled(matches.first().id, enabled)
+                    calendarSyncRef.get()?.requestRefresh()
+                    "ok:${if (enabled) "Enabled" else "Disabled"} ${matches.first().name}"
+                }
+            }
+        } catch (e: Exception) {
+            log.warn(e) { "SetCalendarEnabled failed" }
+            "error:${e.message ?: "failed"}"
         }
     }
 

@@ -15,15 +15,17 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import de.yoxcu.stoandl.calendar.ICalParser
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import java.io.File
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -105,6 +107,7 @@ private fun printUsage() {
     println("  unpair                     Forget the watch on this host (use after moving it to another device)")
     println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
     println("  list                       List known watches and their connection state")
+    println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
     println("  help                       Show this help")
 }
 
@@ -357,6 +360,61 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        "calendar" -> {
+            when (val sub = args.getOrNull(1) ?: "list") {
+                "dump" -> {
+                    val src = args.getOrNull(2)
+                    if (src == null) {
+                        System.err.println("Usage: stoandl calendar dump <file.ics|url>"); System.exit(1); return
+                    }
+                    dumpCalendar(src)
+                }
+                "list" -> {
+                    val conn = connectDbusOrExit() ?: return
+                    try {
+                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                        val cals = try { control.ListCalendars() } catch (e: Exception) {
+                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                        }
+                        if (cals.isEmpty()) {
+                            println("No calendars synced (configure calendar.* in stoandl.conf, or none discovered yet).")
+                        } else {
+                            cals.forEach { entry ->
+                                val p = entry.split('\t')
+                                println("  %-4s %-30s %s".format(p.getOrElse(0) { "" }, p.getOrElse(1) { entry }, p.getOrElse(2) { "" }))
+                            }
+                            println("\nToggle one with:  stoandl calendar disable <id|name>")
+                        }
+                    } finally { conn.disconnect() }
+                }
+                "sync" -> {
+                    val conn = connectDbusOrExit() ?: return
+                    try {
+                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                        handleStatusResponse(try { control.SyncCalendar() } catch (e: Exception) {
+                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                        })
+                    } finally { conn.disconnect() }
+                }
+                "enable", "disable" -> {
+                    val query = args.drop(2).joinToString(" ")
+                    if (query.isBlank()) {
+                        System.err.println("Usage: stoandl calendar $sub <id|name>"); System.exit(1); return
+                    }
+                    val conn = connectDbusOrExit() ?: return
+                    try {
+                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                        handleStatusResponse(try { control.SetCalendarEnabled(query, sub == "enable") } catch (e: Exception) {
+                            System.err.println("Error: ${e.message}"); System.exit(1); return
+                        })
+                    } finally { conn.disconnect() }
+                }
+                else -> {
+                    System.err.println("Usage: stoandl calendar <list|sync|enable <id|name>|disable <id|name>|dump <file|url>>")
+                    System.exit(1)
+                }
+            }
+        }
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -378,6 +436,41 @@ private fun handleStatusResponse(resp: String) {
     } else {
         System.err.println(message.ifEmpty { status })
         System.exit(1)
+    }
+}
+
+/** Offline debug aid: parse an .ics file or http(s) URL and print the events expanded into the
+ *  default sync window (now-1d .. now+30d). Runs in-process — no daemon or watch needed — so it's
+ *  the way to verify recurrence expansion and field mapping in the sandbox. */
+private fun dumpCalendar(src: String) {
+    val text = try {
+        if (src.startsWith("http://") || src.startsWith("https://")) java.net.URI(src).toURL().readText()
+        else File(src).readText()
+    } catch (e: Exception) {
+        System.err.println("Cannot read '$src': ${e.message}"); System.exit(1); return
+    }
+    val nowSec = java.time.Instant.now().epochSecond
+    val start = kotlin.time.Instant.fromEpochSeconds(nowSec - 86_400L)
+    val end = kotlin.time.Instant.fromEpochSeconds(nowSec + 30L * 86_400L)
+    val events = ICalParser.parse(text, calendarId = src, start = start, end = end).sortedBy { it.startTime }
+    if (events.isEmpty()) {
+        println("Parsed OK but 0 occurrences in window (now-1d .. now+30d).")
+        return
+    }
+    val zone = ZoneId.systemDefault()
+    val dateTimeFmt = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd HH:mm").withZone(zone)
+    val dateFmt = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd").withZone(zone)
+    println("${events.size} occurrence(s) in window (now-1d .. now+30d):")
+    events.forEach { ev ->
+        val at = java.time.Instant.ofEpochSecond(ev.startTime.epochSeconds)
+        val whenStr = if (ev.allDay) dateFmt.format(at) + " (all-day)" else dateTimeFmt.format(at)
+        val extras = buildList {
+            if (!ev.location.isNullOrBlank()) add("@${ev.location}")
+            if (ev.recurs) add("recurring")
+            if (ev.attendees.isNotEmpty()) add("${ev.attendees.size} attendee(s)")
+            if (ev.reminders.isNotEmpty()) add("reminders: " + ev.reminders.joinToString(",") { "${it.minutesBefore}m" })
+        }.joinToString("  ")
+        println("  %-30s  %s%s".format(whenStr, ev.title, if (extras.isEmpty()) "" else "   ($extras)"))
     }
 }
 

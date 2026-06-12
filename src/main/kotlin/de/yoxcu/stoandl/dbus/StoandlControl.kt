@@ -58,6 +58,17 @@ interface StoandlControl : DBusInterface {
      *  (`ok:`/`error:`/`notready:`) as for [LaunchApp]. */
     fun SetWatchPref(id: String, value: String): String
 
+    /** Request an immediate calendar re-sync (re-read sources → update timeline pins). Returns
+     *  `ok:` once requested; `error:` if calendar sync is not enabled. */
+    fun SyncCalendar(): String
+
+    /** List the synced calendars, one per entry, tab-separated `id \t name \t enabled|disabled`. */
+    fun ListCalendars(): List<String>
+
+    /** Enable or disable a calendar by numeric id or name substring. Status-prefixed return
+     *  (`ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`). */
+    fun SetCalendarEnabled(query: String, enabled: Boolean): String
+
     /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
      *  `ok:` immediately; poll [PairStatus] for the outcome. */
     fun Pair(): String

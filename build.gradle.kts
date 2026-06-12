@@ -40,6 +40,9 @@ dependencies {
     // JSON parsing for the Open-Meteo weather response (version matches libpebble3's catalog).
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
 
+    // iCalendar parsing + RRULE recurrence expansion for calendar sync (pure-JVM, BSD-3, java.time).
+    implementation("org.mnode.ical4j:ical4j:4.1.1")
+
     // DBus — listen to org.freedesktop.Notifications on the session bus
     implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.8.2")
 

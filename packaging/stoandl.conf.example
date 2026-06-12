@@ -70,3 +70,30 @@ weather.gps_name = Current location
 # Reverse-geocode the GPS coordinates to a place name via OSM Nominatim. Off by default: it sends
 # your coordinates to a third-party web service. When off, the GPS entry uses weather.gps_name.
 weather.reverse_geocode = false
+
+# Calendar → watch timeline. Syncs upcoming events (yesterday … +7 days) as native calendar pins.
+# Disabled until you set at least one source below. Local .ics and discovery make no web requests;
+# ical_urls and caldav are opt-in egress.
+#
+# Local .ics files or directories (scanned for *.ics). `~` expands to your home. The DE-agnostic path:
+#   - Plasma Mobile (Calindori) keeps calendars as plain .ics under ~/.local/share/calindori
+#   - or any .ics your calendar app writes / vdirsyncer syncs
+# Example: calendar.ics_paths = ~/.local/share/calindori, ~/calendars/work.ics
+calendar.ics_paths =
+
+# Auto-discover the desktop's local .ics calendars (Calindori, ~/.calendars, ~/calendars). No egress.
+calendar.discover = false
+
+# Published iCal feed URLs — an HTTP(S) GET of an .ics (e.g. a Google/Nextcloud/Outlook "secret iCal
+# address"). Opt-in egress. GNOME (Evolution Data Server) and KDE (Akonadi) *online* calendars aren't
+# read natively yet — use their iCal URL here, or caldav below.
+# Example: calendar.ical_urls = https://example.com/cal.ics
+calendar.ical_urls =
+
+# CalDAV collections, each url|username|password (the collection URL + Basic auth). Opt-in egress.
+# Credentials are stored here in plaintext — protect this file.
+# Example: calendar.caldav = https://dav.example.com/cal/me/work/|alice|s3cret
+calendar.caldav =
+
+# Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).
+calendar.sync_interval = 30

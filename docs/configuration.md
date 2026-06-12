@@ -32,6 +32,11 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
+| `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
+| `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
+| `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
+| `calendar.caldav` | list | _(empty)_ | CalDAV collections to read, each `url\|user\|password`. **Opt-in egress.** |
+| `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
 ## Weather
@@ -145,6 +150,73 @@ external tool). Note many players — most browsers — don't expose a `Volume` 
 is silently ignored there; mpv, VLC and Spotify do support it. If `system` is selected but no backend is
 found, stoandl logs a warning and falls back to player volume. (In `system` mode the now-playing volume
 bar on the watch still reflects the player, not the master level — only the buttons act on master.)
+
+## Calendar
+
+stoandl syncs upcoming calendar **events** to the watch's **timeline** as native calendar pins —
+title, time, location, a recurring marker, and reminders for events that carry a VALARM. libpebble3
+does all the watch-side work (pin creation, diffing and deletion); stoandl just reads your calendars
+and hands it the events, so re-syncs update pins in place and deleting an event removes its pin.
+
+It's **disabled until you configure a source.** The design is *DE-agnostic first, reuse what the DE
+already imported where that's cheap*:
+
+```ini
+# Local .ics files or directories — no egress. The reliable, DE-agnostic path.
+calendar.ics_paths = ~/.local/share/calindori, ~/calendars/work.ics
+
+# …or let stoandl find local .ics the desktop already keeps (Calindori, ~/.calendars, …):
+calendar.discover  = yes
+
+# Published iCal feed URL — opt-in egress:
+calendar.ical_urls = https://example.com/cal.ics
+
+# CalDAV collection — url|user|password, opt-in egress:
+calendar.caldav    = https://dav.example.com/cal/me/work/|alice|s3cret
+
+calendar.sync_interval = 30
+```
+
+Events are synced for a fixed window of **yesterday through 7 days ahead** (set by libpebble3's
+timeline). Recurring events (RRULE/RDATE, minus EXDATE) are expanded to individual pins; all-day
+events and per-event timezones are handled. stoandl re-reads on `calendar.sync_interval`, immediately
+when a watched local `.ics` changes, and on demand:
+
+```sh
+stoandl calendar list                 # synced calendars + enabled state
+stoandl calendar disable <id|name>    # stop syncing one calendar (enable to undo)
+stoandl calendar sync                 # force a re-read now
+stoandl calendar dump <file|url>      # parse + print events offline (no daemon/watch needed)
+```
+
+### Reusing your desktop's calendars
+
+There is no cross-desktop calendar API, so "reuse the DE's calendars" means different things per DE:
+
+- **Plasma Mobile (Calindori)** keeps calendars as plain local `.ics` — `calendar.discover = yes`
+  (or point `calendar.ics_paths` at `~/.local/share/calindori`) picks them up with no reconfiguration.
+- **Any DE** can point `calendar.ics_paths` at a local `.ics` (one your calendar app writes, or one a
+  tool like `vdirsyncer` syncs), or use `calendar.ical_urls` / `calendar.caldav` for online accounts.
+- **GNOME (Evolution Data Server)** and **KDE desktop (Akonadi)** keep *online* calendars (Google,
+  Nextcloud, Microsoft) in caches with no practical read API for a non-GNOME / non-C++ process, so
+  reading those native stores is **not yet supported**. Reach them via `calendar.ical_urls` (most
+  providers offer a "secret iCal address") or `calendar.caldav`. A GNOME EDS reader is a possible
+  future addition.
+
+CalDAV here is a **collection URL + Basic auth** only (no account discovery, Digest or OAuth), and
+the credentials sit in `stoandl.conf` in plaintext — protect the file (a Secret Service/libsecret
+backend is a possible follow-up). RSVP (accept/decline from the watch) isn't wired up yet. A single
+edited occurrence of a recurring event shows at its original time (detached overrides are skipped to
+avoid duplicates).
+
+### Network / external services
+
+Local `.ics` files and discovery make **no web requests.** The two network sources are opt-in:
+
+| Service | What is sent | When it's called |
+|---------|--------------|------------------|
+| iCal feed URL(s) | an HTTP(S) GET to each `calendar.ical_urls` entry | only when `calendar.ical_urls` is set |
+| CalDAV server(s) | a `calendar-query` REPORT (+ Basic auth) to each `calendar.caldav` collection | only when `calendar.caldav` is set |
 
 ## Watch settings (advanced)
 

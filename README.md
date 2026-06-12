@@ -1,6 +1,6 @@
 # stoandl
 
-> **⚠️ Early work in progress.** Notification sync, app/locker management, backup/restore and PKJS are working; phone-call support is written but untested on real hardware. Expect rough edges and breaking changes.
+> **⚠️ Early work in progress.** Notification sync, app/locker management, backup/restore and PKJS are working; phone-call and calendar-sync support are written but untested on real hardware. Expect rough edges and breaking changes.
 
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
@@ -16,6 +16,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app (Open-Meteo — free, no account)
 - Bridges desktop media players (MPRIS) to the watch's Music app — now-playing plus play/pause, next/previous and volume from the watch
+- Syncs calendar events (and their reminders) to the watch's timeline as native pins — DE-agnostic (local `.ics`, iCal feeds or CalDAV), reusing the calendars your desktop already keeps where it can
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
@@ -154,6 +155,23 @@ daemon is up.
 
 Note: settings a watchapp writes *directly on the watch* (the C `persist_write` API, as opposed
 to Clay/PKJS config) live only on the watch and are not part of this backup.
+
+## Calendar
+
+stoandl syncs upcoming calendar events to the watch's **timeline** as native pins — DE-agnostically
+from local `.ics` files (reusing e.g. Calindori on Plasma Mobile via `calendar.discover`), or from
+iCal feed URLs / CalDAV. It's off until you set a `calendar.*` source in the config.
+
+```sh
+stoandl calendar list                 # synced calendars + enabled state
+stoandl calendar disable <id|name>    # stop syncing one calendar (enable to undo)
+stoandl calendar sync                 # force a re-read now
+stoandl calendar dump <file|url>      # parse + print events offline (no daemon/watch needed)
+```
+
+→ [docs/configuration.md#calendar](docs/configuration.md#calendar) — sources, the reuse-your-DE
+story (and why GNOME/KDE *online* accounts need an iCal/CalDAV URL for now), recurrence/timezone
+handling, and the egress note.
 
 ## Logging
 

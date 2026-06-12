@@ -54,9 +54,23 @@ data class StoandlConfig(
      *  Both must be set to take effect; only used when [musicVolume] is [MusicVolumeMode.SYSTEM]. */
     val musicVolumeUpCommand: String,
     val musicVolumeDownCommand: String,
+    /** Local .ics files or directories to sync to the watch timeline (no egress). Any of these (or
+     *  [calendarDiscover]/[calendarIcalUrls]/[calendarCalDav]) being non-empty enables calendar sync. */
+    val calendarIcsPaths: List<String>,
+    /** Auto-discover calendars the DE keeps as local .ics (e.g. Calindori on Plasma Mobile). No egress. */
+    val calendarDiscover: Boolean,
+    /** Published iCal feed URLs fetched over HTTP(S) (opt-in egress). */
+    val calendarIcalUrls: List<String>,
+    /** CalDAV calendar collections to read (opt-in egress). */
+    val calendarCalDav: List<CalDavAccount>,
+    /** How often calendars are re-read, in minutes (also rolls the timeline window forward). */
+    val calendarSyncIntervalMinutes: Long,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
+
+    /** A CalDAV calendar collection URL plus its Basic-auth credentials. */
+    data class CalDavAccount(val url: String, val username: String, val password: String)
 
     enum class WeatherUnits { METRIC, IMPERIAL }
 
@@ -73,6 +87,7 @@ data class StoandlConfig(
         private const val DEFAULT_WEATHER_INTERVAL_MINUTES = 30L
         private const val DEFAULT_GPS_DESKTOP_ID = "stoandl"
         private const val DEFAULT_GPS_NAME = "Current location"
+        private const val DEFAULT_CALENDAR_INTERVAL_MINUTES = 30L
 
         private fun defaults() = StoandlConfig(
             notificationBlocklist = emptyList(),
@@ -92,6 +107,11 @@ data class StoandlConfig(
             musicVolume = MusicVolumeMode.SYSTEM,
             musicVolumeUpCommand = "",
             musicVolumeDownCommand = "",
+            calendarIcsPaths = emptyList(),
+            calendarDiscover = false,
+            calendarIcalUrls = emptyList(),
+            calendarCalDav = emptyList(),
+            calendarSyncIntervalMinutes = DEFAULT_CALENDAR_INTERVAL_MINUTES,
         )
 
         fun configFile(): File {
@@ -145,6 +165,12 @@ data class StoandlConfig(
                 musicVolume = parseMusicVolume(map["music.volume"]),
                 musicVolumeUpCommand = map["music.volume_up_command"]?.trim().orEmpty(),
                 musicVolumeDownCommand = map["music.volume_down_command"]?.trim().orEmpty(),
+                calendarIcsPaths = list("calendar.ics_paths").map(::expandTilde),
+                calendarDiscover = parseBool(map["calendar.discover"]),
+                calendarIcalUrls = list("calendar.ical_urls"),
+                calendarCalDav = parseCalDav(list("calendar.caldav")),
+                calendarSyncIntervalMinutes = map["calendar.sync_interval"]?.trim()?.toLongOrNull()
+                    ?.takeIf { it > 0 } ?: DEFAULT_CALENDAR_INTERVAL_MINUTES,
             )
             log.info {
                 "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
@@ -153,7 +179,9 @@ data class StoandlConfig(
                     "weatherUnits=${cfg.weatherUnits}, weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
                     "weatherGps=${cfg.weatherGps}, weatherLocationSource=${cfg.weatherLocationSource}, " +
                     "watchPrefs=${cfg.watchPrefs.keys}, musicControl=${cfg.musicControl}, " +
-                    "musicVolume=${cfg.musicVolume}"
+                    "musicVolume=${cfg.musicVolume}, calendarIcsPaths=${cfg.calendarIcsPaths}, " +
+                    "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +
+                    "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}"
             }
             return cfg
         }
@@ -176,6 +204,19 @@ data class StoandlConfig(
                     WeatherLocation(name, lat, lon)
                 }
             }
+
+        /** Parse `url|username|password` CalDAV entries. Only the URL is required; missing user/pass
+         *  become empty (the password is never trimmed of inner content, only the field is split). */
+        private fun parseCalDav(entries: List<String>): List<CalDavAccount> = entries.mapNotNull { entry ->
+            val parts = entry.split('|')
+            val url = parts.getOrNull(0)?.trim().orEmpty()
+            if (url.isEmpty()) {
+                log.warn { "Ignoring malformed calendar.caldav entry (expected url|username|password)" }
+                null
+            } else {
+                CalDavAccount(url, parts.getOrElse(1) { "" }.trim(), parts.getOrElse(2) { "" }.trim())
+            }
+        }
 
         private fun parseBool(raw: String?): Boolean =
             raw?.trim()?.lowercase() in setOf("true", "yes", "1", "on")
