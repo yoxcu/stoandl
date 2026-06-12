@@ -116,6 +116,14 @@ class WeatherSync(
         scope.launch {
             var failStreak = 0
             while (true) {
+                // Only fetch while a watch is connected — otherwise there's nowhere to deliver the
+                // weather and it just hits the weather API for nothing (e.g. out-of-range overnight).
+                // The on-connect refresh above re-fetches the moment a watch returns.
+                if (libPebble.watches.value.none { it is ConnectedPebbleDevice }) {
+                    failStreak = 0
+                    delay(intervalMinutes.minutes)
+                    continue
+                }
                 runCatching { syncNow() }.onFailure { log.warn { "Periodic weather sync failed: ${it.message}" } }
                 val wait = if (lastSyncOk) {
                     failStreak = 0
