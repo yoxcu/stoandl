@@ -1,6 +1,6 @@
 # stoandl
 
-> **⚠️ Early work in progress.** Notification sync, app/locker management, backup/restore and PKJS are working; phone-call and calendar-sync support are written but untested on real hardware. Expect rough edges and breaking changes.
+> **⚠️ Work in progress — but broad.** Most of what the Android/iOS Pebble companion apps do is already here: see [**What it does**](#what-it-does) below. Some of it is verified on real hardware, some is written but not yet hardware-tested — [docs/features.md](docs/features.md) marks which, and lists the remaining gaps. Expect occasional rough edges and breaking changes.
 
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
