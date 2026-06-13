@@ -59,6 +59,9 @@
 
     <!-- Suppress permanently — these are never useful at normal verbosity -->
     <logger name="org.freedesktop.dbus" level="WARN"/>
+    <!-- ical4j Configurator logs "ical4j.properties not found." at INFO on startup (an empty
+         ical4j.properties on the classpath silences it at the source); WARN catches any other chatter. -->
+    <logger name="net.fortuna.ical4j" level="WARN"/>
     <logger name="WatchManager" level="WARN"/>
     <logger name="AppOrderManager" level="WARN"/>
     <logger name="HealthDataProcessor" level="WARN"/>
