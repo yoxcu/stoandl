@@ -531,6 +531,29 @@ without bound. Prune manually if needed.
 
 ---
 
+## 5.9 Time / timezone sync  ⚠️ UNVERIFIED (needs a watch)
+
+The watch clock is set at connect by libpebble3's negotiator (`SetUTC` = unix time + UTC offset +
+timezone name) and on a watch-initiated `GetTimeUtcRequest`. stoandl adds proactive re-sync when the
+**host** timezone changes mid-connection, via a `org.freedesktop.timedate1` `PropertiesChanged`
+watcher on the system bus (`TimedateTimeChanged`, overriding libpebble3's no-op JVM `TimeChanged`).
+No config — always on. Changing the timezone needs privilege (`timedatectl` uses polkit).
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.80 | Monitor starts | start the daemon | Log (INFO): `Time-change monitor started (org.freedesktop.timedate1 → watch clock re-sync)`. (Absent only if there's no system bus / no timedated — then connect-time sync still works.) |
+| 5.81 | Clock correct at connect | connect a watch, check its time | Matches the host wall clock and local offset (this is the negotiator path, always worked). |
+| 5.82 | Timezone change re-syncs | with the watch connected, `sudo timedatectl set-timezone America/New_York` (then set it back) | Log (DEBUG): `timedate1 changed — re-syncing watch clock` then libpebble's `updateTime`; the watch's displayed time shifts to the new offset within a second or two — **without** disconnecting/reconnecting. |
+| 5.83 | NTP toggle | `sudo timedatectl set-ntp true` (or false) | Same `timedate1 changed` re-sync fires (harmless extra `SetUTC`). |
+| 5.84 | No system bus | n/a in normal use | If the system bus is unavailable the monitor logs a DEBUG `unavailable` line and is skipped; connect-time sync is unaffected. |
+
+**Known limitation:** timedated does **not** signal a plain DST rollover (the `Timezone` property is
+unchanged — only the offset moves) nor a bare `timedatectl set-time` wall-clock step, so those still
+wait for the next reconnect (or a watch-initiated time request). Catching them would need a
+`CLOCK_REALTIME` discontinuity watch (`timerfd` `TFD_TIMER_CANCEL_ON_SET`), not done here.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

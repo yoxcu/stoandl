@@ -7,6 +7,7 @@ import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.dbus.MprisMusicControl
 import de.yoxcu.stoandl.dbus.SystemVolume
+import de.yoxcu.stoandl.dbus.TimedateTimeChanged
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
@@ -53,6 +54,7 @@ import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.WatchInfo
+import io.rebble.libpebblecommon.time.TimeChanged
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.voice.TranscriptionProvider
 import io.rebble.libpebblecommon.voice.TranscriptionResult
@@ -226,6 +228,10 @@ class PebbleIntegration(
                 )
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
+            // Replace the no-op JVM TimeChanged with a systemd-timedated watcher so a host timezone
+            // change while the watch stays connected re-pushes the clock (SetUTC). Without this the
+            // watch only learns the time at connect (the negotiator's updateTime()).
+            single<TimeChanged> { TimedateTimeChanged() }
             // Identify to the watch as an Android phone in the PhoneAppVersion handshake. The firmware
             // branches music handling on the phone's OS type (iOS → AMS; Android → the legacy
             // MUSIC_CONTROL endpoint that libpebble3 drives); the JVM module's default OSType.Unknown
