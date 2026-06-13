@@ -214,6 +214,19 @@ Set at least one location in `~/.config/stoandl/stoandl.conf`, e.g.
 | 4.6 | Transient failure | disconnect network, `stoandl weather` | Log warns the fetch failed; the watch keeps its last-known weather (not blanked). |
 | 4.7 | Multiple locations | `weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278` | `Weather updated: 2/2 …`; both locations available in the watch Weather app. |
 
+### 4b. Weather timeline pins
+
+Pins are on by default whenever weather is enabled (`weather.pins = true`).
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 4.20 | Pins appear | one location set, `stoandl weather`, open the watch timeline (future) | Log: `Weather pins updated: 6 pin(s) across 3 day(s)`. Timeline shows a **Sunrise** and a **Sunset** pin for today/tomorrow/+2 (firmware may only surface the next ~2–3 days). Each pin shows high/low + a weather icon. |
+| 4.21 | Day/night split | open a Sunrise vs Sunset pin | Sunrise pin uses the daytime condition/icon; Sunset pin the overnight one (they can differ, e.g. sunny day → clear night). |
+| 4.22 | Primary priority | `weather.locations = Munich:48.137:11.575, Mühldorf:48.25:12.52`, `stoandl weather` | Only **one** set of 6 pins, for Munich (first entry). Opening a pin lists Mühldorf's temps in the detail view. No duplicate Mühldorf pins. |
+| 4.23 | GPS wins | `weather.gps = true` + a fixed location, get a fix, `stoandl weather` | Pins follow the GPS current location (primary); the fixed location appears in the detail view. |
+| 4.24 | Toggle off | `weather.pins = false`, restart, `stoandl weather` | Log: `Weather pins cleared`; the weather pins disappear from the timeline. The Weather app still updates. |
+| 4.25 | Stale clear | remove a location so its day has no data | That day's pins are deleted (not left stale); `delete` is issued for the empty slot. |
+
 ### 4a. DE / command location import
 
 | # | Test | Command / Step | Expected |

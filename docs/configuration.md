@@ -32,6 +32,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
+| `weather.pins` | bool | `true` | Also emit weather **timeline pins** (a sunrise + sunset pin per day, today … +2 days) for the primary location. On by default whenever weather is enabled; set `false` to keep the Weather app but leave the timeline clear. |
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
@@ -57,6 +58,20 @@ first location's current temperature, today's high/low and tomorrow's forecast a
 stoandl refreshes on the configured interval and again immediately whenever a watch connects, so a
 freshly-connected watch shows current weather within seconds. Force a refresh any time with `stoandl
 weather`. A transient fetch failure keeps the last-known weather on the watch rather than blanking it.
+
+### Timeline pins
+
+Alongside the Weather app, stoandl also emits weather **timeline pins**, replicating the original Core
+companion app: for each of today, tomorrow and the day after it places a **Sunrise** pin (at sunrise)
+and a **Sunset** pin (at sunset). Each pin shows the day's high/low and condition; the daytime and
+overnight halves get their own temperature and icon, derived from Open-Meteo's hourly forecast.
+
+Pins follow a single **primary** location — the GPS current location if `weather.gps` is on, otherwise
+the first `weather.locations` entry — so configuring several nearby places (whose sunrises coincide)
+never produces overlapping pin sets. The other configured locations appear inside each pin's detail
+view as a temperature comparison. Set `weather.pins = false` to keep the Weather app but leave the
+timeline clear. (Note: current watch firmware only surfaces the next ~2–3 days of timeline, so the
+furthest pins may not be visible even though they sync.)
 
 ### Importing the location from your desktop
 

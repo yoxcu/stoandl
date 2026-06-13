@@ -41,6 +41,9 @@ data class StoandlConfig(
     /** When true, reverse-geocode the GPS coordinates to a place name via OSM Nominatim. Off by
      *  default: this sends your coordinates to a third-party web service, so it's opt-in. */
     val weatherReverseGeocode: Boolean,
+    /** When true (the default, whenever weather is enabled), also emit weather timeline pins —
+     *  a sunrise and a sunset pin per day for the primary location — alongside the Weather app data. */
+    val weatherPins: Boolean,
     /** Watch "advanced settings" to push: `watch.<prefId>` config keys, mapped prefId → raw value.
      *  Applied (authoritatively) on each watch connect. See `stoandl settings` for the available ids. */
     val watchPrefs: Map<String, String>,
@@ -102,6 +105,7 @@ data class StoandlConfig(
             weatherGpsDesktopId = DEFAULT_GPS_DESKTOP_ID,
             weatherGpsName = DEFAULT_GPS_NAME,
             weatherReverseGeocode = false,
+            weatherPins = true,
             watchPrefs = emptyMap(),
             musicControl = true,
             musicVolume = MusicVolumeMode.SYSTEM,
@@ -155,6 +159,7 @@ data class StoandlConfig(
                 weatherGpsName = map["weather.gps_name"]?.trim()?.takeIf { it.isNotEmpty() }
                     ?: DEFAULT_GPS_NAME,
                 weatherReverseGeocode = parseBool(map["weather.reverse_geocode"]),
+                weatherPins = map["weather.pins"]?.let { parseBool(it) } ?: true,
                 // `watch.<prefId> = value` keys are applied to the watch's settings BlobDB.
                 watchPrefs = map.entries
                     .filter { it.key.startsWith("watch.") && it.key.length > "watch.".length }
@@ -177,7 +182,7 @@ data class StoandlConfig(
                     "dialerApps=${cfg.dialerApps}, vcardPaths=${cfg.vcardPaths}, " +
                     "weatherLocations=${cfg.weatherLocations.map { it.name }}, " +
                     "weatherUnits=${cfg.weatherUnits}, weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
-                    "weatherGps=${cfg.weatherGps}, weatherLocationSource=${cfg.weatherLocationSource}, " +
+                    "weatherGps=${cfg.weatherGps}, weatherPins=${cfg.weatherPins}, weatherLocationSource=${cfg.weatherLocationSource}, " +
                     "watchPrefs=${cfg.watchPrefs.keys}, musicControl=${cfg.musicControl}, " +
                     "musicVolume=${cfg.musicVolume}, calendarIcsPaths=${cfg.calendarIcsPaths}, " +
                     "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +

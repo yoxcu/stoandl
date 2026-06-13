@@ -71,6 +71,12 @@ weather.gps_name = Current location
 # your coordinates to a third-party web service. When off, the GPS entry uses weather.gps_name.
 weather.reverse_geocode = false
 
+# Weather timeline pins: a sunrise + sunset pin per day (today … +2 days) for the primary location
+# (the GPS current location if enabled, otherwise the first weather.locations entry), with the other
+# locations shown in the pin's detail view. Replicates the original Core app. On by default whenever
+# weather is enabled; set to false to keep the Weather app but leave the timeline clear.
+weather.pins = true
+
 # Calendar → watch timeline. Syncs upcoming events (yesterday … +7 days) as native calendar pins.
 # Disabled until you set at least one source below. Local .ics and discovery make no web requests;
 # ical_urls and caldav are opt-in egress.

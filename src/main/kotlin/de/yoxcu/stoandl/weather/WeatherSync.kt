@@ -41,6 +41,7 @@ import java.security.MessageDigest
 import kotlin.math.roundToInt
 import kotlin.time.Clock
 import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
@@ -77,7 +78,13 @@ class WeatherSync(
     private val reverseGeocodeEnabled: Boolean = false,
     // Optional source of additional fixed locations resolved each sync (e.g. imported from the DE).
     private val extraLocations: (suspend () -> List<WeatherLocation>)? = null,
+    // When true (the default), also emit weather timeline pins for the primary location, replicating
+    // the original Core companion app. When false, any previously-emitted pins are removed.
+    private val weatherPins: Boolean = true,
 ) {
+    private val pins = WeatherPins(libPebble)
+    // Avoid re-issuing pin deletions every sync once they've been cleared while pins are disabled.
+    @Volatile private var pinsCleared = false
     private val client = HttpClient(CIO) {
         install(HttpTimeout) {
             requestTimeoutMillis = 30_000
@@ -145,9 +152,10 @@ class WeatherSync(
      * so its last-known data on the watch is preserved (rather than wiped) on transient network errors.
      */
     suspend fun syncNow(): Int = syncMutex.withLock {
-        val tasks = mutableListOf<Deferred<WeatherLocationData>>()
+        val tasks = mutableListOf<Deferred<LocationForecast>>()
 
-        // GPS current location first, so it sorts to the top of the watch's Weather app.
+        // GPS current location first, so it sorts to the top of the watch's Weather app (and is the
+        // primary location for timeline pins).
         val gpsProvider = gps
         if (gpsProvider != null) {
             tasks += scope.async {
@@ -156,14 +164,14 @@ class WeatherSync(
                     // No fix yet: send a "failed" marker so the entry's last-known data is preserved
                     // on the watch rather than wiped.
                     log.info { "GPS enabled but no fix yet — keeping last-known current location" }
-                    WeatherLocationData.WeatherLocationDataFailed(currentLocationKey)
+                    failedForecast(currentLocationKey, gpsFallbackName, isCurrentLocation = true)
                 } else {
                     val (lat, lon) = coords
                     val name = (if (reverseGeocodeEnabled) reverseGeocode(lat, lon) else null) ?: gpsFallbackName
                     runCatching { fetchAt(currentLocationKey, name, lat, lon, isCurrentLocation = true) }
                         .getOrElse {
                             log.warn { "Weather fetch failed for current location: ${it.message}" }
-                            WeatherLocationData.WeatherLocationDataFailed(currentLocationKey)
+                            failedForecast(currentLocationKey, name, isCurrentLocation = true)
                         }
                 }
             }
@@ -178,18 +186,29 @@ class WeatherSync(
                 runCatching { fetchAt(keyFor(location.name), location.name, location.latitude, location.longitude, false) }
                     .getOrElse {
                         log.warn { "Weather fetch failed for ${location.name}: ${it.message}" }
-                        WeatherLocationData.WeatherLocationDataFailed(keyFor(location.name))
+                        failedForecast(keyFor(location.name), location.name, isCurrentLocation = false)
                     }
             }
         }
 
         val results = tasks.awaitAll()
-        libPebble.updateWeatherData(results)
-        val populated = results.count { it is WeatherLocationData.WeatherLocationDataPopulated }
+        libPebble.updateWeatherData(results.map { it.appData })
+        val populated = results.count { it.appData is WeatherLocationData.WeatherLocationDataPopulated }
         lastSyncOk = populated == results.size
         log.info { "Weather updated: $populated/${results.size} location(s) populated" }
+
+        if (weatherPins) {
+            pinsCleared = false
+            pins.sync(results)
+        } else if (!pinsCleared) {
+            pins.clear()
+            pinsCleared = true
+        }
         populated
     }
+
+    private fun failedForecast(key: Uuid, name: String, isCurrentLocation: Boolean) =
+        LocationForecast(WeatherLocationData.WeatherLocationDataFailed(key), name, isCurrentLocation, emptyList())
 
     private suspend fun fetchAt(
         key: Uuid,
@@ -197,22 +216,27 @@ class WeatherSync(
         latitude: Double,
         longitude: Double,
         isCurrentLocation: Boolean,
-    ): WeatherLocationData {
+    ): LocationForecast {
         val tempUnit = if (units == WeatherUnits.IMPERIAL) "fahrenheit" else "celsius"
         val response = client.get("https://api.open-meteo.com/v1/forecast") {
             parameter("latitude", latitude)
             parameter("longitude", longitude)
             parameter("current", "temperature_2m,weather_code")
-            parameter("daily", "weather_code,temperature_2m_max,temperature_2m_min")
+            parameter("daily", "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset")
+            // Hourly is used to derive a genuine day-vs-night split for the timeline pins.
+            parameter("hourly", "temperature_2m,weather_code")
             parameter("temperature_unit", tempUnit)
             parameter("timezone", "auto")
-            parameter("forecast_days", 2)
+            // Unix timestamps so sunrise/sunset/hourly times are directly comparable epoch seconds.
+            parameter("timeformat", "unixtime")
+            // 4 days: 3 days of pins, plus the 4th day's sunrise to bound the 3rd night window.
+            parameter("forecast_days", 4)
         }
         // Non-2xx (e.g. Open-Meteo 502 Bad Gateway) returns an HTML error page — surface the real
         // cause instead of letting JSON parsing choke on "<" and look like a parse bug.
         if (!response.status.isSuccess()) {
             log.warn { "Open-Meteo returned HTTP ${response.status} for $name" }
-            return WeatherLocationData.WeatherLocationDataFailed(key)
+            return failedForecast(key, name, isCurrentLocation)
         }
         val resp = json.decodeFromString<OpenMeteoResponse>(response.bodyAsText())
         val daily = resp.daily
@@ -221,11 +245,11 @@ class WeatherSync(
             daily.tempMax.size < 2 || daily.tempMin.size < 2 || daily.weatherCode.size < 2
         ) {
             log.warn { "Incomplete Open-Meteo response for $name" }
-            return WeatherLocationData.WeatherLocationDataFailed(key)
+            return failedForecast(key, name, isCurrentLocation)
         }
 
         val currentCode = resp.current?.weatherCode ?: -1
-        return WeatherLocationData.WeatherLocationDataPopulated(
+        val appData = WeatherLocationData.WeatherLocationDataPopulated(
             key = key,
             currentTemp = currentTemp.roundToInt().toShort(),
             currentWeatherType = wmoToWeatherType(currentCode),
@@ -239,7 +263,58 @@ class WeatherSync(
             locationName = name,
             forecastShort = wmoToPhrase(currentCode),
         )
+        val days = buildDays(daily, resp.hourly)
+        return LocationForecast(appData, name, isCurrentLocation, days)
     }
+
+    /** Split each of the first three forecast days into a daytime ([sunrise, sunset)) and overnight
+     *  ([sunset, next sunrise)) part, deriving a representative temperature and condition for each
+     *  from the hourly series. Falls back to the daily high/low and code if hourly data is missing. */
+    private fun buildDays(daily: Daily, hourly: Hourly?): List<DayForecast> {
+        val count = minOf(
+            3, daily.sunrise.size, daily.sunset.size,
+            daily.tempMax.size, daily.tempMin.size, daily.weatherCode.size,
+        )
+        return (0 until count).map { i ->
+            val sunrise = daily.sunrise[i]
+            val sunset = daily.sunset[i]
+            // Next day's sunrise bounds tonight; if absent, assume a 12h night.
+            val nextSunrise = daily.sunrise.getOrNull(i + 1) ?: (sunset + 12 * 3600)
+            DayForecast(
+                sunrise = Instant.fromEpochSeconds(sunrise),
+                sunset = Instant.fromEpochSeconds(sunset),
+                day = aggregate(hourly, sunrise, sunset, daily.tempMax[i], daily.weatherCode[i], daytime = true),
+                night = aggregate(hourly, sunset, nextSunrise, daily.tempMin[i], daily.weatherCode[i], daytime = false),
+            )
+        }
+    }
+
+    /** Representative weather for the half-open window [startSec, endSec): the max temperature for a
+     *  daytime window / min for an overnight one, and the dominant condition code. */
+    private fun aggregate(
+        hourly: Hourly?,
+        startSec: Long,
+        endSec: Long,
+        fallbackTemp: Double,
+        fallbackCode: Int,
+        daytime: Boolean,
+    ): DayPart {
+        val idxs = hourly?.time?.indices?.filter { hourly.time[it] in startSec until endSec } ?: emptyList()
+        val temps = idxs.mapNotNull { hourly?.temperature?.getOrNull(it) }
+        val codes = idxs.mapNotNull { hourly?.weatherCode?.getOrNull(it) }
+        val temp = when {
+            temps.isEmpty() -> fallbackTemp
+            daytime -> temps.max()
+            else -> temps.min()
+        }.roundToInt()
+        val code = dominantCode(codes) ?: fallbackCode
+        return DayPart(temp, wmoToWeatherType(code), wmoToPhrase(code))
+    }
+
+    /** Most frequent WMO code in the window, breaking ties toward the higher (more severe) code. */
+    private fun dominantCode(codes: List<Int>): Int? =
+        codes.groupingBy { it }.eachCount().entries
+            .maxWithOrNull(compareBy({ it.value }, { it.key }))?.key
 
     /** Resolve a place name from coordinates via OSM Nominatim (free, no key). Cached by coarse
      *  coordinates to respect Nominatim's usage policy. Returns null on any failure (caller falls
@@ -281,6 +356,7 @@ private fun keyFor(name: String): Uuid {
 private data class OpenMeteoResponse(
     val current: Current? = null,
     val daily: Daily? = null,
+    val hourly: Hourly? = null,
 )
 
 @Serializable
@@ -294,6 +370,17 @@ private data class Daily(
     @SerialName("weather_code") val weatherCode: List<Int> = emptyList(),
     @SerialName("temperature_2m_max") val tempMax: List<Double> = emptyList(),
     @SerialName("temperature_2m_min") val tempMin: List<Double> = emptyList(),
+    // Epoch seconds (timeformat=unixtime).
+    val sunrise: List<Long> = emptyList(),
+    val sunset: List<Long> = emptyList(),
+)
+
+@Serializable
+private data class Hourly(
+    // Epoch seconds (timeformat=unixtime).
+    @SerialName("time") val time: List<Long> = emptyList(),
+    @SerialName("temperature_2m") val temperature: List<Double> = emptyList(),
+    @SerialName("weather_code") val weatherCode: List<Int> = emptyList(),
 )
 
 /** Map a WMO weather-interpretation code (Open-Meteo) to the Pebble Weather app's icon type. */

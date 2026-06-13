@@ -851,6 +851,7 @@ class PebbleIntegration(
             gpsFallbackName = config.weatherGpsName,
             reverseGeocodeEnabled = config.weatherReverseGeocode,
             extraLocations = extraLocations,
+            weatherPins = config.weatherPins,
         )
         ws.start()
         weatherSyncRef.set(ws)
@@ -858,7 +859,8 @@ class PebbleIntegration(
             "Weather sync started: ${config.weatherLocations.size} manual location(s)" +
                 (if (hasSource) " + ${config.weatherLocationSource} source" else "") +
                 (if (config.weatherGps) " + GPS current location" else "") +
-                ", units=${config.weatherUnits}, every ${config.weatherIntervalMinutes}m"
+                ", units=${config.weatherUnits}, every ${config.weatherIntervalMinutes}m" +
+                (if (config.weatherPins) ", timeline pins on" else ", timeline pins off")
         }
     }
 
