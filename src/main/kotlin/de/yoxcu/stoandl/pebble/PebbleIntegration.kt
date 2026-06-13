@@ -14,7 +14,8 @@ import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.weather.DeLocationSource
-import de.yoxcu.stoandl.weather.GeoClueLocationProvider
+import de.yoxcu.stoandl.location.GeoClueLocationProvider
+import de.yoxcu.stoandl.location.GeoClueSystemGeolocation
 import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
@@ -108,6 +109,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.rebble.libpebblecommon.calendar.SystemCalendar
+import io.rebble.libpebblecommon.util.SystemGeolocation
 import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
@@ -263,6 +265,14 @@ class PebbleIntegration(
             // Replace the no-op JVM SystemCalendar with the Linux reader (when sources are configured),
             // so PhoneCalendarSyncer turns desktop calendar events into watch timeline pins.
             calendarSync?.let { cs -> single<SystemCalendar> { cs } }
+            // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
+            // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
+            // the GeoClue client is only created when a watchapp first asks for location. Reuses the
+            // weather GeoClue identity (its own client; GeoClue is per-sender multi-client). Off
+            // unless opted in — leaving the no-op binding (returns "Not supported on Linux").
+            if (config.geolocation) single<SystemGeolocation> {
+                GeoClueSystemGeolocation(GeoClueLocationProvider(config.weatherGpsDesktopId))
+            }
         }), allowOverride = true)
 
         libPebble = koin.get()

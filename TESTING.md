@@ -606,6 +606,35 @@ A bundle for the *wrong* board is the safe way to exercise the safety-check path
 
 ---
 
+## 5.12 Geolocation to watchapps  ⚠️ UNVERIFIED (needs a watch + a location-using watchapp)
+
+Exposes the device's GeoClue2 position to watchapps via libpebble3's `SystemGeolocation` hook: PKJS
+companion scripts call the standard `navigator.geolocation` API and location-aware sports/GPS apps use
+the same fix. Gated by `geolocation.enabled` (off by default). On JVM this needed a small libpebble3
+fork addition — the GraalJS PKJS runtime now routes `_PebbleGeo` through the shared
+`GeolocationInterface` (previously a no-op `GraalGeolocationStub`) — plus a stoandl `SystemGeolocation`
+override backed by `GeoClueLocationProvider` (the same provider weather uses).
+
+**Prerequisites:**
+- `geolocation.enabled = true` in `~/.config/stoandl/stoandl.conf`, daemon restarted.
+- GeoClue allow-list entry for `stoandl` in `/etc/geoclue/geoclue.conf` (same one as `weather.gps`; see
+  [configuration.md](docs/configuration.md#geolocation)). Confirm GeoClue can get a fix on the host first
+  (e.g. `weather.gps = true` shows a current-location weather entry, or use a GeoClue demo agent).
+- A watchapp that requests location. Easiest is a tiny PKJS test app — a `pkjs/index.js` that on
+  `ready` calls `navigator.geolocation.getCurrentPosition(p => console.log('geo', JSON.stringify(p.coords)), e => console.log('geo err', e.message))`
+  — sideloaded with `stoandl sideload <app.pbw>`. A real sports/GPS watchapp also exercises it.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.120 | Disabled (default) | `geolocation.enabled` unset, launch a location-using watchapp | The PKJS callback gets an **error** "Not supported on Linux" (the no-op binding). No GeoClue client is created. |
+| 5.121 | getCurrentPosition | with `geolocation.enabled = true`, launch the test app | Log: `GeoClue client started (… desktopId=stoandl)` on first request, then the app's `geo {…}` console line with real `latitude`/`longitude` (and `accuracy`/`altitude` when GeoClue provides them). `GeolocationInterface` debug line `getCurrentPosition(...)`. |
+| 5.122 | No fix yet | enable geolocation but with GeoClue unable to fix (e.g. no GPS/Wi-Fi) | Callback gets an **error** "No location fix available"; log notes `GeoClue: no location fix yet`. Does not hang. |
+| 5.123 | Not allow-listed | `geolocation.enabled = true` but no `geoclue.conf` entry | Error returned to the app; log warns GeoClue init failed / location unavailable with the allow-list hint. |
+| 5.124 | watchPosition / clearWatch | app calls `navigator.geolocation.watchPosition(...)`, later `clearWatch(id)` | Repeated success callbacks at roughly the requested interval; after `clearWatch` they stop. |
+| 5.125 | Real GPS watchapp | install a sports/GPS-style watchapp, start an activity | The watchapp shows/uses live coordinates from the watch (no phone-app GUI needed). |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

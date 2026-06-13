@@ -33,6 +33,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
 | `weather.pins` | bool | `true` | Also emit weather **timeline pins** (a sunrise + sunset pin per day, today … +2 days) for the primary location. On by default whenever weather is enabled; set `false` to keep the Weather app but leave the timeline clear. |
+| `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
@@ -136,6 +137,40 @@ GeoClue (location) is a local system service, not a web call; importing a locati
 (`weather.location_source`) is local too (GSettings / your command). PKJS/Clay pages can make their own
 HTTP requests, but only for watchapps you install and (for config pages) only when you run `stoandl
 settings`.
+
+## Geolocation
+
+Watchapps can ask for the device's position — PKJS companion scripts via the standard
+`navigator.geolocation` API (`getCurrentPosition`, `watchPosition`, `clearWatch`), and location-aware
+sports/GPS watchapps via the same underlying hook. By default the JVM build of libpebble3 leaves this
+unwired (every request fails with "Not supported on Linux"); set:
+
+```
+geolocation.enabled = true
+```
+
+to back it with **GeoClue2** — the same Linux geolocation service stoandl already uses for weather's
+current-location entry (modem GPS aggregated with Wi-Fi and A-GPS). Coordinates, accuracy, altitude,
+heading and speed are passed through to the watchapp when GeoClue reports them.
+
+It's **off by default** because, once on, *any* watchapp you launch can read your location with no
+per-app prompt (Linux has no location-permission UI; libpebble3's per-app permission defaults to
+allow). Enable it only if you run watchapps you trust with your position.
+
+GeoClue authorises clients by their `DesktopId`, so — exactly as for `weather.gps` — the daemon must be
+**allow-listed** in `/etc/geoclue/geoclue.conf`. Geolocation reuses the **same** identity as weather
+(`weather.gps_desktop_id`, default `stoandl`), so a single allow-list entry covers both:
+
+```
+[stoandl]
+allowed=true
+system=true
+users=
+```
+
+Without it GeoClue denies the request and `getCurrentPosition` returns an error. GeoClue is a local
+system-bus service — no web egress — though a watchapp may of course send the fix onward over its own
+PKJS `XMLHttpRequest`.
 
 ## Music / now-playing
 

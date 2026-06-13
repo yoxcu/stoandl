@@ -4,6 +4,7 @@ package de.yoxcu.stoandl.weather
 
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherUnits
+import de.yoxcu.stoandl.location.GeoClueLocationProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO

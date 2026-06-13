@@ -1,4 +1,4 @@
-package de.yoxcu.stoandl.weather
+package de.yoxcu.stoandl.location
 
 import de.yoxcu.stoandl.dbus.GEOCLUE_BUS_NAME
 import de.yoxcu.stoandl.dbus.GEOCLUE_CLIENT_IFACE
@@ -17,7 +17,8 @@ import org.freedesktop.dbus.types.UInt32
 /**
  * Resolves the device's current position from GeoClue2 — the standard Linux geolocation service
  * (system bus), which aggregates modem GPS, Wi-Fi and A-GPS. This is the headless, DE-agnostic way
- * to get a fix without GPS-specific code.
+ * to get a fix without GPS-specific code. It backs both weather's "current location" entry and the
+ * watch-facing `navigator.geolocation` hook (see [GeoClueSystemGeolocation]).
  *
  * GeoClue authorises clients by their `DesktopId`; a headless daemon must be allow-listed in
  * `/etc/geoclue/geoclue.conf`:
@@ -29,15 +30,26 @@ import org.freedesktop.dbus.types.UInt32
  * ```
  *
  * The client is created and `Start()`ed once; while active GeoClue keeps the client's `Location`
- * property current, so [currentLatLon] just reads it on demand each weather sync. A `/` location
- * path means no fix yet. The provider self-heals: if the system-bus connection drops it is rebuilt
- * on the next read.
+ * property current, so [currentFix]/[currentLatLon] just read it on demand. A `/` location path
+ * means no fix yet. The provider self-heals: if the system-bus connection drops it is rebuilt on
+ * the next read.
  */
 class GeoClueLocationProvider(private val desktopId: String) {
     private val log = KotlinLogging.logger {}
 
     @Volatile private var conn: DBusConnection? = null
     @Volatile private var clientPath: String? = null
+
+    /** A GeoClue position fix. [accuracy] (metres), [altitude] (metres), [speed] (m/s) and [heading]
+     *  (degrees clockwise from north) are null when GeoClue reports them as unknown. */
+    data class GeoClueFix(
+        val latitude: Double,
+        val longitude: Double,
+        val accuracy: Double?,
+        val altitude: Double?,
+        val speed: Double?,
+        val heading: Double?,
+    )
 
     /** Establish (or re-establish) the GeoClue client. Returns true on success. */
     @Synchronized
@@ -59,9 +71,9 @@ class GeoClueLocationProvider(private val desktopId: String) {
         clientPath = null
     }
 
-    /** The latest known position, or null if there's no connection/fix yet. */
+    /** The latest known full position fix, or null if there's no connection/fix yet. */
     @Synchronized
-    fun currentLatLon(): Pair<Double, Double>? = try {
+    fun currentFix(): GeoClueFix? = try {
         ensureClient()
         val c = conn
         val cp = clientPath
@@ -74,10 +86,23 @@ class GeoClueLocationProvider(private val desktopId: String) {
                 log.info { "GeoClue: no location fix yet" }
                 null
             } else {
-                val locProps = c.getRemoteObject(GEOCLUE_BUS_NAME, locPath.path, Properties::class.java)
-                val lat = (locProps.Get<Any>(GEOCLUE_LOCATION_IFACE, "Latitude") as? Number)?.toDouble()
-                val lon = (locProps.Get<Any>(GEOCLUE_LOCATION_IFACE, "Longitude") as? Number)?.toDouble()
-                if (lat == null || lon == null) null else lat to lon
+                val p = c.getRemoteObject(GEOCLUE_BUS_NAME, locPath.path, Properties::class.java)
+                val lat = readDouble(p, "Latitude")
+                val lon = readDouble(p, "Longitude")
+                if (lat == null || lon == null) {
+                    null
+                } else {
+                    GeoClueFix(
+                        latitude = lat,
+                        longitude = lon,
+                        // GeoClue uses sentinels for "unknown": negative accuracy, a hugely negative
+                        // altitude (-G_MAXDOUBLE), and -1 for speed/heading. Map those to null.
+                        accuracy = readDouble(p, "Accuracy")?.takeIf { it >= 0 },
+                        altitude = readDouble(p, "Altitude")?.takeIf { it > -1.0e308 },
+                        speed = readDouble(p, "Speed")?.takeIf { it >= 0 },
+                        heading = readDouble(p, "Heading")?.takeIf { it >= 0 },
+                    )
+                }
             }
         }
     } catch (e: Exception) {
@@ -88,6 +113,12 @@ class GeoClueLocationProvider(private val desktopId: String) {
         clientPath = null
         null
     }
+
+    /** The latest known position as a lat/lon pair, or null if there's no connection/fix yet. */
+    fun currentLatLon(): Pair<Double, Double>? = currentFix()?.let { it.latitude to it.longitude }
+
+    private fun readDouble(p: Properties, name: String): Double? =
+        try { (p.Get<Any>(GEOCLUE_LOCATION_IFACE, name) as? Number)?.toDouble() } catch (_: Exception) { null }
 
     private fun ensureClient() {
         val existing = conn
