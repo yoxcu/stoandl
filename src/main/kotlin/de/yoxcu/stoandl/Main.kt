@@ -25,7 +25,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -99,6 +99,7 @@ private fun printUsage() {
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
     println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
     println("  fakecall end               Debug: clear the synthetic call")
+    println("  findwatch                  Ring the watch to find it (press a watch button to silence)")
     println("  version                    Show the running daemon's version (and this CLI's)")
     println("  weather                    Fetch weather now and push it to the watch")
     println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
@@ -247,6 +248,19 @@ private fun ctl(args: Array<String>) {
                         System.exit(1)
                     }
                 }
+            } catch (e: Exception) {
+                System.err.println("Error: ${e.message}")
+                System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "findwatch" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
+                else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}")
                 System.exit(1)

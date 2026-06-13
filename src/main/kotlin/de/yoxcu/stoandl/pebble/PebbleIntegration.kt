@@ -1653,6 +1653,32 @@ private class StoandlControlImpl(
         return true
     }
 
+    override fun FindWatch(): Boolean {
+        val lp = libPebbleRef.get() ?: run {
+            log.warn { "FindWatch: libPebble not ready" }
+            return false
+        }
+        val cookie = Random.nextUInt()
+        log.info { "[findwatch] ringing watch (cookie=$cookie)" }
+        // Reuse the incoming-call path: the watch rings continuously like a real call until the
+        // user presses a button on the call screen. There is no call to hold, so Answer and
+        // Decline both just silence the ring.
+        lp.currentCall.value = Call.RingingCall(
+            contactName = "Find My Watch",
+            contactNumber = "",
+            cookie = cookie,
+            onCallEnd = {
+                log.info { "[findwatch] watch declined — ring silenced (cookie=$cookie)" }
+                lp.currentCall.value = null
+            },
+            onCallAnswer = {
+                log.info { "[findwatch] watch answered — ring silenced (cookie=$cookie)" }
+                lp.currentCall.value = null
+            },
+        )
+        return true
+    }
+
     private fun findPkjsApp(query: String): PKJSApp? {
         val lp = libPebbleRef.get() ?: return null
         return lp.watches.value

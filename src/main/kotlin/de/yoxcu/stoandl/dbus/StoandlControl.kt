@@ -45,6 +45,12 @@ interface StoandlControl : DBusInterface {
     /** Debug: clear the current synthetic call (simulates the remote party hanging up). */
     fun FakeCallEnd(): Boolean
 
+    /** "Find my watch": make the connected watch ring continuously (like an incoming call named
+     *  "Find My Watch") so a misplaced watch can be located. The ring stops when either button on
+     *  the watch's call screen is pressed (Answer or Decline both just silence it — there is no
+     *  real call to hold). Returns false if libPebble is not ready (no watch connected). */
+    fun FindWatch(): Boolean
+
     /** Force an immediate weather fetch for the configured locations and push it to the watch.
      *  Same status-prefixed return convention as [LaunchApp]. Returns `error:` if weather sync is
      *  not enabled (no `weather.locations` configured). */
