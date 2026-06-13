@@ -230,6 +230,11 @@ class PebbleIntegration(
                 )
             }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
+            // Handle watch-side notification actions: a Dismiss on the watch marks the item read AND
+            // closes the originating desktop notification over D-Bus (CloseNotification). Without this
+            // binding the JVM module's no-op handler runs and watch→desktop dismiss silently does
+            // nothing. (Don't drop this line — it was once clobbered by an unrelated refactor.)
+            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
             // Replace the no-op JVM TimeChanged with a systemd-timedated watcher so a host timezone
             // change while the watch stays connected re-pushes the clock (SetUTC). Without this the
             // watch only learns the time at connect (the negotiator's updateTime()).
