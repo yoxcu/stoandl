@@ -505,6 +505,32 @@ For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging)). On t
 
 ---
 
+## 5.8 Datalog capture (PebbleKit DataLogging)  ⚠️ UNVERIFIED (needs a watchapp that logs data)
+
+The watch→phone DataLogging protocol (ACK/NACK, session tracking) was already implemented in
+libpebble3; the only gap was that frames from **custom** apps (any non-health, non-system UUID/tag)
+had nowhere to go. The fork now re-emits them on `Datalogging.records` and stoandl's `DatalogStore`
+appends them as NDJSON: `~/.config/stoandl/datalog/<uuid>/<tag>.ndjson` (one item per line). Off by
+default — set `datalog.enabled = true` and restart. Needs a watchapp that calls
+`data_logging_create()` / `data_logging_log()` (e.g. a fitness/sensor logger).
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.70 | Disabled by default | fresh config, `stoandl datalog list` | `No datalog captured yet…`; log shows `Datalog capture disabled (datalog.enabled=false)`. |
+| 5.71 | Enable | `datalog.enabled = true`, restart | Log: `Datalog capture enabled → …/datalog`. |
+| 5.72 | Capture a session | run a watchapp that logs data; trigger a flush (or reconnect) | A file appears at `~/.config/stoandl/datalog/<app-uuid>/<tag>.ndjson`; log (DEBUG) shows `datalog <uuid> tag=<n> +<N>B type=…`. |
+| 5.73 | `list` | `stoandl datalog list` | Aligned table: APP UUID / TAG / LINES / SIZE / UPDATED, one row per captured `(uuid, tag)`. |
+| 5.74 | `dump` | `stoandl datalog dump <uuid-substring> [tag]` | Prints the NDJSON. UUID arg is a case-insensitive substring; ambiguous match lists candidates and exits non-zero. |
+| 5.75 | `tail` | `stoandl datalog tail <uuid-substring> [tag] -n 5` | Last 5 lines only. |
+| 5.76 | Item decode | inspect a dumped line | `type:"UInt"`/`"Int"` lines carry a numeric `value` (little-endian); `"ByteArray"` lines carry base64 `bytes`. Each line also has `session_ts` (watch session-open time) and `rx` (receive time). |
+| 5.77 | No daemon needed | stop the daemon, `stoandl datalog list/dump` | Still works — the CLI reads the files directly (like `calendar dump`). |
+| 5.78 | Background sync | log data while the app is **not** running, then reconnect | Data still captured — the daemon-level sink doesn't depend on the app's PKJS runtime being alive (the reason option 2/PKJS was rejected). |
+
+**Known limitation:** files are append-only and never rotated — a chatty sensor app can grow them
+without bound. Prune manually if needed.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

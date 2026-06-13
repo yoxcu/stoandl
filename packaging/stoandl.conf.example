@@ -105,3 +105,11 @@ calendar.caldav =
 
 # Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).
 calendar.sync_interval = 30
+
+# ── Datalog ────────────────────────────────────────────────────────────────────────────────────
+# Capture data logged by custom watchapps via the PebbleKit DataLogging API. Frames are written
+# append-only as NDJSON, one file per (app UUID, tag): ~/.config/stoandl/datalog/<uuid>/<tag>.ndjson.
+# Inspect with `stoandl datalog list|dump|tail`. Local-only (no egress), but it writes app-supplied
+# data to disk and a chatty sensor app can grow the files without bound — so it's off by default.
+# Enable it to discover which of your apps actually log data.
+datalog.enabled = false

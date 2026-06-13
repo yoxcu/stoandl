@@ -68,6 +68,10 @@ data class StoandlConfig(
     val calendarCalDav: List<CalDavAccount>,
     /** How often calendars are re-read, in minutes (also rolls the timeline window forward). */
     val calendarSyncIntervalMinutes: Long,
+    /** Capture datalog frames from custom watchapps (PebbleKit DataLogging) to NDJSON files under
+     *  `~/.config/stoandl/datalog/<uuid>/<tag>.ndjson`. Local-only (no egress), but it writes
+     *  app-supplied data to disk, so it's off by default — enable it to see which apps log data. */
+    val datalog: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -116,6 +120,7 @@ data class StoandlConfig(
             calendarIcalUrls = emptyList(),
             calendarCalDav = emptyList(),
             calendarSyncIntervalMinutes = DEFAULT_CALENDAR_INTERVAL_MINUTES,
+            datalog = false,
         )
 
         fun configFile(): File {
@@ -176,6 +181,7 @@ data class StoandlConfig(
                 calendarCalDav = parseCalDav(list("calendar.caldav")),
                 calendarSyncIntervalMinutes = map["calendar.sync_interval"]?.trim()?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_CALENDAR_INTERVAL_MINUTES,
+                datalog = parseBool(map["datalog.enabled"]),
             )
             log.info {
                 "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
@@ -186,7 +192,8 @@ data class StoandlConfig(
                     "watchPrefs=${cfg.watchPrefs.keys}, musicControl=${cfg.musicControl}, " +
                     "musicVolume=${cfg.musicVolume}, calendarIcsPaths=${cfg.calendarIcsPaths}, " +
                     "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +
-                    "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}"
+                    "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}, " +
+                    "datalog=${cfg.datalog}"
             }
             return cfg
         }

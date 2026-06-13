@@ -10,6 +10,7 @@ import de.yoxcu.stoandl.dbus.SystemVolume
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.weather.GeoClueLocationProvider
 import de.yoxcu.stoandl.weather.WeatherSync
@@ -266,6 +267,13 @@ class PebbleIntegration(
         startCallMonitor()
         startWeatherSync()
         startWatchPrefsSync()
+        // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
+        // them on Datalogging.records; without a subscriber they're simply dropped (as before).
+        if (config.datalog) {
+            DatalogStore(koin.get(), scope).start()
+        } else {
+            log.info { "Datalog capture disabled (datalog.enabled=false)" }
+        }
         // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
         // injected (on the first watch connect); nothing to start here, just report the state.
         log.info {

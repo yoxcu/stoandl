@@ -25,7 +25,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -108,6 +108,7 @@ private fun printUsage() {
     println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
     println("  list                       List known watches and their connection state")
     println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
+    println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
     println("  help                       Show this help")
 }
 
@@ -415,6 +416,32 @@ private fun ctl(args: Array<String>) {
                 }
             }
         }
+        "datalog" -> {
+            // Reads the captured NDJSON files directly — no daemon needed (like `calendar dump`).
+            when (val sub = args.getOrNull(1) ?: "list") {
+                "list" -> datalogList()
+                "dump", "tail" -> {
+                    var n = 20
+                    val pos = mutableListOf<String>()
+                    var i = 2
+                    while (i < args.size) {
+                        val a = args[i]
+                        if (a == "-n" || a == "--lines") { args.getOrNull(i + 1)?.toIntOrNull()?.let { n = it }; i += 2 }
+                        else { pos.add(a); i++ }
+                    }
+                    if (pos.isEmpty()) {
+                        System.err.println("Usage: stoandl datalog $sub <app uuid> [tag]" + if (sub == "tail") " [-n lines]" else "")
+                        System.err.println("Run 'stoandl datalog list' to see captured apps and tags.")
+                        System.exit(1); return
+                    }
+                    datalogShow(pos[0], pos.getOrNull(1), tail = if (sub == "tail") n else null)
+                }
+                else -> {
+                    System.err.println("Usage: stoandl datalog <list | dump <uuid> [tag] | tail <uuid> [tag] [-n lines]>")
+                    System.exit(1)
+                }
+            }
+        }
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -472,6 +499,67 @@ private fun dumpCalendar(src: String) {
         }.joinToString("  ")
         println("  %-30s  %s%s".format(whenStr, ev.title, if (extras.isEmpty()) "" else "   ($extras)"))
     }
+}
+
+/** Where DatalogStore writes captured frames: ~/.config/stoandl/datalog/<uuid>/<tag>.ndjson. */
+private fun datalogDir(): File = File(configDir(), "datalog")
+
+/** List captured datalog sessions: one row per (app UUID, tag) file with line count, size, mtime. */
+private fun datalogList() {
+    val dirs = datalogDir().listFiles()?.filter { it.isDirectory }?.sortedBy { it.name } ?: emptyList()
+    val rows = dirs.flatMap { sdir ->
+        (sdir.listFiles { f -> f.isFile && f.name.endsWith(".ndjson") } ?: emptyArray())
+            .sortedBy { it.name }
+            .map { sdir.name to it }
+    }
+    if (rows.isEmpty()) {
+        println("No datalog captured yet.")
+        println("Enable it with 'datalog.enabled = true' in stoandl.conf (then restart the daemon),")
+        println("and run a watchapp that logs data via the PebbleKit DataLogging API.")
+        return
+    }
+    val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
+    println("%-38s %-10s %8s %10s  %s".format("APP UUID", "TAG", "LINES", "SIZE", "UPDATED"))
+    rows.forEach { (uuid, f) ->
+        val lines = f.bufferedReader().useLines { it.count() }
+        val updated = fmt.format(java.time.Instant.ofEpochMilli(f.lastModified()))
+        println("%-38s %-10s %8d %10s  %s".format(uuid, f.name.removeSuffix(".ndjson"), lines, humanSize(f.length()), updated))
+    }
+}
+
+/** Print (or tail) the NDJSON for an app. [uuidArg] is a case-insensitive substring of the UUID dir
+ *  (UUIDs are long); [tagArg] null = all tags. [tail] null = full dump, else last N lines. */
+private fun datalogShow(uuidArg: String, tagArg: String?, tail: Int?) {
+    val matches = datalogDir().listFiles()
+        ?.filter { it.isDirectory && it.name.contains(uuidArg, ignoreCase = true) }
+        ?.sortedBy { it.name } ?: emptyList()
+    if (matches.isEmpty()) {
+        System.err.println("No datalog session matching '$uuidArg' (try 'stoandl datalog list')"); System.exit(1); return
+    }
+    if (matches.size > 1) {
+        System.err.println("'$uuidArg' matches multiple apps — be more specific:")
+        matches.forEach { System.err.println("  ${it.name}") }
+        System.exit(1); return
+    }
+    val sdir = matches.first()
+    val files = (sdir.listFiles { f -> f.isFile && f.name.endsWith(".ndjson") } ?: emptyArray())
+        .sortedBy { it.name }
+        .let { all -> if (tagArg == null) all.toList() else all.filter { it.name.removeSuffix(".ndjson") == tagArg } }
+    if (files.isEmpty()) {
+        System.err.println(if (tagArg == null) "No data under ${sdir.name}" else "No tag '$tagArg' under ${sdir.name}")
+        System.exit(1); return
+    }
+    files.forEach { f ->
+        if (files.size > 1) println("== ${sdir.name} / ${f.name.removeSuffix(".ndjson")} ==")
+        if (tail == null) f.bufferedReader().useLines { seq -> seq.forEach { println(it) } }
+        else f.readLines().takeLast(tail).forEach { println(it) }
+    }
+}
+
+private fun humanSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KiB".format(bytes / 1024.0)
+    else -> "%.1f MiB".format(bytes / (1024.0 * 1024.0))
 }
 
 /** Polls PairStatus() until the pairing window resolves, printing pending messages as they change.
