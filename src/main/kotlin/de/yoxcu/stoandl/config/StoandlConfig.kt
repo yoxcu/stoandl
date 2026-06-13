@@ -72,6 +72,20 @@ data class StoandlConfig(
      *  `~/.config/stoandl/datalog/<uuid>/<tag>.ndjson`. Local-only (no egress), but it writes
      *  app-supplied data to disk, so it's off by default — enable it to see which apps log data. */
     val datalog: Boolean,
+    /** Allow `stoandl firmware check`/`update` to query a public GitHub repo for firmware images and
+     *  download+flash the bundle matching the connected watch's board. Opt-in egress, so off by
+     *  default. (Local `stoandl firmware <file.pbz>` sideload never touches the network and is always
+     *  available.) */
+    val firmwareGithub: Boolean,
+    /** `owner/repo` whose GitHub releases publish per-board `normal_<board>_<version>.pbz` firmware
+     *  bundles. Defaults to the PebbleOS source for Core devices. */
+    val firmwareGithubRepo: String,
+    /** When true, consider GitHub pre-releases too (otherwise only the latest stable release). */
+    val firmwareGithubPrereleases: Boolean,
+    /** When true (and [firmwareGithub] is on), proactively notify the watch when newer firmware is
+     *  available — checked on connect and at most once a day — with an "Update" action button that
+     *  flashes it. On by default once GitHub checks are enabled; set false for check-on-demand only. */
+    val firmwareNotify: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -95,6 +109,7 @@ data class StoandlConfig(
         private const val DEFAULT_GPS_DESKTOP_ID = "stoandl"
         private const val DEFAULT_GPS_NAME = "Current location"
         private const val DEFAULT_CALENDAR_INTERVAL_MINUTES = 30L
+        private const val DEFAULT_FIRMWARE_GITHUB_REPO = "coredevices/PebbleOS"
 
         private fun defaults() = StoandlConfig(
             notificationBlocklist = emptyList(),
@@ -121,6 +136,10 @@ data class StoandlConfig(
             calendarCalDav = emptyList(),
             calendarSyncIntervalMinutes = DEFAULT_CALENDAR_INTERVAL_MINUTES,
             datalog = false,
+            firmwareGithub = false,
+            firmwareGithubRepo = DEFAULT_FIRMWARE_GITHUB_REPO,
+            firmwareGithubPrereleases = false,
+            firmwareNotify = true,
         )
 
         fun configFile(): File {
@@ -182,6 +201,11 @@ data class StoandlConfig(
                 calendarSyncIntervalMinutes = map["calendar.sync_interval"]?.trim()?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_CALENDAR_INTERVAL_MINUTES,
                 datalog = parseBool(map["datalog.enabled"]),
+                firmwareGithub = parseBool(map["firmware.github"]),
+                firmwareGithubRepo = map["firmware.github_repo"]?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: DEFAULT_FIRMWARE_GITHUB_REPO,
+                firmwareGithubPrereleases = parseBool(map["firmware.github_prereleases"]),
+                firmwareNotify = map["firmware.notify"]?.let { parseBool(it) } ?: true,
             )
             log.info {
                 "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
@@ -193,7 +217,8 @@ data class StoandlConfig(
                     "musicVolume=${cfg.musicVolume}, calendarIcsPaths=${cfg.calendarIcsPaths}, " +
                     "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +
                     "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}, " +
-                    "datalog=${cfg.datalog}"
+                    "datalog=${cfg.datalog}, firmwareGithub=${cfg.firmwareGithub}" +
+                    (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "")
             }
             return cfg
         }

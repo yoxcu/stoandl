@@ -25,7 +25,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -110,6 +110,10 @@ private fun printUsage() {
     println("  list                       List known watches and their connection state")
     println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
     println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
+    println("  firmware <file.pbz>        Flash a local firmware bundle onto the watch (shows progress)")
+    println("  firmware check             Check the PebbleOS GitHub for newer firmware (needs firmware.github)")
+    println("  firmware update            Download+flash the latest matching firmware from GitHub")
+    println("  firmware status            Show the current firmware-update state")
     println("  help                       Show this help")
 }
 
@@ -165,6 +169,7 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        "firmware" -> ctlFirmware(args.drop(1))
         "apps" -> {
             val conn = connectDbusOrExit() ?: return
             try {
@@ -596,6 +601,174 @@ private fun pollPairStatus(control: StoandlControl) {
             System.err.println("Pairing timed out"); System.exit(1); return
         }
     }
+}
+
+/** Dispatch `stoandl firmware ...`: a local `.pbz` path to flash, or `check`/`update`/`status`. */
+private fun ctlFirmware(rest: List<String>) {
+    val sub = rest.firstOrNull()
+    if (sub == null) {
+        System.err.println("Usage: stoandl firmware <file.pbz> | check | update | status")
+        System.exit(1); return
+    }
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        when (sub) {
+            "check" -> {
+                val resp = try { control.CheckFirmware() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                printFirmwareCheck(resp)
+            }
+            "update" -> {
+                val resp = try { control.UpdateFirmware() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, body) = splitStatus(resp)
+                when (kind) {
+                    "ok" -> {
+                        val f = body.split('\t')
+                        println("Updating ${f.getOrElse(0) { "watch" }}: " +
+                            "${f.getOrElse(1) { "?" }} → ${f.getOrElse(2) { "?" }} (${f.getOrElse(3) { "firmware" }})")
+                        pollFirmwareStatus(control)
+                    }
+                    "uptodate", "noasset" -> println(body)
+                    else -> handleStatusResponse(resp) // busy / disabled / notready / error
+                }
+            }
+            "status" -> {
+                val resp = try { control.FirmwareStatus() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                printFirmwareStatusOnce(resp)
+            }
+            else -> {
+                // Anything else is treated as a path to a local .pbz to sideload.
+                val file = File(sub)
+                if (!file.isFile) { System.err.println("No such file: $sub"); System.exit(1); return }
+                if (!file.name.endsWith(".pbz")) {
+                    System.err.println("Not a firmware bundle (expected a .pbz): $sub"); System.exit(1); return
+                }
+                // Send an absolute path: the daemon's cwd differs from the caller's.
+                val resp = try { control.SideloadFirmware(file.absolutePath) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
+                println("Flashing ${file.name} onto the watch — keep it close and charged.")
+                pollFirmwareStatus(control)
+            }
+        }
+    } finally {
+        conn.disconnect()
+    }
+}
+
+private fun splitStatus(resp: String): Pair<String, String> {
+    val idx = resp.indexOf(':')
+    return if (idx >= 0) resp.substring(0, idx) to resp.substring(idx + 1) else resp to ""
+}
+
+private fun printFirmwareCheck(resp: String) {
+    val (kind, body) = splitStatus(resp)
+    when (kind) {
+        "ok" -> {
+            val f = body.split('\t')
+            val board = f.getOrElse(0) { "?" }
+            val current = f.getOrElse(1) { "?" }
+            val latest = f.getOrElse(2) { "?" }
+            val asset = f.getOrElse(3) { "?" }
+            val newer = f.getOrElse(4) { "no" }
+            println("Watch board:    $board")
+            println("Running:        $current")
+            println("Latest on repo: $latest")
+            if (newer == "yes") println("→ Update available ($asset). Run: stoandl firmware update")
+            else println("→ Up to date.")
+        }
+        "noasset" -> {
+            val f = body.split('\t')
+            val board = f.getOrElse(0) { "?" }
+            val current = f.getOrElse(1) { "?" }
+            val latest = f.getOrElse(2) { "?" }
+            println("No firmware published for board '$board' on the configured repo " +
+                "(latest release $latest, running $current).")
+            println("That's expected for classic Pebbles — only Core devices publish there.")
+        }
+        else -> handleStatusResponse(resp) // disabled / notready / error
+    }
+}
+
+private fun printFirmwareStatusOnce(resp: String) {
+    val (kind, body) = splitStatus(resp)
+    val human = when (kind) {
+        "idle" -> "Idle (no firmware update in progress)"
+        "downloading" -> "Downloading $body…"
+        "waiting" -> "Starting firmware transfer…"
+        "inprogress" -> "Flashing: $body%"
+        "reboot" -> "Transfer complete — watch rebooting to apply"
+        "failed" -> "Last firmware update failed: ${body.ifEmpty { "unknown error" }}"
+        "notready" -> body.ifEmpty { "No watch connected" }
+        else -> resp
+    }
+    println(human)
+}
+
+/** Polls FirmwareStatus() while a flash runs, rendering a progress bar in place. Treats `reboot:`
+ *  (or a disconnect after activity) as success and `failed:` as failure. */
+private fun pollFirmwareStatus(control: StoandlControl) {
+    val startMs = System.currentTimeMillis()
+    var sawActivity = false
+    var barShown = false
+    var lastDownloading = ""
+    while (true) {
+        Thread.sleep(800)
+        val st = try { control.FirmwareStatus() } catch (e: Exception) {
+            if (barShown) System.err.println()
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(st)
+        when (kind) {
+            "downloading" -> {
+                sawActivity = true
+                if (body != lastDownloading) { println("Downloading $body…"); lastDownloading = body }
+            }
+            "waiting" -> sawActivity = true
+            "inprogress" -> {
+                sawActivity = true
+                renderFirmwareBar(body.toIntOrNull() ?: 0); barShown = true
+            }
+            "reboot" -> {
+                if (barShown) { renderFirmwareBar(100); println() }
+                println("Done — watch rebooting to apply the firmware.")
+                return
+            }
+            "failed" -> {
+                if (barShown) println()
+                System.err.println("Firmware update failed: ${body.ifEmpty { "unknown error" }}")
+                System.exit(1); return
+            }
+            "notready" -> if (sawActivity) {
+                // The watch reboots and drops the link once the transfer completes.
+                if (barShown) { renderFirmwareBar(100); println() }
+                println("Watch disconnected — it's rebooting to apply the firmware.")
+                return
+            }
+            // "idle" (and an early "notready" before any activity): keep polling.
+        }
+        if (System.currentTimeMillis() - startMs > 600_000) {
+            if (barShown) println()
+            System.err.println("Timed out waiting for the firmware update to finish.")
+            System.exit(1); return
+        }
+    }
+}
+
+private fun renderFirmwareBar(pct: Int) {
+    val clamped = pct.coerceIn(0, 100)
+    val width = 20
+    val filled = clamped * width / 100
+    val bar = "#".repeat(filled) + "-".repeat(width - filled)
+    print("\rFlashing [$bar] %3d%%".format(clamped))
+    System.out.flush()
 }
 
 /** Render the tab-separated locker records from ListApps() as an aligned table. */

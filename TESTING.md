@@ -571,6 +571,41 @@ no `.pbw`, no egress, no config — always available while a watch is connected.
 
 ---
 
+## 5.11 Firmware updates  ⚠️ UNVERIFIED (needs a watch) — ⚠️ the one genuinely risky test
+
+Flashes watch firmware over BLE. **(a)** Local sideload of a `.pbz` (`stoandl firmware <file>`); **(b)**
+GitHub check/update (`firmware check` / `update`) which downloads the bundle matching the watch's board
+from `coredevices/PebbleOS` releases (gated by `firmware.github`, opt-in egress). Both go through
+libpebble3's `FirmwareUpdater`, which runs pre-flash safety checks (board/CRC/slot) and **refuses a
+mismatched bundle before sending anything**. Pebbles also keep a recovery (PRF) firmware, so a failed
+flash drops to recovery rather than bricking — but treat this as the highest-risk feature and test on a
+non-critical watch first, on charger, kept in range.
+
+`FirmwareControl` (stoandl) orchestrates; `GithubFirmwareSource` resolves/downloads. The flash itself is
+async — the CLI polls `FirmwareStatus` and renders a progress bar.
+
+**Get a bundle for (a):** download `normal_<board>_<version>.pbz` for your watch's board from
+<https://github.com/coredevices/PebbleOS/releases> (e.g. `normal_obelix_pvt_…` for a Pebble Time 2).
+A bundle for the *wrong* board is the safe way to exercise the safety-check path.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.110 | Wrong-board safety check | `stoandl firmware <a-.pbz-for-another-board>` | Flash is refused; CLI ends with `Firmware update failed: Firmware board does not match watch board: …`. Watch is untouched (no transfer started). |
+| 5.111 | Local sideload (same version) | `stoandl firmware <correct .pbz, same version as running>` | Progress bar runs to 100%, then `Done — watch rebooting to apply the firmware.` Watch reboots and comes back on the same version. Log: `FWUpdate-… Firmware update completed, waiting for reboot`. |
+| 5.112 | Local sideload (newer/older) | `stoandl firmware <correct .pbz, different version>` | Same as above; watch boots the flashed version (check `stoandl firmware check` or the watch's About screen). |
+| 5.113 | No watch connected | `stoandl firmware <file.pbz>` with no watch | CLI prints `No watch connected` and exits non-zero. |
+| 5.114 | GitHub check (disabled) | `stoandl firmware check` with `firmware.github` unset/false | CLI prints the `disabled:` hint about setting `firmware.github = true`. No network call made. |
+| 5.115 | GitHub check (enabled) | set `firmware.github = true`, restart daemon, `stoandl firmware check` | Prints `Watch board / Running / Latest on repo` and either `→ Update available (…)` or `→ Up to date.` Classic Pebbles instead print the "no firmware published for board" note. |
+| 5.116 | GitHub update | `stoandl firmware update` when an update is available | CLI prints `Updating <board>: <cur> → <latest> (…)`, then `Downloading …`, then the progress bar to `Done — watch rebooting…`. Watch boots the new version. |
+| 5.117 | GitHub update (up to date) | `stoandl firmware update` when already current | CLI prints `… is current (latest …)`; nothing is flashed. |
+| 5.118 | Interrupted transfer | start a flash, then walk the watch out of range mid-transfer | CLI eventually reports a failure (or times out at 10 min); the watch falls back to recovery/its prior firmware rather than bricking. Re-running the flash in range recovers. |
+| 5.119 | Update notification on connect | with `firmware.github = true` and an update available, connect the watch | Within a few seconds the **watch** shows a notification titled **Firmware update** ("<new> is available (you're on <cur>)…") with **Update** and **Dismiss** buttons. Log: `Sent firmware-update notification to watch: <cur> → <new>`. |
+| 5.11a | Update button flashes | on test 5.119's notification, press **Update** | Watch shows an "Updating…" result; the daemon downloads + flashes (same progress as 5.116, just driven from the watch). Log: `Watch-triggered firmware update: ok:…`. |
+| 5.11b | No re-nag | disconnect/reconnect within a day (same available version) | The notification is **not** re-sent (throttled to once/day; only a *newer* version re-notifies). |
+| 5.11c | Notify off | set `firmware.notify = false`, restart, connect with an update available | No watch notification; `firmware check`/`update` on the CLI still work. Log at startup: `Firmware update notifications off …`. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

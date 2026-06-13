@@ -11,6 +11,7 @@ import de.yoxcu.stoandl.dbus.TimedateTimeChanged
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.weather.GeoClueLocationProvider
@@ -167,6 +168,7 @@ class PebbleIntegration(
 ) {
     private lateinit var libPebble: LibPebble
     private lateinit var watchConnector: WatchConnector
+    private lateinit var firmwareControl: FirmwareControl
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
@@ -260,6 +262,7 @@ class PebbleIntegration(
 
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
+        firmwareControl = FirmwareControl(libPebbleRef, scope, config)
         watchConnector = koin.get()
         watchBluetoothPowerState()
         libPebble.init()
@@ -273,6 +276,7 @@ class PebbleIntegration(
         startCallMonitor()
         startWeatherSync()
         startWatchPrefsSync()
+        startFirmwareNotifier()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
         // them on Datalogging.records; without a subscriber they're simply dropped (as before).
         if (config.datalog) {
@@ -930,9 +934,37 @@ class PebbleIntegration(
             .launchIn(scope)
     }
 
+    /** Proactively check GitHub for newer firmware on each watch connect (throttled to once a day) and,
+     *  when found, push a watch notification with an "Update" button. Off unless firmware.github +
+     *  firmware.notify are both enabled (opt-in egress). The local `firmware <file.pbz>` sideload and
+     *  the `firmware check`/`update` CLI commands work regardless of this. */
+    private fun startFirmwareNotifier() {
+        if (!config.firmwareGithub || !config.firmwareNotify) {
+            log.info { "Firmware update notifications off (needs firmware.github=true and firmware.notify=true)" }
+            return
+        }
+        val dailyMs = 24L * 60 * 60 * 1000
+        log.info { "Firmware update notifications on (check on connect, at most once/day; repo=${config.firmwareGithubRepo})" }
+        // Check on each fresh connect; maybeNotify() self-throttles to once per day.
+        libPebble.watches
+            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
+            .distinctUntilChanged()
+            .onEach { connected -> if (connected) scope.launch { firmwareControl.maybeNotify(dailyMs) } }
+            .launchIn(scope)
+        // And re-check daily while a watch stays connected.
+        scope.launch {
+            while (true) {
+                delay(dailyMs)
+                if (libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
+                    firmwareControl.maybeNotify(dailyMs)
+                }
+            }
+        }
+    }
+
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1359,6 +1391,7 @@ private class StoandlControlImpl(
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
     private val watchPrefsControlRef: AtomicReference<WatchPrefsControl?>,
     private val calendarSyncRef: AtomicReference<LinuxSystemCalendar?>,
+    private val firmwareControl: FirmwareControl,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1453,6 +1486,27 @@ private class StoandlControlImpl(
             log.warn(e) { "SideloadApp($path) failed" }
             "error:${e.message ?: "sideload failed"}"
         }
+    }
+
+    override fun SideloadFirmware(path: String): String {
+        log.info { "SideloadFirmware: $path" }
+        return firmwareControl.sideload(path)
+    }
+
+    override fun FirmwareStatus(): String = firmwareControl.status()
+
+    override fun CheckFirmware(): String = try {
+        runBlocking { firmwareControl.check() }
+    } catch (e: Exception) {
+        log.warn(e) { "CheckFirmware failed" }
+        "error:${e.message ?: "firmware check failed"}"
+    }
+
+    override fun UpdateFirmware(): String = try {
+        runBlocking { firmwareControl.update() }
+    } catch (e: Exception) {
+        log.warn(e) { "UpdateFirmware failed" }
+        "error:${e.message ?: "firmware update failed"}"
     }
 
     override fun ListApps(): List<String> {

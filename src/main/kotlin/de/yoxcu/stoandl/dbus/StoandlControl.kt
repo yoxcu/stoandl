@@ -97,4 +97,24 @@ interface StoandlControl : DBusInterface {
     /** List known watches, one per entry, tab-separated `name\tstate` (state: connected / connecting /
      *  disconnected). Empty list if none are known. */
     fun ListWatches(): List<String>
+
+    /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
+     *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or
+     *  `error:`/`notready:`. */
+    fun SideloadFirmware(path: String): String
+
+    /** Current firmware-update state of the connected watch: `idle:`, `downloading:<asset>`,
+     *  `waiting:`, `inprogress:<percent>`, `reboot:` (success — watch rebooting), `failed:<reason>`,
+     *  or `notready:` (no watch). Poll this after [SideloadFirmware]/[UpdateFirmware]. */
+    fun FirmwareStatus(): String
+
+    /** Check the configured GitHub repo for firmware matching the watch's board. Returns
+     *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>`, `noasset:<board>\t<current>\t<latest>`,
+     *  or `disabled:`/`notready:`/`error:`. Requires `firmware.github = true` (opt-in egress). */
+    fun CheckFirmware(): String
+
+    /** Check GitHub and, if newer firmware is available for the watch's board, download and start
+     *  flashing it. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once started (poll
+     *  [FirmwareStatus]), `uptodate:`/`noasset:`/`busy:`, or `disabled:`/`notready:`/`error:`. */
+    fun UpdateFirmware(): String
 }

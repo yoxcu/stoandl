@@ -113,3 +113,25 @@ calendar.sync_interval = 30
 # data to disk and a chatty sensor app can grow the files without bound — so it's off by default.
 # Enable it to discover which of your apps actually log data.
 datalog.enabled = false
+
+# ── Firmware updates ─────────────────────────────────────────────────────────────────────────────
+# Flashing a LOCAL firmware bundle always works and needs nothing here:
+#     stoandl firmware /path/to/normal_<board>_<version>.pbz
+# (libpebble3 validates the bundle against the connected watch — board, CRC, slot — before flashing.)
+#
+# The keys below only enable the OPTIONAL `stoandl firmware check` / `firmware update` commands, which
+# fetch firmware over the network from a public GitHub repo's releases. Opt-in egress → off by default.
+# Core devices (Pebble 2 Duo / Pebble Time 2) publish per-board `normal_<board>_<version>.pbz` bundles
+# there; classic Pebbles do not (their firmware lives on cohorts.rebble.io and isn't covered here).
+firmware.github = false
+
+# owner/repo whose releases carry the .pbz bundles. Defaults to the PebbleOS source.
+firmware.github_repo = coredevices/PebbleOS
+
+# Consider GitHub pre-releases too (otherwise only the latest stable release).
+firmware.github_prereleases = false
+
+# When firmware.github is on, also push a notification TO THE WATCH when newer firmware is available
+# (checked on connect and at most once a day). The notification has an "Update" button that downloads
+# and flashes it. On by default once firmware.github is enabled; set false for check-on-demand only.
+firmware.notify = true

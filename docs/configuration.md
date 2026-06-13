@@ -285,3 +285,59 @@ Numbers are matched digits-only by suffix, so a stored `0151 2345678` resolves a
 If a number isn't in the vCard files, stoandl falls back to the title of the dialer's own
 incoming-call notification (see `call.dialer_apps`) — best-effort, since that depends on the
 notification arriving at or before the call rings.
+
+## Firmware updates
+
+Flash watch firmware over BLE. The transfer, the `FIRMWARE_UPDATE_START`/`COMPLETE` handshake and the
+pre-flash safety checks (board, CRC, slot — a mismatched bundle is **refused before anything is sent**)
+are all libpebble3's; stoandl just drives them and shows progress.
+
+### Local sideload (no config, no network)
+
+```sh
+stoandl firmware /path/to/normal_<board>_<version>.pbz
+```
+
+Flashes a firmware bundle already on disk. Always available — no keys, no egress. The CLI shows a
+progress bar and reports when the watch reboots to apply. A firmware `.pbz` for the *wrong* board is
+rejected by the safety check, so this can't flash a bundle your watch won't accept.
+
+### GitHub check / update (opt-in egress)
+
+```sh
+stoandl firmware check     # is newer firmware available for this watch?
+stoandl firmware update    # download the matching bundle and flash it
+```
+
+These fetch firmware from a public GitHub repo's **releases** and are **off by default** because they
+make network calls. Enable them in `stoandl.conf`:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `firmware.github` | `false` | Allow `firmware check` / `update` to query GitHub and download firmware. |
+| `firmware.github_repo` | `coredevices/PebbleOS` | `owner/repo` whose releases publish `normal_<board>_<version>.pbz` bundles. |
+| `firmware.github_prereleases` | `false` | Consider pre-releases too (otherwise only the latest stable release). |
+| `firmware.notify` | `true` | When GitHub checks are on, also notify the watch when newer firmware appears (see below). |
+
+### Update notifications on the watch
+
+With `firmware.github` on, stoandl checks for newer firmware **on each watch connect** (throttled to
+at most once a day) and, when it finds some, pushes a notification **to the watch** with an **Update**
+action button. Pressing Update downloads and flashes the matching bundle right there — no phone, no CLI.
+It only re-notifies when the available version actually changes, so reconnecting doesn't nag. Set
+`firmware.notify = false` to keep the GitHub checks for `firmware check`/`update` on the command line but
+suppress the automatic watch notification.
+
+No account or token is needed — the PebbleOS releases are public. The connected watch's hardware
+platform reports a board revision (e.g. `obelix_pvt` for a Pebble Time 2) that **exactly matches** the
+release asset name `normal_<board>_<version>.pbz`, so the right bundle is picked with no mapping table.
+This covers **Core devices** (Pebble 2 Duo / Pebble Time 2); classic Pebbles don't publish here (their
+firmware lives on `cohorts.rebble.io`) and `firmware check` reports "no firmware published for board".
+
+> **Risk note.** Flashing firmware is the highest-risk operation stoandl performs. It's mitigated by
+> the pre-flash safety checks and by Pebble's recovery (PRF) firmware — a failed flash drops the watch
+> to recovery rather than bricking it — but flash on charger, keep the watch in range, and prefer a
+> non-critical watch when trying it the first time.
+
+`stoandl firmware status` prints the current state at any time (`idle`, `downloading`, `inprogress`,
+`reboot`, `failed`).
