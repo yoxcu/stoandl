@@ -137,12 +137,16 @@ private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto r
 private val DISCOVERY_WARN_INTERVAL = 60.seconds
 
 // Broken-bond / one-sided-bond churn: after the watch is unpaired ON THE WATCH, the host still holds
-// the bond (and Trusted), so BlueZ endlessly re-establishes a dead link (connect→drop every few
-// seconds). Detect that rapid flapping and recover: forget + remove the host bond (stops the churn)
-// and notify with a one-tap re-pair action. A normal connect settles after 2-3 state changes, so a
-// continuously-churning watch is unambiguous.
+// the bond (and Trusted), so BlueZ reconnects then immediately tears the link down with an
+// authentication failure (the watch no longer honours the bond), every few seconds. BlueZ surfaces
+// each as `org.bluez.Device1.Disconnected(reason=org.bluez.Reason.Authentication)` — distinct from an
+// out-of-range drop, which carries `org.bluez.Reason.Timeout`. Count those auth-failure disconnects
+// and, past a threshold, notify with a one-tap re-pair action. This is proximity-independent: a far
+// (out-of-range) watch only ever produces Reason.Timeout, so it is never flagged. Requires BlueZ
+// >= 5.83 (when the Device1.Disconnected signal landed); on older BlueZ no signal arrives and the
+// detector simply never fires — safe, just no auto-detection.
 private val BROKEN_BOND_WINDOW = 3.minutes
-private const val BROKEN_BOND_FLAPS = 5   // present-but-rejected (FailedToConnect) attempts → notify
+private const val BROKEN_BOND_FLAPS = 5   // auth-failure (Reason.Authentication) disconnects → notify
 private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification this often while it persists
                                            // (in place, via replaces_id — it updates, never stacks)
 // The OTHER broken-bond direction: the host lost the BlueZ pairing (e.g. `bluetoothctl remove`) while
@@ -475,14 +479,14 @@ class PebbleIntegration(
     /**
      * Watches for the two broken-bond directions, both INVISIBLE to libpebble's normal device state:
      *
-     * 1. Unpaired ON THE WATCH (host still bonded): the still-Trusted bond makes BlueZ autonomously
-     *    re-establish a dead link every few seconds — `Device1.Connected` flaps true/false — without ever
-     *    completing a Pebble session. libPebble.watches never flaps for this, so we watch
-     *    `Device1.Connected` directly over D-Bus; after [BROKEN_BOND_FLAPS] drops within
-     *    [BROKEN_BOND_WINDOW] for a known not-fully-connected watch, NOTIFY with a one-tap Re-pair action.
-     *    Never auto-forgets here — the bond might be a perfectly-good flaky one — and a watch that reaches
-     *    a full session (ConnectedPebbleDevice) has its count cleared, so good/flaky bonds and out-of-range
-     *    watches are never flagged.
+     * 1. Unpaired ON THE WATCH (host still bonded): the still-Trusted bond makes BlueZ reconnect then
+     *    immediately disconnect with an authentication failure (the watch rejects the bond), every few
+     *    seconds — INVISIBLE to libPebble.watches. BlueZ reports each as a `org.bluez.Device1.Disconnected`
+     *    signal with reason `org.bluez.Reason.Authentication`; an out-of-range drop instead carries
+     *    `org.bluez.Reason.Timeout` and is ignored. After [BROKEN_BOND_FLAPS] auth-failure disconnects
+     *    within [BROKEN_BOND_WINDOW] for a known not-fully-connected watch, NOTIFY with a one-tap Re-pair
+     *    action. Never auto-forgets here — the user may just re-pair — and a watch that reaches a full
+     *    session (ConnectedPebbleDevice) has its count cleared. Requires BlueZ >= 5.83 for the signal.
      *
      * 2. Pairing removed ON THE HOST (e.g. `bluetoothctl remove`): `isBonded` goes false. The watch can
      *    NEVER reconnect without a fresh pair, so after [HOST_BOND_LOST_GRACE] (and not mid-pairing) we
@@ -502,31 +506,30 @@ class PebbleIntegration(
                 return@launch
             }
             try {
-                // Record every org.bluez.Device1 Connected=false (a link drop), keyed by device path.
+                // Record every org.bluez.Device1 Disconnected(reason=Authentication), keyed by device path:
+                // a host-side teardown because the watch rejected the bond (unpaired ON THE WATCH). This is
+                // the precise broken-bond signal — out-of-range drops carry Reason.Timeout instead and are
+                // NOT recorded, so a far watch never trips. (BlueZ >= 5.83; older BlueZ never emits it.)
                 val rule = DBusMatchRuleBuilder.create()
-                    .withType("signal").withInterface("org.freedesktop.DBus.Properties")
-                    .withMember("PropertiesChanged").build()
+                    .withType("signal").withInterface("org.bluez.Device1")
+                    .withMember("Disconnected").build()
                 conn.addGenericSigHandler(rule) { msg: DBusSignal ->
                     try {
                         val path = msg.getPath() ?: return@addGenericSigHandler
                         if (!path.contains("/dev_")) return@addGenericSigHandler
                         val params = msg.getParameters() ?: return@addGenericSigHandler
-                        if (params.size < 2 || params[0] != "org.bluez.Device1") return@addGenericSigHandler
-                        val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                        val connected = variantValue(changed["Connected"]) as? Boolean ?: return@addGenericSigHandler
-                        if (!connected) {
+                        val reason = params.getOrNull(0) as? String ?: return@addGenericSigHandler
+                        if (reason == "org.bluez.Reason.Authentication") {
                             drops.getOrPut(path) { java.util.Collections.synchronizedList(ArrayList()) }
                                 .add(System.currentTimeMillis())
                         }
                     } catch (_: Exception) {}
                 }
-                // A full Pebble session (ConnectedPebbleDevice) PROVES the bond is intact, so reset that
-                // watch's drop history the instant it happens — and clear any active alert. This is the
-                // discriminator between a broken bond and mere weak-signal/out-of-range flapping: a
-                // one-sided bond NEVER completes a session (StartNotify/PPoG always fails) so its drops
-                // accumulate and fire; a flaky-but-good link keeps re-achieving sessions, so its count
-                // keeps resetting and never trips. Done continuously (not just at the 15s poll) so brief
-                // sessions between polls still count.
+                // A full Pebble session (ConnectedPebbleDevice) PROVES the bond is intact, so clear that
+                // watch's auth-failure history and any active alert the instant one happens. The reason
+                // string already discriminates broken-bond (Authentication) from out-of-range (Timeout);
+                // this is the belt-and-suspenders clear for the edge case where a transient auth-failure
+                // is followed by a successful reconnect. Done continuously (not just at the 15s poll).
                 scope.launch {
                     libPebble.watches.collect { list ->
                         list.filterIsInstance<ConnectedPebbleDevice>().forEach { w ->
@@ -606,8 +609,8 @@ class PebbleIntegration(
     private fun notifyBrokenBond(device: KnownPebbleDevice, replacesId: UInt32): UInt32 {
         val name = device.displayName()
         log.warn {
-            "Broken-bond detector: $name — BlueZ keeps re-establishing a dead link (Connected flapping, " +
-                "never a full session) — likely unpaired on the watch. Notifying; not forgetting it on its own."
+            "Broken-bond detector: $name — BlueZ reports repeated authentication-failure disconnects " +
+                "(Reason.Authentication); the watch has unpaired on its side. Notifying; not forgetting it on its own."
         }
         return sendActionableNotification(
             "Pebble won't stay connected",
