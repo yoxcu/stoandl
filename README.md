@@ -18,6 +18,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Bridges desktop media players (MPRIS) to the watch's Music app — now-playing plus play/pause, next/previous and volume from the watch
 - Syncs calendar events (and their reminders) to the watch's timeline as native pins — DE-agnostic (local `.ics`, iCal feeds or CalDAV), reusing the calendars your desktop already keeps where it can
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
+- Flashes watch firmware over BLE — a local `.pbz`, or (opt-in) the latest build for your watch's board straight from the PebbleOS GitHub releases, with an optional "update available" notification on the watch
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -172,6 +173,30 @@ stoandl calendar dump <file|url>      # parse + print events offline (no daemon/
 → [docs/configuration.md#calendar](docs/configuration.md#calendar) — sources, the reuse-your-DE
 story (and why GNOME/KDE *online* accounts need an iCal/CalDAV URL for now), recurrence/timezone
 handling, and the egress note.
+
+## Firmware
+
+Flash watch firmware over BLE. A local bundle works offline with no setup; libpebble3 checks it
+against the connected watch (board, CRC, slot) and refuses a mismatched bundle before sending
+anything.
+
+```sh
+stoandl firmware <file.pbz>   # flash a local firmware bundle (shows a progress bar)
+stoandl firmware check        # is newer firmware available for this watch? (needs firmware.github)
+stoandl firmware update       # download the matching build from GitHub and flash it
+stoandl firmware status       # current firmware-update state
+```
+
+`check`/`update` fetch firmware from a public GitHub repo's releases (default `coredevices/PebbleOS`)
+— opt-in egress, off until you set `firmware.github = true`. The watch's board maps exactly to the
+release asset, so the right build is picked automatically; with `firmware.notify` (on by default once
+GitHub checks are) stoandl also pushes an "update available" notification to the watch with an Update
+button. Core devices (Pebble 2 Duo / Pebble Time 2) only — classic Pebbles aren't published there.
+
+> Flashing is the riskiest thing stoandl does. It's guarded by the pre-flash safety checks and
+> Pebble's recovery firmware, but flash on charger and keep the watch in range.
+
+→ [docs/configuration.md#firmware-updates](docs/configuration.md#firmware-updates)
 
 ## Logging
 
