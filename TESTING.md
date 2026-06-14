@@ -824,7 +824,7 @@ with `notify-send "<App>" "<msg>"` (the `<App>` becomes the app name). Verify dr
 
 ---
 
-## 5.19 Developer connection  ⚠️ UNVERIFIED (needs a watch + the Pebble SDK)
+## 5.19 Developer connection  ✅ Verified on hardware
 
 Brings up libpebble3's developer connection (`ConnectedPebble.DevConnection` → `DevConnectionManager`),
 which starts a LAN WebSocket server on **port 9000** (`DevConnectionServer`) that relays raw
