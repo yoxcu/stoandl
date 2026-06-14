@@ -728,6 +728,35 @@ file or directory is honoured, and `.png` is appended if missing.
 
 ---
 
+## 5.16 Watch logs / support bundle  ⚠️ UNVERIFIED (needs a watch)
+
+`stoandl logs [path]` dumps the watch's firmware logs to a text file; `stoandl support [out.tar.gz]`
+packages a full support bundle for sharing with a maintainer. libpebble3 already implements both over the
+wire — `CommonConnectedDevice` is `ConnectedPebble.Logs` (`gatherLogs()` streams the firmware log
+generations over the LOG_DUMP endpoint) and `ConnectedPebble.CoreDump` (`getCoreDump()` over GET_BYTES),
+backed by real common services with **no JVM stub** (unlike the screenshot path), and exposes `WatchInfo`
+directly. So this is pure stoandl wiring (`LogsControl` + three D-Bus methods + CLI), no fork change.
+
+The support bundle is **resilient**: it always gathers the host-side pieces it can read directly — the
+daemon log (`/tmp/stoandl*.log`) and the **secret-redacted** `stoandl.conf` — even with no daemon or watch,
+and folds in the watch's firmware logs + `watch-info.txt` (and, with `--coredump`, a coredump) when a watch
+is reachable. Anything missing is recorded in `bundle-notes.txt` inside the archive instead of aborting.
+Config secrets (CalDAV passwords, credentials/tokens in URLs) are redacted by `sanitizeConfig`. Purely
+local — no network, no egress opt-in.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.160 | Default log dump | connect a watch, `stoandl logs` | Prints `Gathering watch logs…` then `Saved <cwd>/pebble-logs-<time>.txt`. File begins `# Device logs:` with `=== Generation: N ===` blocks and `LEVEL TIMESTAMP file:line> message` lines. |
+| 5.161 | Explicit path / ext | `stoandl logs /tmp/w.txt` and `stoandl logs /tmp/w` | First writes exactly `/tmp/w.txt`; second appends `.txt`. A directory target writes `pebble-logs-<time>.txt` inside it. |
+| 5.162 | No watch | `stoandl logs` with no watch connected | CLI prints `No watch connected` and exits non-zero; no file written. |
+| 5.163 | Support bundle (full) | with a watch connected, `stoandl support` | Prints a checklist (`watch logs: included`, `watch info`/via file, `daemon log: N file(s)`, `config: included …`), then `Wrote <cwd>/stoandl-support-<time>.tar.gz (<size>)`. Extract: contains `watch-logs.txt`, `watch-info.txt`, `daemon-logs/`, `stoandl.conf`, `version.txt`, `bundle-notes.txt`. |
+| 5.164 | Support bundle (no daemon) | stop the daemon, `stoandl support` | Still succeeds. `bundle-notes.txt` notes the watch pieces were omitted; the archive still has `daemon-logs/` (if any) + redacted `stoandl.conf` + `version.txt`. |
+| 5.165 | Coredump opt-in | `stoandl support --coredump` | If the watch has a coredump, `coredump.bin` is included and notes say `coredump: included`; otherwise `coredump: none on the watch`. Without the flag, no coredump is fetched. |
+| 5.166 | Config redaction | put a `calendar.caldav = https://dav.example/|me|s3cr3t` line in `stoandl.conf`, `stoandl support`, inspect the bundled `stoandl.conf` | The password field is `***` (`…|me|***`); URL userinfo and `?token=`/`?key=` params elsewhere are `***`; a header comment warns secrets were redacted. Non-secret keys are unchanged. |
+| 5.167 | Output path forms | `stoandl support /tmp/`, `stoandl support /tmp/b` , `stoandl support /tmp/b.tgz` | Directory → `stoandl-support-<time>.tar.gz` inside it; bare name → `b.tar.gz`; `.tgz`/`.tar.gz` honoured as-is. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

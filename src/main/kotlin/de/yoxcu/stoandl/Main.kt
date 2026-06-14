@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot", "logs", "support")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -120,6 +120,9 @@ private fun printUsage() {
     println("  language install <locale>  Download+install a pack (e.g. de_DE; needs language.download)")
     println("  language status            Show the current language-pack install state")
     println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
+    println("  logs [path]                Dump the watch's firmware logs to a text file (default: ./pebble-logs-<time>.txt)")
+    println("  support [out.tar.gz]       Build a support bundle (watch logs + watch info + daemon log + config, secrets redacted)")
+    println("                             Add --coredump to also pull a coredump off the watch")
     println("  help                       Show this help")
 }
 
@@ -500,6 +503,8 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        "logs" -> ctlLogs(args.drop(1))
+        "support" -> ctlSupport(args.drop(1))
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -1196,6 +1201,174 @@ private fun doRestore(inPath: String, force: Boolean) {
     println("Restored ${dir.path} from ${archive.path}")
     if (movedAside != null) println("Previous config kept at ${movedAside.path}")
     println("Start the daemon to pick it up: systemctl --user start stoandl")
+}
+
+/** Dump the watch's firmware logs to a text file. Resolves the target against THIS process's cwd
+ *  and sends an absolute path (the daemon writes the file, and its cwd $HOME differs from ours). */
+private fun ctlLogs(rest: List<String>) {
+    val arg = rest.firstOrNull { !it.startsWith("-") }
+    val target = when {
+        arg == null -> File("pebble-logs-${timestamp()}.txt")
+        File(arg).isDirectory -> File(arg, "pebble-logs-${timestamp()}.txt")
+        arg.endsWith(".txt", ignoreCase = true) || arg.endsWith(".log", ignoreCase = true) -> File(arg)
+        else -> File("$arg.txt")
+    }
+    val path = target.absolutePath
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        println("Gathering watch logs… (this can take a few seconds)")
+        val resp = try { control.GatherLogs(path) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(resp)
+        if (kind == "ok") println("Saved $body") else handleStatusResponse(resp)
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/**
+ * Assemble a support bundle (a `.tar.gz`) for sharing with a maintainer. Resilient: it always
+ * gathers the host-side pieces it can read directly — the daemon log and the (secret-redacted)
+ * config — even with no daemon or watch, and folds in the watch's firmware logs + metadata (and,
+ * with `--coredump`, a coredump) when the daemon and a watch are reachable. What's missing is noted
+ * in `bundle-notes.txt` inside the archive rather than aborting.
+ */
+private fun ctlSupport(rest: List<String>) {
+    val wantCoredump = rest.any { it == "--coredump" }
+    val outArg = rest.firstOrNull { !it.startsWith("-") }
+    val stamp = timestamp()
+    val out = File(when {
+        outArg == null -> "stoandl-support-$stamp.tar.gz"
+        File(outArg).isDirectory -> File(outArg, "stoandl-support-$stamp.tar.gz").path
+        outArg.endsWith(".tar.gz") || outArg.endsWith(".tgz") -> outArg
+        else -> "$outArg.tar.gz"
+    }).absoluteFile
+
+    val tmpRoot = java.nio.file.Files.createTempDirectory("stoandl-support").toFile()
+    val bundleDir = File(tmpRoot, "stoandl-support-$stamp").apply { mkdirs() }
+    val notes = StringBuilder()
+    fun note(line: String) { notes.appendLine(line); println("  $line") }
+    println("Building support bundle…")
+
+    // --- Watch-side pieces (need the daemon + a connected watch) ---
+    val conn = try {
+        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    } catch (e: Exception) { null }
+    var daemonVersion: String? = null
+    if (conn != null) {
+        try {
+            val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            daemonVersion = try { control.Version() } catch (e: Exception) { null }
+            if (daemonVersion == null) {
+                note("daemon not responding — watch logs/info/coredump omitted")
+            } else {
+                val wi = try { control.WatchInfoText() } catch (e: Exception) { "error:${e.message}" }
+                val (wk, wb) = splitStatus(wi)
+                if (wk == "ok") File(bundleDir, "watch-info.txt").writeText(wb + "\n")
+                else note("watch info unavailable: ${wb.ifEmpty { wk }}")
+
+                println("  gathering watch logs… (a few seconds)")
+                val lr = try { control.GatherLogs(File(bundleDir, "watch-logs.txt").absolutePath) }
+                catch (e: Exception) { "error:${e.message}" }
+                val (lk, lb) = splitStatus(lr)
+                if (lk == "ok") note("watch logs: included") else note("watch logs unavailable: ${lb.ifEmpty { lk }}")
+
+                if (wantCoredump) {
+                    println("  fetching coredump…")
+                    val cr = try { control.GetCoreDump(File(bundleDir, "coredump.bin").absolutePath) }
+                    catch (e: Exception) { "error:${e.message}" }
+                    val (ck, cb) = splitStatus(cr)
+                    when (ck) {
+                        "ok" -> note("coredump: included")
+                        "none" -> note("coredump: none on the watch")
+                        else -> note("coredump unavailable: ${cb.ifEmpty { ck }}")
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+    } else {
+        note("couldn't reach D-Bus — watch logs/info/coredump omitted")
+    }
+
+    // --- Host-side pieces (read directly; no daemon needed) ---
+    // Daemon log + its rotated siblings (logback writes /tmp/stoandl.log and /tmp/stoandl.<i>.log).
+    val logDir = File("/tmp")
+    val daemonLogs = (logDir.listFiles { f ->
+        f.isFile && Regex("""stoandl(\.\d+)?\.log""").matches(f.name)
+    } ?: emptyArray()).sortedBy { it.name }
+    if (daemonLogs.isNotEmpty()) {
+        val dest = File(bundleDir, "daemon-logs").apply { mkdirs() }
+        daemonLogs.forEach { it.copyTo(File(dest, it.name), overwrite = true) }
+        note("daemon log: ${daemonLogs.size} file(s)")
+    } else {
+        note("daemon log: none found at /tmp/stoandl*.log")
+    }
+
+    // stoandl.conf — included with secrets redacted (CalDAV passwords, credentials in URLs).
+    val confFile = de.yoxcu.stoandl.config.StoandlConfig.configFile()
+    if (confFile.isFile) {
+        val sanitized = sanitizeConfig(confFile.readText())
+        File(bundleDir, "stoandl.conf").writeText(sanitized)
+        note("config: included (secrets redacted — review before sharing)")
+    } else {
+        note("config: no stoandl.conf (running on defaults)")
+    }
+
+    // version.txt — CLI + daemon versions and a little host context.
+    File(bundleDir, "version.txt").writeText(buildString {
+        appendLine("stoandl CLI:    ${BuildInfo.version}")
+        appendLine("stoandl daemon: ${daemonVersion ?: "(not running / unreachable)"}")
+        appendLine("OS:             ${System.getProperty("os.name")} ${System.getProperty("os.version")} (${System.getProperty("os.arch")})")
+        appendLine("Java:           ${System.getProperty("java.version")} (${System.getProperty("java.vendor")})")
+        appendLine("Generated:      ${LocalDateTime.now()}")
+    })
+
+    File(bundleDir, "bundle-notes.txt").writeText(
+        "stoandl support bundle — $stamp\n\n" + notes.toString())
+
+    out.absoluteFile.parentFile?.mkdirs()
+    val code = runProcess("tar", "czf", out.path, "-C", tmpRoot.path, bundleDir.name)
+    tmpRoot.deleteRecursively()
+    if (code != 0) {
+        System.err.println("Bundle failed (tar exit $code)"); System.exit(1); return
+    }
+    println()
+    println("Wrote ${out.path} (${humanSize(out.length())})")
+    println("Review it before sharing — config secrets are redacted, but watch logs may contain personal data.")
+}
+
+/** Redact secrets from a stoandl.conf before it goes into a support bundle: CalDAV passwords
+ *  (`url|user|password`), and any credentials embedded in URLs (`scheme://user:pass@…` userinfo and
+ *  secret-looking query params like `token`/`key`/`password`). Conservative — only touches values it
+ *  recognises as secret-bearing, leaving the rest readable so misconfig is still diagnosable. */
+private fun sanitizeConfig(text: String): String {
+    val userinfo = Regex("""(://)[^/@\s:]+:[^/@\s]+@""")
+    val secretParam = Regex("""([?&](?:token|key|apikey|api_key|auth|password|passwd|secret|sig|signature)=)[^&\s]+""", RegexOption.IGNORE_CASE)
+    fun redactUrl(s: String) = s.replace(userinfo, "$1***:***@").replace(secretParam, "$1***")
+    val lines = text.lines().map { raw ->
+        val hash = raw.indexOf('#')
+        val code = if (hash >= 0) raw.substring(0, hash) else raw
+        val comment = if (hash >= 0) raw.substring(hash) else ""
+        val eq = code.indexOf('=')
+        if (eq <= 0) return@map raw
+        val key = code.substring(0, eq).trim()
+        var value = code.substring(eq + 1)
+        value = when (key) {
+            // calendar.caldav = url|user|password, url2|user2|password2, …  → redact the password field.
+            "calendar.caldav" -> value.split(',').joinToString(",") { entry ->
+                val parts = entry.split('|')
+                if (parts.size >= 3) (parts.take(2) + "***" + parts.drop(3)).joinToString("|")
+                else redactUrl(entry)
+            }
+            else -> redactUrl(value)
+        }
+        code.substring(0, eq + 1) + value + comment
+    }
+    return "# Secrets redacted by `stoandl support`. Review before sharing.\n" + lines.joinToString("\n")
 }
 
 private fun connectDbusOrExit(): DBusConnection? = try {

@@ -143,4 +143,16 @@ interface StoandlControl : DBusInterface {
      *  the (chunked) transfer completes — a couple of seconds. Returns `ok:<path>\t<width>\t<height>`,
      *  `notready:<msg>` (no watch), or `error:<msg>` (timeout, watch busy, or write failed). */
     fun TakeScreenshot(path: String): String
+
+    /** Dump the watch's firmware logs to the absolute [path] as text. Blocks until the (multi-generation)
+     *  transfer completes — a handful of seconds. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`. */
+    fun GatherLogs(path: String): String
+
+    /** Fetch an existing coredump off the watch to the absolute [path]. Returns `ok:<path>`,
+     *  `none:<msg>` (no coredump on the watch), `notready:<msg>`, or `error:<msg>`. */
+    fun GetCoreDump(path: String): String
+
+    /** The connected watch's metadata as a human-readable text block (model, firmware, board, serial,
+     *  language, capabilities …). Returns `ok:<text>` or `notready:<msg>`. */
+    fun WatchInfoText(): String
 }

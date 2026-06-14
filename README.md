@@ -21,6 +21,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Flashes watch firmware over BLE — a local `.pbz`, or (opt-in) the latest build for your watch's board straight from the PebbleOS GitHub releases, with an optional "update available" notification on the watch
 - Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
+- Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -232,6 +233,24 @@ stoandl screenshot ~/Pictures/       # → a timestamped PNG in that directory
 
 Works on colour (Basalt/Chalk/Emery) and 1-bit classic Pebbles alike. Purely local — no network, no
 setup. The capture takes a couple of seconds.
+
+## Watch logs & support bundle
+
+Pull the watch's own firmware logs, or package a full diagnostic bundle for a bug report.
+
+```sh
+stoandl logs                         # → ./pebble-logs-<time>.txt  (the watch's firmware log)
+stoandl logs /tmp/watch.txt          # a name you choose
+
+stoandl support                      # → ./stoandl-support-<time>.tar.gz
+stoandl support --coredump           # also pull a coredump off the watch, if it has one
+```
+
+The support bundle gathers the watch's firmware logs and metadata, the daemon log (`/tmp/stoandl*.log`),
+the stoandl version, and your `stoandl.conf` **with secrets redacted** (CalDAV passwords and any
+credentials/tokens in URLs). It's resilient: even with no daemon running or no watch connected it still
+collects whatever it can, noting what's missing in `bundle-notes.txt`. Purely local — nothing is uploaded.
+Review the archive before sharing: the watch logs can still contain personal data.
 
 ## Logging
 
