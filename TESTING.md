@@ -853,7 +853,7 @@ network can install apps and relay protocol traffic to the watch. Off by default
 
 ---
 
-## 5.20 Battery level read-out  ⚠️ UNVERIFIED (needs a watch)
+## 5.20 Battery level read-out  ✅ Verified on hardware
 
 Surfaces the connected watch's battery level (`ConnectedPebble.Battery.batteryLevel` — the standard BLE
 Battery Service `0x180F` / level characteristic `0x2A19` libpebble3 subscribes to). Read-only,
