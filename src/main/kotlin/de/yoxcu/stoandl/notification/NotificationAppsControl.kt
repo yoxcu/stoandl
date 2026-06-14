@@ -54,10 +54,10 @@ class NotificationAppsControl(
         val now = Clock.System.now()
         val parsed = parseSpec(spec, now) ?: return "error:Unknown mute '$spec' (use always|weekdays|weekends|never or a duration like 1h/30m/2d)"
         val apps = runBlocking { dao.allApps() }
-        val matches = apps.filter { it.matches(query) }
+        val matches = apps.resolve(query)
         when {
             matches.isEmpty() -> "notfound:No tracked app matching '$query'"
-            matches.size > 1 -> "ambiguous:" + matches.joinToString("; ") { it.name }
+            matches.size > 1 -> ambiguous(matches)
             else -> {
                 val app = matches.first()
                 runBlocking { dao.insertOrReplace(parsed.applyTo(app, now)) }
@@ -90,10 +90,10 @@ class NotificationAppsControl(
      */
     fun setStyle(query: String, color: String, icon: String, vibe: String): String = try {
         val apps = runBlocking { dao.allApps() }
-        val matches = apps.filter { it.matches(query) }
+        val matches = apps.resolve(query)
         when {
             matches.isEmpty() -> "notfound:No tracked app matching '$query'"
-            matches.size > 1 -> "ambiguous:" + matches.joinToString("; ") { it.name }
+            matches.size > 1 -> ambiguous(matches)
             else -> {
                 val app = matches.first()
                 val newColor = resolveStyle(color, app.colorName)
@@ -116,6 +116,24 @@ class NotificationAppsControl(
 
     private fun NotificationAppItem.matches(query: String): Boolean =
         name.contains(query, ignoreCase = true) || packageName.contains(query, ignoreCase = true)
+
+    /**
+     * Resolve [query] to tracked apps. An **exact** (case-insensitive) name or package match wins
+     * outright, so an app whose name is also a substring of another (e.g. `whatsapp` vs `whatsapps`)
+     * can be targeted by typing it in full; otherwise fall back to substring matches (which may be
+     * ambiguous). Returns the candidate list for the caller's empty/one/many handling.
+     */
+    private fun List<NotificationAppItem>.resolve(query: String): List<NotificationAppItem> {
+        val exact = filter {
+            it.name.equals(query, ignoreCase = true) || it.packageName.equals(query, ignoreCase = true)
+        }
+        return exact.ifEmpty { filter { it.matches(query) } }
+    }
+
+    /** Ambiguous-match status: list the candidates and hint that the full exact name selects one. */
+    private fun ambiguous(matches: List<NotificationAppItem>): String =
+        "ambiguous:" + matches.joinToString("; ") { it.name } +
+            " — type an app's exact name to pick just that one"
 
     private data class MuteSpec(val state: MuteState, val expiration: Instant?) {
         fun applyTo(app: NotificationAppItem, now: Instant): NotificationAppItem = app.copy(

@@ -64,7 +64,10 @@ stoandl notif style Element --color Red --icon NotificationElement --vibe double
 stoandl notif styles                   # list every available colour, icon and vibe preset (offline)
 ```
 
-Quote multi-word app names. New apps default to `notification.default_mute` (`never` = deliver).
+Quote multi-word app names. The app argument is a case-insensitive **substring** match, but an **exact**
+name wins outright — so when one app's name is a substring of another (e.g. `whatsapp` vs `whatsapps`),
+typing the full exact name targets just that one; a partial that still hits several reports them as
+ambiguous. New apps default to `notification.default_mute` (`never` = deliver).
 Muting is enforced **host-side** (the notification is dropped before it crosses BLE), so per-app mute
 works fully without any watch-side support.
 

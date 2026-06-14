@@ -1699,11 +1699,15 @@ private class StoandlControlImpl(
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
         return try {
             val cals = runBlocking { lp.calendars().first() }
+            // Exact id wins, then an exact (case-insensitive) name — so a calendar whose name is a
+            // substring of another (e.g. "Work" vs "Workout") can be picked in full — then substring.
             val matches = query.toIntOrNull()?.let { id -> cals.filter { it.id == id } }?.takeIf { it.isNotEmpty() }
+                ?: cals.filter { it.name.equals(query, ignoreCase = true) }.takeIf { it.isNotEmpty() }
                 ?: cals.filter { it.name.contains(query, ignoreCase = true) }
             when {
                 matches.isEmpty() -> "notfound:No calendar matching '$query'"
-                matches.size > 1 -> "ambiguous:" + matches.joinToString("; ") { "${it.id}:${it.name}" }
+                matches.size > 1 -> "ambiguous:" + matches.joinToString("; ") { "${it.id}:${it.name}" } +
+                    " — type the exact name or the id to pick just one"
                 else -> {
                     lp.updateCalendarEnabled(matches.first().id, enabled)
                     calendarSyncRef.get()?.requestRefresh()
@@ -2074,14 +2078,15 @@ private class StoandlControlImpl(
 
     private fun findPkjsApp(query: String): PKJSApp? {
         val lp = libPebbleRef.get() ?: return null
-        return lp.watches.value
+        val apps = lp.watches.value
             .filterIsInstance<ConnectedPebbleDevice>()
             .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
-            .firstOrNull { app ->
-                query.isEmpty() ||
-                app.appInfo.shortName.contains(query, ignoreCase = true) ||
-                app.appInfo.uuid.equals(query, ignoreCase = true)
-            }
+        if (query.isEmpty()) return apps.firstOrNull()
+        // Prefer an exact shortName / uuid match before a substring hit, so "whatsapp" doesn't pick a
+        // running "whatsapps".
+        return apps.firstOrNull {
+            it.appInfo.shortName.equals(query, ignoreCase = true) || it.appInfo.uuid.equals(query, ignoreCase = true)
+        } ?: apps.firstOrNull { it.appInfo.shortName.contains(query, ignoreCase = true) }
     }
 
     override fun Pair(): String {
