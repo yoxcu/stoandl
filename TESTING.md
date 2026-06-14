@@ -728,7 +728,13 @@ file or directory is honoured, and `.png` is appended if missing.
 
 ---
 
-## 5.16 Watch logs / support bundle  ⚠️ UNVERIFIED (needs a watch)
+## 5.16 Watch logs / support bundle  ◻️ Bundle assembly + redaction + no-watch degradation verified (real bundle 2026-06-14) — ⚠️ watch-side capture (logs/info/coredump) still needs a watch
+
+> Evidence: a `stoandl support` run on hardware (no watch connected) produced a valid bundle whose
+> `bundle-notes.txt` recorded `watch info/logs unavailable: No watch connected`, included the daemon
+> log + version + `stoandl.conf` with the CalDAV password redacted to `***`. So tests 5.164 (resilient,
+> watch pieces omitted) and 5.166 (redaction) are confirmed; 5.160–5.163, 5.165 (watch-connected
+> paths) remain to run.
 
 `stoandl logs [path]` dumps the watch's firmware logs to a text file; `stoandl support [out.tar.gz]`
 packages a full support bundle for sharing with a maintainer. libpebble3 already implements both over the
