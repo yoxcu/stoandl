@@ -186,4 +186,17 @@ interface StoandlControl : DBusInterface {
      *  [vibe] (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off ms). For each
      *  value: empty = leave unchanged; `default` = reset. Status-prefixed return. */
     fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
+
+    /** Start the developer connection: a LAN WebSocket server (port 9000) that bridges the Pebble SDK
+     *  (`pebble install --phone <ip>`) / CloudPebble to the connected watch over BLE for installing and
+     *  live-debugging apps. The server binds all interfaces with no auth, so it's started on demand.
+     *  Returns `ok:9000` (server port), `notready:<msg>` (no watch), or `error:<msg>`. */
+    fun StartDevConnection(): String
+
+    /** Stop the developer connection server. Returns `ok:`, `notready:<msg>`, or `error:<msg>`. */
+    fun StopDevConnection(): String
+
+    /** Whether the developer connection server is running. Returns `ok:active`/`ok:inactive` or
+     *  `notready:<msg>`. */
+    fun DevConnectionStatus(): String
 }

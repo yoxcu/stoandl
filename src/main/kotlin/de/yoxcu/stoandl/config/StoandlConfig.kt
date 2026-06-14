@@ -109,6 +109,11 @@ data class StoandlConfig(
      *  (Local `stoandl language sideload <file.pbl>` and `stoandl language list` never touch the
      *  network and are always available.) */
     val languageDownload: Boolean,
+    /** Auto-start the developer connection (the LAN WebSocket server on port 9000 that lets the Pebble
+     *  SDK / CloudPebble install and live-debug apps through stoandl over BLE) on every watch connect.
+     *  The server binds all interfaces with no auth, so it's off by default; `stoandl developer
+     *  start`/`stop` toggle it on demand regardless of this setting. */
+    val developerAutostart: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -169,6 +174,7 @@ data class StoandlConfig(
             firmwareGithubPrereleases = false,
             firmwareNotify = true,
             languageDownload = false,
+            developerAutostart = false,
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -246,6 +252,7 @@ data class StoandlConfig(
                 firmwareGithubPrereleases = parseBool(map["firmware.github_prereleases"]),
                 firmwareNotify = map["firmware.notify"]?.let { parseBool(it) } ?: true,
                 languageDownload = parseBool(map["language.download"]),
+                developerAutostart = parseBool(map["developer.autostart"]),
             )
             log.info {
                 "Config loaded from ${file.path}: " +

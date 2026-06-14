@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -130,6 +130,7 @@ private fun printUsage() {
     println("  reset recovery             Reboot the watch into recovery (PRF) firmware (un-brick a bad flash)")
     println("  reset factory [--yes]      Factory-reset the watch — WIPES it (apps, settings, pairing); needs confirmation")
     println("                             Add --coredump to also pull a coredump off the watch")
+    println("  developer start|stop|status  Toggle the developer connection (Pebble SDK / CloudPebble install + live-debug over BLE, port 9000)")
     println("  help                       Show this help")
 }
 
@@ -514,6 +515,7 @@ private fun ctl(args: Array<String>) {
         "logs" -> ctlLogs(args.drop(1))
         "support" -> ctlSupport(args.drop(1))
         "reset" -> ctlReset(args.drop(1))
+        "developer", "dev" -> ctlDeveloper(args.drop(1))
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -1485,6 +1487,69 @@ private fun sendReset(call: (StoandlControl) -> String) {
     } finally {
         conn.disconnect()
     }
+}
+
+/** `stoandl developer <start|stop|status>` — toggle the developer connection (libpebble3's LAN
+ *  WebSocket server on port 9000) so the Pebble SDK / CloudPebble can install and live-debug apps
+ *  through stoandl over BLE. */
+private fun ctlDeveloper(rest: List<String>) {
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        when (rest.firstOrNull()) {
+            "start" -> {
+                val resp = try { control.StartDevConnection() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, body) = splitStatus(resp)
+                if (kind != "ok") { handleStatusResponse(resp); return }
+                val port = body.ifEmpty { "9000" }
+                println("Developer connection started (port $port).")
+                println()
+                println("Install / live-debug with the Pebble SDK, from this host or another machine on the LAN:")
+                val ips = lanAddresses()
+                if (ips.isEmpty()) println("  pebble install --phone <this-host-ip>")
+                else ips.forEach { println("  pebble install --phone $it") }
+                println()
+                println("⚠ The server listens on ALL interfaces (0.0.0.0:$port) with no authentication —")
+                println("  anyone on your network can install apps and control the watch while it runs.")
+                println("  Stop it with:  stoandl developer stop")
+            }
+            "stop" -> {
+                val resp = try { control.StopDevConnection() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, _) = splitStatus(resp)
+                if (kind == "ok") println("Developer connection stopped.") else handleStatusResponse(resp)
+            }
+            "status" -> {
+                val resp = try { control.DevConnectionStatus() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, body) = splitStatus(resp)
+                if (kind == "ok") println("Developer connection is ${if (body == "active") "active (port 9000)" else "inactive"}.")
+                else handleStatusResponse(resp)
+            }
+            else -> {
+                System.err.println("Usage: stoandl developer <start | stop | status>")
+                System.exit(1)
+            }
+        }
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/** Non-loopback IPv4 addresses of up interfaces, for printing `pebble install --phone <ip>` hints. */
+private fun lanAddresses(): List<String> = try {
+    java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+        .filter { it.isUp && !it.isLoopback }
+        .flatMap { it.inetAddresses.asSequence() }
+        .filterIsInstance<java.net.Inet4Address>()
+        .map { it.hostAddress }
+        .toList()
+} catch (e: Exception) {
+    emptyList()
 }
 
 /** Redact secrets from a stoandl.conf before it goes into a support bundle: CalDAV passwords

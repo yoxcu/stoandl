@@ -143,3 +143,15 @@ firmware.github_prereleases = false
 # (checked on connect and at most once a day). The notification has an "Update" button that downloads
 # and flashes it. On by default once firmware.github is enabled; set false for check-on-demand only.
 firmware.notify = true
+
+# ── Developer connection ─────────────────────────────────────────────────────────────────────────
+# Bridge the Pebble SDK / CloudPebble to the watch over BLE, so `pebble install --phone <this-host>`
+# and live app debugging work through stoandl (what the official app's developer connection does).
+# Toggle it on demand — no config needed:
+#     stoandl developer start | stop | status
+#
+# ⚠ This opens an UNAUTHENTICATED WebSocket server on 0.0.0.0:9000 (all interfaces): while it runs,
+# anyone on your network can install apps and relay protocol traffic to the watch. So it's off by
+# default and you start it explicitly. Set the key below to auto-start it on every watch connect
+# (e.g. a dedicated dev device) — leave it false unless you understand the exposure.
+developer.autostart = false

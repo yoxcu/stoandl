@@ -824,6 +824,35 @@ with `notify-send "<App>" "<msg>"` (the `<App>` becomes the app name). Verify dr
 
 ---
 
+## 5.19 Developer connection  ⚠️ UNVERIFIED (needs a watch + the Pebble SDK)
+
+Brings up libpebble3's developer connection (`ConnectedPebble.DevConnection` → `DevConnectionManager`),
+which starts a LAN WebSocket server on **port 9000** (`DevConnectionServer`) that relays raw
+Pebble-protocol frames to/from the connected watch, installs `.pbw` bundles, and streams PKJS logs —
+the bridge the Pebble SDK (`pebble install --phone <ip>`) / CloudPebble's "phone" mode talk to. stoandl
+pins `WatchConfig.lanDevConnection=true` so the transport picks the LAN server (not the token-gated
+CloudPebble proxy), exposes `DeveloperControl` over three control-bus methods, and the CLI prints the
+host LAN address + a security warning.
+
+**Security:** the server binds `0.0.0.0:9000` with **no authentication** — while running, anyone on the
+network can install apps and relay protocol traffic to the watch. Off by default; started explicitly
+(or via opt-in `developer.autostart`).
+
+**Prerequisite:** daemon running, a connected watch, and the Pebble SDK (`pebble` CLI) on the same LAN.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.193 | Start | connect a watch, `stoandl developer start` | Prints `Developer connection started (port 9000).`, a `pebble install --phone <ip>` hint for each detected LAN address, and the 0.0.0.0/no-auth warning. Daemon log: `Developer connection started (LAN WebSocket server on 0.0.0.0:9000)` and `Starting server for … on port 9000`. |
+| 5.194 | Status (active) | `stoandl developer status` | `Developer connection is active (port 9000).` |
+| 5.195 | SDK install | from another machine: `pebble install --phone <host-ip>` in a watchapp project | The app installs onto the watch and launches; PKJS `console.log` output streams back to the SDK. (This is the core acceptance test.) |
+| 5.196 | Live debug / logs | `pebble logs --phone <host-ip>` while the app runs | App + PKJS logs stream to the terminal. |
+| 5.197 | Stop | `stoandl developer stop`, then `stoandl developer status` | `Developer connection stopped.` then `… inactive.`; port 9000 no longer accepts connections. Daemon log: `Developer connection stopped`. |
+| 5.198 | Survives reconnect only with autostart | with `developer.autostart=false`: start, then move the watch out of range and back | After reconnect, `developer status` shows `inactive` (the server lived in the dropped connection scope) — must `developer start` again. With `developer.autostart=true` (restart daemon), it comes back up automatically on reconnect (log: `Developer connection autostart on …`). |
+| 5.199 | No watch | `stoandl developer start` / `status` with no watch connected | Prints `No watch connected` and exits non-zero; no server started. |
+| 5.19a | Bad subcommand | `stoandl developer`, `stoandl developer foo` | Prints `Usage: stoandl developer <start | stop | status>` and exits non-zero. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

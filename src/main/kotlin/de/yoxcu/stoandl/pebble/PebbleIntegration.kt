@@ -12,6 +12,7 @@ import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.debug.DebugControl
+import de.yoxcu.stoandl.developer.DeveloperControl
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
@@ -41,6 +42,8 @@ import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
+import io.rebble.libpebblecommon.WatchConfig
+import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
@@ -187,6 +190,7 @@ class PebbleIntegration(
     private lateinit var screenshotControl: ScreenshotControl
     private lateinit var logsControl: LogsControl
     private lateinit var debugControl: DebugControl
+    private lateinit var developerControl: DeveloperControl
     // Null when notification.per_app is off (no store to manage).
     private var notificationAppsControl: NotificationAppsControl? = null
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
@@ -218,9 +222,17 @@ class PebbleIntegration(
         // Register the pairing agent before any connection so MITM pairing has an answerer.
         pairingAgent.register()
 
-        val bleConfig = LibPebbleConfig(bleConfig = BleConfig(reversedPPoG = false))
+        // reversedPPoG=false → the phone acts as the BLE peripheral. lanDevConnection=true → the
+        // developer connection (started on demand) uses the LAN WebSocket server on port 9000 rather
+        // than the CloudPebble proxy (stoandl has no Rebble token, so the proxy can't authenticate).
+        // Both the Ble- and WatchConfigFlow are pinned in the override module below so a persisted
+        // Java Preferences value (LibPebbleConfigHolder loads storage over our default) can't undo them.
+        val libPebbleConfig = LibPebbleConfig(
+            bleConfig = BleConfig(reversedPPoG = false),
+            watchConfig = WatchConfig(lanDevConnection = true),
+        )
         val koin = initKoin(
-            defaultConfig = bleConfig,
+            defaultConfig = libPebbleConfig,
             webServices = NoOpWebServices,
             appContext = AppContext(),
             tokenProvider = NoOpTokenProvider,
@@ -241,8 +253,8 @@ class PebbleIntegration(
         val calendarSync = buildCalendarSync()
         calendarSyncRef.set(calendarSync)
 
-        // Override modules: use our DBus notification bridge, and pin BleConfigFlow so any
-        // persisted Java Preferences value cannot override reversedPPoG=false.
+        // Override modules: use our DBus notification bridge, and pin Ble-/WatchConfigFlow so any
+        // persisted Java Preferences value cannot override reversedPPoG=false / lanDevConnection=true.
         koin.loadModules(listOf(module {
             single<NotificationListenerConnection> {
                 DbusNotificationListenerConnection(
@@ -257,7 +269,10 @@ class PebbleIntegration(
             // write-back). Overrides the JVM module's PlatformConfig(syncNotificationApps = false),
             // which otherwise keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
             if (config.notificationSyncToWatch) single { PlatformConfig(syncNotificationApps = true) }
-            single { BleConfigFlow(MutableStateFlow(bleConfig)) }
+            single { BleConfigFlow(MutableStateFlow(libPebbleConfig)) }
+            // Pin lanDevConnection=true so the developer connection uses the LAN server (port 9000),
+            // not the CloudPebble proxy. Overrides the JVM module's storage-backed WatchConfigFlow.
+            single { WatchConfigFlow(MutableStateFlow(libPebbleConfig)) }
             // Handle watch-side notification actions: a Dismiss on the watch marks the item read AND
             // closes the originating desktop notification over D-Bus (CloseNotification). Without this
             // binding the JVM module's no-op handler runs and watch→desktop dismiss silently does
@@ -313,6 +328,7 @@ class PebbleIntegration(
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
+        developerControl = DeveloperControl(libPebbleRef)
         if (config.notificationPerApp) notificationAppsControl = NotificationAppsControl(koin.get())
         watchConnector = koin.get()
         watchBluetoothPowerState()
@@ -328,6 +344,7 @@ class PebbleIntegration(
         startWeatherSync()
         startWatchPrefsSync()
         startFirmwareNotifier()
+        startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
         // them on Datalogging.records; without a subscriber they're simply dropped (as before).
         if (config.datalog) {
@@ -1013,9 +1030,23 @@ class PebbleIntegration(
         }
     }
 
+    /** Auto-start the developer connection (LAN server, port 9000) on every fresh watch connect when
+     *  `developer.autostart` is on. The server lives in the watch's per-connection scope and dies on
+     *  disconnect, so re-arming it on each reconnect is what makes autostart actually persistent. Off
+     *  by default — the server is an unauthenticated LAN listener (see [DeveloperControl]). */
+    private fun startDeveloperAutostart() {
+        if (!config.developerAutostart) return
+        log.info { "Developer connection autostart on (LAN server :9000 on every watch connect)" }
+        libPebble.watches
+            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
+            .distinctUntilChanged()
+            .onEach { connected -> if (connected) scope.launch { developerControl.start() } }
+            .launchIn(scope)
+    }
+
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, notificationAppsControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1569,6 +1600,7 @@ private class StoandlControlImpl(
     private val screenshotControl: ScreenshotControl,
     private val logsControl: LogsControl,
     private val debugControl: DebugControl,
+    private val developerControl: DeveloperControl,
     // Null when notification.per_app is off.
     private val notificationAppsControl: NotificationAppsControl?,
     private val scope: CoroutineScope,
@@ -1728,6 +1760,18 @@ private class StoandlControlImpl(
         log.info { "ResetIntoRecovery requested" }
         return debugControl.resetIntoRecovery()
     }
+
+    override fun StartDevConnection(): String {
+        log.info { "StartDevConnection requested" }
+        return developerControl.start()
+    }
+
+    override fun StopDevConnection(): String {
+        log.info { "StopDevConnection requested" }
+        return developerControl.stop()
+    }
+
+    override fun DevConnectionStatus(): String = developerControl.status()
 
     override fun NotifList(): List<String> =
         notificationAppsControl?.list() ?: emptyList()

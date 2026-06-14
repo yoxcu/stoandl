@@ -491,3 +491,32 @@ default because it makes a network call:
 To revert to English, install the watch's English pack (`stoandl language install en_US`, or sideload it).
 `stoandl language status` prints the current state at any time (`idle`, `downloading`, `installing`,
 `done`, `failed`).
+
+## Developer connection
+
+Bridge the Pebble SDK / CloudPebble to the connected watch over BLE, so you can install and live-debug
+watchapps through stoandl the way the official phone app's developer connection does — not just
+`stoandl sideload`. `stoandl developer start` brings up libpebble3's LAN WebSocket server on **port
+9000**; it relays raw Pebble-protocol frames to/from the watch, installs `.pbw` bundles, and streams
+PKJS logs. Point the SDK at this host:
+
+```sh
+stoandl developer start            # prints the host's LAN address(es) + a security warning
+# on your dev machine (in a watchapp project):
+pebble install --phone <host-ip>   # install + run on the watch
+pebble logs    --phone <host-ip>   # stream app + PKJS logs
+stoandl developer status           # active / inactive
+stoandl developer stop             # tear the server down
+```
+
+> ⚠ **Security.** The server binds `0.0.0.0:9000` (all interfaces) with **no authentication**: while
+> it runs, anyone who can reach this host on the network can install apps and relay protocol traffic to
+> the watch. It's therefore off by default and started explicitly; stop it when you're done developing.
+> It's a plain LAN listener — nothing is uploaded anywhere (no egress).
+
+The server lives in the watch's connection scope, so it goes away when the watch disconnects. Set the
+key below to bring it back up automatically on every connect (handy for a dedicated dev device):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `developer.autostart` | `false` | Auto-start the developer connection (LAN server, port 9000) on every watch connect. Leave off unless you accept the unauthenticated-LAN-listener exposure above; `stoandl developer start`/`stop` work on demand regardless. |
