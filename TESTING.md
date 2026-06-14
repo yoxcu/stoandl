@@ -543,7 +543,7 @@ No config — always on. Changing the timezone needs privilege (`timedatectl` us
 |---|------|-----------------|----------|
 | 5.80 | Monitor starts | start the daemon | Log (INFO): `Time-change monitor started (org.freedesktop.timedate1 → watch clock re-sync)`. (Absent only if there's no system bus / no timedated — then connect-time sync still works.) |
 | 5.81 | Clock correct at connect | connect a watch, check its time | Matches the host wall clock and local offset (this is the negotiator path, always worked). |
-| 5.82 | Timezone change re-syncs | with the watch connected, `sudo timedatectl set-timezone America/New_York` (then set it back) | Log (DEBUG): `timedate1 changed — re-syncing watch clock` then libpebble's `updateTime`; the watch's displayed time shifts to the new offset within a second or two — **without** disconnecting/reconnecting. |
+| 5.82 | Timezone change re-syncs | with the watch connected, `sudo timedatectl set-timezone America/New_York` (then set it back) | Log (INFO): `timedate1 changed (tz now America/New_York) — re-syncing watch clock` then libpebble's `updateTime`; the watch's displayed time shifts to the new offset within a second or two — **without** disconnecting/reconnecting. (The daemon invalidates the JVM's cached default zone on the change; before that fix the resend carried the stale offset and only a restart picked up the new zone.) |
 | 5.83 | NTP toggle | `sudo timedatectl set-ntp true` (or false) | Same `timedate1 changed` re-sync fires (harmless extra `SetUTC`). |
 | 5.84 | No system bus | n/a in normal use | If the system bus is unavailable the monitor logs a DEBUG `unavailable` line and is skipped; connect-time sync is unaffected. |
 

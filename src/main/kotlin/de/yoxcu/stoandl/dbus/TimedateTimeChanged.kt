@@ -59,7 +59,16 @@ class TimedateTimeChanged : TimeChanged {
                     // The path filter already pins this to timedated; double-check the interface name.
                     val ifaceName = msg.getParameters()?.getOrNull(0) as? String
                     if (ifaceName == null || ifaceName == TIMEDATE1_IFACE) {
-                        log.debug { "timedate1 changed — re-syncing watch clock" }
+                        // The JVM caches its default time zone at startup, so `timedatectl set-timezone`
+                        // changing /etc/localtime does NOT update a running process — `TimeZone.
+                        // currentSystemDefault()` (which libpebble3 uses to build SetUTC) would keep
+                        // returning the OLD zone and the re-push would carry a stale offset. Invalidate
+                        // the cache so the resend reads the new zone. (Clear `user.timezone` too: it's
+                        // set to the resolved id at startup and getDefault() prefers it over re-reading
+                        // /etc/localtime.)
+                        System.clearProperty("user.timezone")
+                        java.util.TimeZone.setDefault(null)
+                        log.info { "timedate1 changed (tz now ${java.util.TimeZone.getDefault().id}) — re-syncing watch clock" }
                         onChanged()
                     }
                 } catch (e: Exception) {
