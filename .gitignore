@@ -10,5 +10,16 @@ build/
 # Local config/locker backup archives (stoandl backup)
 stoandl-backup-*.tar.gz
 
+# Support/debug bundles (stoandl support) — the .tar.gz and any unpacked staging dir
+stoandl-support-*.tar.gz
+stoandl-support-*/
+
 # Watch screenshots (stoandl screenshot — default name lands in cwd)
 pebble-screenshot-*.png
+
+# Watch log dumps (stoandl logs — default name lands in cwd)
+pebble-logs-*.txt
+
+# Python bytecode cache (tools/)
+__pycache__/
+*.pyc
