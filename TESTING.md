@@ -672,6 +672,35 @@ to English, install the watch's `en_US` pack (or the matching board's English en
 
 ---
 
+## 5.14 Disconnect logging: reason + no duplicates  ⚠️ UNVERIFIED (needs a watch)
+
+Diagnostics-only change in the libpebble3 fork (`BluezBle.jvm.kt`, `BluezGattConnector`). Two fixes:
+
+1. **Disconnect reason in the log.** The `device reported Connected=false (link dropped)` line now
+   carries the BlueZ disconnect reason — `Timeout — out of range` vs `Authentication — auth failure /
+   broken bond` (and a few others) — captured from the `org.bluez.Device1.Disconnected(reason, message)`
+   signal (BlueZ ≥ 5.83; same signal the broken-bond churn detector keys off). This is the discriminator
+   that turns an overnight-log triage from a btmon snoop dig into a single `grep`. On BlueZ < 5.83 the
+   suffix is simply absent (no signal).
+2. **No more doubled drop lines.** Each `link dropped` used to log twice (≈830 lines for ≈415 real
+   drops in the 2026-06-14 overnight log): the per-connection scope was cancelled by the reconnect
+   `cleanup()` before the teardown coroutine could close the signal handler, so handlers (and their
+   `DBusConnection`s) leaked and all fired on the next drop. Teardown now runs via
+   `_disconnected.invokeOnCompletion` on an independent `cleanupScope`, closing both handlers and the
+   connection exactly once — also fixing the per-session connection leak.
+
+**How to observe:** tail `/tmp/stoandl.log` (or `stoandl.log`) while forcing disconnects. No watch GUI
+needed — just a connected, bonded watch.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.140 | Reason on out-of-range | connect a watch, then walk it out of range until it drops | A **single** `device reported Connected=false (link dropped, reason: Timeout — out of range)` per drop. (Older BlueZ < 5.83: `(link dropped)` with no reason — still single.) |
+| 5.141 | Reason on broken bond | with a connected watch, unpair it **on the watch** | Drop line reads `… reason: Authentication — auth failure / broken bond`; the existing "Pebble won't stay connected" churn-detector notification still fires (5.83+). |
+| 5.142 | No duplicate lines | over a flappy session (marginal range), `grep -c 'link dropped' stoandl.log` vs distinct timestamps | Each drop logs **once**; no two `link dropped` lines share the same millisecond. |
+| 5.143 | No connection leak | run the daemon through many connect/drop cycles, then check open D-Bus connections / fds for the process (`ls /proc/<pid>/fd | wc -l`) | fd count stays roughly flat across cycles (no steady growth from leaked `DBusConnection`s). |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect
