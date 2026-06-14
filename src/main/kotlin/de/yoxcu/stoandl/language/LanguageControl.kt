@@ -32,6 +32,12 @@ class LanguageControl(
 ) {
     private val catalog by lazy { LanguagePackCatalog.load() }
 
+    /** The locale of a pack we installed this session, per watch — used to show the right "installed"
+     *  language in [list] before the watch reconnects (libpebble3's `WatchInfo` is a connect-time
+     *  snapshot with no live re-query, so it otherwise lags an install until reconnect). */
+    @Volatile private var lastInstall: InstalledOverride? = null
+    private data class InstalledOverride(val deviceId: String, val isoLocal: String)
+
     /** Language packs need a *normal* connection ([ConnectedPebbleDevice]); a recovery-mode watch
      *  (firmware-only) can't take one. */
     private fun device(): ConnectedPebbleDevice? =
@@ -61,15 +67,12 @@ class LanguageControl(
      */
     fun list(): List<String> {
         val dev = device() ?: return emptyList()
-        // NOTE: this is the watch's language as read **when it connected** — libpebble3 captures
-        // WatchInfo once at connect and exposes no live re-query. So right after installing a pack the
-        // flag still reflects the old language until the watch reconnects (reboot, or daemon restart).
         // Match on locale only — the watch's languageVersion rarely equals the catalog's newest pack
         // version, so requiring both would wrongly flag the installed language as "not installed".
-        val installed = dev.installedLanguagePack
+        val installedLocale = installedLocale(dev)
         return catalog.forWatch(dev.watchInfo.platform, systemLocale()).map { pack ->
-            val isInstalled = installed != null &&
-                installed.isoLocal.equals(pack.isoLocal, ignoreCase = true)
+            val isInstalled = installedLocale != null &&
+                installedLocale.equals(pack.isoLocal, ignoreCase = true)
             val source = if (pack.file.startsWith("https://binaries.rebble.io")) "rebble" else "github"
             listOf(
                 pack.id,
@@ -100,6 +103,9 @@ class LanguageControl(
                 "(try 'stoandl language list')"
         return try {
             dev.installLanguagePack(pack.file, pack.displayName())
+            // Remember the target locale so `list` reflects it once the (async) install completes,
+            // without waiting for a reconnect. installedLocale() gates this on the install state.
+            lastInstall = InstalledOverride(dev.identifier.asString, pack.isoLocal)
             "ok:${pack.displayName()}"
         } catch (e: Exception) {
             log.warn(e) { "installLanguagePack(${pack.file}) failed" }
@@ -139,6 +145,25 @@ class LanguageControl(
         return byBest { it.isoLocal.equals(query, ignoreCase = true) }
             ?: byBest { it.isoLocal.take(2).equals(query.take(2), ignoreCase = true) }
             ?: byBest { it.name.contains(query, ignoreCase = true) || it.localName.contains(query, ignoreCase = true) }
+    }
+
+    /**
+     * The locale currently installed on [dev]. libpebble3's `WatchInfo` is captured once at connect
+     * and never re-queried, so right after an install it still reports the old language until the watch
+     * reconnects. To avoid that lag we prefer the locale of a pack we installed this session — but only
+     * once libpebble3's own install state confirms it finished (so a failed/in-flight install doesn't
+     * show as installed). After a reconnect the install state resets to a plain `Idle`, so we fall back
+     * to the now-correct connect-time snapshot.
+     */
+    private fun installedLocale(dev: ConnectedPebbleDevice): String? {
+        val ov = lastInstall
+        if (ov != null && ov.deviceId == dev.identifier.asString) {
+            val st = dev.languagePackInstallState
+            if (st is LanguagePackInstallState.Idle && st.successfullyInstalledLanguage != null && st.previousError == null) {
+                return ov.isoLocal
+            }
+        }
+        return dev.installedLanguagePack?.isoLocal
     }
 
     /** The daemon's locale as an `xx_YY` tag (e.g. `de_DE`), matching the catalog's `ISOLocal`. */

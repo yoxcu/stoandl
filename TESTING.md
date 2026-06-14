@@ -666,7 +666,7 @@ to English, install the watch's `en_US` pack (or the matching board's English en
 | 5.137 | Install by name | `stoandl language install French` | Resolves to the French pack and installs it (same flow as 5.136). |
 | 5.138 | Install — no match | `stoandl language install xx_XX` | CLI prints `No language pack matching 'xx_XX' …` and exits non-zero. Nothing sent. |
 | 5.139 | Install — system locale default | `stoandl language install` (no arg) with `LANG=de_DE.UTF-8` | Picks the pack matching the daemon's locale (German here). |
-| 5.13a | Installed flag round-trips | after a successful install, `stoandl language list` | The just-installed locale now shows `*`. (`WatchInfo.language`/`languageVersion` reflect it.) |
+| 5.13a | Installed flag round-trips | after a successful install, `stoandl language list` | The just-installed locale shows `*` **immediately** — stoandl records the installed locale on success (matched by locale, not version). The watch's own `WatchInfo` is a connect-time snapshot that only refreshes on reconnect, so the override bridges the gap. After reconnecting the watch, `list` still shows the right locale (now from the refreshed snapshot). |
 | 5.13b | Status while idle | `stoandl language status` after things settle | Prints `Idle (no language-pack install in progress)`. |
 | 5.13c | Community pack | `stoandl language install ja_JP` (or `he_IL`) | Downloads from the GitHub URL (not Rebble) and installs; the watch renders the CJK/Hebrew font. |
 
