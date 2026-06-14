@@ -13,6 +13,7 @@ import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
+import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
@@ -173,6 +174,7 @@ class PebbleIntegration(
     private lateinit var watchConnector: WatchConnector
     private lateinit var firmwareControl: FirmwareControl
     private lateinit var languageControl: LanguageControl
+    private lateinit var screenshotControl: ScreenshotControl
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
@@ -281,6 +283,7 @@ class PebbleIntegration(
         libPebbleRef.set(libPebble)
         firmwareControl = FirmwareControl(libPebbleRef, scope, config)
         languageControl = LanguageControl(libPebbleRef, config)
+        screenshotControl = ScreenshotControl(libPebbleRef)
         watchConnector = koin.get()
         watchBluetoothPowerState()
         libPebble.init()
@@ -982,7 +985,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1411,6 +1414,7 @@ private class StoandlControlImpl(
     private val calendarSyncRef: AtomicReference<LinuxSystemCalendar?>,
     private val firmwareControl: FirmwareControl,
     private val languageControl: LanguageControl,
+    private val screenshotControl: ScreenshotControl,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1541,6 +1545,11 @@ private class StoandlControlImpl(
     }
 
     override fun LanguageStatus(): String = languageControl.status()
+
+    override fun TakeScreenshot(path: String): String {
+        log.info { "TakeScreenshot: $path" }
+        return screenshotControl.capture(path)
+    }
 
     override fun ListApps(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()

@@ -701,6 +701,33 @@ needed — just a connected, bonded watch.
 
 ---
 
+## 5.15 Watch screenshots  ✅ Verified on hardware (captures the watch screen to a PNG)
+
+`stoandl screenshot [path]` captures the connected watch's screen to a PNG on the host. libpebble3's
+`ScreenshotService` does the protocol work over the SCREENSHOT endpoint — request, reassemble the chunked
+transfer, decode the 1-bit (classic) or 8-bit (colour) framebuffer. The fork adds a raw-pixel accessor
+(`ConnectedPebble.Screenshot.takeScreenshotPixels()` → ARGB `IntArray`) because the existing
+`takeScreenshot()` returns a Compose `ImageBitmap` that is a null stub on the JVM/desktop build. stoandl's
+`ScreenshotControl` encodes those pixels to PNG with a tiny `Deflater`-based `PngEncoder` (no `java.awt`/
+`ImageIO`, so it works on musl/postmarketOS) and writes the file. Purely local — no network, no egress
+opt-in. The capture is a one-shot (~couple of seconds, 5 s watch-side timeout); the D-Bus call blocks on it.
+
+The CLI resolves the target against its own cwd and sends an absolute path (the daemon writes the file and
+its cwd is `$HOME`). Default name is `pebble-screenshot-<timestamp>.png` in the caller's cwd; an explicit
+file or directory is honoured, and `.png` is appended if missing.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.150 | Default capture | connect a watch, `stoandl screenshot` | Prints `Capturing watch screen…` then `Saved <cwd>/pebble-screenshot-<time>.png (<w>×<h>)`. The PNG opens in an image viewer and shows the watch's current screen, right colours and orientation. Log: `Saved <w>×<h> screenshot → …`. |
+| 5.151 | Explicit path | `stoandl screenshot /tmp/watch.png` | Writes exactly `/tmp/watch.png`. |
+| 5.152 | Path without extension | `stoandl screenshot /tmp/watch` | Writes `/tmp/watch.png` (`.png` appended). |
+| 5.153 | Directory target | `stoandl screenshot /tmp/` | Writes `/tmp/pebble-screenshot-<time>.png`. |
+| 5.154 | No watch connected | `stoandl screenshot` with no watch | CLI prints `No watch connected` and exits non-zero; no file written. |
+| 5.155 | Colour vs B&W board | run on a colour watch (Basalt/Chalk/Emery) and, if available, a classic 1-bit Pebble | Colour board → full-colour PNG; 1-bit board → crisp black-and-white PNG. Dimensions match the watch (e.g. 144×168, 200×228). |
+| 5.156 | Back-to-back captures | run `stoandl screenshot` twice in a row | Both succeed (the `Busy` guard releases between captures); two distinct files. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

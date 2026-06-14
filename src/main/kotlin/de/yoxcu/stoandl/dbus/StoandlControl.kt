@@ -138,4 +138,9 @@ interface StoandlControl : DBusInterface {
      *  `installing:<percent>`, `done:<name>` (just finished), `failed:<reason>`, or `notready:`.
      *  Poll this after [SideloadLanguage]/[InstallLanguage]. */
     fun LanguageStatus(): String
+
+    /** Capture the connected watch's screen and write it as a PNG to the absolute [path]. Blocks until
+     *  the (chunked) transfer completes — a couple of seconds. Returns `ok:<path>\t<width>\t<height>`,
+     *  `notready:<msg>` (no watch), or `error:<msg>` (timeout, watch busy, or write failed). */
+    fun TakeScreenshot(path: String): String
 }

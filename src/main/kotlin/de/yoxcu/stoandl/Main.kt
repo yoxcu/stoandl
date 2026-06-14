@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -119,6 +119,7 @@ private fun printUsage() {
     println("  language sideload <file.pbl>   Install a local language pack onto the watch")
     println("  language install <locale>  Download+install a pack (e.g. de_DE; needs language.download)")
     println("  language status            Show the current language-pack install state")
+    println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
     println("  help                       Show this help")
 }
 
@@ -465,6 +466,38 @@ private fun ctl(args: Array<String>) {
                     System.err.println("Usage: stoandl datalog <list | dump <uuid> [tag] | tail <uuid> [tag] [-n lines]>")
                     System.exit(1)
                 }
+            }
+        }
+        "screenshot" -> {
+            // Resolve the target against THIS process's cwd and send an absolute path: the daemon writes
+            // the file, and its cwd ($HOME) differs from the caller's. Default to a timestamped name;
+            // accept an explicit file or a directory; tack on .png if missing.
+            val arg = args.getOrNull(1)
+            val target = when {
+                arg == null -> File("pebble-screenshot-${timestamp()}.png")
+                File(arg).isDirectory -> File(arg, "pebble-screenshot-${timestamp()}.png")
+                arg.endsWith(".png", ignoreCase = true) -> File(arg)
+                else -> File("$arg.png")
+            }
+            val path = target.absolutePath
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                println("Capturing watch screen…")
+                val resp = try { control.TakeScreenshot(path) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, body) = splitStatus(resp)
+                if (kind == "ok") {
+                    val f = body.split('\t')
+                    val saved = f.getOrElse(0) { path }
+                    val dims = if (f.size >= 3) " (${f[1]}×${f[2]})" else ""
+                    println("Saved $saved$dims")
+                } else {
+                    handleStatusResponse(resp)
+                }
+            } finally {
+                conn.disconnect()
             }
         }
         in VERSION_FLAGS -> printVersion()

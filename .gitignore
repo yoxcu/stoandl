@@ -9,3 +9,6 @@ build/
 
 # Local config/locker backup archives (stoandl backup)
 stoandl-backup-*.tar.gz
+
+# Watch screenshots (stoandl screenshot — default name lands in cwd)
+pebble-screenshot-*.png

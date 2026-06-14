@@ -20,6 +20,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
 - Flashes watch firmware over BLE — a local `.pbz`, or (opt-in) the latest build for your watch's board straight from the PebbleOS GitHub releases, with an optional "update available" notification on the watch
 - Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
+- Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -217,6 +218,20 @@ egress, off until you set `language.download = true`. `list` and `sideload` neve
 Core devices (Pebble 2 Duo / Time 2) share the Diorite (`silk`) packs; classic Pebbles use their own board.
 
 → [docs/configuration.md#language-packs](docs/configuration.md#language-packs)
+
+## Screenshots
+
+Capture the watch's current screen to a PNG on the host — handy for sharing watchfaces or filing bug
+reports.
+
+```sh
+stoandl screenshot                   # → ./pebble-screenshot-<time>.png
+stoandl screenshot watchface.png     # → a name you choose
+stoandl screenshot ~/Pictures/       # → a timestamped PNG in that directory
+```
+
+Works on colour (Basalt/Chalk/Emery) and 1-bit classic Pebbles alike. Purely local — no network, no
+setup. The capture takes a couple of seconds.
 
 ## Logging
 
