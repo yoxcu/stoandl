@@ -728,7 +728,7 @@ file or directory is honoured, and `.png` is appended if missing.
 
 ---
 
-## 5.16 Watch logs / support bundle  ◻️ Bundle assembly + redaction + no-watch degradation verified (real bundle 2026-06-14) — ⚠️ watch-side capture (logs/info/coredump) still needs a watch
+## 5.16 Watch logs / support bundle  ✅ Verified on hardware
 
 > Evidence: a `stoandl support` run on hardware (no watch connected) produced a valid bundle whose
 > `bundle-notes.txt` recorded `watch info/logs unavailable: No watch connected`, included the daemon
@@ -754,6 +754,7 @@ local — no network, no egress opt-in.
 |---|------|-----------------|----------|
 | 5.160 | Default log dump | connect a watch, `stoandl logs` | Prints `Gathering watch logs…` then `Saved <cwd>/pebble-logs-<time>.txt`. File begins `# Device logs:` with `=== Generation: N ===` blocks and `LEVEL TIMESTAMP file:line> message` lines. |
 | 5.161 | Explicit path / ext | `stoandl logs /tmp/w.txt` and `stoandl logs /tmp/w` | First writes exactly `/tmp/w.txt`; second appends `.txt`. A directory target writes `pebble-logs-<time>.txt` inside it. |
+| 5.167 | Directory target that doesn't exist yet | `stoandl support /tmp/new_a/` (where `/tmp/new_a` does not exist) | Creates `/tmp/new_a/` and writes `stoandl-support-<time>.tar.gz` **inside** it — not an empty-named `/tmp/new_a/.tar.gz`. Same trailing-`/` handling for `stoandl logs new_a/` and `stoandl screenshot new_a/`. |
 | 5.162 | No watch | `stoandl logs` with no watch connected | CLI prints `No watch connected` and exits non-zero; no file written. |
 | 5.163 | Support bundle (full) | with a watch connected, `stoandl support` | Prints a checklist (`watch logs: included`, `watch info`/via file, `daemon log: N file(s)`, `config: included …`), then `Wrote <cwd>/stoandl-support-<time>.tar.gz (<size>)`. Extract: contains `watch-logs.txt`, `watch-info.txt`, `daemon-logs/`, `stoandl.conf`, `version.txt`, `bundle-notes.txt`. |
 | 5.164 | Support bundle (no daemon) | stop the daemon, `stoandl support` | Still succeeds. `bundle-notes.txt` notes the watch pieces were omitted; the archive still has `daemon-logs/` (if any) + redacted `stoandl.conf` + `version.txt`. |
