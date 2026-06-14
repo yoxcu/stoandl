@@ -91,6 +91,11 @@ data class StoandlConfig(
      *  available — checked on connect and at most once a day — with an "Update" action button that
      *  flashes it. On by default once GitHub checks are enabled; set false for check-on-demand only. */
     val firmwareNotify: Boolean,
+    /** Allow `stoandl language install` to download a `.pbl` language pack from the catalog's source
+     *  (Rebble's CDN or a community GitHub repo) and install it. Opt-in egress, so off by default.
+     *  (Local `stoandl language sideload <file.pbl>` and `stoandl language list` never touch the
+     *  network and are always available.) */
+    val languageDownload: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -146,6 +151,7 @@ data class StoandlConfig(
             firmwareGithubRepo = DEFAULT_FIRMWARE_GITHUB_REPO,
             firmwareGithubPrereleases = false,
             firmwareNotify = true,
+            languageDownload = false,
         )
 
         fun configFile(): File {
@@ -213,6 +219,7 @@ data class StoandlConfig(
                     ?: DEFAULT_FIRMWARE_GITHUB_REPO,
                 firmwareGithubPrereleases = parseBool(map["firmware.github_prereleases"]),
                 firmwareNotify = map["firmware.notify"]?.let { parseBool(it) } ?: true,
+                languageDownload = parseBool(map["language.download"]),
             )
             log.info {
                 "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
@@ -226,7 +233,8 @@ data class StoandlConfig(
                     "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +
                     "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}, " +
                     "datalog=${cfg.datalog}, firmwareGithub=${cfg.firmwareGithub}" +
-                    (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "")
+                    (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "") +
+                    ", languageDownload=${cfg.languageDownload}"
             }
             return cfg
         }

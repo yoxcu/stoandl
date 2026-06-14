@@ -635,6 +635,43 @@ override backed by `GeoClueLocationProvider` (the same provider weather uses).
 
 ---
 
+## 5.13 Language packs  ⚠️ UNVERIFIED (needs a watch)
+
+Installs a firmware language pack (`.pbl`) onto the watch, changing its notification/UI language and
+loading the fonts a script needs. **(a)** `stoandl language list` shows the catalog packs for the
+connected watch's board; **(b)** `stoandl language sideload <file.pbl>` installs a local pack (offline);
+**(c)** `stoandl language install <locale|name|id>` auto-picks from the catalog and downloads+installs
+(gated by `language.download`, opt-in egress). All three go through libpebble3's
+`ConnectedPebbleDevice.installLanguagePack(...)` — PutBytes-transfers the file as `lang`, same machinery
+as firmware/app sideload. The catalog is the official Core app's manifest bundled as the resource
+`language-packs.json`. `LanguageControl` (stoandl) orchestrates; the install is async — the CLI polls
+`LanguageStatus` and renders a progress bar.
+
+Boards are matched as the official app does: **Core devices (Pebble 2 Duo / Time 2) use the Diorite
+`silk` packs**, classic Pebbles use their own board revision (e.g. a Time Steel → `snowy_s3`). To revert
+to English, install the watch's `en_US` pack (or the matching board's English entry).
+
+**Get a pack for (b):** any `.pbl` from the catalog's URLs — e.g. download one from
+`https://binaries.rebble.io/lp/…` (run `stoandl language list` to see which apply to your watch).
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.130 | List (watch connected) | `stoandl language list` | A table of packs for the watch's board, system locale first, `[community]` marking GitHub-sourced ones. ~15 rows for a Core device. The currently-installed pack (if any) is marked `*`. |
+| 5.131 | List falls back to catalog (no watch / no daemon) | `stoandl language list` with no watch connected (and again with the daemon stopped) | Instead of erroring, prints "No watch connected — showing the full catalog (every board)" then the whole catalog (17 languages, `LOCALE / BOARDS / LANGUAGE`, board counts, `[community]` tags). Works even with the daemon down (offline). |
+| 5.132 | Sideload a local pack | `stoandl language sideload <file.pbl>` | Progress bar runs to 100%, then `Done — installed …`. The watch's notifications/menus switch to that language. Log: `installLanguagePack done`. |
+| 5.133 | Wrong file type | `stoandl language sideload <something.pbw>` | CLI rejects with "Not a language pack (expected a .pbl)"; nothing sent. |
+| 5.134 | No such file | `stoandl language sideload /tmp/nope.pbl` | CLI prints `No such file: …` and exits non-zero. |
+| 5.135 | Install (disabled) | `stoandl language install de_DE` with `language.download` unset/false | CLI prints the `disabled:` hint about setting `language.download = true`. No network call. |
+| 5.136 | Install by locale | set `language.download = true`, restart, `stoandl language install de_DE` | CLI prints `Installing Deutsch (German) v…`, then `Downloading …`, then the bar to `Done`. Watch UI is German. |
+| 5.137 | Install by name | `stoandl language install French` | Resolves to the French pack and installs it (same flow as 5.136). |
+| 5.138 | Install — no match | `stoandl language install xx_XX` | CLI prints `No language pack matching 'xx_XX' …` and exits non-zero. Nothing sent. |
+| 5.139 | Install — system locale default | `stoandl language install` (no arg) with `LANG=de_DE.UTF-8` | Picks the pack matching the daemon's locale (German here). |
+| 5.13a | Installed flag round-trips | after a successful install, `stoandl language list` | The just-installed locale now shows `*`. (`WatchInfo.language`/`languageVersion` reflect it.) |
+| 5.13b | Status while idle | `stoandl language status` after things settle | Prints `Idle (no language-pack install in progress)`. |
+| 5.13c | Community pack | `stoandl language install ja_JP` (or `he_IL`) | Downloads from the GitHub URL (not Rebble) and installs; the watch renders the CJK/Hebrew font. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

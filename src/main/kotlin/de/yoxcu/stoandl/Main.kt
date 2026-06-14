@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import de.yoxcu.stoandl.calendar.ICalParser
+import de.yoxcu.stoandl.language.LanguagePackCatalog
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import java.io.File
@@ -25,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -114,6 +115,10 @@ private fun printUsage() {
     println("  firmware check             Check the PebbleOS GitHub for newer firmware (needs firmware.github)")
     println("  firmware update            Download+flash the latest matching firmware from GitHub")
     println("  firmware status            Show the current firmware-update state")
+    println("  language [list]            List language packs for the watch (or the full catalog if none connected)")
+    println("  language sideload <file.pbl>   Install a local language pack onto the watch")
+    println("  language install <locale>  Download+install a pack (e.g. de_DE; needs language.download)")
+    println("  language status            Show the current language-pack install state")
     println("  help                       Show this help")
 }
 
@@ -170,6 +175,7 @@ private fun ctl(args: Array<String>) {
             }
         }
         "firmware" -> ctlFirmware(args.drop(1))
+        "language" -> ctlLanguage(args.drop(1))
         "apps" -> {
             val conn = connectDbusOrExit() ?: return
             try {
@@ -768,6 +774,214 @@ private fun renderFirmwareBar(pct: Int) {
     val filled = clamped * width / 100
     val bar = "#".repeat(filled) + "-".repeat(width - filled)
     print("\rFlashing [$bar] %3d%%".format(clamped))
+    System.out.flush()
+}
+
+/** Dispatch `stoandl language ...`: `catalog`/`search` (offline), `list`/`sideload`/`install`/`status`. */
+private fun ctlLanguage(rest: List<String>) {
+    val sub = rest.firstOrNull() ?: "list"
+    // `list` is resilient: it shows the watch's packs when the daemon+watch are there, and otherwise
+    // falls back to the full bundled catalog (offline), so it works before pairing / with no daemon.
+    if (sub == "list") { ctlLanguageList(); return }
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        when (sub) {
+            "status" -> {
+                val resp = try { control.LanguageStatus() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                printLanguageStatusOnce(resp)
+            }
+            "sideload", "add" -> {
+                val path = rest.getOrNull(1)
+                if (path == null) {
+                    System.err.println("Usage: stoandl language sideload <file.pbl>"); System.exit(1); return
+                }
+                val file = File(path)
+                if (!file.isFile) { System.err.println("No such file: $path"); System.exit(1); return }
+                if (!file.name.endsWith(".pbl")) {
+                    System.err.println("Not a language pack (expected a .pbl): $path"); System.exit(1); return
+                }
+                // Absolute path: the daemon's cwd differs from the caller's.
+                val resp = try { control.SideloadLanguage(file.absolutePath) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
+                println("Installing ${file.name} onto the watch — keep it close.")
+                pollLanguageStatus(control)
+            }
+            "install" -> {
+                val query = rest.drop(1).joinToString(" ")
+                val resp = try { control.InstallLanguage(query) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
+                println("Installing ${resp.removePrefix("ok:")} — downloading then transferring to the watch.")
+                pollLanguageStatus(control)
+            }
+            else -> {
+                System.err.println("Usage: stoandl language [list | sideload <file.pbl> | install <locale|name|id> | status]")
+                System.exit(1)
+            }
+        }
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/**
+ * `stoandl language list`: the watch's installable packs (board-filtered, installed pack marked) when
+ * the daemon and a watch are present, else the full bundled catalog. Uses a soft D-Bus connect so a
+ * missing daemon (or no watch) degrades to the offline catalog instead of erroring out.
+ */
+private fun ctlLanguageList() {
+    val conn = try {
+        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    } catch (e: Exception) {
+        printFullCatalog(); return
+    }
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        val records = try { control.ListLanguages() } catch (e: Exception) { emptyList() }
+        if (records.isEmpty()) printFullCatalog() else printLanguageList(records)
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/** Render the tab-separated records from ListLanguages() as an aligned table. */
+private fun printLanguageList(records: List<String>) {
+    // Empty is handled by the caller (it falls back to the full catalog), so records is non-empty here.
+    println("%-3s %-7s %s".format("", "LOCALE", "LANGUAGE"))
+    records.forEach { rec ->
+        val f = rec.split('\t')
+        val isoLocal = f.getOrElse(1) { "" }
+        val displayName = f.getOrElse(2) { "" }
+        val installed = f.getOrElse(3) { "no" } == "yes"
+        val source = f.getOrElse(4) { "" }
+        val mark = if (installed) " * " else "   "
+        val src = if (source == "github") "  [community]" else ""
+        println("%s %-7s %s%s".format(mark, isoLocal, displayName, src))
+    }
+    println()
+    println("  * = currently installed.  Install one with:  stoandl language install <locale>")
+    println("  (downloads need 'language.download = true' in stoandl.conf; or use 'language sideload <file.pbl>')")
+}
+
+/**
+ * The full bundled catalog (every locale and board), shown by `language list` when no watch is
+ * connected — so you can still see what's available before pairing or while out of range. Fully
+ * offline (the manifest is a bundled resource). One row per language, with how many boards carry it.
+ */
+private fun printFullCatalog() {
+    val packs = LanguagePackCatalog.load().all()
+    data class Entry(val locale: String, val boards: Int, val allBoards: Boolean, val community: Boolean, val lang: String)
+    val rows = packs.groupBy { it.isoLocal to it.name }
+        .map { (key, ps) ->
+            val first = ps.first()
+            Entry(
+                locale = key.first,
+                boards = ps.mapNotNull { it.hardware }.distinct().size,
+                allBoards = ps.any { it.hardware == null },
+                community = ps.any { !it.file.startsWith("https://binaries.rebble.io") },
+                lang = "${first.localName} (${first.name})",
+            )
+        }
+        .sortedWith(compareBy({ it.locale }, { it.lang }))
+    if (rows.isEmpty()) {
+        println("No language packs available (no watch connected, and the bundled catalog is empty).")
+        return
+    }
+    println("No watch connected — showing the full catalog (every board).")
+    println("%-8s %-10s %s".format("LOCALE", "BOARDS", "LANGUAGE"))
+    rows.forEach { r ->
+        val boards = if (r.allBoards) "all" else r.boards.toString()
+        val tag = if (r.community) "  [community]" else ""
+        println("%-8s %-10s %s%s".format(r.locale, boards, r.lang, tag))
+    }
+    println()
+    println("${rows.size} language(s).  Connect your watch and run 'stoandl language list' to see the")
+    println("packs for its board (and which is installed), then 'stoandl language install <locale>'.")
+}
+
+private fun printLanguageStatusOnce(resp: String) {
+    val (kind, body) = splitStatus(resp)
+    val human = when (kind) {
+        "idle" -> "Idle (no language-pack install in progress)"
+        "downloading" -> "Downloading $body…"
+        "installing" -> "Installing: $body%"
+        "done" -> "Last install finished: $body"
+        "failed" -> "Last language-pack install failed: ${body.ifEmpty { "unknown error" }}"
+        "notready" -> body.ifEmpty { "No watch connected" }
+        else -> resp
+    }
+    println(human)
+}
+
+/** Polls LanguageStatus() while an install runs, rendering a progress bar in place. Treats `done:`
+ *  as success and `failed:` as failure. */
+private fun pollLanguageStatus(control: StoandlControl) {
+    val startMs = System.currentTimeMillis()
+    var sawActivity = false
+    var barShown = false
+    var lastDownloading = ""
+    var firstPoll = true
+    while (true) {
+        Thread.sleep(600)
+        val st = try { control.LanguageStatus() } catch (e: Exception) {
+            if (barShown) System.err.println()
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(st)
+        // A successful install leaves a *sticky* `done:`/`idle:` on the watch's snapshot. On the very
+        // first poll that terminal value may be the PREVIOUS install's, before our kickoff has
+        // propagated — skip one cycle so we don't report a stale "Done" for a fresh install.
+        if (firstPoll && !sawActivity && (kind == "done" || kind == "idle" || kind == "failed")) {
+            firstPoll = false
+            continue
+        }
+        firstPoll = false
+        when (kind) {
+            "downloading" -> {
+                sawActivity = true
+                if (body != lastDownloading) { println("Downloading $body…"); lastDownloading = body }
+            }
+            "installing" -> {
+                sawActivity = true
+                renderLanguageBar(body.toIntOrNull() ?: 0); barShown = true
+            }
+            "done" -> {
+                if (barShown) { renderLanguageBar(100); println() }
+                println("Done — installed ${body.ifEmpty { "the language pack" }}.")
+                return
+            }
+            "failed" -> {
+                if (barShown) println()
+                System.err.println("Language-pack install failed: ${body.ifEmpty { "unknown error" }}")
+                System.exit(1); return
+            }
+            "notready" -> if (sawActivity) {
+                if (barShown) { renderLanguageBar(100); println() }
+                println("Watch disconnected during install.")
+                return
+            }
+            // "idle" before any activity (the kickoff hasn't landed yet): keep polling.
+        }
+        if (System.currentTimeMillis() - startMs > 180_000) {
+            if (barShown) println()
+            System.err.println("Timed out waiting for the language-pack install to finish.")
+            System.exit(1); return
+        }
+    }
+}
+
+private fun renderLanguageBar(pct: Int) {
+    val clamped = pct.coerceIn(0, 100)
+    val width = 20
+    val filled = clamped * width / 100
+    val bar = "#".repeat(filled) + "-".repeat(width - filled)
+    print("\rInstalling [$bar] %3d%%".format(clamped))
     System.out.flush()
 }
 

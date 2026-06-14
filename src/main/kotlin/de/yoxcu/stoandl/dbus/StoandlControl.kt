@@ -117,4 +117,25 @@ interface StoandlControl : DBusInterface {
      *  flashing it. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once started (poll
      *  [FirmwareStatus]), `uptodate:`/`noasset:`/`busy:`, or `disabled:`/`notready:`/`error:`. */
     fun UpdateFirmware(): String
+
+    /** Install a local `.pbl` language pack (absolute [path]) onto the connected watch. The transfer
+     *  runs asynchronously; returns `ok:` once kicked off (poll [LanguageStatus]), or
+     *  `error:`/`notready:`. */
+    fun SideloadLanguage(path: String): String
+
+    /** List the catalog language packs available for the connected watch's board, system-locale
+     *  first. Each entry is tab-separated: `id \t isoLocal \t displayName \t installed(yes|no) \t
+     *  source(rebble|github)`. Empty list if no watch is connected or the catalog is empty. */
+    fun ListLanguages(): List<String>
+
+    /** Auto-pick a catalog pack for [query] (an ISO locale like `de_DE`/`de`, a language name, or a
+     *  catalog id; blank = the daemon's system locale), download it and install it. Returns
+     *  `ok:<displayName>` once kicked off (poll [LanguageStatus]), `notfound:`, `disabled:` (needs
+     *  `language.download = true`, opt-in egress), `notready:`, or `error:`. */
+    fun InstallLanguage(query: String): String
+
+    /** Current language-pack install state of the connected watch: `idle:`, `downloading:<name>`,
+     *  `installing:<percent>`, `done:<name>` (just finished), `failed:<reason>`, or `notready:`.
+     *  Poll this after [SideloadLanguage]/[InstallLanguage]. */
+    fun LanguageStatus(): String
 }

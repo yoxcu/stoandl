@@ -19,6 +19,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Syncs calendar events (and their reminders) to the watch's timeline as native pins — DE-agnostic (local `.ics`, iCal feeds or CalDAV), reusing the calendars your desktop already keeps where it can
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
 - Flashes watch firmware over BLE — a local `.pbz`, or (opt-in) the latest build for your watch's board straight from the PebbleOS GitHub releases, with an optional "update available" notification on the watch
+- Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -197,6 +198,25 @@ button. Core devices (Pebble 2 Duo / Pebble Time 2) only — classic Pebbles are
 > Pebble's recovery firmware, but flash on charger and keep the watch in range.
 
 → [docs/configuration.md#firmware-updates](docs/configuration.md#firmware-updates)
+
+## Language packs
+
+Install a firmware language pack onto the watch — changing its notification/UI language and loading the
+fonts a script needs (Cyrillic, CJK, Burmese, Hebrew, …). A local `.pbl` works offline; the built-in
+catalog (the official app's manifest, bundled) lets you pick one for your watch and download it.
+
+```sh
+stoandl language list                # packs for the connected watch (installed one marked *); the full catalog if none
+stoandl language sideload pack.pbl   # install a local .pbl (offline)
+stoandl language install de_DE       # pick from the catalog and download+install (needs language.download)
+stoandl language status              # current install state
+```
+
+`install` downloads from Rebble's CDN (or a community GitHub repo for packs like Japanese/Hebrew) — opt-in
+egress, off until you set `language.download = true`. `list` and `sideload` never touch the network.
+Core devices (Pebble 2 Duo / Time 2) share the Diorite (`silk`) packs; classic Pebbles use their own board.
+
+→ [docs/configuration.md#language-packs](docs/configuration.md#language-packs)
 
 ## Logging
 

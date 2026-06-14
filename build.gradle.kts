@@ -72,6 +72,46 @@ val generateVersionFile by tasks.registering {
 sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/version"))
 tasks.named("processResources") { dependsOn(generateVersionFile) }
 
+// Generate the language-pack catalog resource from the libpebble3 submodule's own manifest, so our
+// bundled copy can never drift from the fork. The official Core app embeds the catalog as a
+// triple-quoted JSON string (`LanguagePacksJson`) in LanguagePackRepository.kt — which lives in the
+// Compose `pebble` module stoandl doesn't depend on — so we extract that string verbatim at build
+// time into a classpath resource (read by de.yoxcu.stoandl.language.LanguagePackCatalog). Bumping the
+// submodule automatically refreshes the catalog; there's no hand-maintained copy to forget.
+val generateLanguagePackCatalog by tasks.registering {
+    val source = layout.projectDirectory.file(
+        "libs/libpebble3/pebble/src/commonMain/kotlin/coredevices/pebble/services/LanguagePackRepository.kt"
+    )
+    val outputDir = layout.buildDirectory.dir("generated/language")
+    inputs.file(source)
+    outputs.dir(outputDir)
+    doLast {
+        val src = source.asFile
+        require(src.isFile) {
+            "Language-pack source not found: ${src.path}\nRun: git submodule update --init --recursive"
+        }
+        val text = src.readText()
+        val marker = "LanguagePacksJson = \"\"\""
+        val start = text.indexOf(marker)
+        require(start >= 0) { "`$marker` not found in ${src.name} — has the fork's catalog moved or been renamed?" }
+        val from = start + marker.length
+        val end = text.indexOf("\"\"\"", from)
+        require(end >= 0) { "closing triple-quote for LanguagePacksJson not found in ${src.name}" }
+        // `.trimIndent()` mirrors what the Kotlin source itself does at runtime (`""".trimIndent()`).
+        val json = text.substring(from, end).trimIndent().trim()
+        require(json.startsWith("{") && json.contains("\"languages\"")) {
+            "Extracted language-pack JSON doesn't look right (no \"languages\" array) — check ${src.name}"
+        }
+        val out = outputDir.get().file("language-packs.json").asFile
+        out.parentFile.mkdirs()
+        out.writeText(json + "\n")
+        logger.lifecycle("Generated language-packs.json (${json.length} chars) from ${src.name}")
+    }
+}
+
+sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/language"))
+tasks.named("processResources") { dependsOn(generateLanguagePackCatalog) }
+
 // Note: the BecomeMonitor no-reply fix (DbusNotificationMonitor.kt) reflects into dbus-java
 // internals, but needs no `--add-opens`: the fat JAR runs on the classpath, where dbus-java is in
 // the unnamed module (no strong encapsulation). Passing those flags only triggered

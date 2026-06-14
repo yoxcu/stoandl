@@ -376,3 +376,53 @@ firmware lives on `cohorts.rebble.io`) and `firmware check` reports "no firmware
 
 `stoandl firmware status` prints the current state at any time (`idle`, `downloading`, `inprogress`,
 `reboot`, `failed`).
+
+## Language packs
+
+Install a firmware **language pack** (`.pbl`) onto the watch — this changes its notification/UI language
+and loads the fonts a script needs (Cyrillic, Simplified/Traditional Chinese, Japanese, Burmese, Hebrew,
+…). The transfer is libpebble3's (`installLanguagePack` → PutBytes, the same machinery as firmware/app
+sideload); stoandl drives it and shows progress.
+
+The packs come from a built-in **catalog** — the same manifest the official Core app ships, bundled with
+stoandl. See what's available with:
+
+```sh
+stoandl language list   # packs for your watch's board (installed one marked *), or the full catalog
+```
+
+With a watch connected, `list` shows the packs for its board — system locale first, the installed pack
+marked `*`, community packs tagged `[community]`. With **no** watch connected (or no daemon running) it
+falls back to the full bundled catalog — every locale and board, one row per language with the number of
+boards it covers — so you can browse what's available before pairing. This fallback is fully offline.
+
+Boards are matched the way the official app does: **Core devices (Pebble 2 Duo / Pebble Time 2) share the
+Diorite (`silk`) packs**, classic Pebbles use their own board revision (a Time Steel → `snowy_s3`, etc.).
+
+### Local sideload (no config, no network)
+
+```sh
+stoandl language sideload /path/to/pack.pbl
+```
+
+Installs a `.pbl` already on disk. Always available — no keys, no egress. The CLI shows a progress bar
+and reports when the install finishes.
+
+### Catalog install (opt-in egress)
+
+```sh
+stoandl language install de_DE     # by ISO locale (also: a name like "German", or a catalog id)
+stoandl language install           # no arg = the daemon's own system locale
+```
+
+Auto-picks the best catalog pack for your watch and **downloads** it (from Rebble's CDN
+`binaries.rebble.io`, or a community GitHub repo for packs like Japanese/Hebrew), then installs it. Off by
+default because it makes a network call:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `language.download` | `false` | Allow `language install` to download a `.pbl` from the catalog source and install it. (`language list` and `language sideload` never touch the network.) |
+
+To revert to English, install the watch's English pack (`stoandl language install en_US`, or sideload it).
+`stoandl language status` prints the current state at any time (`idle`, `downloading`, `installing`,
+`done`, `failed`).
