@@ -1252,7 +1252,9 @@ private class DbusNotificationListenerConnection(
  */
 // Per-app notification styling (set via `stoandl notif style`), applied to the outgoing notification
 // at send time — host-side, watch-visible, independent of any BlobDB app-sync.
-private val VIBE_PRESETS: Map<String, List<UInt>> = mapOf(
+// Named vibration presets (shared with the `notif styles` CLI listing). Each is an on/off-millisecond
+// pattern; perAppVibe also accepts a raw CSV of the same.
+internal val VIBE_PRESETS: Map<String, List<UInt>> = mapOf(
     "short" to listOf(120u),
     "long" to listOf(500u),
     "double" to listOf(100u, 100u, 100u),

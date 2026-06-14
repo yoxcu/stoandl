@@ -61,6 +61,7 @@ stoandl notif mute Discord 1h          # temporary mute (also 30m / 2d …); aut
 stoandl notif unmute Slack             # deliver again
 stoandl notif mute-all  / unmute-all   # apply to every tracked app
 stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
+stoandl notif styles                   # list every available colour, icon and vibe preset (offline)
 ```
 
 Quote multi-word app names. New apps default to `notification.default_mute` (`never` = deliver).
@@ -80,6 +81,9 @@ action menu.)
 name), and `--vibe` (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off milliseconds
 like `100,50,100`). These are applied **host-side at send time** to the outgoing notification, so they
 render on the watch with no sync. For each flag, `default` resets it; omitting it leaves it unchanged.
+Run **`stoandl notif styles`** to print the full list of accepted colours (64), icons (the `Notification*`
+app/messaging set plus the generic timeline icons) and vibe presets — it's generated from the enums, so
+it always matches what the daemon accepts, and needs no daemon or watch.
 
 **`notification.sync_to_watch`** (off by default) additionally pushes the list + mute states to the
 watch via libpebble3's `NotificationAppItem` BlobDB. It's off because current firmware has no per-app

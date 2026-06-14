@@ -21,6 +21,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
 import de.yoxcu.stoandl.language.LanguagePackCatalog
+import de.yoxcu.stoandl.pebble.VIBE_PRESETS
+import io.rebble.libpebblecommon.timeline.TimelineColor
+import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import java.io.File
@@ -130,6 +133,7 @@ private fun printUsage() {
     println("  notif unmute <app>         Deliver an app's notifications again")
     println("  notif mute-all|unmute-all [spec]   Apply a mute state to every tracked app")
     println("  notif style <app> [--color <c>] [--icon <i>] [--vibe <v>]   Per-app colour/icon/vibration")
+    println("  notif styles               List the available colours, icons and vibe presets (offline)")
     println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
     println("  logs [path]                Dump the watch's firmware logs to a text file (default: ./pebble-logs-<time>.txt)")
     println("  support [out.tar.gz]       Build a support bundle (watch logs + watch info + daemon log + config, secrets redacted)")
@@ -974,6 +978,9 @@ private fun renderFirmwareBar(pct: Int) {
 /** Dispatch `stoandl language ...`: `catalog`/`search` (offline), `list`/`sideload`/`install`/`status`. */
 private fun ctlNotif(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
+    // `styles` lists the available colours/icons/vibes — generated from the enums, fully offline
+    // (no daemon, no watch), so handle it before opening the control bus.
+    if (sub == "styles") { printNotifStyles(); return }
     val conn = connectDbusOrExit() ?: return
     try {
         val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
@@ -1004,7 +1011,7 @@ private fun ctlNotif(rest: List<String>) {
             "style" -> {
                 val query = rest.getOrNull(1)
                 if (query.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]  (use 'default' to reset)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]  (use 'default' to reset; 'stoandl notif styles' lists the choices)"); System.exit(1); return
                 }
                 val color = flagValue(rest, "--color") ?: ""
                 val icon = flagValue(rest, "--icon") ?: ""
@@ -1017,7 +1024,7 @@ private fun ctlNotif(rest: List<String>) {
                 })
             }
             else -> {
-                System.err.println("Usage: stoandl notif <list|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]>")
+                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]>")
                 System.exit(1)
             }
         }
@@ -1028,6 +1035,44 @@ private fun ctlNotif(rest: List<String>) {
 private fun flagValue(args: List<String>, flag: String): String? {
     val i = args.indexOf(flag)
     return if (i >= 0 && i + 1 < args.size) args[i + 1] else null
+}
+
+/** Print the per-app styling values (`notif style` choices). Generated from the libpebble3
+ *  `TimelineColor`/`TimelineIcon` enums + the shared vibe presets, so the listing can't drift from
+ *  what the daemon actually accepts. Fully offline — no daemon or watch needed. */
+private fun printNotifStyles() {
+    println("Per-app notification styling — set with:")
+    println("  stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]")
+    println("Names are case-insensitive; pass 'default' (or 'none'/'clear') for any flag to reset it.")
+    println()
+
+    println("Vibe presets (--vibe):")
+    VIBE_PRESETS.forEach { (name, pat) -> println("  %-8s %s ms".format(name, pat.joinToString(","))) }
+    println("  (or a custom CSV of on/off milliseconds, e.g. 100,50,100)")
+    println()
+
+    val colors = TimelineColor.entries.map { it.name }.sorted()
+    println("Colors (--color) — ${colors.size}:")
+    printColumns(colors)
+    println()
+
+    val (appIcons, otherIcons) = TimelineIcon.entries.map { it.name }.sorted()
+        .partition { it.startsWith("Notification") }
+    println("Icons (--icon) — app / messaging set (${appIcons.size}):")
+    printColumns(appIcons)
+    println()
+    println("Other icons (${otherIcons.size}):")
+    printColumns(otherIcons)
+}
+
+/** Print [items] wrapped into space-padded columns that fit within [width] characters. */
+private fun printColumns(items: List<String>, indent: String = "  ", width: Int = 100) {
+    if (items.isEmpty()) return
+    val colW = items.maxOf { it.length } + 2
+    val perRow = ((width - indent.length) / colW).coerceAtLeast(1)
+    items.chunked(perRow).forEach { row ->
+        println(indent + row.joinToString("") { it.padEnd(colW) }.trimEnd())
+    }
 }
 
 /** Render NotifList() rows (`name \t mute \t color \t icon \t vibe \t lastNotifiedEpoch`) as a table. */
