@@ -804,16 +804,18 @@ and **per-app styling** (5.189–5.191) need a watch but no sync. The opt-in Blo
 Core/PebbleOS firmware does not have — see 5.192.
 
 **Prerequisite:** daemon running; `notification.per_app = true` (default). Emit desktop notifications
-with `notify-send "<App>" "<msg>"` (the `<App>` becomes the app name). Verify drops in the log
+with `notify-send -a "<App>" "<summary>" "<msg>"` — the **`-a`/`--app-name`** flag is what sets the app
+name, which is the identity stoandl tracks; the summary/body are unrelated. (Without `-a`, `notify-send`
+sends an empty app name, so the app would be tracked as blank, not `<App>`.) Verify drops in the log
 (`Muted notification from <app>`) and on the watch.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.180 | Lazy-load | `notify-send "Element" "hi"`, then `stoandl notif list` | `Element` appears with mute `never` and a recent "last notified"; watch shows the notification. Log: `Tracking new notification app 'Element'`. |
-| 5.181 | Mute always | `stoandl notif mute Element`, then `notify-send "Element" "hi"` | No notification on the watch; `notif list` shows `Element … always`. Log: `Muted notification from Element (always)`. |
-| 5.182 | Unmute | `stoandl notif unmute Element`, then `notify-send "Element" "hi"` | Notification reaches the watch again; `notif list` shows `never`. |
-| 5.183 | Weekday/weekend schedule | `stoandl notif mute Slack weekdays` | On a Mon–Fri, a `Slack` notification is dropped; on Sat/Sun it's delivered (and vice-versa for `weekends`). `notif list` shows `weekdays`. |
-| 5.184 | Temporary mute | `stoandl notif mute Discord 1h`; notify → dropped; wait past expiry (or use `5s`) → notify | Dropped while active (`notif list` shows `muted-until …`); delivered again after expiry, with no manual unmute. |
+| 5.180 | Lazy-load | `notify-send -a Element "Element" "hi"`, then `stoandl notif list` | `Element` appears with mute `never` and a recent "last notified"; watch shows the notification. Log: `Tracking new notification app 'Element'`. |
+| 5.181 | Mute always | `stoandl notif mute Element`, then `notify-send -a Element "Element" "hi"` | No notification on the watch; `notif list` shows `Element … always`. Log: `Muted notification from Element (always)`. |
+| 5.182 | Unmute | `stoandl notif unmute Element`, then `notify-send -a Element "Element" "hi"` | Notification reaches the watch again; `notif list` shows `never`. |
+| 5.183 | Weekday/weekend schedule | `stoandl notif mute Slack weekdays`, then `notify-send -a Slack "Slack" "hi"` | On a Mon–Fri the `Slack` notification is dropped; on Sat/Sun it's delivered (and vice-versa for `weekends`). `notif list` shows `weekdays`. |
+| 5.184 | Temporary mute | `stoandl notif mute Discord 1h`; `notify-send -a Discord "Discord" "hi"` → dropped; wait past expiry (or use `5s`) → notify again | Dropped while active (`notif list` shows `muted-until …`); delivered again after expiry, with no manual unmute. |
 | 5.185 | Mute all / unmute all | `stoandl notif mute-all`, then `unmute-all` | All tracked apps flip to `always`, then back to `never`; `notif list` reflects both. |
 | 5.186 | Substring match errors | `stoandl notif mute zzz` (no match); a substring matching ≥2 apps | `notfound:`/`ambiguous:` status; nothing changed. |
 | 5.187 | Persistence | mute an app, `systemctl --user restart stoandl`, `stoandl notif list` | Mute state survives the restart (Room store). |
