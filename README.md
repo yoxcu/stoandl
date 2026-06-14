@@ -23,6 +23,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
 - Resets the watch over BLE — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
+- Reads the watch's battery level — `stoandl battery`, and inline in `stoandl list`
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -82,7 +83,8 @@ just confirm the code on the watch. Subsequent reconnects are automatic.
 
 ```sh
 stoandl pair                 # pair a new watch (opens a ~2 min window)
-stoandl list                 # known watches and their connection state
+stoandl list                 # known watches, their connection state and battery level
+stoandl battery              # the connected watch's battery level
 stoandl repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
 stoandl unpair               # forget the watch on this host (e.g. moving it elsewhere)
 ```

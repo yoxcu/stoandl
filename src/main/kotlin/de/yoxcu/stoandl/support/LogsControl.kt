@@ -79,7 +79,7 @@ class LogsControl(
     fun watchInfoText(): String {
         libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
-        return "ok:${formatWatchInfo(dev.watchInfo)}"
+        return "ok:${formatWatchInfo(dev.watchInfo, dev.batteryLevel)}"
     }
 
     /** Copy a libpebble3 temp file onto the caller's target path, creating parent dirs. */
@@ -89,10 +89,11 @@ class LogsControl(
         File(srcPath).copyTo(dest, overwrite = true)
     }
 
-    private fun formatWatchInfo(w: WatchInfo): String = buildString {
+    private fun formatWatchInfo(w: WatchInfo, batteryLevel: Int?): String = buildString {
         appendLine("Model:           ${w.color.uiDescription} (${w.color.jsName})")
         appendLine("Platform:        ${w.platform.watchType.codename} [${w.platform.name}]")
         appendLine("Board:           ${w.platform.revision}")
+        appendLine("Battery:         ${batteryLevel?.let { "$it%" } ?: "—"}")
         appendLine("Firmware:        ${w.runningFwVersion.stringVersion}")
         appendLine("Recovery FW:     ${w.recoveryFwVersion?.stringVersion ?: "—"}")
         appendLine("Serial:          ${w.serial}")

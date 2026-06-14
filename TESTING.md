@@ -853,6 +853,26 @@ network can install apps and relay protocol traffic to the watch. Off by default
 
 ---
 
+## 5.20 Battery level read-out  ⚠️ UNVERIFIED (needs a watch)
+
+Surfaces the connected watch's battery level (`ConnectedPebble.Battery.batteryLevel` — the standard BLE
+Battery Service `0x180F` / level characteristic `0x2A19` libpebble3 subscribes to). Read-only,
+local-only, no config, no egress. Surfaced three ways: the dedicated `stoandl battery` command, a trailing
+`NN%` on each connected watch's `stoandl list` line, and a `Battery:` line in the watch-info block of the
+`stoandl support` bundle.
+
+**Prerequisite:** daemon running, a connected watch.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.200 | Dedicated command | connect a watch, `stoandl battery` | Prints `<watch name>: NN%`. With no watch connected: `No watch connected` (non-zero exit). |
+| 5.201 | List shows level | connect a watch, `stoandl list` | The connected watch's line ends with its battery percentage, e.g. `  Pebble Time 2          connected     87%`. |
+| 5.202 | Disconnected shows none | `stoandl list` with a known-but-disconnected watch | That watch's line shows the state but **no** percentage (battery is only read on a live connection). |
+| 5.203 | Reflects a change | let the watch charge/drain (or toggle on the watch), then `stoandl list` again | The reported percentage tracks the watch (libpebble3 also pushes level-change notifications, so it updates without a reconnect). |
+| 5.204 | Support bundle | `stoandl support`, then inspect the watch-info file in the bundle | Contains a `Battery:  NN%` line (or `—` if unavailable). |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

@@ -1749,6 +1749,14 @@ private class StoandlControlImpl(
         return logsControl.getCoreDump(path)
     }
 
+    override fun Battery(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+            ?: return "notready:No watch connected"
+        val level = dev.batteryLevel ?: return "unknown:${dev.displayName()}"
+        return "ok:${dev.displayName()}\t$level"
+    }
+
     override fun WatchInfoText(): String = logsControl.watchInfoText()
 
     override fun FactoryReset(): String {
@@ -2153,7 +2161,9 @@ private class StoandlControlImpl(
                 is ConnectingPebbleDevice -> "connecting"
                 else -> "disconnected"
             }
-            "${d.displayName()}\t$state"
+            // batteryLevel is only meaningful (and reachable) on a live connection.
+            val battery = (d as? ConnectedPebbleDevice)?.batteryLevel?.toString() ?: ""
+            "${d.displayName()}\t$state\t$battery"
         }
     }
 }

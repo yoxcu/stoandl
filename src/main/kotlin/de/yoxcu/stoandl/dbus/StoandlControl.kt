@@ -94,9 +94,14 @@ interface StoandlControl : DBusInterface {
      *  `ok:` immediately; poll [PairStatus] for the outcome. */
     fun Repair(watch: String): String
 
-    /** List known watches, one per entry, tab-separated `name\tstate` (state: connected / connecting /
-     *  disconnected). Empty list if none are known. */
+    /** List known watches, one per entry, tab-separated `name\tstate\tbattery` (state: connected /
+     *  connecting / disconnected; battery is the 0–100 level for a connected watch, else empty).
+     *  Empty list if none are known. */
     fun ListWatches(): List<String>
+
+    /** The connected watch's battery level. Status-prefixed: `ok:<name>\t<level>` (0–100),
+     *  `unknown:<name>` (connected but no reading yet), or `notready:<msg>` (no watch). */
+    fun Battery(): String
 
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or

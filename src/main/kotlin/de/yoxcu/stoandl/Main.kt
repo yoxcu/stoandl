@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -109,6 +109,7 @@ private fun printUsage() {
     println("  unpair                     Forget the watch on this host (use after moving it to another device)")
     println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
     println("  list                       List known watches and their connection state")
+    println("  battery                    Show the connected watch's battery level")
     println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
     println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
     println("  firmware <file.pbz>        Flash a local firmware bundle onto the watch (shows progress)")
@@ -390,11 +391,33 @@ private fun ctl(args: Array<String>) {
                 } else {
                     watches.forEach { entry ->
                         val parts = entry.split('\t')
-                        println("  %-24s %s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }))
+                        val battery = parts.getOrElse(2) { "" }
+                        val batteryStr = if (battery.isNotBlank()) "  ${battery}%" else ""
+                        println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, batteryStr))
                     }
                 }
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "battery" -> {
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                val resp = try { control.Battery() } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+                val (kind, body) = splitStatus(resp)
+                when (kind) {
+                    "ok" -> {
+                        val f = body.split('\t')
+                        println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" }))
+                    }
+                    "unknown" -> println("$body: battery level not available yet")
+                    else -> handleStatusResponse(resp)
+                }
             } finally {
                 conn.disconnect()
             }
