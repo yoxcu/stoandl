@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -119,6 +119,11 @@ private fun printUsage() {
     println("  language sideload <file.pbl>   Install a local language pack onto the watch")
     println("  language install <locale>  Download+install a pack (e.g. de_DE; needs language.download)")
     println("  language status            Show the current language-pack install state")
+    println("  notif [list]               List tracked notification apps and their mute state")
+    println("  notif mute <app> [spec]    Mute an app: always|weekdays|weekends or a duration (1h/30m/2d)")
+    println("  notif unmute <app>         Deliver an app's notifications again")
+    println("  notif mute-all|unmute-all [spec]   Apply a mute state to every tracked app")
+    println("  notif style <app> [--color <c>] [--icon <i>] [--vibe <v>]   Per-app colour/icon/vibration")
     println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
     println("  logs [path]                Dump the watch's firmware logs to a text file (default: ./pebble-logs-<time>.txt)")
     println("  support [out.tar.gz]       Build a support bundle (watch logs + watch info + daemon log + config, secrets redacted)")
@@ -182,6 +187,7 @@ private fun ctl(args: Array<String>) {
         }
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
+        "notif" -> ctlNotif(args.drop(1))
         "apps" -> {
             val conn = connectDbusOrExit() ?: return
             try {
@@ -819,6 +825,100 @@ private fun renderFirmwareBar(pct: Int) {
 }
 
 /** Dispatch `stoandl language ...`: `catalog`/`search` (offline), `list`/`sideload`/`install`/`status`. */
+private fun ctlNotif(rest: List<String>) {
+    val sub = rest.firstOrNull() ?: "list"
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        when (sub) {
+            "list" -> {
+                val rows = try { control.NotifList() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                printNotifList(rows)
+            }
+            // Quote multi-word app names: `stoandl notif mute "My App" 1h`.
+            "mute", "unmute" -> {
+                val query = rest.getOrNull(1)
+                if (query.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl notif $sub <app>" + if (sub == "mute") " [always|weekdays|weekends|<1h|30m|2d>]" else ""); System.exit(1); return
+                }
+                val spec = if (sub == "unmute") "never" else rest.getOrNull(2) ?: "always"
+                handleStatusResponse(try { control.NotifSetMute(query, spec) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            "mute-all", "unmute-all" -> {
+                val spec = if (sub == "unmute-all") "never" else rest.getOrNull(1) ?: "always"
+                handleStatusResponse(try { control.NotifSetMuteAll(spec) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            "style" -> {
+                val query = rest.getOrNull(1)
+                if (query.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]  (use 'default' to reset)"); System.exit(1); return
+                }
+                val color = flagValue(rest, "--color") ?: ""
+                val icon = flagValue(rest, "--icon") ?: ""
+                val vibe = flagValue(rest, "--vibe") ?: ""
+                if (color.isEmpty() && icon.isEmpty() && vibe.isEmpty()) {
+                    System.err.println("Nothing to set: pass --color <name>, --icon <name> and/or --vibe <preset|ms,ms,…>"); System.exit(1); return
+                }
+                handleStatusResponse(try { control.NotifSetStyle(query, color, icon, vibe) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            else -> {
+                System.err.println("Usage: stoandl notif <list|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]>")
+                System.exit(1)
+            }
+        }
+    } finally { conn.disconnect() }
+}
+
+/** Value following [flag] in [args], or null if the flag is absent or has no following token. */
+private fun flagValue(args: List<String>, flag: String): String? {
+    val i = args.indexOf(flag)
+    return if (i >= 0 && i + 1 < args.size) args[i + 1] else null
+}
+
+/** Render NotifList() rows (`name \t mute \t color \t icon \t vibe \t lastNotifiedEpoch`) as a table. */
+private fun printNotifList(rows: List<String>) {
+    if (rows.isEmpty()) {
+        println("No notification apps tracked yet — they're added as desktop apps notify (needs notification.per_app = true).")
+        return
+    }
+    val fmt = "%-22s %-13s %-10s %-18s %-8s %s"
+    println(fmt.format("APP", "MUTE", "COLOR", "ICON", "VIBE", "LAST"))
+    rows.sortedBy { it.substringBefore('\t').lowercase() }.forEach { rec ->
+        val f = rec.split('\t')
+        val name = f.getOrElse(0) { "" }
+        val mute = f.getOrElse(1) { "" }
+        val color = f.getOrElse(2) { "" }.ifEmpty { "—" }
+        // TimelineIcon enum names are long and all share a "Notification" prefix — strip it to fit.
+        val icon = f.getOrElse(3) { "" }.ifEmpty { "—" }.removePrefix("Notification")
+        val vibe = f.getOrElse(4) { "" }.ifEmpty { "—" }
+        val epoch = f.getOrElse(5) { "0" }.toLongOrNull() ?: 0L
+        println(fmt.format(name.take(22), mute, color.take(10), icon.take(18), vibe.take(8), relativeAge(epoch)))
+    }
+    println()
+    println("  Mute:   stoandl notif mute <app> [always|weekdays|weekends|1h|2d]")
+    println("  Style:  stoandl notif style <app> [--color <c>] [--icon <i>] [--vibe <v>]")
+}
+
+private fun relativeAge(epochSeconds: Long): String {
+    if (epochSeconds <= 0) return "—"
+    val d = java.time.Instant.now().epochSecond - epochSeconds
+    return when {
+        d < 0 -> "just now"
+        d < 60 -> "${d}s ago"
+        d < 3600 -> "${d / 60}m ago"
+        d < 86_400 -> "${d / 3600}h ago"
+        else -> "${d / 86_400}d ago"
+    }
+}
+
 private fun ctlLanguage(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
     // `list` is resilient: it shows the watch's packs when the daemon+watch are there, and otherwise
@@ -1105,7 +1205,7 @@ private fun printWatchPrefs(records: List<String>, filter: String?) {
 }
 
 /** stoandl's data directory: locker DB, pbw cache and PKJS settings all live here. */
-private fun configDir(): File = File(System.getProperty("user.home"), ".config/stoandl")
+private fun configDir(): File = de.yoxcu.stoandl.config.StoandlConfig.configDir()
 
 private fun timestamp(): String = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
 

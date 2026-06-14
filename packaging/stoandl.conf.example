@@ -4,11 +4,19 @@
 # and restart the service:  systemctl --user restart stoandl
 #
 # Syntax: `key = value`, `#` starts a comment. List values are comma-separated.
-# All matching is case-insensitive substring matching against the notification app name.
 
-# Apps whose notifications are never forwarded to the watch.
-# Example: notification.blocklist = KDE Connect, Spotify, org.kde.discover.notifier
-notification.blocklist =
+# Per-app mute store. When on, every desktop app that notifies is tracked and its mute state is
+# enforced host-side before sending (the notification is dropped before it crosses BLE). Manage it at
+# runtime with `stoandl notif` (list / mute <app> [always|weekdays|weekends|1h|2d] / unmute /
+# mute-all / style), or with the "Mute" action on a notification on the watch. On by default.
+notification.per_app = true
+# Mute state applied to a newly observed app: never (deliver), always (mute), weekdays, or weekends.
+notification.default_mute = never
+# Sync the per-app list + mute states to the watch (libpebble3 NotificationAppItem -> BlobDB).
+# OFF by default: current Core/PebbleOS firmware has no per-app notification UI on the watch
+# (Settings->Notifications is global-only), so the synced records surface nowhere — mute is
+# enforced host-side regardless. Opt-in for firmware that does surface it. BLE-only, no web egress.
+notification.sync_to_watch = false
 
 # Telephony/dialer apps. Their notifications are suppressed from the watch (the native call
 # screen replaces them), and their notification title is used as a fallback caller name when

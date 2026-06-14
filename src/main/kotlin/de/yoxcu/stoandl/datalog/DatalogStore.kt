@@ -80,7 +80,7 @@ class DatalogStore(
     }
 
     companion object {
-        fun defaultDir(): File = File(System.getProperty("user.home"), ".config/stoandl/datalog")
+        fun defaultDir(): File = File(de.yoxcu.stoandl.config.StoandlConfig.configDir(), "datalog")
 
         /** Split a SendDataItems payload into fixed [itemSize] chunks; a non-multiple tail is kept
          *  as a final short item rather than dropped (so nothing is silently lost). */

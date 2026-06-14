@@ -13,8 +13,21 @@ private val log = KotlinLogging.logger {}
  * Editing the file requires a daemon restart to take effect.
  */
 data class StoandlConfig(
-    /** App-name substrings (case-insensitive) whose notifications are never forwarded to the watch. */
-    val notificationBlocklist: List<String>,
+    /** Track every observed desktop app in a per-app store and enforce per-app mute state host-side
+     *  (drop before send) before a notification reaches the watch. Apps are lazy-added the first time
+     *  they notify, with [notificationDefaultMute]. On by default; control per app via `stoandl notif`
+     *  (or the "Mute" action on a notification on the watch). Local-only. */
+    val notificationPerApp: Boolean,
+    /** Mute state applied to a newly observed app: `never` (deliver), `always` (mute), or the
+     *  day-of-week schedules `weekdays`/`weekends`. */
+    val notificationDefaultMute: String,
+    /** Sync the per-app list + mute states to the watch (libpebble3's `NotificationAppItem` →
+     *  BlobDB). **Off by default**: current Core/PebbleOS firmware exposes no per-app notification
+     *  UI on the watch (Settings→Notifications is global-only, and notifications carry no per-app
+     *  "Mute" action), so the synced records surface nowhere — mute is enforced host-side regardless.
+     *  Kept as an opt-in for firmware that does surface it (the official Core phone app pushes the
+     *  same records). BLE-only, no web egress. */
+    val notificationSyncToWatch: Boolean,
     /** Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the
      *  native call screen replaces them) and their title is used as a fallback caller name. */
     val dialerApps: List<String>,
@@ -121,8 +134,12 @@ data class StoandlConfig(
         private const val DEFAULT_CALENDAR_INTERVAL_MINUTES = 30L
         private const val DEFAULT_FIRMWARE_GITHUB_REPO = "coredevices/PebbleOS"
 
+        private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
+
         private fun defaults() = StoandlConfig(
-            notificationBlocklist = emptyList(),
+            notificationPerApp = true,
+            notificationDefaultMute = "never",
+            notificationSyncToWatch = false,
             dialerApps = DEFAULT_DIALER_APPS,
             vcardPaths = emptyList(),
             weatherLocations = emptyList(),
@@ -154,11 +171,18 @@ data class StoandlConfig(
             languageDownload = false,
         )
 
-        fun configFile(): File {
+        /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
+         *  Holds `stoandl.conf`, the libpebble3 store (`libpebble3.db`), datalog, backups, etc. —
+         *  the single source of truth for where everything lives. The libpebble3 fork resolves the
+         *  same path independently (`stoandlConfigDir()`), so an `XDG_CONFIG_HOME` override moves
+         *  the config and the daemon's stores together. */
+        fun configDir(): File {
             val xdg = System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() }
             val base = xdg ?: (System.getProperty("user.home") + "/.config")
-            return File("$base/stoandl/stoandl.conf")
+            return File(base, "stoandl")
         }
+
+        fun configFile(): File = File(configDir(), "stoandl.conf")
 
         fun load(file: File = configFile()): StoandlConfig {
             if (!file.isFile) {
@@ -180,7 +204,9 @@ data class StoandlConfig(
                 map[key]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: default
 
             val cfg = StoandlConfig(
-                notificationBlocklist = list("notification.blocklist"),
+                notificationPerApp = map["notification.per_app"]?.let { parseBool(it) } ?: true,
+                notificationDefaultMute = parseDefaultMute(map["notification.default_mute"]),
+                notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
                 vcardPaths = list("contacts.vcard_paths").map(::expandTilde),
                 weatherLocations = parseWeatherLocations(list("weather.locations")),
@@ -222,7 +248,9 @@ data class StoandlConfig(
                 languageDownload = parseBool(map["language.download"]),
             )
             log.info {
-                "Config loaded from ${file.path}: blocklist=${cfg.notificationBlocklist}, " +
+                "Config loaded from ${file.path}: " +
+                    "perApp=${cfg.notificationPerApp}, defaultMute=${cfg.notificationDefaultMute}, " +
+                    "syncToWatch=${cfg.notificationSyncToWatch}, " +
                     "dialerApps=${cfg.dialerApps}, vcardPaths=${cfg.vcardPaths}, " +
                     "weatherLocations=${cfg.weatherLocations.map { it.name }}, " +
                     "weatherUnits=${cfg.weatherUnits}, weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
@@ -273,6 +301,15 @@ data class StoandlConfig(
 
         private fun parseBool(raw: String?): Boolean =
             raw?.trim()?.lowercase() in setOf("true", "yes", "1", "on")
+
+        private fun parseDefaultMute(raw: String?): String = when (val v = raw?.trim()?.lowercase()) {
+            null, "" -> "never"
+            in MUTE_STATES -> v
+            else -> {
+                log.warn { "Unknown notification.default_mute '$raw'; defaulting to never" }
+                "never"
+            }
+        }
 
         private fun parseMusicVolume(raw: String?): MusicVolumeMode = when (raw?.trim()?.lowercase()) {
             null, "", "system", "master" -> MusicVolumeMode.SYSTEM

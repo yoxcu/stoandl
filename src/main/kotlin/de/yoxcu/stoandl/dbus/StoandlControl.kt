@@ -166,4 +166,24 @@ interface StoandlControl : DBusInterface {
      *  firmware (reflash from PRF with `firmware`). Fire-and-forget (the link drops as the watch
      *  reboots). Returns `ok:<msg>`, `notready:<msg>`, or `error:<msg>`. */
     fun ResetIntoRecovery(): String
+
+    /** List the per-app notification store (apps lazy-tracked as they notify). Each entry is
+     *  tab-separated: `name \t muteLabel \t lastNotifiedEpochSeconds` (muteLabel is one of
+     *  `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`). Empty if per-app
+     *  notifications are disabled or no app has notified yet. */
+    fun NotifList(): List<String>
+
+    /** Set the mute state for the app matching [query] (substring of name/package). [spec] is
+     *  `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`) for a temporary mute.
+     *  Status-prefixed return (`ok:`/`notfound:`/`ambiguous:`/`error:`). */
+    fun NotifSetMute(query: String, spec: String): String
+
+    /** Apply [spec] (same grammar as [NotifSetMute]) to every tracked app. Status-prefixed return. */
+    fun NotifSetMuteAll(spec: String): String
+
+    /** Set per-app notification styling for the app matching [query], applied host-side to its
+     *  outgoing notifications: [color] (a TimelineColor name), [icon] (a TimelineIcon enum name), and
+     *  [vibe] (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off ms). For each
+     *  value: empty = leave unchanged; `default` = reset. Status-prefixed return. */
+    fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
 }

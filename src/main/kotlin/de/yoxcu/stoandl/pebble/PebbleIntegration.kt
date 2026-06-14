@@ -14,6 +14,7 @@ import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
+import de.yoxcu.stoandl.notification.NotificationAppsControl
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.datalog.DatalogStore
@@ -51,9 +52,16 @@ import io.rebble.libpebblecommon.connection.WatchConnector
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
+import io.rebble.libpebblecommon.database.asMillisecond
+import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
 import io.rebble.libpebblecommon.database.entity.BaseAction
+import io.rebble.libpebblecommon.database.entity.MuteState
+import io.rebble.libpebblecommon.database.entity.NotificationAppItem
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
+import io.rebble.libpebblecommon.di.PlatformConfig
 import io.rebble.libpebblecommon.di.initKoin
+import io.rebble.libpebblecommon.timeline.TimelineColor
+import io.rebble.libpebblecommon.timeline.toPebbleColor
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
@@ -179,6 +187,8 @@ class PebbleIntegration(
     private lateinit var screenshotControl: ScreenshotControl
     private lateinit var logsControl: LogsControl
     private lateinit var debugControl: DebugControl
+    // Null when notification.per_app is off (no store to manage).
+    private var notificationAppsControl: NotificationAppsControl? = null
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
@@ -222,6 +232,9 @@ class PebbleIntegration(
         // Shared map: watch-side timeline item UUID → daemon-assigned D-Bus notification ID.
         // Populated by DbusNotificationListenerConnection; consumed by DbusNotificationActionHandler.
         val itemIdToDbusId = ConcurrentHashMap<Uuid, UInt32>()
+        // watch-item UUID → app package, shared by the listener (populated when a notification with a
+        // "Mute" action is sent) and the action handler (consumed when the watch invokes that action).
+        val itemIdToMutePkg = ConcurrentHashMap<Uuid, String>()
 
         // Build the Linux calendar source from config (null if nothing is configured). libpebble3's
         // PhoneCalendarSyncer reads it and handles all pin creation/diffing/deletion itself.
@@ -233,18 +246,28 @@ class PebbleIntegration(
         koin.loadModules(listOf(module {
             single<NotificationListenerConnection> {
                 DbusNotificationListenerConnection(
-                    notificationFlow, scope, itemIdToDbusId,
-                    blocklist = config.notificationBlocklist,
+                    notificationFlow, scope, itemIdToDbusId, itemIdToMutePkg,
                     dialerApps = config.dialerApps,
                     dialerNameCache = dialerNameCache,
+                    notifAppDao = if (config.notificationPerApp) get<NotificationAppRealDao>() else null,
+                    defaultMute = parseMuteState(config.notificationDefaultMute),
                 )
             }
+            // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
+            // write-back). Overrides the JVM module's PlatformConfig(syncNotificationApps = false),
+            // which otherwise keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
+            if (config.notificationSyncToWatch) single { PlatformConfig(syncNotificationApps = true) }
             single { BleConfigFlow(MutableStateFlow(bleConfig)) }
             // Handle watch-side notification actions: a Dismiss on the watch marks the item read AND
             // closes the originating desktop notification over D-Bus (CloseNotification). Without this
             // binding the JVM module's no-op handler runs and watch→desktop dismiss silently does
             // nothing. (Don't drop this line — it was once clobbered by an unrelated refactor.)
-            single<PlatformNotificationActionHandler> { DbusNotificationActionHandler(itemIdToDbusId, libPebbleRef) }
+            single<PlatformNotificationActionHandler> {
+                DbusNotificationActionHandler(
+                    itemIdToDbusId, itemIdToMutePkg, libPebbleRef,
+                    notifAppDao = if (config.notificationPerApp) get<NotificationAppRealDao>() else null,
+                )
+            }
             // Replace the no-op JVM TimeChanged with a systemd-timedated watcher so a host timezone
             // change while the watch stays connected re-pushes the clock (SetUTC). Without this the
             // watch only learns the time at connect (the negotiator's updateTime()).
@@ -290,6 +313,7 @@ class PebbleIntegration(
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
+        if (config.notificationPerApp) notificationAppsControl = NotificationAppsControl(koin.get())
         watchConnector = koin.get()
         watchBluetoothPowerState()
         libPebble.init()
@@ -991,7 +1015,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, notificationAppsControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1046,9 +1070,15 @@ private class DbusNotificationListenerConnection(
     private val notificationFlow: Flow<IncomingNotification>,
     private val scope: CoroutineScope,
     private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
-    private val blocklist: List<String>,
+    // watch-item UUID → app package, so a wrist "Mute" action knows which app to mute.
+    private val itemIdToMutePkg: ConcurrentHashMap<Uuid, String>,
     private val dialerApps: List<String>,
     private val dialerNameCache: DialerNameCache,
+    // Per-app mute store. Apps are lazy-added the first time they notify; mute state is enforced
+    // host-side (drop before send) here, and each forwarded notification carries a "Mute" action so
+    // it can also be muted from the wrist (write-back into this same DAO).
+    private val notifAppDao: NotificationAppRealDao?,
+    private val defaultMute: MuteState,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
@@ -1064,11 +1094,44 @@ private class DbusNotificationListenerConnection(
                     log.info { "Suppressed dialer notification from ${notification.appName} (name='${notification.summary}')" }
                     return@collect
                 }
-                if (blocklist.any { appLower.contains(it.lowercase()) }) {
-                    log.info { "Filtered notification from ${notification.appName} (blocklist)" }
-                    return@collect
+                // Per-app store: lazy-add the app, refresh lastNotified, and enforce its mute state
+                // host-side. The appName is the app identity on Linux (no package ids).
+                val dao = notifAppDao
+                var trackedApp: NotificationAppItem? = null
+                if (dao != null && notification.appName.isNotBlank()) {
+                    val pkg = notification.appName
+                    val now = Clock.System.now()
+                    val existing = dao.getEntry(pkg)
+                    val entry = if (existing == null) {
+                        val created = NotificationAppItem(
+                            packageName = pkg,
+                            name = notification.appName,
+                            muteState = defaultMute,
+                            channelGroups = emptyList(),
+                            stateUpdated = now.asMillisecond(),
+                            lastNotified = now.asMillisecond(),
+                            muteExpiration = null,
+                            vibePatternName = null,
+                            colorName = null,
+                            iconCode = null,
+                        )
+                        dao.insertOrReplace(created)
+                        log.info { "Tracking new notification app '${notification.appName}' (default mute=${defaultMute.name.lowercase()})" }
+                        created
+                    } else {
+                        dao.insertOrReplace(existing.copy(lastNotified = now.asMillisecond()))
+                        existing
+                    }
+                    if (isMutedNow(entry, now)) {
+                        log.info { "Muted notification from ${notification.appName} (${entry.muteState.name.lowercase()})" }
+                        return@collect
+                    }
+                    trackedApp = entry
                 }
                 try {
+                    // Captured as a val so the per-app overrides + the Mute action smart-cast inside
+                    // the builder lambdas. Null when per-app tracking is off.
+                    val app = trackedApp
                     val timelineNotification = buildTimelineNotification(
                         // Pin to the same parent UUID the official Android app uses for phone
                         // notifications. The firmware keys "dismiss should round-trip to the phone"
@@ -1081,21 +1144,88 @@ private class DbusNotificationListenerConnection(
                             title { notification.summary }
                             if (notification.body.isNotEmpty()) body { notification.body }
                             if (notification.appName.isNotEmpty()) subtitle { notification.appName }
-                            tinyIcon { iconForApp(notification.appName) }
+                            // Per-app overrides (set via `notif style`) fall back to the app-name icon.
+                            tinyIcon { perAppIcon(app?.iconCode, notification.appName) }
+                            perAppColor(app?.colorName)?.let { c -> backgroundColor { c.toPebbleColor() } }
+                            perAppVibe(app?.vibePatternName)?.let { v -> vibrationPattern { v } }
                         }
                         actions {
                             action(TimelineItem.Action.Type.Dismiss) {
                                 attributes { title { "Dismiss" } }
                             }
+                            // "Mute <app>" — same mechanism the official Android app uses: a Generic
+                            // timeline action the watch surfaces in the notification's action menu.
+                            // On press it round-trips back (handled in DbusNotificationActionHandler)
+                            // and mutes host-side. Needs no BlobDB app-sync.
+                            if (app != null) {
+                                action(TimelineItem.Action.Type.Generic) {
+                                    attributes { title { "Mute ${app.name}" } }
+                                }
+                            }
                         }
                     }
                     itemIdToDbusId[timelineNotification.itemId] = notification.id
+                    if (app != null) itemIdToMutePkg[timelineNotification.itemId] = app.packageName
                     libPebble.sendNotification(timelineNotification)
                     log.info { "Notification queued for watch: ${notification.appName} – ${notification.summary}" }
                 } catch (e: Exception) {
                     log.warn(e) { "Failed to send notification to watch" }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Host-side mute decision for a tracked app, mirroring the relevant parts of libpebble3's
+ * Android `decideNotification`. A temporary mute ([NotificationAppItem.muteExpiration], set by
+ * `notif mute <app> 1h`) takes precedence: muted until it expires, then delivered. Otherwise the
+ * [MuteState] applies — `Always` mutes, `Never`/`Exempt` deliver, and `Weekdays`/`Weekends` are
+ * day-of-week bitmasks (bit i = day, Sunday=0) tested against the host's current local day.
+ */
+// Per-app notification styling (set via `stoandl notif style`), applied to the outgoing notification
+// at send time — host-side, watch-visible, independent of any BlobDB app-sync.
+private val VIBE_PRESETS: Map<String, List<UInt>> = mapOf(
+    "short" to listOf(120u),
+    "long" to listOf(500u),
+    "double" to listOf(100u, 100u, 100u),
+    "triple" to listOf(80u, 80u, 80u, 80u, 80u),
+    "pulse" to listOf(60u, 140u, 60u, 140u, 60u),
+)
+
+private fun perAppColor(name: String?): TimelineColor? = name?.let { TimelineColor.findByName(it) }
+
+private fun perAppIcon(code: String?, appName: String): TimelineIcon {
+    if (code != null) {
+        TimelineIcon.entries.firstOrNull { it.name.equals(code, ignoreCase = true) }?.let { return it }
+        TimelineIcon.fromCode(code)?.let { return it }
+    }
+    return iconForApp(appName)
+}
+
+/** A named preset (`short`/`double`/…) or a raw CSV of on/off millisecond durations (`100,50,100`). */
+private fun perAppVibe(spec: String?): List<UInt>? {
+    if (spec == null) return null
+    VIBE_PRESETS[spec.lowercase()]?.let { return it }
+    return spec.split(',').mapNotNull { it.trim().toUIntOrNull() }.takeIf { it.isNotEmpty() }
+}
+
+private fun parseMuteState(s: String): MuteState = when (s.lowercase()) {
+    "always" -> MuteState.Always
+    "weekdays" -> MuteState.Weekdays
+    "weekends" -> MuteState.Weekends
+    else -> MuteState.Never
+}
+
+private fun isMutedNow(item: NotificationAppItem, now: kotlin.time.Instant): Boolean {
+    item.muteExpiration?.let { return it.instant > now }
+    return when (item.muteState) {
+        MuteState.Always -> true
+        MuteState.Never, MuteState.Exempt -> false
+        MuteState.Weekdays, MuteState.Weekends -> {
+            // java.time DayOfWeek: Mon=1..Sun=7; %7 maps to the firmware's Sunday=0 indexing.
+            val sundayZero = java.time.LocalDate.now().dayOfWeek.value % 7
+            (item.muteState.value.toInt() and (1 shl sundayZero)) != 0
         }
     }
 }
@@ -1117,7 +1247,9 @@ private object NoOpTokenProvider : TokenProvider {
 
 private class DbusNotificationActionHandler(
     private val itemIdToDbusId: ConcurrentHashMap<Uuid, UInt32>,
+    private val itemIdToMutePkg: ConcurrentHashMap<Uuid, String>,
     private val libPebbleRef: AtomicReference<LibPebble?>,
+    private val notifAppDao: NotificationAppRealDao?,
 ) : PlatformNotificationActionHandler {
     private val log = KotlinLogging.logger {}
     @Volatile private var dbusConn: DBusConnection? = null
@@ -1168,6 +1300,20 @@ private class DbusNotificationActionHandler(
                     log.warn { "No D-Bus ID found for watch item $itemId — desktop notification not closed" }
                 }
                 TimelineActionResult(true, TimelineIcon.ResultDismissed, "Dismissed")
+            }
+            // "Mute <app>" — the only Generic action we attach. Mute the app host-side; the desktop
+            // notification is left alone (mute ≠ dismiss). `stoandl notif unmute <app>` reverses it.
+            TimelineItem.Action.Type.Generic -> {
+                val pkg = itemIdToMutePkg[itemId]
+                val dao = notifAppDao
+                if (pkg != null && dao != null) {
+                    dao.updateAppMuteState(pkg, MuteState.Always)
+                    log.info { "Muted '$pkg' from watch action" }
+                    TimelineActionResult(true, TimelineIcon.ResultMute, "Muted")
+                } else {
+                    log.info { "Generic action on $itemId with no mute mapping" }
+                    TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
+                }
             }
             else -> {
                 log.info { "Unhandled watch action type ${action.type} on $itemId" }
@@ -1423,6 +1569,8 @@ private class StoandlControlImpl(
     private val screenshotControl: ScreenshotControl,
     private val logsControl: LogsControl,
     private val debugControl: DebugControl,
+    // Null when notification.per_app is off.
+    private val notificationAppsControl: NotificationAppsControl?,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1580,6 +1728,21 @@ private class StoandlControlImpl(
         log.info { "ResetIntoRecovery requested" }
         return debugControl.resetIntoRecovery()
     }
+
+    override fun NotifList(): List<String> =
+        notificationAppsControl?.list() ?: emptyList()
+
+    override fun NotifSetMute(query: String, spec: String): String =
+        notificationAppsControl?.setMute(query, spec)
+            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun NotifSetMuteAll(spec: String): String =
+        notificationAppsControl?.setMuteAll(spec)
+            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
+        notificationAppsControl?.setStyle(query, color, icon, vibe)
+            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
 
     override fun ListApps(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()

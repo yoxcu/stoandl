@@ -310,7 +310,7 @@ notification title. Configure at least one `.vcf` with a known number first (see
 | 5.14 | vCard name | call from a number stored in a configured `.vcf` | Watch call screen shows the **contact name**, not the bare number. Number matching is digits-only by suffix (so `+49…` matches a stored `0…`). |
 | 5.15 | Dialer-title fallback | call from a number **not** in any vCard, while the DE dialer raises its own incoming-call notification | Watch shows the dialer's title as the name (best-effort). |
 | 5.16 | Dialer notification suppressed | with `call.dialer_apps = spacebar, calls`, observe the watch during a call | The dialer's **redundant** call notification does **not** reach the watch (the native call screen replaces it). Log: `Suppressed dialer notification from …`. |
-| 5.17 | Blocklist | set `notification.blocklist = <some app>`, trigger that app's notification | It's dropped. Log: `Filtered notification from … (blocklist)`. |
+| 5.17 | Per-app mute (drop) | `stoandl notif mute <app>`, trigger that app's notification | It's dropped host-side. Log: `Muted notification from … (always)`. (See §5.18 for the full per-app suite.) |
 
 ### 5d. Missed calls
 
@@ -780,6 +780,41 @@ requires a typed `yes` confirmation (skippable with `--yes`/`-y`); the daemon ju
 | 5.174 | Factory reset `--yes` | `stoandl reset factory --yes` | No prompt; wipes immediately. (Use with care.) |
 | 5.175 | No watch connected | `stoandl reset recovery` / `reset factory --yes` with no watch | CLI prints `No watch connected` and exits non-zero; nothing sent. |
 | 5.176 | Bad subcommand | `stoandl reset`, `stoandl reset foo` | Prints `Usage: stoandl reset <factory|recovery> [--yes]` and exits non-zero. |
+
+---
+
+## 5.18 Per-app notification settings  ✅ Host-side mute + lazy-load verified — ⚠️ wrist "Mute" action + styling to verify on hardware
+
+Wires libpebble3's per-app `NotificationAppItem` store (dormant on JVM). Every desktop app that
+notifies is lazily tracked, and its mute state is enforced **host-side** in the notification listener
+(`DbusNotificationListenerConnection` + `isMutedNow()`) before `sendNotification` — the same enforcement
+point Android uses. `stoandl notif` manages the store via `NotificationAppsControl` over the control bus.
+With `notification.sync_to_watch` on, the list also syncs to the watch (Koin override of
+`PlatformConfig(syncNotificationApps = true)`) and wrist toggles write back via libpebble3's `handleWrite`.
+
+The **host-side** half (tests 5.180–5.187) needs only the daemon — no watch. The **wrist "Mute" action**
+and **per-app styling** (5.189–5.191) need a watch but no sync. The opt-in BlobDB push
+(`notification.sync_to_watch`, off by default) only feeds a per-app *settings menu* that current
+Core/PebbleOS firmware does not have — see 5.192.
+
+**Prerequisite:** daemon running; `notification.per_app = true` (default). Emit desktop notifications
+with `notify-send "<App>" "<msg>"` (the `<App>` becomes the app name). Verify drops in the log
+(`Muted notification from <app>`) and on the watch.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.180 | Lazy-load | `notify-send "Element" "hi"`, then `stoandl notif list` | `Element` appears with mute `never` and a recent "last notified"; watch shows the notification. Log: `Tracking new notification app 'Element'`. |
+| 5.181 | Mute always | `stoandl notif mute Element`, then `notify-send "Element" "hi"` | No notification on the watch; `notif list` shows `Element … always`. Log: `Muted notification from Element (always)`. |
+| 5.182 | Unmute | `stoandl notif unmute Element`, then `notify-send "Element" "hi"` | Notification reaches the watch again; `notif list` shows `never`. |
+| 5.183 | Weekday/weekend schedule | `stoandl notif mute Slack weekdays` | On a Mon–Fri, a `Slack` notification is dropped; on Sat/Sun it's delivered (and vice-versa for `weekends`). `notif list` shows `weekdays`. |
+| 5.184 | Temporary mute | `stoandl notif mute Discord 1h`; notify → dropped; wait past expiry (or use `5s`) → notify | Dropped while active (`notif list` shows `muted-until …`); delivered again after expiry, with no manual unmute. |
+| 5.185 | Mute all / unmute all | `stoandl notif mute-all`, then `unmute-all` | All tracked apps flip to `always`, then back to `never`; `notif list` reflects both. |
+| 5.186 | Substring match errors | `stoandl notif mute zzz` (no match); a substring matching ≥2 apps | `notfound:`/`ambiguous:` status; nothing changed. |
+| 5.187 | Persistence | mute an app, `systemctl --user restart stoandl`, `stoandl notif list` | Mute state survives the restart (Room store). |
+| 5.189 | Wrist "Mute" action | connect a watch, trigger an app notification, open its action menu on the watch | A **"Mute *app*"** action appears (alongside Dismiss). Selecting it shows "Muted" on the watch; `stoandl notif list` now shows that app `always`; the next notification from it is dropped host-side. Log: `Muted '<app>' from watch action`. No `sync_to_watch` needed. |
+| 5.190 | Unmute after wrist-mute | `stoandl notif unmute <app>` (muting from the wrist gives no notification to unmute from) | App delivers again; `notif list` shows `never`. |
+| 5.191 | Per-app styling | `stoandl notif style <app> --color Red --icon NotificationElement --vibe double`, then trigger a notification | The notification renders with the red background, the chosen icon, and the double-buzz vibration on the watch. `--color default` etc. resets each; unknown values fall back silently. |
+| 5.192 | Settings menu (firmware-absent) | `notification.sync_to_watch = true`, restart, connect a watch | Records DO sync (log `BlobDB - insert: CannedResponses [<app>]`), but **no per-app settings menu exists on this firmware** (Settings → Notifications is global only). The toggle therefore defaults **off**; muting is via the action menu (5.189), which needs no sync. Re-test only against firmware that adds a per-app menu. |
 
 ---
 

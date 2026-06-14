@@ -16,7 +16,9 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `notification.blocklist` | list | _(empty)_ | App-name substrings (case-insensitive) whose notifications are never forwarded to the watch. |
+| `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). |
+| `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
+| `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. BLE-only, no web egress. |
 | `call.dialer_apps` | list | `spacebar, calls` | Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the native call screen replaces them) and their title is used as a fallback caller name. |
 | `contacts.vcard_paths` | list | _(empty)_ | vCard (`.vcf`) files or directories scanned for caller-ID resolution. `~` expands to `$HOME`. |
 | `music.enabled` | bool | `true` | Bridge desktop media players (MPRIS) to the watch's Music app — now-playing display plus play/pause, next/previous and volume from the watch. Local-only; set `false` to disable. |
@@ -40,6 +42,49 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.caldav` | list | _(empty)_ | CalDAV calendars, each `url\|user\|password`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
+
+## Per-app notification settings
+
+**`notification.per_app`** (on by default) tracks which apps notify and controls each one. Every
+desktop app that notifies is lazily added to a per-app store the first time it's seen (the app name is
+its identity — there are no package ids on Linux), and its mute state is enforced **host-side** before
+sending, so a muted app's notification is dropped before it crosses BLE. It's exact-match, schedulable,
+and adjustable at runtime without editing the config.
+
+Manage the store with `stoandl notif`:
+
+```sh
+stoandl notif list                     # tracked apps, their mute state and when each last notified
+stoandl notif mute "Element"           # mute always (drops on the host)
+stoandl notif mute Slack weekdays      # mute on Mon–Fri only (weekdays / weekends schedules)
+stoandl notif mute Discord 1h          # temporary mute (also 30m / 2d …); auto-expires
+stoandl notif unmute Slack             # deliver again
+stoandl notif mute-all  / unmute-all   # apply to every tracked app
+stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
+```
+
+Quote multi-word app names. New apps default to `notification.default_mute` (`never` = deliver).
+Muting is enforced **host-side** (the notification is dropped before it crosses BLE), so per-app mute
+works fully without any watch-side support.
+
+**Muting from the wrist.** Every forwarded notification carries a **"Mute *app*" action** in its
+on-watch action menu (the same mechanism the official Android app uses). Selecting it mutes that app
+host-side — it shows up as muted in `stoandl notif list`, and `stoandl notif unmute <app>` reverses it.
+This needs no config and no BlobDB sync. (Note: there is no per-app *settings menu* on current
+Core/PebbleOS firmware — Settings → Notifications is global only — so muting is per-notification, via the
+action menu.)
+
+**Per-app styling** (`notif style`) sets, for an app's notifications: `--color` (a
+[TimelineColor](https://github.com/coredevices/libpebble3) name like `Red`/`MintGreen`/`DukeBlue`),
+`--icon` (a TimelineIcon enum name like `NotificationSlack`; defaults to an icon picked from the app
+name), and `--vibe` (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off milliseconds
+like `100,50,100`). These are applied **host-side at send time** to the outgoing notification, so they
+render on the watch with no sync. For each flag, `default` resets it; omitting it leaves it unchanged.
+
+**`notification.sync_to_watch`** (off by default) additionally pushes the list + mute states to the
+watch via libpebble3's `NotificationAppItem` BlobDB. It's off because current firmware has no per-app
+*settings menu* to surface them (muting is via the action menu above, which needs no sync). Kept as an
+opt-in for firmware that does. BLE-only, no web egress.
 
 ## Weather
 
