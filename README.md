@@ -28,7 +28,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Runs as a background daemon with no UI
 
 It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
-→ [docs/features.md](docs/features.md) — full feature list, comparison with other companion apps, and roadmap.
+→ [docs/features.md](docs/features.md) — full feature list, comparison with other companion apps, and what's not yet implemented.
 
 ## Compatibility
 
