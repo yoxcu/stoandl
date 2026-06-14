@@ -114,6 +114,21 @@ data class StoandlConfig(
      *  The server binds all interfaces with no auth, so it's off by default; `stoandl developer
      *  start`/`stop` toggle it on demand regardless of this setting. */
     val developerAutostart: Boolean,
+    /** Ask the watch for its health/activity data (steps, sleep, heart rate, workouts) on every fresh
+     *  connect — incremental after the first full pull. Mirrors the official app. Local-only (no
+     *  egress), so on by default; it costs a little watch BLE/battery. The data lands in the shared
+     *  `libpebble3.db`; [healthExport] projects it to readable files. */
+    val healthSync: Boolean,
+    /** Continuously export the synced health data to NDJSON under `<configDir>/health/`
+     *  (`daily.ndjson`, `activities.ndjson`) so other tools can consume it. Re-projected from the DB
+     *  whenever new data arrives. Local-only; on by default. */
+    val healthExport: Boolean,
+    /** Also export minute-level samples (steps + heart rate per minute) to `health/samples/<date>.ndjson`.
+     *  Much higher volume than the daily summary, so off by default. */
+    val healthExportSamples: Boolean,
+    /** How many days back the export re-projects on each update (the daily summary, activities and
+     *  samples window). Older days already written stay in place. */
+    val healthExportDays: Int,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -138,6 +153,7 @@ data class StoandlConfig(
         private const val DEFAULT_GPS_NAME = "Current location"
         private const val DEFAULT_CALENDAR_INTERVAL_MINUTES = 30L
         private const val DEFAULT_FIRMWARE_GITHUB_REPO = "coredevices/PebbleOS"
+        private const val DEFAULT_HEALTH_EXPORT_DAYS = 30
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
 
@@ -175,6 +191,10 @@ data class StoandlConfig(
             firmwareNotify = true,
             languageDownload = false,
             developerAutostart = false,
+            healthSync = true,
+            healthExport = true,
+            healthExportSamples = false,
+            healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -253,6 +273,11 @@ data class StoandlConfig(
                 firmwareNotify = map["firmware.notify"]?.let { parseBool(it) } ?: true,
                 languageDownload = parseBool(map["language.download"]),
                 developerAutostart = parseBool(map["developer.autostart"]),
+                healthSync = map["health.sync"]?.let { parseBool(it) } ?: true,
+                healthExport = map["health.export"]?.let { parseBool(it) } ?: true,
+                healthExportSamples = parseBool(map["health.export_samples"]),
+                healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
+                    ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
             )
             log.info {
                 "Config loaded from ${file.path}: " +
@@ -269,7 +294,9 @@ data class StoandlConfig(
                     "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}, " +
                     "datalog=${cfg.datalog}, firmwareGithub=${cfg.firmwareGithub}" +
                     (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "") +
-                    ", languageDownload=${cfg.languageDownload}"
+                    ", languageDownload=${cfg.languageDownload}" +
+                    ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
+                    (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "")
             }
             return cfg
         }

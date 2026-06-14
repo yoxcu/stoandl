@@ -155,3 +155,22 @@ firmware.notify = true
 # default and you start it explicitly. Set the key below to auto-start it on every watch connect
 # (e.g. a dedicated dev device) — leave it false unless you understand the exposure.
 developer.autostart = false
+
+# ── Health / activity ──────────────────────────────────────────────────────────────────────────
+# Pull the watch's health data (steps, distance, calories, active minutes, sleep, heart rate, and
+# Walk/Run/workout sessions) into the host. The watch only sends it when asked, so when health.sync
+# is on, stoandl requests it on every connect (incremental — the first run is a full pull). The data
+# lands in the shared libpebble3 DB; health.export projects it to readable NDJSON under
+# ~/.config/stoandl/health/ (daily.ndjson, activities.ndjson) whenever new data arrives. Read it with
+# `stoandl health [days] | activities | dump`, or `stoandl health sync` to pull on demand.
+# Local-only — nothing is uploaded — so both are on by default.
+health.sync = true
+health.export = true
+
+# Also export minute-level samples (steps + heart rate per minute) to health/samples/<date>.ndjson.
+# Much higher volume than the daily summary, so off by default.
+health.export_samples = false
+
+# How many days back each export re-projects (the daily/activities/samples window). Older days already
+# written stay in place. Default 30.
+health.export_days = 30

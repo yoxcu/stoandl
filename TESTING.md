@@ -873,6 +873,37 @@ local-only, no config, no egress. Surfaced three ways: the dedicated `stoandl ba
 
 ---
 
+## 5.21 Health / activity sync  ⚠️ UNVERIFIED (needs a watch with health tracking on)
+
+Pulls the watch's health data (steps/distance/calories/active-minutes, sleep, heart rate incl. resting
+HR + HR-zone minutes, and Walk/Run/OpenWorkout sessions) into the host. libpebble3 already ingests the
+watch's health datalog frames into the shared `libpebble3.db` (`HealthDataProcessor`, real on the JVM —
+no fork change); the gaps were that nothing **requested** the data and nothing **exposed** it. stoandl
+now (a) fires `requestHealthData` on each connect (`health.sync`, default on — incremental, so the
+first run with an empty DB is a full pull), and (b) `HealthExporter` projects the DB to
+`~/.config/stoandl/health/` whenever new data arrives (`health.export`, default on): `daily.ndjson`,
+`activities.ndjson`, and opt-in `samples/<date>.ndjson` (`health.export_samples`, default off). The CLI
+reads the exported files offline (like `datalog`); `stoandl health sync` pulls fresh data on demand via
+the daemon. Units are normalised (metres, kcal, minutes); queries reuse libpebble3's aggregation +
+sleep-grouping. Local-only, no egress.
+
+**Prerequisite:** a watch with health/activity tracking (and HR, for heart-rate rows) enabled, worn long
+enough to have data; daemon running.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.210 | Sync on connect | start the daemon with a watch in range, watch the log | `Health sync on …`; on connect, libpebble3 logs a health sync request and `healthDataUpdated` fires; `Health export enabled → …/health`. |
+| 5.211 | Daily summary | after a sync, `stoandl health` | A table of the last 7 days: `DATE STEPS DIST SLEEP ACTIVE RHR AVGHR`, with plausible values (steps non-zero for an active day; sleep like `7h12m`; HR in a human range). Missing metrics show `-`. |
+| 5.212 | Day count arg | `stoandl health 30` | Up to 30 days listed (as available). |
+| 5.213 | Daily file | inspect `~/.config/stoandl/health/daily.ndjson` | One JSON object per day, keyed by `date`, sorted ascending; distance in metres, calories in kcal, durations in minutes; re-running a sync upserts (no duplicate dates). |
+| 5.214 | Activities | do a tracked walk/run, sync, `stoandl health activities` | The session appears: `WHEN TYPE DUR STEPS DIST KCAL`; also a row in `activities.ndjson` keyed by `start`. |
+| 5.215 | On-demand sync | `stoandl health sync` with a watch connected | `Requested health sync from <name>`; the export refreshes (`stoandl health` shows newer data). With no watch: `No watch connected` (non-zero exit). |
+| 5.216 | Samples opt-in | set `health.export_samples = true`, restart, sync | `samples/<date>.ndjson` files appear with minute-level `{ts,steps,hr,hr_zone}` rows (steps>0 or hr>0). Off by default → no such files. |
+| 5.217 | Toggles off | set `health.sync = false` / `health.export = false`, restart | Log notes each disabled; no health requests on connect / no files written, respectively. |
+| 5.218 | Dump | `stoandl health dump daily` / `dump activities` | Prints the raw NDJSON. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

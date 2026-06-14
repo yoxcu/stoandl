@@ -19,6 +19,7 @@ import de.yoxcu.stoandl.notification.NotificationAppsControl
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.datalog.DatalogStore
+import de.yoxcu.stoandl.health.HealthExporter
 import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
 import de.yoxcu.stoandl.location.GeoClueSystemGeolocation
@@ -195,6 +196,7 @@ class PebbleIntegration(
     private var notificationAppsControl: NotificationAppsControl? = null
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
+    private val healthExporterRef = AtomicReference<HealthExporter?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
     private val calendarSyncRef = AtomicReference<LinuxSystemCalendar?>(null)
     private val config = StoandlConfig.load()
@@ -352,6 +354,9 @@ class PebbleIntegration(
         } else {
             log.info { "Datalog capture disabled (datalog.enabled=false)" }
         }
+        // Health/activity: ask the watch for fresh data on connect (libpebble3 ingests it into the
+        // shared DB; nothing requests it on its own), and project that DB to readable NDJSON files.
+        startHealthSync()
         // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
         // injected (on the first watch connect); nothing to start here, just report the state.
         log.info {
@@ -1044,9 +1049,40 @@ class PebbleIntegration(
             .launchIn(scope)
     }
 
+    /**
+     * Health/activity sync + export. The watch only sends health data when asked (nothing in
+     * libpebble3 requests it automatically), so when `health.sync` is on we fire
+     * [LibPebble.requestHealthData] on each fresh connect — incremental, since it asks for data newer
+     * than the latest row already stored (the first run, with an empty DB, is therefore a full pull).
+     * The data is ingested into the shared DB by libpebble3's HealthDataProcessor; when `health.export`
+     * is on, [HealthExporter] projects it to NDJSON whenever new data lands.
+     */
+    private fun startHealthSync() {
+        if (config.healthExport) {
+            HealthExporter(
+                libPebble = libPebble,
+                scope = scope,
+                exportDays = config.healthExportDays,
+                exportSamples = config.healthExportSamples,
+            ).also { healthExporterRef.set(it); it.start() }
+        } else {
+            log.info { "Health export disabled (health.export=false)" }
+        }
+        if (!config.healthSync) {
+            log.info { "Health sync on connect disabled (health.sync=false)" }
+            return
+        }
+        log.info { "Health sync on (request steps/sleep/HR/workouts from the watch on each connect)" }
+        libPebble.watches
+            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
+            .distinctUntilChanged()
+            .onEach { connected -> if (connected) libPebble.requestHealthData(fullSync = false) }
+            .launchIn(scope)
+    }
+
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1603,6 +1639,8 @@ private class StoandlControlImpl(
     private val developerControl: DeveloperControl,
     // Null when notification.per_app is off.
     private val notificationAppsControl: NotificationAppsControl?,
+    // Null when health.export is off (no exporter to re-project on demand).
+    private val healthExporterRef: AtomicReference<HealthExporter?>,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1755,6 +1793,18 @@ private class StoandlControlImpl(
             ?: return "notready:No watch connected"
         val level = dev.batteryLevel ?: return "unknown:${dev.displayName()}"
         return "ok:${dev.displayName()}\t$level"
+    }
+
+    override fun SyncHealth(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+            ?: return "notready:No watch connected"
+        // Fire-and-forget: the watch streams data back asynchronously (ingested into the DB by
+        // libpebble3), which fires healthDataUpdated → the exporter re-projects. Re-project once now too
+        // so any data already in the DB is written even if this sync turns up nothing new.
+        lp.requestHealthData(fullSync = false)
+        healthExporterRef.get()?.let { exporter -> scope.launch { exporter.exportNow() } }
+        return "ok:Requested health sync from ${dev.displayName()}"
     }
 
     override fun WatchInfoText(): String = logsControl.watchInfoText()

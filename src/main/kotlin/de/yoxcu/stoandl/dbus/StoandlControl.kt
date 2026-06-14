@@ -103,6 +103,10 @@ interface StoandlControl : DBusInterface {
      *  `unknown:<name>` (connected but no reading yet), or `notready:<msg>` (no watch). */
     fun Battery(): String
 
+    /** Request a fresh health/activity sync from the connected watch and re-project the export. Returns
+     *  `ok:<msg>` once the request is fired (data streams back asynchronously), or `notready:<msg>`. */
+    fun SyncHealth(): String
+
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or
      *  `error:`/`notready:`. */

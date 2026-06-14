@@ -520,3 +520,35 @@ key below to bring it back up automatically on every connect (handy for a dedica
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `developer.autostart` | `false` | Auto-start the developer connection (LAN server, port 9000) on every watch connect. Leave off unless you accept the unauthenticated-LAN-listener exposure above; `stoandl developer start`/`stop` work on demand regardless. |
+
+## Health / activity
+
+Pull the watch's health data — steps, distance, calories, active minutes, **sleep** sessions,
+**heart rate** (incl. resting HR and per-zone minutes), and **workout** sessions (Walk / Run /
+OpenWorkout) — into the host. libpebble3 ingests the watch's health frames into its database on its
+own; the watch only sends them when **asked**, and headless stoandl has no dashboard to show them in,
+so stoandl requests the data and projects it to a local NDJSON store other tools can read.
+
+```sh
+stoandl health                 # last 7 days: steps / distance / sleep / active / resting+avg HR
+stoandl health 30              # last 30 days
+stoandl health activities      # recent Walk/Run/workout sessions
+stoandl health sync            # ask a connected watch to sync now, then re-export
+stoandl health dump daily      # raw NDJSON (daily | activities)
+```
+
+Files are written under `~/.config/stoandl/health/` (honouring `XDG_CONFIG_HOME`):
+
+- `daily.ndjson` — one object per day (keyed by date), upserted on each sync.
+- `activities.ndjson` — one object per workout session (keyed by start time).
+- `samples/<date>.ndjson` — minute-level steps + heart rate (only with `health.export_samples`).
+
+Units are normalised for consumers: **distance in metres, energy in kcal, durations in minutes**;
+timestamps are unix epoch seconds. Both halves are local-only (no egress), so they're **on by default**.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `health.sync` | `true` | Request a health sync from the watch on every connect (incremental — the first run, with an empty DB, is a full pull). Costs a little watch BLE/battery. |
+| `health.export` | `true` | Project the synced data to NDJSON under `~/.config/stoandl/health/` whenever new data arrives. |
+| `health.export_samples` | `false` | Also write minute-level samples (steps + heart rate per minute). Much higher volume than the daily summary, so off by default. |
+| `health.export_days` | `30` | How many days back each export re-projects (the daily/activities/samples window). Days already written outside the window stay in place. |

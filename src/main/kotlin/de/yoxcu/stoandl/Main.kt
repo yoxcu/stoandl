@@ -15,6 +15,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
 import de.yoxcu.stoandl.language.LanguagePackCatalog
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -26,7 +30,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "health")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -110,6 +114,7 @@ private fun printUsage() {
     println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
     println("  list                       List known watches and their connection state")
     println("  battery                    Show the connected watch's battery level")
+    println("  health [days]              Show daily steps/sleep/heart-rate (default 7; sync|activities|dump)")
     println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
     println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
     println("  firmware <file.pbz>        Flash a local firmware bundle onto the watch (shows progress)")
@@ -422,6 +427,7 @@ private fun ctl(args: Array<String>) {
                 conn.disconnect()
             }
         }
+        "health" -> ctlHealth(args.drop(1))
         "calendar" -> {
             when (val sub = args.getOrNull(1) ?: "list") {
                 "dump" -> {
@@ -650,6 +656,122 @@ private fun datalogShow(uuidArg: String, tagArg: String?, tail: Int?) {
         if (files.size > 1) println("== ${sdir.name} / ${f.name.removeSuffix(".ndjson")} ==")
         if (tail == null) f.bufferedReader().useLines { seq -> seq.forEach { println(it) } }
         else f.readLines().takeLast(tail).forEach { println(it) }
+    }
+}
+
+/** Where HealthExporter writes the projected data: ~/.config/stoandl/health/. */
+private fun healthDir(): File = File(configDir(), "health")
+
+/** Dispatch `stoandl health ...`. A bare day count (default 7) prints the daily summary; `activities`
+ *  lists workout sessions; `dump` prints raw NDJSON. All three read the exported files directly (no
+ *  daemon needed, like `datalog`). `sync` talks to the daemon to pull fresh data from the watch. */
+private fun ctlHealth(rest: List<String>) {
+    when (val sub = rest.firstOrNull()?.lowercase()) {
+        null -> healthSummary(7)
+        "sync" -> healthSync()
+        "activities" -> healthActivities(rest.getOrNull(1)?.toIntOrNull()?.takeIf { it > 0 } ?: 7)
+        "dump" -> {
+            val which = rest.getOrNull(1)?.lowercase() ?: "daily"
+            val file = when (which) {
+                "daily" -> File(healthDir(), "daily.ndjson")
+                "activities" -> File(healthDir(), "activities.ndjson")
+                else -> { System.err.println("Usage: stoandl health dump [daily|activities]"); System.exit(1); return }
+            }
+            if (!file.isFile) { System.err.println("No $which export yet at ${file.path}"); return }
+            file.bufferedReader().useLines { seq -> seq.forEach { println(it) } }
+        }
+        else -> {
+            val days = sub.toIntOrNull()
+            if (days != null && days > 0) healthSummary(days)
+            else {
+                System.err.println("Usage: stoandl health [days | sync | activities [days] | dump [daily|activities]]")
+                System.exit(1)
+            }
+        }
+    }
+}
+
+private fun readNdjson(file: File): List<JsonObject> {
+    if (!file.isFile) return emptyList()
+    return file.readLines().mapNotNull { raw ->
+        val line = raw.trim()
+        if (line.isEmpty()) null else runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull()
+    }
+}
+
+private fun jInt(o: JsonObject, key: String): Int? =
+    (o[key]?.jsonPrimitive)?.content?.toLongOrNull()?.toInt()
+private fun jLong(o: JsonObject, key: String): Long? =
+    (o[key]?.jsonPrimitive)?.content?.toLongOrNull()
+private fun jStr(o: JsonObject, key: String): String =
+    (o[key]?.jsonPrimitive)?.content ?: "-"
+
+private fun fmtInt(n: Int?): String = n?.let { "%,d".format(it) } ?: "-"
+private fun fmtDist(meters: Int?): String = when {
+    meters == null -> "-"
+    meters >= 1000 -> "%.1fkm".format(meters / 1000.0)
+    else -> "${meters}m"
+}
+private fun fmtDur(minutes: Int?): String = when {
+    minutes == null -> "-"
+    minutes >= 60 -> "${minutes / 60}h${(minutes % 60).toString().padStart(2, '0')}m"
+    else -> "${minutes}m"
+}
+
+private fun healthSummary(days: Int) {
+    val rows = readNdjson(File(healthDir(), "daily.ndjson"))
+    if (rows.isEmpty()) {
+        println("No health data exported yet.")
+        println("It syncs from the watch on connect (health.sync) and exports to ${healthDir().path} (health.export).")
+        println("With the watch connected, run 'stoandl health sync' to pull now.")
+        return
+    }
+    println("%-12s %8s %9s %7s %7s %5s %5s".format("DATE", "STEPS", "DIST", "SLEEP", "ACTIVE", "RHR", "AVGHR"))
+    rows.takeLast(days).forEach { o ->
+        println("%-12s %8s %9s %7s %7s %5s %5s".format(
+            jStr(o, "date"),
+            fmtInt(jInt(o, "steps")),
+            fmtDist(jInt(o, "distance_m")),
+            jInt(o, "sleep_total_min")?.let { fmtDur(it) } ?: "-",
+            fmtDur(jInt(o, "active_minutes")),
+            jInt(o, "resting_hr")?.toString() ?: "-",
+            jInt(o, "avg_hr")?.toString() ?: "-",
+        ))
+    }
+}
+
+private fun healthActivities(days: Int) {
+    val rows = readNdjson(File(healthDir(), "activities.ndjson"))
+    val cutoff = System.currentTimeMillis() / 1000 - days.toLong() * 86_400
+    val recent = rows.filter { (jLong(it, "start") ?: 0) >= cutoff }
+    if (recent.isEmpty()) {
+        println(if (rows.isEmpty()) "No activity sessions exported yet." else "No activity sessions in the last $days day(s).")
+        return
+    }
+    val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
+    println("%-16s %-10s %7s %8s %9s %6s".format("WHEN", "TYPE", "DUR", "STEPS", "DIST", "KCAL"))
+    recent.forEach { o ->
+        println("%-16s %-10s %7s %8s %9s %6s".format(
+            fmt.format(java.time.Instant.ofEpochSecond(jLong(o, "start") ?: 0)),
+            jStr(o, "type"),
+            fmtDur(jInt(o, "duration_min")),
+            fmtInt(jInt(o, "steps")),
+            fmtDist(jInt(o, "distance_m")),
+            jInt(o, "active_kcal")?.toString() ?: "-",
+        ))
+    }
+}
+
+private fun healthSync() {
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        val resp = try { control.SyncHealth() } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        handleStatusResponse(resp)
+    } finally {
+        conn.disconnect()
     }
 }
 
