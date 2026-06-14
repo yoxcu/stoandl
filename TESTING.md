@@ -634,7 +634,7 @@ override backed by `GeoClueLocationProvider` (the same provider weather uses).
 
 ---
 
-## 5.13 Language packs  ⚠️ UNVERIFIED (needs a watch)
+## 5.13 Language packs  ✅ Verified on hardware
 
 Installs a firmware language pack (`.pbl`) onto the watch, changing its notification/UI language and
 loading the fonts a script needs. **(a)** `stoandl language list` shows the catalog packs for the
