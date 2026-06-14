@@ -554,19 +554,18 @@ wait for the next reconnect (or a watch-initiated time request). Catching them w
 
 ---
 
-## 5.10 Find my watch  ⚠️ UNVERIFIED (needs a watch)
+## 5.10 Find my watch  ✅ Verified on hardware
 
 `stoandl findwatch` rings a misplaced watch by injecting a synthetic incoming call named "Find My
 Watch" into the same `currentCall` path the telephony integration uses (`FindWatch` in
 `PebbleIntegration`). The watch rings continuously like a real call until a button on the call screen
-is pressed; Answer and Decline both just clear the call (there is nothing to hold). Host→watch only,
+is pressed (it just clears the call — there is nothing to hold). Host→watch only,
 no `.pbw`, no egress, no config — always available while a watch is connected.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
 | 5.90 | Ring | with a watch connected, run `stoandl findwatch` | CLI prints `Ringing watch — press a button on the watch to silence it`. The watch shows a call screen titled **Find My Watch** and vibrates/rings continuously. Log (INFO): `[findwatch] ringing watch (cookie=…)`. |
-| 5.91 | Silence via Decline | on the watch's call screen, press **Decline** | The ring stops; the call screen dismisses. Log: `[findwatch] watch declined — ring silenced (cookie=…)`. |
-| 5.92 | Silence via Answer | run `findwatch` again, press **Answer** instead | The ring stops the same way (no active call is established). Log: `[findwatch] watch answered — ring silenced (cookie=…)`. |
+| 5.91 | Silence | on the watch's call screen, press the button to dismiss it | The ring stops; the call screen dismisses. Log: `[findwatch] watch declined — ring silenced (cookie=…)`. (The Find-My-Watch screen has a single dismiss/Decline button — no Answer — which is expected; pressing it clears the call.) |
 | 5.93 | No watch connected | run `stoandl findwatch` with no watch | CLI prints `Daemon not ready (no watch connected?)` and exits non-zero. Log (WARN): `FindWatch: libPebble not ready`. |
 
 ---
