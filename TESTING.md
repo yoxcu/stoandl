@@ -873,7 +873,7 @@ local-only, no config, no egress. Surfaced three ways: the dedicated `stoandl ba
 
 ---
 
-## 5.21 Health / activity sync  ⚠️ UNVERIFIED (needs a watch with health tracking on)
+## 5.21 Health / activity sync  ✅ Verified on hardware
 
 Pulls the watch's health data (steps/distance/calories/active-minutes, sleep, heart rate incl. resting
 HR + HR-zone minutes, and Walk/Run/OpenWorkout sessions) into the host. libpebble3 already ingests the
