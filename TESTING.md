@@ -757,6 +757,32 @@ local — no network, no egress opt-in.
 
 ---
 
+## 5.17 Factory reset / reset to recovery  ⚠️ UNVERIFIED (needs a watch — DESTRUCTIVE)
+
+`stoandl reset recovery` reboots the watch into its recovery (PRF) firmware; `stoandl reset factory`
+wipes the watch back to out-of-box state. Both ride libpebble3's `ConnectedPebble.Debug`
+(`resetIntoPrf()` / `factoryReset()`), which send a single RESET-endpoint packet — no JVM stub, no fork
+change, pure stoandl wiring (`DebugControl` + two D-Bus methods + CLI). Fire-and-forget: the call returns
+as soon as the packet is queued and the watch drops the BLE link as it reboots/wipes, so there's no
+completion ack — confirm the outcome on the watch itself. The factory reset is irreversible, so the CLI
+requires a typed `yes` confirmation (skippable with `--yes`/`-y`); the daemon just executes.
+
+> ⚠️ These genuinely reset the watch. `reset factory` erases all apps, settings and the host pairing
+> (re-pair afterwards). Run them last in a test session. `reset recovery` is recoverable — reflash a
+> normal firmware from PRF with `stoandl firmware …`.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.170 | Reset to recovery | connect a watch, `stoandl reset recovery` | Prints `Recovery reboot sent to <name> — the watch will reboot into PRF`. The watch reboots and comes up in PRF (the recovery firmware screen / red Pebble logo). Reconnect and `stoandl firmware <normal.pbz>` restores it. Log: `Sent reset-into-recovery (PRF) to <name>`. |
+| 5.171 | `prf` alias | `stoandl reset prf` | Same as `reset recovery`. |
+| 5.172 | Factory reset confirm prompt | `stoandl reset factory`, then type `yes` | Prompts `Factory-reset the watch? … Type 'yes' to confirm:`; on `yes` prints `Factory reset sent to <name> …` and the watch wipes + reboots to out-of-box (needs re-pairing). |
+| 5.173 | Factory reset abort | `stoandl reset factory`, then type `no` (or empty/Enter) | Prints `Aborted.`; no packet sent, watch untouched. |
+| 5.174 | Factory reset `--yes` | `stoandl reset factory --yes` | No prompt; wipes immediately. (Use with care.) |
+| 5.175 | No watch connected | `stoandl reset recovery` / `reset factory --yes` with no watch | CLI prints `No watch connected` and exits non-zero; nothing sent. |
+| 5.176 | Bad subcommand | `stoandl reset`, `stoandl reset foo` | Prints `Usage: stoandl reset <factory|recovery> [--yes]` and exits non-zero. |
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

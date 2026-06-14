@@ -22,6 +22,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
+- Resets the watch over BLE — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
 - Runs as a background daemon with no UI
 
@@ -251,6 +252,22 @@ the stoandl version, and your `stoandl.conf` **with secrets redacted** (CalDAV p
 credentials/tokens in URLs). It's resilient: even with no daemon running or no watch connected it still
 collects whatever it can, noting what's missing in `bundle-notes.txt`. Purely local — nothing is uploaded.
 Review the archive before sharing: the watch logs can still contain personal data.
+
+## Factory reset & recovery
+
+Reset the connected watch over BLE — the companion to the firmware tooling, for un-bricking a bad flash
+or wiping the watch for handoff.
+
+```sh
+stoandl reset recovery               # reboot the watch into recovery (PRF) firmware
+stoandl reset factory                # wipe the watch back to out-of-box state (asks to confirm)
+stoandl reset factory --yes          # …skip the confirmation prompt
+```
+
+`reset recovery` is recoverable — from PRF, reflash a normal firmware with `stoandl firmware <file.pbz>`.
+`reset factory` is **irreversible**: it erases all apps, settings and the host pairing (you'll re-pair
+afterwards), so the CLI requires a typed `yes` unless you pass `--yes`. Both are local — nothing is
+uploaded, and there's no config to set.
 
 ## Logging
 

@@ -155,4 +155,15 @@ interface StoandlControl : DBusInterface {
     /** The connected watch's metadata as a human-readable text block (model, firmware, board, serial,
      *  language, capabilities …). Returns `ok:<text>` or `notready:<msg>`. */
     fun WatchInfoText(): String
+
+    /** Factory-reset the connected watch: wipe it back to out-of-box state (bonds, apps, settings) and
+     *  reboot. Irreversible — the watch needs re-pairing afterwards. Fire-and-forget (no completion
+     *  ack; the BLE link drops as the watch wipes). Returns `ok:<msg>`, `notready:<msg>` (no watch),
+     *  or `error:<msg>`. The destructive confirmation is the CLI's job. */
+    fun FactoryReset(): String
+
+    /** Reboot the connected watch into its recovery (PRF) firmware — for un-bricking a bad normal
+     *  firmware (reflash from PRF with `firmware`). Fire-and-forget (the link drops as the watch
+     *  reboots). Returns `ok:<msg>`, `notready:<msg>`, or `error:<msg>`. */
+    fun ResetIntoRecovery(): String
 }

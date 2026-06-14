@@ -377,6 +377,26 @@ firmware lives on `cohorts.rebble.io`) and `firmware check` reports "no firmware
 `stoandl firmware status` prints the current state at any time (`idle`, `downloading`, `inprogress`,
 `reboot`, `failed`).
 
+### Recovery & factory reset (no config, no network)
+
+The companion to the firmware tooling — reset the connected watch over BLE.
+
+```sh
+stoandl reset recovery     # reboot the watch into recovery (PRF) firmware
+stoandl reset factory      # wipe the watch back to out-of-box state (asks to confirm)
+stoandl reset factory --yes   # …skip the confirmation prompt (for scripts)
+```
+
+`reset recovery` reboots the watch into its recovery (PRF) firmware — the way out of a bad normal
+firmware. From PRF, reflash a normal bundle with `stoandl firmware <file.pbz>`. It's recoverable, so it
+needs no confirmation.
+
+`reset factory` wipes the watch back to out-of-box state — all installed apps, settings **and the host
+pairing**. It's **irreversible** and the watch must be re-paired afterwards, so the CLI requires you to
+type `yes` at the prompt; pass `--yes`/`-y` to skip it. Both are fire-and-forget: the watch drops the BLE
+link as it reboots/wipes, so confirm the result on the watch itself. Always available with a connected
+watch — no keys, no egress.
+
 ## Language packs
 
 Install a firmware **language pack** (`.pbl`) onto the watch — this changes its notification/UI language

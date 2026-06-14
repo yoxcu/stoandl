@@ -26,7 +26,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot", "logs", "support")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "calendar", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -122,6 +122,8 @@ private fun printUsage() {
     println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
     println("  logs [path]                Dump the watch's firmware logs to a text file (default: ./pebble-logs-<time>.txt)")
     println("  support [out.tar.gz]       Build a support bundle (watch logs + watch info + daemon log + config, secrets redacted)")
+    println("  reset recovery             Reboot the watch into recovery (PRF) firmware (un-brick a bad flash)")
+    println("  reset factory [--yes]      Factory-reset the watch — WIPES it (apps, settings, pairing); needs confirmation")
     println("                             Add --coredump to also pull a coredump off the watch")
     println("  help                       Show this help")
 }
@@ -505,6 +507,7 @@ private fun ctl(args: Array<String>) {
         }
         "logs" -> ctlLogs(args.drop(1))
         "support" -> ctlSupport(args.drop(1))
+        "reset" -> ctlReset(args.drop(1))
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -1339,6 +1342,49 @@ private fun ctlSupport(rest: List<String>) {
     println()
     println("Wrote ${out.path} (${humanSize(out.length())})")
     println("Review it before sharing — config secrets are redacted, but watch logs may contain personal data.")
+}
+
+/**
+ * Dispatch `stoandl reset <factory|recovery>`: factory-reset the watch, or reboot it into recovery
+ * (PRF) firmware. A factory reset is irreversible (it wipes the watch), so it requires an explicit
+ * confirmation — a `yes`/`y` typed at the prompt, or `--yes`/`-y` to skip the prompt for scripts.
+ */
+private fun ctlReset(rest: List<String>) {
+    val skipConfirm = rest.any { it == "--yes" || it == "-y" }
+    val sub = rest.firstOrNull { !it.startsWith("-") }
+    when (sub) {
+        "factory" -> {
+            if (!skipConfirm) {
+                print("Factory-reset the watch? This WIPES all apps, settings and pairings and is " +
+                    "irreversible. Type 'yes' to confirm: ")
+                System.out.flush()
+                val answer = readlnOrNull()?.trim()?.lowercase()
+                if (answer != "yes" && answer != "y") {
+                    println("Aborted."); return
+                }
+            }
+            sendReset { it.FactoryReset() }
+        }
+        "recovery", "prf" -> sendReset { it.ResetIntoRecovery() }
+        else -> {
+            System.err.println("Usage: stoandl reset <factory|recovery> [--yes]")
+            System.exit(1)
+        }
+    }
+}
+
+/** Run a reset RPC and print its status-prefixed result. */
+private fun sendReset(call: (StoandlControl) -> String) {
+    val conn = connectDbusOrExit() ?: return
+    try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        val resp = try { call(control) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        handleStatusResponse(resp)
+    } finally {
+        conn.disconnect()
+    }
 }
 
 /** Redact secrets from a stoandl.conf before it goes into a support bundle: CalDAV passwords
