@@ -61,11 +61,15 @@ class LanguageControl(
      */
     fun list(): List<String> {
         val dev = device() ?: return emptyList()
+        // NOTE: this is the watch's language as read **when it connected** — libpebble3 captures
+        // WatchInfo once at connect and exposes no live re-query. So right after installing a pack the
+        // flag still reflects the old language until the watch reconnects (reboot, or daemon restart).
+        // Match on locale only — the watch's languageVersion rarely equals the catalog's newest pack
+        // version, so requiring both would wrongly flag the installed language as "not installed".
         val installed = dev.installedLanguagePack
         return catalog.forWatch(dev.watchInfo.platform, systemLocale()).map { pack ->
             val isInstalled = installed != null &&
-                installed.isoLocal.equals(pack.isoLocal, ignoreCase = true) &&
-                installed.version == pack.version
+                installed.isoLocal.equals(pack.isoLocal, ignoreCase = true)
             val source = if (pack.file.startsWith("https://binaries.rebble.io")) "rebble" else "github"
             listOf(
                 pack.id,
