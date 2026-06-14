@@ -789,7 +789,7 @@ requires a typed `yes` confirmation (skippable with `--yes`/`-y`); the daemon ju
 
 ---
 
-## 5.18 Per-app notification settings  ✅ Host-side mute + lazy-load verified — ⚠️ wrist "Mute" action + styling to verify on hardware
+## 5.18 Per-app notification settings  ✅ Verified on hardware
 
 Wires libpebble3's per-app `NotificationAppItem` store (dormant on JVM). Every desktop app that
 notifies is lazily tracked, and its mute state is enforced **host-side** in the notification listener
