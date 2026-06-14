@@ -518,12 +518,7 @@ private fun ctl(args: Array<String>) {
             // the file, and its cwd ($HOME) differs from the caller's. Default to a timestamped name;
             // accept an explicit file or a directory; tack on .png if missing.
             val arg = args.getOrNull(1)
-            val target = when {
-                arg == null -> File("pebble-screenshot-${timestamp()}.png")
-                File(arg).isDirectory -> File(arg, "pebble-screenshot-${timestamp()}.png")
-                arg.endsWith(".png", ignoreCase = true) -> File(arg)
-                else -> File("$arg.png")
-            }
+            val target = resolveOutPath(arg, "pebble-screenshot-${timestamp()}.png", listOf(".png"))
             val path = target.absolutePath
             val conn = connectDbusOrExit() ?: return
             try {
@@ -1401,6 +1396,27 @@ private fun configDir(): File = de.yoxcu.stoandl.config.StoandlConfig.configDir(
 
 private fun timestamp(): String = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
 
+/**
+ * Resolve a user-supplied output [arg] for a generated file, sharing the logic across `support` /
+ * `logs` / `screenshot`:
+ *  - null → [defaultName] in the cwd
+ *  - an existing directory **or** a path ending in `/` → [defaultName] inside it (so `support a/`
+ *    writes `a/<default>` rather than the empty-named `a/.tar.gz`)
+ *  - a path already ending in one of [exts] → used verbatim
+ *  - otherwise → [arg] + the first extension
+ * Any missing parent directories are created, so a not-yet-existing dir prefix just works.
+ */
+private fun resolveOutPath(arg: String?, defaultName: String, exts: List<String>): File {
+    val target = when {
+        arg == null -> File(defaultName)
+        arg.endsWith("/") || File(arg).isDirectory -> File(arg, defaultName)
+        exts.any { arg.endsWith(it, ignoreCase = true) } -> File(arg)
+        else -> File(arg + exts.first())
+    }.absoluteFile
+    target.parentFile?.mkdirs()
+    return target
+}
+
 /** True if the stoandl daemon currently owns its D-Bus name. Returns false (with a warning) if
  *  the bus can't be reached, so a detection glitch doesn't block a restore. */
 private fun daemonRunning(): Boolean = try {
@@ -1502,12 +1518,7 @@ private fun doRestore(inPath: String, force: Boolean) {
  *  and sends an absolute path (the daemon writes the file, and its cwd $HOME differs from ours). */
 private fun ctlLogs(rest: List<String>) {
     val arg = rest.firstOrNull { !it.startsWith("-") }
-    val target = when {
-        arg == null -> File("pebble-logs-${timestamp()}.txt")
-        File(arg).isDirectory -> File(arg, "pebble-logs-${timestamp()}.txt")
-        arg.endsWith(".txt", ignoreCase = true) || arg.endsWith(".log", ignoreCase = true) -> File(arg)
-        else -> File("$arg.txt")
-    }
+    val target = resolveOutPath(arg, "pebble-logs-${timestamp()}.txt", listOf(".txt", ".log"))
     val path = target.absolutePath
     val conn = connectDbusOrExit() ?: return
     try {
@@ -1534,12 +1545,7 @@ private fun ctlSupport(rest: List<String>) {
     val wantCoredump = rest.any { it == "--coredump" }
     val outArg = rest.firstOrNull { !it.startsWith("-") }
     val stamp = timestamp()
-    val out = File(when {
-        outArg == null -> "stoandl-support-$stamp.tar.gz"
-        File(outArg).isDirectory -> File(outArg, "stoandl-support-$stamp.tar.gz").path
-        outArg.endsWith(".tar.gz") || outArg.endsWith(".tgz") -> outArg
-        else -> "$outArg.tar.gz"
-    }).absoluteFile
+    val out = resolveOutPath(outArg, "stoandl-support-$stamp.tar.gz", listOf(".tar.gz", ".tgz"))
 
     val tmpRoot = java.nio.file.Files.createTempDirectory("stoandl-support").toFile()
     val bundleDir = File(tmpRoot, "stoandl-support-$stamp").apply { mkdirs() }
