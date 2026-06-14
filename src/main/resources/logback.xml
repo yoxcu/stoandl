@@ -29,6 +29,10 @@
     <!-- stoandl own code: startup, scan, connect, notify — always INFO -->
     <logger name="de.yoxcu.stoandl" level="INFO"/>
 
+    <!-- Datalog capture: per-frame detail is DEBUG — honor STOANDL_LOG so `STOANDL_LOG=DEBUG`
+         surfaces each captured custom-watchapp frame (otherwise the parent pins it to INFO). -->
+    <logger name="de.yoxcu.stoandl.datalog" level="${logLevel}"/>
+
     <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
     <logger name="PrivatePKJSInterface" level="INFO"/>
     <logger name="CompanionAppLifecycleManager" level="INFO"/>
