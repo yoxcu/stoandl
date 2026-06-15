@@ -505,14 +505,15 @@ For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging)). On t
 
 ---
 
-## 5.8 Datalog capture (PebbleKit DataLogging)  ⚠️ UNVERIFIED (needs a watchapp that logs data)
+## 5.8 Datalog capture (PebbleKit DataLogging)  ✅ Verified on hardware
 
 The watch→phone DataLogging protocol (ACK/NACK, session tracking) was already implemented in
 libpebble3; the only gap was that frames from **custom** apps (any non-health, non-system UUID/tag)
 had nowhere to go. The fork now re-emits them on `Datalogging.records` and stoandl's `DatalogStore`
 appends them as NDJSON: `~/.config/stoandl/datalog/<uuid>/<tag>.ndjson` (one item per line). Off by
 default — set `datalog.enabled = true` and restart. Needs a watchapp that calls
-`data_logging_create()` / `data_logging_log()` (e.g. a fitness/sensor logger).
+`data_logging_create()` / `data_logging_log()` (e.g. a fitness/sensor logger) — a minimal one for this
+purpose is in `testing/datalogtest/` (logs an incrementing uint to tag 42; SELECT forces a flush).
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
