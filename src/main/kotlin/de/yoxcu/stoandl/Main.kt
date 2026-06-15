@@ -383,7 +383,8 @@ private fun ctl(args: Array<String>) {
             val conn = connectDbusOrExit() ?: return
             try {
                 val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                handleStatusResponse(control.Unpair())
+                // `unpair` = blanket (all); `unpair <name>` = just the matching watch (like `repair`).
+                handleStatusResponse(control.Unpair(if (args.size >= 2) args[1] else ""))
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
             } finally {

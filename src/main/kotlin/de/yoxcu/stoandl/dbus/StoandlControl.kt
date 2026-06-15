@@ -83,10 +83,12 @@ interface StoandlControl : DBusInterface {
      *  `timeout:<msg>`. Returns `error:No pairing in progress` if [Pair] was never called. */
     fun PairStatus(): String
 
-    /** Forget the paired watch on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
-     *  RemoveDevice (clears the bond). Use on the host you've moved the watch away from, to stop it
-     *  endlessly retrying a watch that's now bonded elsewhere. Status-prefixed return. */
-    fun Unpair(): String
+    /** Forget paired watch(es) on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
+     *  RemoveDevice (clears the bond). [watch] empty = unpair ALL (blanket); otherwise a name substring
+     *  selects a SINGLE watch (exact-then-unique-substring, like [Repair]). Use on the host you've moved
+     *  the watch away from, to stop it endlessly retrying a watch that's now bonded elsewhere.
+     *  Status-prefixed return. */
+    fun Unpair(watch: String): String
 
     /** Re-pair a SPECIFIC known watch by name: forget just that watch (clears its state, Trusted
      *  intent and BlueZ bond) and open the pairing window — leaving any other watches untouched

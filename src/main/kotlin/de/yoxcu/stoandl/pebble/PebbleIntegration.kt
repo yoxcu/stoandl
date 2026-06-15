@@ -2387,32 +2387,35 @@ private class StoandlControlImpl(
     override fun PairStatus(): String =
         pairingState.get().ifEmpty { "error:No pairing in progress" }
 
-    override fun Unpair(): String {
+    override fun Unpair(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
-        // forget() each known watch (stops libpebble3 auto-connect) and clear its BlueZ bond. Only
-        // *report* watches that were genuinely still bonded: forget() can leave a wedged
-        // KnownPebbleDevice in the list (a stuck standing-connect attempt to a moved/out-of-range
-        // watch keeps hasConnectionAttempt true, which blocks WatchManager from evicting it), so the
-        // same entry can reappear here on a later 'unpair' even though it's already unpaired. The
-        // BlueZ Paired property (isBonded) is the real "paired" state — gate the message on it so a
-        // repeat unpair on an already-unpaired watch honestly reports nothing left to do.
-        val names = known.mapNotNull { d ->
-            when (val id = d.identifier) {
-                is PebbleBleIdentifier -> {
-                    val wasBonded = isBonded(id)
-                    bluezObjectPath(id.asString)?.let(::removeBluezBond)
-                    d.forget()
-                    if (wasBonded) d.displayName() else null
-                }
-                is PebbleBtClassicIdentifier -> {
-                    // BT Classic: remove the BR/EDR bond by MAC (works even while connected) and report it.
-                    classicDevicePath(id.macAddress)?.let(::removeBluezBond)
-                    d.forget()
-                    d.displayName()
-                }
-                else -> { d.forget(); null }
+
+        // Targeted: `unpair <name>` forgets just the matching watch (exact-then-unique-substring, like
+        // `repair`), leaving any other watches untouched (multi-watch safe).
+        if (watch.isNotBlank()) {
+            if (known.isEmpty()) return "error:No known watches"
+            val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
+                .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
+            val match = when {
+                matches.size == 1 -> matches[0]
+                matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
+                    known.joinToString(", ") { it.displayName() }
+                else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
             }
+            val name = match.displayName()
+            unpairOne(match)
+            return "ok:Unpaired $name"
+        }
+
+        // Blanket: forget() each known watch (stops libpebble3 auto-connect) and clear its BlueZ bond.
+        // Only *report* watches that were genuinely still bonded: forget() can leave a wedged
+        // KnownPebbleDevice in the list (a stuck standing-connect attempt to a moved/out-of-range watch
+        // keeps hasConnectionAttempt true, which blocks WatchManager from evicting it), so the same entry
+        // can reappear here on a later 'unpair' even though it's already unpaired.
+        val names = known.mapNotNull { d ->
+            val name = d.displayName()
+            if (unpairOne(d)) name else null
         }
         // Also sweep any leftover bonded Pebble in BlueZ that libpebble3 no longer tracks.
         val swept = clearStalePebbleBonds()
@@ -2421,6 +2424,25 @@ private class StoandlControlImpl(
             swept.isNotEmpty() -> "ok:Cleared ${swept.size} stale bond(s)"
             else -> "ok:No paired watch"
         }
+    }
+
+    /** Forget one watch's libpebble3 state and clear its BlueZ bond (BLE by object path, Classic by MAC
+     *  — works even while connected). Returns whether it was genuinely bonded (for blanket-unpair noise
+     *  filtering; a wedged BLE entry reports false). */
+    private fun unpairOne(d: KnownPebbleDevice): Boolean = when (val id = d.identifier) {
+        is PebbleBleIdentifier -> {
+            val wasBonded = isBonded(id)
+            bluezObjectPath(id.asString)?.let(::removeBluezBond)
+            d.forget()
+            wasBonded
+        }
+        is PebbleBtClassicIdentifier -> {
+            val path = classicDevicePath(id.macAddress)
+            path?.let(::removeBluezBond)
+            d.forget()
+            path != null
+        }
+        else -> { d.forget(); false }
     }
 
     override fun Repair(watch: String): String {
