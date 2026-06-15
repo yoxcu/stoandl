@@ -174,3 +174,18 @@ health.export_samples = false
 # How many days back each export re-projects (the daily/activities/samples window). Older days already
 # written stay in place. Default 30.
 health.export_days = 30
+
+# ── Reconnect (EXPERIMENTAL) ─────────────────────────────────────────────────────────────────────
+# A bonded watch normally reconnects via BlueZ's own background auto-connect — no app scan. That is
+# rock-solid for the BLE-native watches (Pebble Time 2 / Pebble 2). But a classic-era Pebble Time /
+# Time Steel advertises as "Pebble Time LE XXXX" with a *rotating* Resolvable Private Address: after a
+# drop the kernel's accept-list path is pinned to the now-stale dev_<oldRPA> object and can never
+# re-match it, so the watch never comes back. Turning this on makes stoandl run an ACTIVE scan when a
+# bonded watch has been down past a short grace (~20s) and reconnect it under its *current* object path
+# — the same path the initial connect uses. It only kicks in after the grace, so the BLE-native watches
+# (which reconnect in a few seconds via the kernel path) never trigger a rescan.
+#
+# Doubles as a diagnostic: watch the log after a drop for "Starting BLE scan (active reconnect rescan…)"
+# and "BluezBleScanner: pebble match count". If the watch never appears, it isn't advertising at all
+# after a disconnect — in which case NO BLE strategy can recover it and BT Classic is the only path.
+reconnect.active_rescan = false

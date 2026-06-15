@@ -129,6 +129,16 @@ data class StoandlConfig(
     /** How many days back the export re-projects on each update (the daily summary, activities and
      *  samples window). Older days already written stay in place. */
     val healthExportDays: Int,
+    /** EXPERIMENTAL (branch `pts-ble-active-rescan`): when a bonded watch is disconnected and BlueZ's
+     *  native background auto-connect isn't bringing it back, run an app-side ACTIVE scan after a short
+     *  grace and reconnect by re-discovering the watch under its *current* object path — the same path
+     *  the initial connect uses (which sidesteps the stale `dev_<oldRPA>` path + empty-resolving-list
+     *  problem that strands a classic-era Pebble Time/Time Steel advertising "Pebble Time LE XXXX" with
+     *  a rotating Resolvable Private Address). Off by default. The BLE-native Time 2 / Pebble 2 reconnect
+     *  via the fast kernel path well within the grace, so they never trigger a rescan (no regression).
+     *  Doubles as a diagnostic: if the watch never appears in the rescan log, it isn't advertising at
+     *  all post-drop — in which case no BLE strategy can recover it and BT Classic is the only path. */
+    val bleActiveRescan: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -195,6 +205,7 @@ data class StoandlConfig(
             healthExport = true,
             healthExportSamples = false,
             healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
+            bleActiveRescan = false,
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -276,6 +287,7 @@ data class StoandlConfig(
                 healthSync = map["health.sync"]?.let { parseBool(it) } ?: true,
                 healthExport = map["health.export"]?.let { parseBool(it) } ?: true,
                 healthExportSamples = parseBool(map["health.export_samples"]),
+                bleActiveRescan = parseBool(map["reconnect.active_rescan"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
             )
@@ -296,7 +308,8 @@ data class StoandlConfig(
                     (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "") +
                     ", languageDownload=${cfg.languageDownload}" +
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
-                    (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "")
+                    (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
+                    ", bleActiveRescan=${cfg.bleActiveRescan}"
             }
             return cfg
         }
