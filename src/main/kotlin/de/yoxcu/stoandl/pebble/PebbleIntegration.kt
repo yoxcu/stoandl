@@ -54,6 +54,8 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.PebbleScanResult
+import io.rebble.libpebblecommon.connection.bt.createBondClassic
+import io.rebble.libpebblecommon.connection.bt.isBondedClassic
 import io.rebble.libpebblecommon.connection.WatchConnector
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
@@ -448,15 +450,26 @@ class PebbleIntegration(
                 delay(35.seconds)
             }
         }
-        // Request a connection the first time we see each discovered classic Pebble. connectGoal then
-        // stays set, so WatchManager keeps (re)connecting it — no need to re-request on every emission.
-        val requested = ConcurrentHashMap.newKeySet<String>()
+        // The first time we see each discovered classic Pebble: pair it UP-FRONT if needed (a blocking
+        // ~10s Device1.Pair — confirm the code on the watch — done OUTSIDE the connect attempt so it
+        // doesn't race the connection timeout), then request a connection. connectGoal then stays set,
+        // so WatchManager keeps (re)connecting it.
+        val handled = ConcurrentHashMap.newKeySet<String>()
         libPebble.watches.onEach { devices ->
             for (d in devices) {
                 val id = d.identifier as? PebbleBtClassicIdentifier ?: continue
                 if (d is ConnectedPebbleDevice || d is ConnectingPebbleDevice) continue
-                if (requested.add(id.macAddress)) {
-                    log.info { "BT Classic: auto-connecting discovered ${id.macAddress}" }
+                if (!handled.add(id.macAddress)) continue
+                scope.launch {
+                    val bonded = withContext(Dispatchers.IO) { isBondedClassic(id) || createBondClassic(id) }
+                    if (!bonded) {
+                        log.warn {
+                            "BT Classic: ${id.macAddress} not bonded and auto-pair failed — pair it once by " +
+                                "hand (btmgmt pair -t bredr ${id.macAddress}) then restart"
+                        }
+                        return@launch
+                    }
+                    log.info { "BT Classic: connecting ${id.macAddress}" }
                     watchConnector.requestConnection(id)
                 }
             }
