@@ -104,6 +104,7 @@ import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.interfaces.ObjectManager
+import org.freedesktop.dbus.interfaces.Properties
 import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.UInt32
@@ -736,7 +737,11 @@ class PebbleIntegration(
                         // we're not mid-pairing, when the bond is briefly absent by design) forget it — which
                         // stops libpebble's futile connect loop — and tell the user how to bring it back.
                         val id = w.identifier as? PebbleBleIdentifier
-                        if (id != null && !pairingGate.isOpen() && !isBonded(id)) {
+                        // Only forget on a CONFIRMED host-side removal (device present + Paired=false),
+                        // not when isBonded merely threw because the BLE object is transiently absent
+                        // (rotating RPA, or a Classic-driven watch) — that's away, not unpaired.
+                        if (id != null && !pairingGate.isOpen() &&
+                            bluezObjectPath(id.asString)?.let { bluezBondGenuinelyRemoved(it) } == true) {
                             val since = unbondedSince.getOrPut(path) { now }
                             if (now - since >= HOST_BOND_LOST_GRACE.inWholeMilliseconds) {
                                 notifyHostBondLost(w)
@@ -1637,6 +1642,36 @@ private fun bluezObjectPath(identifierAsString: String): String? =
     Regex(""""object_path"\s*:\s*"([^"]+)"""").find(identifierAsString)?.groupValues?.get(1)
 
 /** Removes a single BlueZ bond by device object path via Adapter1.RemoveDevice. Returns true on success. */
+/**
+ * True ONLY when the BlueZ device object EXISTS and reports Paired=false — a genuine host-side bond
+ * removal (e.g. `bluetoothctl remove`). The fork's [isBonded] returns false even when the device object
+ * is merely ABSENT (a transient/away BLE device whose rotating-RPA object BlueZ dropped, or a watch we
+ * drive over BT Classic so its "Pebble Time LE" BLE object comes and goes) — that is NOT a removed bond
+ * and must not trigger the host-bond-lost forget/notify (the spurious "Pebble pairing removed" alert).
+ * Here an absent/unreachable object → false (away, not removed).
+ */
+private fun bluezBondGenuinelyRemoved(devicePath: String): Boolean {
+    val conn = try {
+        DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    } catch (e: Exception) {
+        return false
+    }
+    return try {
+        val props = conn.getRemoteObject(ORG_BLUEZ, devicePath, Properties::class.java)
+        val paired = props.Get<Any>(BLUEZ_DEVICE1, "Paired")
+        val isPaired = when (paired) {
+            is Boolean -> paired
+            is Variant<*> -> paired.value as? Boolean ?: true
+            else -> true
+        }
+        !isPaired  // object present AND not paired = a real host-side removal
+    } catch (e: Exception) {
+        false  // object absent / unreachable → away, not a removed bond
+    } finally {
+        try { conn.disconnect() } catch (_: Exception) {}
+    }
+}
+
 private fun removeBluezBond(devicePath: String): Boolean {
     val adapterPath = devicePath.substringBeforeLast("/dev_") // -> /org/bluez/hciN
     val conn = try {
