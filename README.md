@@ -5,7 +5,8 @@
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
 Headless Pebble smartwatch companion app / bridge for Linux / postmarketOS — a background
-daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
+daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE (or Bluetooth Classic
+for classic-era watches).
 
 *Stoandl* is Bavarian dialect for "Steinchen" (little stone / pebble).
 
@@ -24,7 +25,7 @@ daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE.
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
 - Resets the watch over BLE — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
 - Reads the watch's battery level — `stoandl battery`, and inline in `stoandl list`
-- Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range; reconnection is handed to BlueZ's own background auto-connect, so the watch links up the instant it's reachable with no polling and no restarts
+- Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range. BLE watches are handed to BlueZ's own background auto-connect (no polling); classic-era watches reconnect by paging the watch's fixed address (no advertising needed, so it survives airplane mode). Either way it links up on its own, with no restarts
 - Runs as a background daemon with no UI
 
 It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
@@ -32,18 +33,20 @@ It also runs PKJS companion scripts, serves Clay config pages, and has (untested
 
 ## Compatibility
 
-BLE-only by design. Works reliably with BLE-native watches (Pebble 2 / Time 2); older dual-mode
-watches (Time, Time Steel) are best-effort over BLE.
+BLE-native watches (Pebble 2 / Time 2) connect over **BLE** and work reliably. Classic-era watches
+(Pebble Time / Time Steel) are flaky over BLE — their reliable native transport is **Bluetooth Classic**
+(BR/EDR), which stoandl now supports as an experimental transport (see
+[Bluetooth Classic](#bluetooth-classic-classic-era-watches) below).
 
-| Watch | Platform | Status |
-|-------|----------|--------|
-| Pebble Time 2 | EMERY | ✅ Works |
-| Pebble 2 | DIORITE | ⚠️ Expected to work (untested) |
-| Pebble Time / Time Steel | BASALT | ⚠️ Flaky over BLE (~1 in 5 pairings succeed) |
-| Pebble Time Round | CHALK | ⚠️ Same class as BASALT (untested) |
-| original Pebble / Pebble Steel | APLITE | ❌ Classic-only — not supported |
+| Watch | Platform | Transport | Status |
+|-------|----------|-----------|--------|
+| Pebble Time 2 | EMERY | BLE | ✅ Works |
+| Pebble 2 | DIORITE | BLE | ⚠️ Expected to work (untested) |
+| Pebble Time / Time Steel | BASALT | Bluetooth Classic | ✅ Works — experimental, hardware-verified on a Time Steel (flaky over BLE) |
+| Pebble Time Round | CHALK | Bluetooth Classic | ⚠️ Same class as BASALT (untested) |
+| original Pebble / Pebble Steel | APLITE | Bluetooth Classic | ⚠️ Classic-only hardware (untested) |
 
-→ [docs/devices.md](docs/devices.md) — root causes, workarounds, Bluetooth Classic scope.
+→ [docs/devices.md](docs/devices.md) — root causes, workarounds, transport details.
 
 ## Requirements
 
@@ -58,9 +61,15 @@ watches (Time, Time Steel) are best-effort over BLE.
 
 ## Bluetooth setup
 
-Some Pebbles advertise as dual-mode — BlueZ tries a Classic connection first and never falls back
-to LE. Put the adapter in **LE-only mode** to force BLE. (Firmware v4.12.0+ on BLE-native watches
-fixes the advertising bug; LE-only mode is not needed there.)
+**Most setups need no change.** Leave the adapter in its default dual-mode (BR/EDR + LE): BLE-native
+watches (Time 2 / Pebble 2) on current firmware connect over LE, and classic-era watches (Time /
+Time Steel) need BR/EDR **enabled** for [Bluetooth Classic](#bluetooth-classic-classic-era-watches).
+
+**LE-only mode (optional — BLE-native watches only).** Some BLE-native Pebbles on *old* firmware
+advertise as dual-mode, so BlueZ tries a Classic connection that never falls back to LE. Forcing the
+adapter **LE-only** dodges that. Firmware v4.12.0+ fixes the advertising bug, so it's rarely needed —
+and **don't** use LE-only mode if you want a classic-era watch over Bluetooth Classic (that needs
+BR/EDR on).
 
 ```sh
 # temporary (until reboot)
@@ -74,7 +83,8 @@ Persistent — `/etc/bluetooth/main.conf`:
 ControllerMode = le
 ```
 
-Then `sudo systemctl restart bluetooth`. Note: disables Bluetooth Classic for the whole adapter.
+Then `sudo systemctl restart bluetooth`. Note: this disables Bluetooth Classic for the whole adapter,
+so a single adapter can serve either an LE-only BLE watch **or** a classic-era watch — not both at once.
 
 ## Pairing
 
@@ -82,11 +92,12 @@ On first connection the watch shows a **6-digit code**. stoandl auto-accepts on 
 just confirm the code on the watch. Subsequent reconnects are automatic.
 
 ```sh
-stoandl pair                 # pair a new watch (opens a ~2 min window)
+stoandl pair                 # pair a new watch (opens a ~2 min window; finds BLE and classic watches)
 stoandl list                 # known watches, their connection state and battery level
 stoandl battery              # the connected watch's battery level
+stoandl connect B349         # connect a specific known watch by name/substring (switches the active watch)
 stoandl repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
-stoandl unpair               # forget the watch on this host (e.g. moving it elsewhere)
+stoandl unpair [name]        # forget watches on this host — all of them, or just the named one
 ```
 
 If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
@@ -104,6 +115,55 @@ restored. (To forget a watch cleanly in the first place, use `stoandl unpair`, n
 > and it never links up. Check with `bluetoothctl show | grep Discovering`; if it's `yes` and you
 > didn't start it, close the scanner — the watch reconnects within a second. stoandl logs a warning
 > (and sends a desktop notification) when it detects this.
+
+## Bluetooth Classic (classic-era watches)
+
+> **Experimental.** Works and is hardware-verified on a Pebble Time Steel, but it's newer and less
+> battle-tested than the BLE path, and off by default.
+
+Classic-era Pebbles (Pebble Time / Time Steel — and, by class, the original Pebble / Steel) connect
+reliably only over **Bluetooth Classic** (BR/EDR, RFCOMM/SPP), their native transport. Their BLE path
+is a firmware-side race: the watch pairs once over BLE, then hands the host its Classic address and
+expects the persistent link over BR/EDR — so over BLE it often never reconnects. stoandl can now talk
+to these watches over Bluetooth Classic directly. The BLE path is untouched: BLE-native watches
+(Time 2 / Pebble 2) keep using BLE.
+
+What works (hardware-verified on a Time Steel): discover → pair → connect → the full Pebble protocol →
+automatic reconnect after the watch goes out of range or into airplane mode. The protocol layer is
+transport-agnostic, so everything in [What it does](#what-it-does) — notifications, the locker, health,
+datalog, calendar, music, … — works the same over Classic.
+
+### Enabling it
+
+It's off until you opt in, in `~/.config/stoandl/stoandl.conf`:
+
+```ini
+classic.discover = true     # discover, pair and connect classic-era Pebbles automatically
+```
+
+Make sure the adapter has **BR/EDR enabled** (the default — *not* LE-only mode; see
+[Bluetooth setup](#bluetooth-setup)). Then pair as usual:
+
+```sh
+stoandl pair                 # opens a pairing window; inquires for BLE and classic watches alike
+# then confirm the matching 6-digit code ON THE WATCH — stoandl auto-confirms on the host side
+```
+
+With `classic.discover` on, a known watch reconnects on its own afterwards: stoandl pages its fixed
+address, so no advertising is needed and it survives airplane mode / out-of-range. A BR/EDR inquiry
+only runs while a pairing window is open, so the radio stays quiet the rest of the time.
+
+`connect`, `unpair [name]`, `repair`, `list` and `battery` all work for classic watches just like BLE
+ones — `unpair` forgets a classic watch by its address even while it's connected. Only one watch is
+connected at a time; `stoandl connect <name>` hands the active slot to another known watch.
+
+> **Pairing falls back to manual?** Pairing a dual-mode watch occasionally creates an LE bond instead
+> of the BR/EDR link key RFCOMM needs. If the watch pairs but won't connect, bond it explicitly with
+> `btmgmt pair -t bredr <mac>`, then (re)start the daemon.
+
+The transport spans this repo and the [libpebble3 fork](#libpebble3) (the BlueZ RFCOMM socket, the
+BR/EDR scanner and Classic pairing). → [docs/devices.md](docs/devices.md) for the full diagnosis and
+[docs/configuration.md](docs/configuration.md#bluetooth-classic) for the config keys.
 
 ## Build
 

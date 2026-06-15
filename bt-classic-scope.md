@@ -1,5 +1,14 @@
 # Scope: Bluetooth Classic (BR/EDR) support for stoandl (JVM/Linux, BlueZ)
 
+> **Status: IMPLEMENTED (experimental).** This was the original design doc; the transport now exists
+> and is hardware-verified on a Pebble Time Steel (since v0.4.0). For how to use it see
+> [Bluetooth Classic](README.md#bluetooth-classic-classic-era-watches) in the README and
+> [docs/devices.md](docs/devices.md); this file is kept as the design record. Where the
+> implementation diverged from the plan below: the RFCOMM socket is obtained via a **JNA
+> AF_BLUETOOTH socket** (not `Profile1`/`ConnectProfile` FD-passing, which BlueZ rejects for an
+> external client), the channel is resolved via a native **L2CAP SDP** query, and pairing is done
+> **up-front** during the pairing window rather than inside the connect attempt.
+
 Goal: reliably support the classic-primary Pebbles (Pebble Time, **Time Steel**, original Pebble/Steel)
 whose BLE path is a firmware-side ~1/5 race. BT Classic (RFCOMM/SPP) is their native, reliable transport.
 

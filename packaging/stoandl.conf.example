@@ -175,36 +175,18 @@ health.export_samples = false
 # written stay in place. Default 30.
 health.export_days = 30
 
-# ── Reconnect (EXPERIMENTAL) ─────────────────────────────────────────────────────────────────────
-# A bonded watch normally reconnects via BlueZ's own background auto-connect — no app scan. That is
-# rock-solid for the BLE-native watches (Pebble Time 2 / Pebble 2). But a classic-era Pebble Time /
-# Time Steel advertises as "Pebble Time LE XXXX" with a *rotating* Resolvable Private Address: after a
-# drop the kernel's accept-list path is pinned to the now-stale dev_<oldRPA> object and can never
-# re-match it, so the watch never comes back. Turning this on makes stoandl run an ACTIVE scan when a
-# bonded watch has been down past a short grace (~20s) and reconnect it under its *current* object path
-# — the same path the initial connect uses. It only kicks in after the grace, so the BLE-native watches
-# (which reconnect in a few seconds via the kernel path) never trigger a rescan.
-#
-# Doubles as a diagnostic: watch the log after a drop for "Starting BLE scan (active reconnect rescan…)"
-# and "BluezBleScanner: pebble match count". If the watch never appears, it isn't advertising at all
-# after a disconnect — in which case NO BLE strategy can recover it and BT Classic is the only path.
-reconnect.active_rescan = false
-
-# ── Bluetooth Classic (EXPERIMENTAL, MVP) ────────────────────────────────────────────────────────
+# ── Bluetooth Classic (EXPERIMENTAL) ─────────────────────────────────────────────────────────────
 # Classic-era Pebbles (Pebble Time / Time Steel) use Bluetooth Classic RFCOMM/SPP as their reliable
 # native transport — BLE on these watches is a flaky firmware-side race. The BLE path is unaffected:
-# BLE-native watches (Pebble Time 2 / Pebble 2) still use BLE.
+# BLE-native watches (Pebble Time 2 / Pebble 2) still use BLE. The adapter must have BR/EDR enabled
+# (the default — not LE-only mode).
 #
-# Easiest: let stoandl discover the watch (BR/EDR inquiry) and auto-connect it. A watch that's already
-# bonded reconnects on its own; to pair a NEW watch, run `stoandl pair` (opens a pairing window) and
-# confirm the 6-digit code ON THE WATCH — same flow as BLE. The RFCOMM channel is resolved via SDP.
-# classic.discover = true
+# Turn this on to discover, pair and connect classic-era watches over a BR/EDR inquiry. To pair a NEW
+# watch, run `stoandl pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH — same
+# flow as BLE; the RFCOMM channel is resolved via SDP. A bonded watch then reconnects on its own.
+classic.discover = false
 #
-# Or pin a specific watch by MAC (still auto-pairs + SDP-resolves the channel):
-# classic.mac = B0:B4:48:B6:1E:81
-# classic.channel = 1        # fallback only; the channel is resolved via SDP at connect time
-#
-# If auto-pair doesn't yield a working BR/EDR bond on your dual-mode watch, pair it once by hand:
+# If auto-pairing doesn't yield a working BR/EDR bond on your dual-mode watch, pair it once by hand:
 #     bluetoothctl remove <MAC>            # clear any half-bond; put the watch in pairing mode, then:
 #     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
 #     bluetoothctl trust <MAC>

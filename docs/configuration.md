@@ -41,7 +41,39 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
 | `calendar.caldav` | list | _(empty)_ | CalDAV calendars, each `url\|user\|password`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
+| `classic.discover` | bool | `false` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl pair`) is open. Off by default. |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
+
+## Bluetooth Classic
+
+> **Experimental** — hardware-verified on a Pebble Time Steel, off by default.
+
+Classic-era Pebbles (Pebble Time / Time Steel, and by class the original Pebble / Steel) connect
+reliably only over **Bluetooth Classic** (BR/EDR, RFCOMM/SPP), not BLE — see
+[docs/devices.md](devices.md) for the diagnosis. BLE-native watches (Time 2 / Pebble 2) are
+unaffected and keep using BLE. The adapter must have **BR/EDR enabled** (the default; *not*
+LE-only mode).
+
+The hands-off path is `classic.discover`:
+
+```ini
+classic.discover = true            # discover + auto-pair + auto-connect classic-era Pebbles
+```
+
+Then `stoandl pair` (confirm the 6-digit code on the watch; the host auto-confirms). A BR/EDR
+inquiry runs only while that pairing window is open — the rest of the time the radio is quiet. A
+bonded watch reconnects on its own afterwards: stoandl pages its fixed address (no advertising), so
+it survives airplane mode / out-of-range. There's no kernel-side background auto-connect for BR/EDR
+(that's BLE-only), so stoandl runs a quiet standing reconnect loop instead.
+
+Pairing a dual-mode watch occasionally yields an LE bond rather than the BR/EDR link key RFCOMM
+needs; if it pairs but won't connect, run `btmgmt pair -t bredr <mac>` by hand and restart the daemon.
+
+All other commands (`connect`, `unpair [name]`, `repair`, `list`, `battery`) and every feature work
+over Classic just as over BLE — the Pebble protocol layer is transport-agnostic. Only one watch is
+connected at a time; `stoandl connect <name>` switches the active watch.
+
+No web egress: Bluetooth Classic is local-radio only.
 
 ## Per-app notification settings
 

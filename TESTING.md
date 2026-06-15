@@ -908,6 +908,42 @@ enough to have data; daemon running.
 
 ---
 
+## 5.22 Bluetooth Classic transport  ✅ Verified on hardware (Pebble Time Steel) — experimental
+
+Connects classic-era Pebbles (Pebble Time / Time Steel) over **Bluetooth Classic** (BR/EDR,
+RFCOMM/SPP) — their reliable native transport. The host is the RFCOMM client; reconnect pages the
+watch's fixed address (no advertising), so it survives airplane mode. Discovery (BR/EDR inquiry) runs
+only while a pairing window is open; a bonded watch reconnects with no scan. Off by default
+(`classic.discover`); the BLE path is untouched. See
+[README → Bluetooth Classic](README.md#bluetooth-classic-classic-era-watches) and
+[docs/configuration.md](docs/configuration.md#bluetooth-classic).
+
+```sh
+tail -f /tmp/stoandl.log | grep -E "BT Classic|Starting BLE scan|connected and services resolved|link dropped"
+```
+
+**Prerequisite:** a classic-era watch (Time / Time Steel); the adapter in dual-mode with **BR/EDR
+enabled** (NOT LE-only mode); `classic.discover = true` in `stoandl.conf`; daemon running.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.220 | BR/EDR is enabled | `btmgmt info` (or `bluetoothctl show`) | Current settings include **`br/edr`** (alongside `le`) — the adapter is not LE-only. If it is, Classic can't work: `sudo btmgmt bredr on` (and don't set `ControllerMode = le`). |
+| 5.221 | Discover → pair → connect | `classic.discover = true`, restart, `stoandl pair`, then confirm the 6-digit code **on the watch** | Log: `BT Classic: discovering (BR/EDR inquiry — pairing window open)` → `Found <name> — pairing...` → `BT Classic: connecting <mac>` → `connected and services resolved`. Host auto-confirms; the code matches the watch. `stoandl list` shows the watch `connected`. |
+| 5.222 | Full protocol over Classic | with it connected: trigger a desktop notification; `stoandl apps`; `stoandl battery` | The notification reaches the watch; `apps` lists the locker; `battery` prints a level. Every feature rides the same transport-agnostic protocol — it behaves like a BLE watch. |
+| 5.223 | Reconnect after out-of-range | walk out of range / toggle the watch's airplane mode, then bring it back | Reconnects on its own — stoandl pages the fixed MAC, no advertising needed. Log: one out-of-range INFO, then `BT Classic: connecting <mac>` → `connected and services resolved` on return. A test notification arrives. Repeat 3–5×. |
+| 5.224 | Standing loop stays quiet | leave it out of range several minutes, then `grep -c "BT Classic" /tmp/stoandl.log` and skim the log | The retry loop is quiet — roughly one "out" + one "back" line per cycle, **not** a per-attempt ERROR storm. No `RealPebbleConnector` ERROR spam, no WatchManager re-spawn churn. |
+| 5.225 | Inquiry only while pairing | with **no** pairing window open: `bluetoothctl show \| grep Discovering` (or watch `btmon`) | `Discovering: no` — there is no always-on BR/EDR inquiry. A bonded watch reconnects with no scan; inquiry appears only during the ~2 min after `stoandl pair`. |
+| 5.226 | BLE-native watch unaffected | have a Pebble Time 2 / Pebble 2 around too; `stoandl list` + log | The Time 2 connects over **BLE** as before and is **not** misclassified as Classic (the classic scanner requires a Class-of-Device, which BLE-only devices lack). No regression to the BLE path. |
+| 5.227 | `connect <name>` switches the active watch | with two known watches, `stoandl connect <other>` | The named watch becomes the connected one (single-watch mode hands over the slot). Exact-then-substring match. Works for BLE and classic watches alike. |
+| 5.228 | `unpair <name>` forgets one watch | `stoandl unpair <name>` for a classic watch (even while connected) | Only that watch is forgotten — its BlueZ bond removed by MAC; other watches untouched. `stoandl unpair` with no name still forgets **all**. `stoandl list` reflects the change. |
+| 5.229 | Pairing fallback to manual | a dual-mode watch that pairs but won't connect (got an LE bond, not a BR/EDR link key) | Log: `BT Classic: pairing <mac> failed — try btmgmt pair -t bredr <mac> by hand`. Running that, then restarting the daemon, yields a working link. |
+
+**Known limitation:** one watch is connected at a time (`connect` switches the active one); simultaneous
+Classic + BLE is not supported. The original Pebble / Steel (APLITE) and Time Round (CHALK) are the same
+Classic-only class and expected to work, but are untested.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

@@ -129,26 +129,10 @@ data class StoandlConfig(
     /** How many days back the export re-projects on each update (the daily summary, activities and
      *  samples window). Older days already written stay in place. */
     val healthExportDays: Int,
-    /** EXPERIMENTAL (branch `pts-ble-active-rescan`): when a bonded watch is disconnected and BlueZ's
-     *  native background auto-connect isn't bringing it back, run an app-side ACTIVE scan after a short
-     *  grace and reconnect by re-discovering the watch under its *current* object path — the same path
-     *  the initial connect uses (which sidesteps the stale `dev_<oldRPA>` path + empty-resolving-list
-     *  problem that strands a classic-era Pebble Time/Time Steel advertising "Pebble Time LE XXXX" with
-     *  a rotating Resolvable Private Address). Off by default. The BLE-native Time 2 / Pebble 2 reconnect
-     *  via the fast kernel path well within the grace, so they never trigger a rescan (no regression).
-     *  Doubles as a diagnostic: if the watch never appears in the rescan log, it isn't advertising at
-     *  all post-drop — in which case no BLE strategy can recover it and BT Classic is the only path. */
-    val bleActiveRescan: Boolean,
     /** EXPERIMENTAL Bluetooth Classic (BR/EDR) transport for classic-era Pebbles (Time / Time Steel),
-     *  whose native, reliable transport is RFCOMM/SPP — not BLE. When [classicMac] is set, stoandl
-     *  connects that watch over a secure RFCOMM socket (the watch must already be BR/EDR-bonded:
-     *  `btmgmt pair -t bredr <mac>`). The BLE path is unaffected — BLE-native watches still use BLE. */
-    val classicMac: String?,
-    /** RFCOMM channel of the watch's SPP service. The connector resolves it via SDP at connect time;
-     *  this is only the fallback if SDP resolution fails. Default 1. */
-    val classicChannel: Int,
-    /** Discover classic-era Pebbles via BR/EDR inquiry and auto-connect them (auto-pairing if needed),
-     *  so you don't have to configure [classicMac]. Off by default. */
+     *  whose native, reliable transport is RFCOMM/SPP — not BLE. When set, stoandl discovers these
+     *  watches via a BR/EDR inquiry (during a pairing window) and auto-pairs + connects them over a
+     *  secure RFCOMM socket. Off by default. The BLE path is unaffected — BLE-native watches use BLE. */
     val classicDiscover: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
@@ -216,9 +200,6 @@ data class StoandlConfig(
             healthExport = true,
             healthExportSamples = false,
             healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
-            bleActiveRescan = false,
-            classicMac = null,
-            classicChannel = 1,
             classicDiscover = false,
         )
 
@@ -301,9 +282,6 @@ data class StoandlConfig(
                 healthSync = map["health.sync"]?.let { parseBool(it) } ?: true,
                 healthExport = map["health.export"]?.let { parseBool(it) } ?: true,
                 healthExportSamples = parseBool(map["health.export_samples"]),
-                bleActiveRescan = parseBool(map["reconnect.active_rescan"]),
-                classicMac = map["classic.mac"]?.trim()?.takeIf { it.isNotEmpty() },
-                classicChannel = map["classic.channel"]?.trim()?.toIntOrNull() ?: 1,
                 classicDiscover = parseBool(map["classic.discover"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
@@ -326,8 +304,6 @@ data class StoandlConfig(
                     ", languageDownload=${cfg.languageDownload}" +
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
-                    ", bleActiveRescan=${cfg.bleActiveRescan}" +
-                    (cfg.classicMac?.let { ", classicMac=$it (ch${cfg.classicChannel})" } ?: "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "")
             }
             return cfg
