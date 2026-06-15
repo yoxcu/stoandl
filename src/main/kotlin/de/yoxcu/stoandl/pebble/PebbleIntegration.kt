@@ -485,6 +485,11 @@ class PebbleIntegration(
                         return@launch
                     }
                     if (!pairingInFlight.add(mac)) return@launch
+                    // Report the found watch in `stoandl pair`, same as the BLE flow.
+                    if (pairingState.get() == "pending:") {
+                        val label = d.displayName().takeIf { it.isNotBlank() } ?: "Pebble"
+                        pairingState.set("pending:Found $label — pairing...")
+                    }
                     val paired = try {
                         withContext(Dispatchers.IO) { createBondClassic(id) }
                     } finally {
@@ -1250,6 +1255,16 @@ class PebbleIntegration(
     private fun startAutoConnect() {
         libPebble.watches.onEach { devices ->
             for (device in devices.filterIsInstance<BleDiscoveredPebbleDevice>()) {
+                // Dual-mode pick: if this same watch is reachable over BT Classic (a classic Pebble with
+                // the matching name suffix is present, e.g. "Pebble B349" on both), let Classic claim it
+                // and skip the BLE bridge. Covers watches whose BLE advert name lacks the "LE" token the
+                // scan-record filter keys on.
+                val bleSuffix = device.name.substringAfterLast(' ').takeIf { it.isNotBlank() }
+                if (bleSuffix != null && devices.any {
+                        it.identifier is PebbleBtClassicIdentifier &&
+                            it.name.substringAfterLast(' ').equals(bleSuffix, ignoreCase = true)
+                    }
+                ) continue
                 val failures = device.connectionFailureInfo
                 if (failures != null && failures.times >= MAX_CONNECTION_ATTEMPTS) {
                     log.warn { "Giving up on ${device.identifier} after ${failures.times} attempts (${failures.reason})" }
@@ -1741,6 +1756,26 @@ private fun bluezBondGenuinelyRemoved(devicePath: String): Boolean {
         !isPaired  // object present AND not paired = a real host-side removal
     } catch (e: Exception) {
         false  // object absent / unreachable → away, not a removed bond
+    } finally {
+        try { conn.disconnect() } catch (_: Exception) {}
+    }
+}
+
+/** BlueZ object path of a BR/EDR device by MAC (any adapter), or null if BlueZ doesn't know it. */
+private fun classicDevicePath(mac: String): String? {
+    val suffix = "dev_" + mac.trim().uppercase().replace(":", "_")
+    val conn = try {
+        DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    } catch (e: Exception) {
+        return null
+    }
+    return try {
+        conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
+            .GetManagedObjects().keys
+            .map { it.toString() }
+            .firstOrNull { it.endsWith("/$suffix") }
+    } catch (e: Exception) {
+        null
     } finally {
         try { conn.disconnect() } catch (_: Exception) {}
     }
@@ -2363,11 +2398,21 @@ private class StoandlControlImpl(
         // BlueZ Paired property (isBonded) is the real "paired" state — gate the message on it so a
         // repeat unpair on an already-unpaired watch honestly reports nothing left to do.
         val names = known.mapNotNull { d ->
-            val id = d.identifier as? PebbleBleIdentifier
-            val wasBonded = id != null && isBonded(id)
-            id?.let { bluezObjectPath(it.asString)?.let(::removeBluezBond) }
-            d.forget()
-            if (wasBonded) d.displayName() else null
+            when (val id = d.identifier) {
+                is PebbleBleIdentifier -> {
+                    val wasBonded = isBonded(id)
+                    bluezObjectPath(id.asString)?.let(::removeBluezBond)
+                    d.forget()
+                    if (wasBonded) d.displayName() else null
+                }
+                is PebbleBtClassicIdentifier -> {
+                    // BT Classic: remove the BR/EDR bond by MAC (works even while connected) and report it.
+                    classicDevicePath(id.macAddress)?.let(::removeBluezBond)
+                    d.forget()
+                    d.displayName()
+                }
+                else -> { d.forget(); null }
+            }
         }
         // Also sweep any leftover bonded Pebble in BlueZ that libpebble3 no longer tracks.
         val swept = clearStalePebbleBonds()
