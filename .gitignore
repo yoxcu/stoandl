@@ -23,3 +23,7 @@ pebble-logs-*.txt
 # Python bytecode cache (tools/)
 __pycache__/
 *.pyc
+
+# Pebble SDK build artifacts (testing/ watchapp projects)
+.lock-waf_*
+.pebble/
