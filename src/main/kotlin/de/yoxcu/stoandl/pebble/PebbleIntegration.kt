@@ -433,21 +433,27 @@ class PebbleIntegration(
         }
     }
 
-    /** BR/EDR inquiry + auto-connect of discovered classic Pebbles. The connector auto-pairs if needed. */
+    /** Discover + connect classic Pebbles. The connector auto-pairs (during a pairing window) if needed. */
     private fun startClassicDiscovery() {
-        // Inquire periodically while no classic watch is connected (stop once one is, to free the radio).
+        // BR/EDR inquiry is ONLY needed to find a NEW watch's MAC — so, like the BLE scan, run it only
+        // while a pairing window is open (`stoandl pair`). A KNOWN/bonded classic watch needs no scan:
+        // it's loaded from the DB and WatchManager reconnects it via the connector paging its fixed MAC
+        // (no advertising, no discovery). Inquiry is power/airtime-heavy, so we never leave it running.
         scope.launch {
             while (true) {
                 val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                 val classicConnected = libPebble.watches.value.any {
                     it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
                 }
-                if (btOn && !classicConnected) {
-                    if (!libPebble.isScanningClassic.value) libPebble.startClassicScan()
+                if (btOn && pairingGate.isOpen() && !classicConnected) {
+                    if (!libPebble.isScanningClassic.value) {
+                        log.info { "BT Classic: discovering (BR/EDR inquiry — pairing window open)" }
+                        libPebble.startClassicScan()
+                    }
                 } else if (libPebble.isScanningClassic.value) {
                     libPebble.stopClassicScan()
                 }
-                delay(35.seconds)
+                delay(2.seconds)
             }
         }
         // For each discovered classic Pebble: a BONDED one auto-connects; an UNBONDED one is only paired
