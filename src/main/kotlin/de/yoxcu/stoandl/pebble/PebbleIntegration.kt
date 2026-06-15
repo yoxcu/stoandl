@@ -2167,11 +2167,19 @@ private class StoandlControlImpl(
     override fun Unpair(): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
-        // forget() each known watch (stops libpebble3 auto-connect) and clear its BlueZ bond.
-        val names = known.map { d ->
-            (d.identifier as? PebbleBleIdentifier)?.let { id -> bluezObjectPath(id.asString)?.let(::removeBluezBond) }
+        // forget() each known watch (stops libpebble3 auto-connect) and clear its BlueZ bond. Only
+        // *report* watches that were genuinely still bonded: forget() can leave a wedged
+        // KnownPebbleDevice in the list (a stuck standing-connect attempt to a moved/out-of-range
+        // watch keeps hasConnectionAttempt true, which blocks WatchManager from evicting it), so the
+        // same entry can reappear here on a later 'unpair' even though it's already unpaired. The
+        // BlueZ Paired property (isBonded) is the real "paired" state — gate the message on it so a
+        // repeat unpair on an already-unpaired watch honestly reports nothing left to do.
+        val names = known.mapNotNull { d ->
+            val id = d.identifier as? PebbleBleIdentifier
+            val wasBonded = id != null && isBonded(id)
+            id?.let { bluezObjectPath(it.asString)?.let(::removeBluezBond) }
             d.forget()
-            d.displayName()
+            if (wasBonded) d.displayName() else null
         }
         // Also sweep any leftover bonded Pebble in BlueZ that libpebble3 no longer tracks.
         val swept = clearStalePebbleBonds()
