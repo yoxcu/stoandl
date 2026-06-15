@@ -52,6 +52,8 @@ import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
+import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
+import io.rebble.libpebblecommon.connection.PebbleScanResult
 import io.rebble.libpebblecommon.connection.WatchConnector
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
@@ -344,6 +346,7 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
+        startClassicWatch()
         startStaleBondReaper()
         startDiscoveryInterferenceWarning()
         startNotificationActionListener()
@@ -392,6 +395,37 @@ class PebbleIntegration(
                 }
             }
             delay(1.5.seconds)
+        }
+    }
+
+    /**
+     * EXPERIMENTAL Bluetooth Classic (BR/EDR) transport. Classic-era Pebbles (Time / Time Steel) use
+     * RFCOMM/SPP as their reliable native transport, not BLE. When `classic.mac` is configured, register
+     * that watch as a Classic device and request a connection — libpebble3 routes it to the
+     * BluezBtClassicConnector (a secure RFCOMM socket). The watch must already be BR/EDR-bonded
+     * (`btmgmt pair -t bredr <mac>`); MVP does not auto-pair. The BLE path is untouched — BLE-native
+     * watches keep using BLE.
+     */
+    private fun startClassicWatch() {
+        val mac = config.classicMac ?: return
+        scope.launch {
+            // Wait for Bluetooth to be up so the RFCOMM connect can page the watch.
+            combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
+                bt.enabled() && powered
+            }.first { it }
+            delay(2.seconds)
+            log.info { "BT Classic: connecting $mac (RFCOMM ch ${config.classicChannel})" }
+            val identifier = PebbleBtClassicIdentifier(mac, config.classicChannel)
+            // Register it as a known device so WatchManager will (re)connect it, then set the goal.
+            watchConnector.addScanResult(
+                PebbleScanResult(
+                    identifier = identifier,
+                    name = "Pebble (Classic)",
+                    rssi = 0,
+                    leScanRecord = null,
+                )
+            )
+            watchConnector.requestConnection(identifier)
         }
     }
 

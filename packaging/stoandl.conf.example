@@ -189,3 +189,16 @@ health.export_days = 30
 # and "BluezBleScanner: pebble match count". If the watch never appears, it isn't advertising at all
 # after a disconnect — in which case NO BLE strategy can recover it and BT Classic is the only path.
 reconnect.active_rescan = false
+
+# ── Bluetooth Classic (EXPERIMENTAL, MVP) ────────────────────────────────────────────────────────
+# Classic-era Pebbles (Pebble Time / Time Steel) use Bluetooth Classic RFCOMM/SPP as their reliable
+# native transport — BLE on these watches is a flaky firmware-side race. Set classic.mac to connect
+# such a watch over Classic instead of BLE. The watch must ALREADY be BR/EDR-bonded:
+#     bluetoothctl remove <MAC>            # clear any half-bond
+#     # put the watch into pairing mode, then:
+#     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
+#     bluetoothctl trust <MAC>             # (verify: `bluetoothctl info <MAC>` shows Bonded: yes)
+# Find the RFCOMM channel in the watch's SDP "Serial Port" record (sdptool browse <MAC>, or BlueZ's
+# cache); it can change across re-pairs. The BLE path is unaffected — BLE-native watches still use BLE.
+# classic.mac = B0:B4:48:B6:1E:81
+# classic.channel = 1
