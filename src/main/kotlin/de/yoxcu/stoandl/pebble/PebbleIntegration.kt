@@ -131,9 +131,11 @@ import java.io.File
 private const val MAX_CONNECTION_ATTEMPTS = 5
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
 // EXPERIMENTAL active-rescan (config `reconnect.active_rescan`): start an active scan once a bonded
-// watch has had no connected device for this long (past a healthy reconnect, so the BLE-native watches
-// never trigger it), and stop after the cap so we don't active-scan a genuinely-away watch forever.
-private const val RESCAN_GRACE_MS = 20_000L     // 20s
+// watch has had no live GATT link for this long, and stop after the cap so we don't active-scan a
+// genuinely-away watch forever. The grace is deliberately longer than a healthy standing-Connect()
+// reconnect (~33s observed for the Time Steel) so that path gets first crack and the scan never even
+// starts in the common case — the rescan is a fallback for a watch that stays stuck past the grace.
+private const val RESCAN_GRACE_MS = 45_000L     // 45s
 private const val RESCAN_MAX_MS = 300_000L      // 5 min
 
 /** Allows pairing with unbonded watches only while the window is open. */
@@ -399,14 +401,16 @@ class PebbleIntegration(
             // before the first scan attempt so btAdapterPowered reflects reality from the start.
             delay(1.seconds)
             // EXPERIMENTAL active-rescan (config `reconnect.active_rescan`): when the bonded watch last
-            // had NO connected device — i.e. when it (stayed) down. NOTE this is keyed on "not connected",
-            // not "no connection attempt": the connector keeps a standing Device1.Connect() pending after
-            // a drop, so a dropped watch reads as perpetually *connecting*, never disconnected. The first
-            // cut gated on the (never-true) disconnected state and so never fired.
+            // had NO live GATT link. Keyed on "no link" (not connected and not negotiating), NOT on "no
+            // connection attempt": the connector keeps a standing Device1.Connect() pending after a drop,
+            // so a dropped watch reads as perpetually *connecting*, never disconnected — gating on that
+            // (the first cut) was dead code that never fired.
             var downSince: Long? = null
-            // startBleScan auto-stops after 30s, so we re-issue it while we still want to scan; check
-            // often enough to (re)start within a few seconds and to stop promptly once connected.
-            val tick = 3.seconds
+            // startBleScan auto-stops after 30s, so we re-issue it while we still want to scan; tick
+            // fast so we stop the scan within ~2s of a GATT link coming up (a scan running during the
+            // PPoG handshake starves the watch's GATT traffic → the handshake times out and the link is
+            // torn down — observed as ~33s connect/drop(reason Local) flapping).
+            val tick = 2.seconds
             while (true) {
                 // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
                 // (covers rfkill / airplane mode where GattServerManager may still report Enabled).
@@ -424,8 +428,17 @@ class PebbleIntegration(
 
                 val devices = libPebble.watches.value
                 val connected = devices.any { it is ConnectedPebbleDevice }
-                val connecting = !connected && devices.any { it is ConnectingPebbleDevice }
+                // A watch in the *negotiating* sub-state has its GATT link UP and is running the PPoG /
+                // protocol handshake. A plain (non-negotiating) ConnectingPebbleDevice is the standing
+                // Device1.Connect() with NO link yet — which, after a drop, is the watch's *permanent*
+                // state until it returns (so we can't treat "connecting" as "busy" or the rescan would
+                // never fire). The distinction is the whole game: it's safe to scan while link-less, but
+                // a scan during negotiation starves the handshake → the link is torn down.
+                val negotiating = devices.any { it is ConnectingPebbleDevice && it.negotiating }
+                val connectingNoLink = devices.any { it is ConnectingPebbleDevice && !it.negotiating }
                 val haveKnown = devices.any { it is KnownPebbleDevice }
+                // GATT link established (negotiating) or fully connected → MUST NOT scan (starves PPoG).
+                val linkUp = connected || negotiating
                 val now = System.currentTimeMillis()
 
                 // EXPERIMENTAL active-rescan: a bonded watch normally reconnects via BlueZ's kernel
@@ -434,13 +447,13 @@ class PebbleIntegration(
                 // Time / Time Steel advertises as "Pebble Time LE XXXX" with a *rotating* Resolvable
                 // Private Address: after a drop the kernel is pinned to the stale dev_<oldRPA> object and
                 // can never re-match it, so the standing Connect() suspends forever. When a bonded watch
-                // has had no connected device past the grace, run an ACTIVE scan: the existing scan-result
-                // path (startAutoConnect → isBonded → requestConnection) then reconnects it under its
-                // *current* object path. Grace-gated so a healthy reconnect (a few seconds) completes
-                // first → the BLE-native watches never trigger a rescan. Bounded so we don't active-scan
-                // (power) indefinitely for a genuinely-away watch — past the cap we fall back to the
-                // kernel path (same as today).
-                if (!connected && haveKnown) {
+                // has had no live link past the grace, run an ACTIVE scan to re-discover/reconnect it —
+                // but STOP the instant the link comes up (negotiating) so the handshake isn't starved.
+                // Grace-gated so a healthy reconnect (a few seconds, reaches negotiating well within the
+                // grace) never triggers a rescan → no regression for the BLE-native watches. Bounded so
+                // we don't active-scan (power) a genuinely-away watch forever — past the cap we fall back
+                // to the kernel path (same as today).
+                if (!linkUp && haveKnown) {
                     if (downSince == null) downSince = now
                 } else {
                     downSince = null
@@ -450,16 +463,18 @@ class PebbleIntegration(
                 val rescanWanted = config.bleActiveRescan && !pairingGate.isOpen() &&
                     ds != null && downMs >= RESCAN_GRACE_MS && downMs <= RESCAN_MAX_MS
 
-                // Pairing scan: discover an *unbonded* watch while a pairing window is open. Don't scan
-                // once a connect is in flight — it collides with the connect on BlueZ's single discovery
-                // slot (org.bluez.Error.InProgress). (The rescan path deliberately scans *through* the
-                // stuck "connecting" state, which is exactly the case it exists to break.)
-                val pairingScan = pairingGate.isOpen() && !connected && !connecting
+                // Pairing scan: discover an *unbonded* watch while a pairing window is open. Stop once any
+                // connect is in flight (even link-less) — a scan collides with the connect on BlueZ's
+                // single discovery slot (org.bluez.Error.InProgress). The rescan path is the opposite: it
+                // scans THROUGH the link-less connecting state (the stuck case it exists to break) and
+                // only stops once the link is up.
+                val pairingScan = pairingGate.isOpen() && !connected && !negotiating && !connectingNoLink
+                val rescanScan = rescanWanted && !linkUp
 
-                val wantScan = pairingScan || rescanWanted
+                val wantScan = pairingScan || rescanScan
                 if (wantScan && !libPebble.isScanningBle.value) {
                     log.info {
-                        if (rescanWanted) "Starting BLE scan (active reconnect rescan — bonded watch down " +
+                        if (rescanScan) "Starting BLE scan (active reconnect rescan — bonded watch down " +
                             "${downMs / 1000}s; if it never appears below, it isn't advertising and only BT " +
                             "Classic can recover it)"
                         else "Starting BLE scan"
