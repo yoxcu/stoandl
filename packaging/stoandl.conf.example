@@ -195,8 +195,9 @@ reconnect.active_rescan = false
 # native transport — BLE on these watches is a flaky firmware-side race. The BLE path is unaffected:
 # BLE-native watches (Pebble Time 2 / Pebble 2) still use BLE.
 #
-# Easiest: let stoandl discover + pair the watch for you (BR/EDR inquiry, auto-pair, SDP channel).
-# Put the watch in pairing mode the first time and confirm the 6-digit code ON THE WATCH.
+# Easiest: let stoandl discover the watch (BR/EDR inquiry) and auto-connect it. A watch that's already
+# bonded reconnects on its own; to pair a NEW watch, run `stoandl pair` (opens a pairing window) and
+# confirm the 6-digit code ON THE WATCH — same flow as BLE. The RFCOMM channel is resolved via SDP.
 # classic.discover = true
 #
 # Or pin a specific watch by MAC (still auto-pairs + SDP-resolves the channel):

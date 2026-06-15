@@ -450,27 +450,49 @@ class PebbleIntegration(
                 delay(35.seconds)
             }
         }
-        // The first time we see each discovered classic Pebble: pair it UP-FRONT if needed (a blocking
-        // ~10s Device1.Pair — confirm the code on the watch — done OUTSIDE the connect attempt so it
-        // doesn't race the connection timeout), then request a connection. connectGoal then stays set,
-        // so WatchManager keeps (re)connecting it.
-        val handled = ConcurrentHashMap.newKeySet<String>()
+        // For each discovered classic Pebble: a BONDED one auto-connects; an UNBONDED one is only paired
+        // when a pairing window is open (`stoandl pair`) — honoring the same flow as BLE, so we never pop
+        // an unsolicited pairing prompt on the watch. Pairing is a blocking ~10s Device1.Pair (confirm the
+        // code on the watch) done OUTSIDE the connect attempt so it doesn't race the connection timeout.
+        val connecting = ConcurrentHashMap.newKeySet<String>()
+        val pairingInFlight = ConcurrentHashMap.newKeySet<String>()
+        val hinted = ConcurrentHashMap.newKeySet<String>()
         libPebble.watches.onEach { devices ->
             for (d in devices) {
                 val id = d.identifier as? PebbleBtClassicIdentifier ?: continue
                 if (d is ConnectedPebbleDevice || d is ConnectingPebbleDevice) continue
-                if (!handled.add(id.macAddress)) continue
+                val mac = id.macAddress
+                if (connecting.contains(mac)) continue
                 scope.launch {
-                    val bonded = withContext(Dispatchers.IO) { isBondedClassic(id) || createBondClassic(id) }
-                    if (!bonded) {
-                        log.warn {
-                            "BT Classic: ${id.macAddress} not bonded and auto-pair failed — pair it once by " +
-                                "hand (btmgmt pair -t bredr ${id.macAddress}) then restart"
+                    if (withContext(Dispatchers.IO) { isBondedClassic(id) }) {
+                        if (connecting.add(mac)) {
+                            log.info { "BT Classic: connecting $mac" }
+                            watchConnector.requestConnection(id)
                         }
                         return@launch
                     }
-                    log.info { "BT Classic: connecting ${id.macAddress}" }
-                    watchConnector.requestConnection(id)
+                    // Unbonded — wait for an explicit pairing window.
+                    if (!pairingGate.isOpen()) {
+                        if (hinted.add(mac)) {
+                            log.info { "BT Classic: discovered unpaired Pebble $mac — run 'stoandl pair' (then confirm the code on the watch) to pair it" }
+                        }
+                        return@launch
+                    }
+                    if (!pairingInFlight.add(mac)) return@launch
+                    val paired = try {
+                        withContext(Dispatchers.IO) { createBondClassic(id) }
+                    } finally {
+                        pairingInFlight.remove(mac)
+                    }
+                    if (paired) {
+                        hinted.remove(mac)
+                        if (connecting.add(mac)) {
+                            log.info { "BT Classic: connecting $mac" }
+                            watchConnector.requestConnection(id)
+                        }
+                    } else {
+                        log.warn { "BT Classic: pairing $mac failed — try `btmgmt pair -t bredr $mac` by hand" }
+                    }
                 }
             }
         }.launchIn(scope)
