@@ -408,26 +408,59 @@ class PebbleIntegration(
      * watches keep using BLE.
      */
     private fun startClassicWatch() {
-        val mac = config.classicMac ?: return
+        val mac = config.classicMac
+        if (mac == null && !config.classicDiscover) return
         scope.launch {
-            // Wait for Bluetooth to be up so the RFCOMM connect can page the watch.
+            // Wait for Bluetooth to be up so the RFCOMM connect/inquiry can reach the watch.
             combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
                 bt.enabled() && powered
             }.first { it }
             delay(2.seconds)
-            log.info { "BT Classic: connecting $mac (RFCOMM ch ${config.classicChannel})" }
-            val identifier = PebbleBtClassicIdentifier(mac, config.classicChannel)
-            // Register it as a known device so WatchManager will (re)connect it, then set the goal.
-            watchConnector.addScanResult(
-                PebbleScanResult(
-                    identifier = identifier,
-                    name = "Pebble (Classic)",
-                    rssi = 0,
-                    leScanRecord = null,
+            if (mac != null) {
+                log.info { "BT Classic: connecting $mac" }
+                val identifier = PebbleBtClassicIdentifier(mac, config.classicChannel)
+                watchConnector.addScanResult(
+                    PebbleScanResult(identifier, "Pebble (Classic)", 0, null)
                 )
-            )
-            watchConnector.requestConnection(identifier)
+                watchConnector.requestConnection(identifier)
+            }
+            if (config.classicDiscover) {
+                log.info { "BT Classic: discovering classic Pebbles (BR/EDR inquiry)" }
+                startClassicDiscovery()
+            }
         }
+    }
+
+    /** BR/EDR inquiry + auto-connect of discovered classic Pebbles. The connector auto-pairs if needed. */
+    private fun startClassicDiscovery() {
+        // Inquire periodically while no classic watch is connected (stop once one is, to free the radio).
+        scope.launch {
+            while (true) {
+                val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                val classicConnected = libPebble.watches.value.any {
+                    it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
+                }
+                if (btOn && !classicConnected) {
+                    if (!libPebble.isScanningClassic.value) libPebble.startClassicScan()
+                } else if (libPebble.isScanningClassic.value) {
+                    libPebble.stopClassicScan()
+                }
+                delay(35.seconds)
+            }
+        }
+        // Request a connection the first time we see each discovered classic Pebble. connectGoal then
+        // stays set, so WatchManager keeps (re)connecting it — no need to re-request on every emission.
+        val requested = ConcurrentHashMap.newKeySet<String>()
+        libPebble.watches.onEach { devices ->
+            for (d in devices) {
+                val id = d.identifier as? PebbleBtClassicIdentifier ?: continue
+                if (d is ConnectedPebbleDevice || d is ConnectingPebbleDevice) continue
+                if (requested.add(id.macAddress)) {
+                    log.info { "BT Classic: auto-connecting discovered ${id.macAddress}" }
+                    watchConnector.requestConnection(id)
+                }
+            }
+        }.launchIn(scope)
     }
 
     private fun startScanLoop() {

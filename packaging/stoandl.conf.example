@@ -192,13 +192,18 @@ reconnect.active_rescan = false
 
 # ── Bluetooth Classic (EXPERIMENTAL, MVP) ────────────────────────────────────────────────────────
 # Classic-era Pebbles (Pebble Time / Time Steel) use Bluetooth Classic RFCOMM/SPP as their reliable
-# native transport — BLE on these watches is a flaky firmware-side race. Set classic.mac to connect
-# such a watch over Classic instead of BLE. The watch must ALREADY be BR/EDR-bonded:
-#     bluetoothctl remove <MAC>            # clear any half-bond
-#     # put the watch into pairing mode, then:
-#     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
-#     bluetoothctl trust <MAC>             # (verify: `bluetoothctl info <MAC>` shows Bonded: yes)
-# Find the RFCOMM channel in the watch's SDP "Serial Port" record (sdptool browse <MAC>, or BlueZ's
-# cache); it can change across re-pairs. The BLE path is unaffected — BLE-native watches still use BLE.
+# native transport — BLE on these watches is a flaky firmware-side race. The BLE path is unaffected:
+# BLE-native watches (Pebble Time 2 / Pebble 2) still use BLE.
+#
+# Easiest: let stoandl discover + pair the watch for you (BR/EDR inquiry, auto-pair, SDP channel).
+# Put the watch in pairing mode the first time and confirm the 6-digit code ON THE WATCH.
+# classic.discover = true
+#
+# Or pin a specific watch by MAC (still auto-pairs + SDP-resolves the channel):
 # classic.mac = B0:B4:48:B6:1E:81
-# classic.channel = 1
+# classic.channel = 1        # fallback only; the channel is resolved via SDP at connect time
+#
+# If auto-pair doesn't yield a working BR/EDR bond on your dual-mode watch, pair it once by hand:
+#     bluetoothctl remove <MAC>            # clear any half-bond; put the watch in pairing mode, then:
+#     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
+#     bluetoothctl trust <MAC>

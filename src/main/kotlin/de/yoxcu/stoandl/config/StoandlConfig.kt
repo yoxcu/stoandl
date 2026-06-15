@@ -144,9 +144,12 @@ data class StoandlConfig(
      *  connects that watch over a secure RFCOMM socket (the watch must already be BR/EDR-bonded:
      *  `btmgmt pair -t bredr <mac>`). The BLE path is unaffected — BLE-native watches still use BLE. */
     val classicMac: String?,
-    /** RFCOMM channel of the watch's SPP service (from its SDP record — resolve with sdptool/the cache;
-     *  it can change across re-pairs). Default 1. */
+    /** RFCOMM channel of the watch's SPP service. The connector resolves it via SDP at connect time;
+     *  this is only the fallback if SDP resolution fails. Default 1. */
     val classicChannel: Int,
+    /** Discover classic-era Pebbles via BR/EDR inquiry and auto-connect them (auto-pairing if needed),
+     *  so you don't have to configure [classicMac]. Off by default. */
+    val classicDiscover: Boolean,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -216,6 +219,7 @@ data class StoandlConfig(
             bleActiveRescan = false,
             classicMac = null,
             classicChannel = 1,
+            classicDiscover = false,
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -300,6 +304,7 @@ data class StoandlConfig(
                 bleActiveRescan = parseBool(map["reconnect.active_rescan"]),
                 classicMac = map["classic.mac"]?.trim()?.takeIf { it.isNotEmpty() },
                 classicChannel = map["classic.channel"]?.trim()?.toIntOrNull() ?: 1,
+                classicDiscover = parseBool(map["classic.discover"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
             )
@@ -322,7 +327,8 @@ data class StoandlConfig(
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
                     ", bleActiveRescan=${cfg.bleActiveRescan}" +
-                    (cfg.classicMac?.let { ", classicMac=$it (ch${cfg.classicChannel})" } ?: "")
+                    (cfg.classicMac?.let { ", classicMac=$it (ch${cfg.classicChannel})" } ?: "") +
+                    (if (cfg.classicDiscover) ", classicDiscover=true" else "")
             }
             return cfg
         }
