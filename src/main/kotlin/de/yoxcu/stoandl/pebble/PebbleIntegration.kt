@@ -2473,6 +2473,27 @@ private class StoandlControlImpl(
         return "ok:Re-pairing ${match.displayName()} — put the watch in pairing mode"
     }
 
+    override fun Connect(watch: String): String {
+        val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
+        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        if (known.isEmpty()) return "error:No known watches — use 'stoandl pair' to add one"
+        // Same exact-then-unique-substring match as repair/unpair.
+        val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
+            .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
+        val match = when {
+            matches.size == 1 -> matches[0]
+            matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
+                known.joinToString(", ") { it.displayName() }
+            else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
+        }
+        if (match is ConnectedPebbleDevice) return "ok:${match.displayName()} already connected"
+        // requestConnection: in single-watch mode this sets connectGoal on the chosen watch and clears
+        // it on the others, handing it the one connection slot (it connects once in range).
+        match.connect()
+        log.info { "Connect: handing the connection slot to ${match.displayName()}" }
+        return "ok:Connecting ${match.displayName()}"
+    }
+
     override fun ListWatches(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
         return lp.watches.value.filterIsInstance<KnownPebbleDevice>().map { d ->

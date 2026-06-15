@@ -96,6 +96,12 @@ interface StoandlControl : DBusInterface {
      *  `ok:` immediately; poll [PairStatus] for the outcome. */
     fun Repair(watch: String): String
 
+    /** Connect a SPECIFIC known watch by name substring (exact-then-unique-substring, like [Repair]).
+     *  In single-watch mode this hands the one connection slot to the chosen watch (disconnecting
+     *  whatever else is active), so it's how you switch between paired watches without unpairing.
+     *  Status-prefixed return. */
+    fun Connect(watch: String): String
+
     /** List known watches, one per entry, tab-separated `name\tstate\tbattery` (state: connected /
      *  connecting / disconnected; battery is the 0–100 level for a connected watch, else empty).
      *  Empty list if none are known. */

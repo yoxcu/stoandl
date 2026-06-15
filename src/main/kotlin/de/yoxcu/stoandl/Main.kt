@@ -33,7 +33,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "health")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "health")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -113,8 +113,9 @@ private fun printUsage() {
     println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
     println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
     println("  pair                       Pair a new Pebble watch (opens a ~2 min window; blocks until done)")
-    println("  unpair                     Forget the watch on this host (use after moving it to another device)")
+    println("  unpair [name]              Forget watch(es) on this host — all, or just the named one")
     println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
+    println("  connect <name>             Connect a specific known watch (switches the active watch)")
     println("  list                       List known watches and their connection state")
     println("  battery                    Show the connected watch's battery level")
     println("  health [days]              Show daily steps/sleep/heart-rate (default 7; sync|activities|dump)")
@@ -385,6 +386,20 @@ private fun ctl(args: Array<String>) {
                 val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
                 // `unpair` = blanket (all); `unpair <name>` = just the matching watch (like `repair`).
                 handleStatusResponse(control.Unpair(if (args.size >= 2) args[1] else ""))
+            } catch (e: Exception) {
+                System.err.println("Error: ${e.message}"); System.exit(1)
+            } finally {
+                conn.disconnect()
+            }
+        }
+        "connect" -> {
+            if (args.size < 2) {
+                System.err.println("Usage: stoandl connect <watch name>"); System.exit(1); return
+            }
+            val conn = connectDbusOrExit() ?: return
+            try {
+                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                handleStatusResponse(control.Connect(args[1]))
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
             } finally {
