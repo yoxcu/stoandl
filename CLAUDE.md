@@ -41,7 +41,7 @@ DbusNotificationMonitor   ← passive BecomeMonitor copy (does NOT intercept)
 PebbleIntegration / DbusNotificationListenerConnection
     │  buildTimelineNotification → libPebble.sendNotification()
     ▼
-libpebble3 (composite build submodule: libs/libpebble3, micropebble branch)
+libpebble3 (composite build submodule: libs/libpebble3, stoandl branch)
     ▼
 BlueZ GATT server (reversedPPoG=false: phone acts as BLE peripheral)
     ▼
@@ -60,9 +60,9 @@ Pebble watch over BLE/PPoG
 
 ## libpebble3 submodule
 
-The dependency is a patched fork (`yoxcu/libpebble3`, branch `stoandl`) included as a git submodule at `libs/libpebble3`. It is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
+The dependency is a patched fork of upstream [`coredevices/libpebble3`](https://github.com/coredevices/libpebble3) (`yoxcu/libpebble3`, branch `stoandl`), included as a git submodule at `libs/libpebble3`. It tracks `coredevices/master` directly and is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
 
-The fork adds: BlueZ GATT server, PPoG handshake fixes for Linux BLE, BlueZ pairing/bonding, PKJS/GraalJS runtime for watchapp companion JS, and strips Android/iOS targets to speed up JVM builds.
+The fork adds: a pure-BlueZ D-Bus BLE backend + GATT server, a Bluetooth Classic (RFCOMM/SPP) transport for classic-era watches, PPoG handshake/reconnect fixes for Linux BLE, BlueZ pairing/bonding, and a GraalJS PKJS runtime for watchapp companion JS. It builds the JVM target; the Android-SDK-only modules are gated behind `ANDROID_HOME`, and the iOS targets are kept (they're load-bearing for the Room codegen).
 
 ## PKJS (PebbleKit JS)
 

@@ -377,7 +377,7 @@ systemctl --user enable --now stoandl
 
 ## libpebble3
 
-Depends on a patched fork of [matejdro/libpebble3](https://github.com/matejdro/libpebble3)
-(`stoandl` branch), included as a git submodule at `libs/libpebble3`. Run
-`git submodule update --init --recursive` after cloning. Wired via Gradle composite build — no
-separate Maven publish needed.
+Depends on a patched fork of [coredevices/libpebble3](https://github.com/coredevices/libpebble3)
+(the `stoandl` branch at [yoxcu/libpebble3](https://github.com/yoxcu/libpebble3)), included as a git
+submodule at `libs/libpebble3`. Run `git submodule update --init --recursive` after cloning. Wired
+via Gradle composite build — no separate Maven publish needed.
