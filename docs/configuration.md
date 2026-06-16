@@ -226,8 +226,8 @@ settings`.
 
 Watchapps can ask for the device's position — PKJS companion scripts via the standard
 `navigator.geolocation` API (`getCurrentPosition`, `watchPosition`, `clearWatch`), and location-aware
-sports/GPS watchapps via the same underlying hook. By default the JVM build of libpebble3 leaves this
-unwired (every request fails with "Not supported on Linux"); set:
+sports/GPS watchapps via the same underlying hook. Off by default — every request fails with
+"Geolocation is disabled — set geolocation.enabled=true in stoandl.conf …" until you opt in:
 
 ```
 geolocation.enabled = true

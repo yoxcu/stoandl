@@ -626,7 +626,7 @@ override backed by `GeoClueLocationProvider` (the same provider weather uses).
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.120 | Disabled (default) | `geolocation.enabled` unset, launch a location-using watchapp | The PKJS callback gets an **error** "Not supported on Linux" (the no-op binding). No GeoClue client is created. |
+| 5.120 | Disabled (default) | `geolocation.enabled` unset, launch a location-using watchapp | The PKJS callback gets an **error** "Geolocation is disabled — set geolocation.enabled=true in stoandl.conf …" (the `DisabledGeolocation` binding, not libpebble3's "Not supported on Linux" no-op). No GeoClue client is created. |
 | 5.121 | getCurrentPosition | with `geolocation.enabled = true`, launch the test app | Log: `GeoClue client started (… desktopId=stoandl)` on first request, then the app's `geo {…}` console line with real `latitude`/`longitude` (and `accuracy`/`altitude` when GeoClue provides them). `GeolocationInterface` debug line `getCurrentPosition(...)`. |
 | 5.122 | No fix yet | enable geolocation but with GeoClue unable to fix (e.g. no GPS/Wi-Fi) | Callback gets an **error** "No location fix available"; log notes `GeoClue: no location fix yet`. Does not hang. |
 | 5.123 | Not allow-listed | `geolocation.enabled = true` but no `geoclue.conf` entry | Error returned to the app; log warns GeoClue init failed / location unavailable with the allow-list hint. |

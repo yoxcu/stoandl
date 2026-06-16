@@ -21,6 +21,7 @@ import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.health.HealthExporter
 import de.yoxcu.stoandl.weather.DeLocationSource
+import de.yoxcu.stoandl.location.DisabledGeolocation
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
 import de.yoxcu.stoandl.location.GeoClueSystemGeolocation
 import de.yoxcu.stoandl.weather.WeatherSync
@@ -322,10 +323,15 @@ class PebbleIntegration(
             // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
             // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
             // the GeoClue client is only created when a watchapp first asks for location. Reuses the
-            // weather GeoClue identity (its own client; GeoClue is per-sender multi-client). Off
-            // unless opted in — leaving the no-op binding (returns "Not supported on Linux").
-            if (config.geolocation) single<SystemGeolocation> {
-                GeoClueSystemGeolocation(GeoClueLocationProvider(config.weatherGpsDesktopId))
+            // weather GeoClue identity (its own client; GeoClue is per-sender multi-client). When off
+            // (the default), bind DisabledGeolocation instead of leaving libpebble3's no-op so the
+            // watchapp's error says it's disabled (opt-in), not the misleading "Not supported on Linux".
+            single<SystemGeolocation> {
+                if (config.geolocation) {
+                    GeoClueSystemGeolocation(GeoClueLocationProvider(config.weatherGpsDesktopId))
+                } else {
+                    DisabledGeolocation
+                }
             }
         }), allowOverride = true)
 
@@ -2353,20 +2359,27 @@ private class StoandlControlImpl(
     /** Forget one watch's libpebble3 state and clear its BlueZ bond (BLE by object path, Classic by MAC
      *  — works even while connected). Returns whether it was genuinely bonded (for blanket-unpair noise
      *  filtering; a wedged BLE entry reports false). */
-    private fun unpairOne(d: KnownPebbleDevice): Boolean = when (val id = d.identifier) {
-        is PebbleBleIdentifier -> {
-            val wasBonded = isBonded(id)
-            bluezObjectPath(id.asString)?.let(::removeBluezBond)
-            d.forget()
-            wasBonded
+    private fun unpairOne(d: KnownPebbleDevice): Boolean {
+        val wasBonded = when (val id = d.identifier) {
+            is PebbleBleIdentifier -> {
+                val bonded = isBonded(id)
+                bluezObjectPath(id.asString)?.let(::removeBluezBond)
+                d.forget()
+                bonded
+            }
+            is PebbleBtClassicIdentifier -> {
+                val path = classicDevicePath(id.macAddress)
+                path?.let(::removeBluezBond)
+                d.forget()
+                path != null
+            }
+            else -> { d.forget(); false }
         }
-        is PebbleBtClassicIdentifier -> {
-            val path = classicDevicePath(id.macAddress)
-            path?.let(::removeBluezBond)
-            d.forget()
-            path != null
-        }
-        else -> { d.forget(); false }
+        // A deliberate unpair: log it plainly (removeBluezBond's own line reads "stale", which fits the
+        // reaper/repair paths but not a user-driven unpair). Only for genuinely-bonded watches so a
+        // blanket `unpair` over wedged/non-bonded entries stays quiet.
+        if (wasBonded) log.info { "Unpaired ${d.displayName()} — forgot it and cleared its BlueZ bond" }
+        return wasBonded
     }
 
     private sealed interface WatchMatch {
