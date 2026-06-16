@@ -1104,17 +1104,18 @@ class PebbleIntegration(
             .launchIn(scope)
     }
 
-    /** Proactively check GitHub for newer firmware on each watch connect (throttled to once a day) and,
-     *  when found, push a watch notification with an "Update" button. Off unless firmware.github +
-     *  firmware.notify are both enabled (opt-in egress). The local `firmware <file.pbz>` sideload and
-     *  the `firmware check`/`update` CLI commands work regardless of this. */
+    /** Proactively check for newer firmware on each watch connect (throttled to once a day) and, when
+     *  found, push a watch notification with an "Update" button. The source is picked per watch (GitHub
+     *  for Core devices, cohorts.rebble.io for classic), so this runs when *either* firmware.github or
+     *  firmware.cohorts is on, plus firmware.notify (opt-in egress). The local `firmware <file.pbz>`
+     *  sideload and the `firmware check`/`update` CLI commands work regardless of this. */
     private fun startFirmwareNotifier() {
-        if (!config.firmwareGithub || !config.firmwareNotify) {
-            log.info { "Firmware update notifications off (needs firmware.github=true and firmware.notify=true)" }
+        if ((!config.firmwareGithub && !config.firmwareCohorts) || !config.firmwareNotify) {
+            log.info { "Firmware update notifications off (needs firmware.github or firmware.cohorts, plus firmware.notify=true)" }
             return
         }
         val dailyMs = 24L * 60 * 60 * 1000
-        log.info { "Firmware update notifications on (check on connect, at most once/day; repo=${config.firmwareGithubRepo})" }
+        log.info { "Firmware update notifications on (check on connect, at most once/day)" }
         // Check on each fresh connect; maybeNotify() self-throttles to once per day.
         libPebble.watches
             .map { devices -> devices.any { it is ConnectedPebbleDevice } }

@@ -100,9 +100,19 @@ data class StoandlConfig(
     val firmwareGithubRepo: String,
     /** When true, consider GitHub pre-releases too (otherwise only the latest stable release). */
     val firmwareGithubPrereleases: Boolean,
-    /** When true (and [firmwareGithub] is on), proactively notify the watch when newer firmware is
-     *  available — checked on connect and at most once a day — with an "Update" action button that
-     *  flashes it. On by default once GitHub checks are enabled; set false for check-on-demand only. */
+    /** Allow `stoandl firmware check`/`update` to query Rebble's cohorts service for firmware images
+     *  for classic / Rebble-generation Pebbles (original Pebble, Pebble Time / Time Steel, Time Round,
+     *  Pebble 2) — whose firmware was never published to GitHub. The Core-vs-classic source split is by
+     *  board generation, so this is the classic counterpart of [firmwareGithub]. Opt-in egress, off by
+     *  default. (Local `.pbz` sideload never touches the network and is always available.) */
+    val firmwareCohorts: Boolean,
+    /** Base URL of the cohorts service (no trailing slash). Defaults to Rebble's; overridable for a
+     *  self-hosted/mirror cohorts instance. */
+    val firmwareCohortsUrl: String,
+    /** When true (and the matching source — [firmwareGithub] or [firmwareCohorts] — is on), proactively
+     *  notify the watch when newer firmware is available — checked on connect and at most once a day —
+     *  with an "Update" action button that flashes it. On by default once a source is enabled; set
+     *  false for check-on-demand only. */
     val firmwareNotify: Boolean,
     /** Allow `stoandl language install` to download a `.pbl` language pack from the catalog's source
      *  (Rebble's CDN or a community GitHub repo) and install it. Opt-in egress, so off by default.
@@ -158,6 +168,7 @@ data class StoandlConfig(
         private const val DEFAULT_GPS_NAME = "Current location"
         private const val DEFAULT_CALENDAR_INTERVAL_MINUTES = 30L
         private const val DEFAULT_FIRMWARE_GITHUB_REPO = "coredevices/PebbleOS"
+        private const val DEFAULT_FIRMWARE_COHORTS_URL = "https://cohorts.rebble.io"
         private const val DEFAULT_HEALTH_EXPORT_DAYS = 30
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
@@ -193,6 +204,8 @@ data class StoandlConfig(
             firmwareGithub = false,
             firmwareGithubRepo = DEFAULT_FIRMWARE_GITHUB_REPO,
             firmwareGithubPrereleases = false,
+            firmwareCohorts = false,
+            firmwareCohortsUrl = DEFAULT_FIRMWARE_COHORTS_URL,
             firmwareNotify = true,
             languageDownload = false,
             developerAutostart = false,
@@ -276,6 +289,9 @@ data class StoandlConfig(
                 firmwareGithubRepo = map["firmware.github_repo"]?.trim()?.takeIf { it.isNotEmpty() }
                     ?: DEFAULT_FIRMWARE_GITHUB_REPO,
                 firmwareGithubPrereleases = parseBool(map["firmware.github_prereleases"]),
+                firmwareCohorts = parseBool(map["firmware.cohorts"]),
+                firmwareCohortsUrl = map["firmware.cohorts_url"]?.trim()?.trimEnd('/')
+                    ?.takeIf { it.isNotEmpty() } ?: DEFAULT_FIRMWARE_COHORTS_URL,
                 firmwareNotify = map["firmware.notify"]?.let { parseBool(it) } ?: true,
                 languageDownload = parseBool(map["language.download"]),
                 developerAutostart = parseBool(map["developer.autostart"]),
@@ -300,7 +316,10 @@ data class StoandlConfig(
                     "calendarDiscover=${cfg.calendarDiscover}, calendarIcalUrls=${cfg.calendarIcalUrls.size}, " +
                     "calendarCalDav=${cfg.calendarCalDav.size}, calendarSyncIntervalMinutes=${cfg.calendarSyncIntervalMinutes}, " +
                     "datalog=${cfg.datalog}, firmwareGithub=${cfg.firmwareGithub}" +
-                    (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases}, notify=${cfg.firmwareNotify})" else "") +
+                    (if (cfg.firmwareGithub) " (repo=${cfg.firmwareGithubRepo}, prereleases=${cfg.firmwareGithubPrereleases})" else "") +
+                    ", firmwareCohorts=${cfg.firmwareCohorts}" +
+                    (if (cfg.firmwareCohorts) " (url=${cfg.firmwareCohortsUrl})" else "") +
+                    (if (cfg.firmwareGithub || cfg.firmwareCohorts) ", firmwareNotify=${cfg.firmwareNotify}" else "") +
                     ", languageDownload=${cfg.languageDownload}" +
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +

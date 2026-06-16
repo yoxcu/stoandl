@@ -128,20 +128,30 @@ datalog.enabled = false
 # (libpebble3 validates the bundle against the connected watch — board, CRC, slot — before flashing.)
 #
 # The keys below only enable the OPTIONAL `stoandl firmware check` / `firmware update` commands, which
-# fetch firmware over the network from a public GitHub repo's releases. Opt-in egress → off by default.
-# Core devices (Pebble 2 Duo / Pebble Time 2) publish per-board `normal_<board>_<version>.pbz` bundles
-# there; classic Pebbles do not (their firmware lives on cohorts.rebble.io and isn't covered here).
+# fetch firmware over the network. Opt-in egress → off by default. The source is chosen by the watch's
+# generation, so the two switches are independent:
+#   - firmware.github  → Core devices (Pebble 2 Duo / Pebble Time 2), from the PebbleOS GitHub releases
+#   - firmware.cohorts → classic / Rebble watches (Pebble, Time / Time Steel, Time Round, Pebble 2),
+#                        from Rebble's cohorts service
 firmware.github = false
 
-# owner/repo whose releases carry the .pbz bundles. Defaults to the PebbleOS source.
+# owner/repo whose releases carry the per-board `normal_<board>_<version>.pbz` bundles (Core devices).
+# Defaults to the PebbleOS source.
 firmware.github_repo = coredevices/PebbleOS
 
 # Consider GitHub pre-releases too (otherwise only the latest stable release).
 firmware.github_prereleases = false
 
-# When firmware.github is on, also push a notification TO THE WATCH when newer firmware is available
+# Fetch firmware for classic / Rebble-generation watches from Rebble's cohorts service. This is the
+# classic counterpart of firmware.github — enable it for a Pebble Time / Time Steel / Pebble 2 etc.
+firmware.cohorts = false
+
+# Base URL of the cohorts service (no trailing slash). Override only for a self-hosted/mirror instance.
+firmware.cohorts_url = https://cohorts.rebble.io
+
+# When a source above is on, also push a notification TO THE WATCH when newer firmware is available
 # (checked on connect and at most once a day). The notification has an "Update" button that downloads
-# and flashes it. On by default once firmware.github is enabled; set false for check-on-demand only.
+# and flashes it. On by default once a source is enabled; set false for check-on-demand only.
 firmware.notify = true
 
 # ── Developer connection ─────────────────────────────────────────────────────────────────────────

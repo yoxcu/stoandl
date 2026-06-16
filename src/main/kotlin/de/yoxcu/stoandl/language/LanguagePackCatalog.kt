@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.language
 
+import de.yoxcu.stoandl.pebble.isCoreDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
 import kotlinx.serialization.SerialName
@@ -93,25 +94,6 @@ class LanguagePackCatalog private constructor(private val packs: List<LanguagePa
  */
 fun WatchHardwarePlatform.languagePackBoard(): String =
     if (isCoreDevice()) WatchHardwarePlatform.PEBBLE_SILK.revision else revision
-
-/** Same partition as libpebble3's Core app: the listed classic boards are not Core devices. */
-private fun WatchHardwarePlatform.isCoreDevice(): Boolean = when (this) {
-    WatchHardwarePlatform.UNKNOWN,
-    WatchHardwarePlatform.PEBBLE_ONE_EV_1, WatchHardwarePlatform.PEBBLE_ONE_EV_2,
-    WatchHardwarePlatform.PEBBLE_ONE_EV_2_3, WatchHardwarePlatform.PEBBLE_ONE_EV_2_4,
-    WatchHardwarePlatform.PEBBLE_ONE_POINT_FIVE, WatchHardwarePlatform.PEBBLE_TWO_POINT_ZERO,
-    WatchHardwarePlatform.PEBBLE_SNOWY_EVT_2, WatchHardwarePlatform.PEBBLE_SNOWY_DVT,
-    WatchHardwarePlatform.PEBBLE_BOBBY_SMILES, WatchHardwarePlatform.PEBBLE_ONE_BIGBOARD_2,
-    WatchHardwarePlatform.PEBBLE_ONE_BIGBOARD, WatchHardwarePlatform.PEBBLE_SNOWY_BIGBOARD,
-    WatchHardwarePlatform.PEBBLE_SNOWY_BIGBOARD_2, WatchHardwarePlatform.PEBBLE_SPALDING_EVT,
-    WatchHardwarePlatform.PEBBLE_SPALDING_PVT, WatchHardwarePlatform.PEBBLE_SPALDING_BIGBOARD,
-    WatchHardwarePlatform.PEBBLE_SILK_EVT, WatchHardwarePlatform.PEBBLE_SILK,
-    WatchHardwarePlatform.PEBBLE_SILK_BIGBOARD, WatchHardwarePlatform.PEBBLE_SILK_BIGBOARD_2_PLUS,
-    WatchHardwarePlatform.PEBBLE_ROBERT_EVT, WatchHardwarePlatform.PEBBLE_ROBERT_BIGBOARD,
-    WatchHardwarePlatform.PEBBLE_ROBERT_BIGBOARD_2,
-    -> false
-    else -> true
-}
 
 @Serializable
 data class LanguagePack(

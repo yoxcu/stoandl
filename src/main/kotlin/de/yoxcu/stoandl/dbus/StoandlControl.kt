@@ -125,13 +125,15 @@ interface StoandlControl : DBusInterface {
      *  or `notready:` (no watch). Poll this after [SideloadFirmware]/[UpdateFirmware]. */
     fun FirmwareStatus(): String
 
-    /** Check the configured GitHub repo for firmware matching the watch's board. Returns
-     *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>`, `noasset:<board>\t<current>\t<latest>`,
-     *  or `disabled:`/`notready:`/`error:`. Requires `firmware.github = true` (opt-in egress). */
+    /** Check the source matching the watch's generation (GitHub for Core devices, cohorts.rebble.io
+     *  for classic) for firmware matching its board. Returns
+     *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>`,
+     *  `noasset:<board>\t<current>\t<source>`, or `disabled:`/`notready:`/`error:`. Requires the
+     *  matching source enabled — `firmware.github` or `firmware.cohorts` (opt-in egress). */
     fun CheckFirmware(): String
 
-    /** Check GitHub and, if newer firmware is available for the watch's board, download and start
-     *  flashing it. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once started (poll
+    /** Check the matching source and, if newer firmware is available for the watch's board, download
+     *  and start flashing it. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once started (poll
      *  [FirmwareStatus]), `uptodate:`/`noasset:`/`busy:`, or `disabled:`/`notready:`/`error:`. */
     fun UpdateFirmware(): String
 

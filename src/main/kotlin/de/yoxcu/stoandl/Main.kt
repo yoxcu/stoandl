@@ -122,8 +122,8 @@ private fun printUsage() {
     println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
     println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
     println("  firmware <file.pbz>        Flash a local firmware bundle onto the watch (shows progress)")
-    println("  firmware check             Check the PebbleOS GitHub for newer firmware (needs firmware.github)")
-    println("  firmware update            Download+flash the latest matching firmware from GitHub")
+    println("  firmware check             Check online for newer firmware (GitHub for Core, cohorts.rebble.io for classic)")
+    println("  firmware update            Download+flash the latest matching firmware for the watch")
     println("  firmware status            Show the current firmware-update state")
     println("  language [list]            List language packs for the watch (or the full catalog if none connected)")
     println("  language sideload <file.pbl>   Install a local language pack onto the watch")
@@ -893,9 +893,11 @@ private fun printFirmwareCheck(resp: String) {
             val latest = f.getOrElse(2) { "?" }
             val asset = f.getOrElse(3) { "?" }
             val newer = f.getOrElse(4) { "no" }
-            println("Watch board:    $board")
-            println("Running:        $current")
-            println("Latest on repo: $latest")
+            val source = f.getOrElse(5) { "" }
+            println("Watch board:      $board")
+            println("Running:          $current")
+            println("Latest available: $latest")
+            if (source.isNotEmpty()) println("Source:           $source")
             if (newer == "yes") println("→ Update available ($asset). Run: stoandl firmware update")
             else println("→ Up to date.")
         }
@@ -903,10 +905,8 @@ private fun printFirmwareCheck(resp: String) {
             val f = body.split('\t')
             val board = f.getOrElse(0) { "?" }
             val current = f.getOrElse(1) { "?" }
-            val latest = f.getOrElse(2) { "?" }
-            println("No firmware published for board '$board' on the configured repo " +
-                "(latest release $latest, running $current).")
-            println("That's expected for classic Pebbles — only Core devices publish there.")
+            val source = f.getOrElse(2) { "the configured source" }
+            println("$source publishes no firmware for board '$board' (running $current).")
         }
         else -> handleStatusResponse(resp) // disabled / notready / error
     }
