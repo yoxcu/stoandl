@@ -989,6 +989,43 @@ trigger). Sideload with `stoandl sideload <app.pbw>`.
 
 ---
 
+## 5.24 Code-review cleanup (dedupe / dead code / stale comments)  ⚠️ UNVERIFIED (needs a watch)
+
+A full review of the **stoandl** tree (commit `230164d`, not the libpebble3 fork) applied
+behavior-preserving cleanups: shared helpers were extracted (`withControl{}` collapsed ~25 copies of
+the connect→`getRemoteObject`→try/finally-disconnect scaffold across the CLI; plus
+`openSessionBus`/`openSystemBus`, `connectedDevice<T>()`, `LenientJson`, `stoandlHttpClient`,
+`matchOneWatch`, `onFreshConnect`, `currentPkjsApps`, `renderProgressBar`, a shared `runCommand`),
+dead code/imports/loggers were removed, and stale comments + missing `conf.example` keys were fixed.
+It compiles clean in the isolated build with no new warnings — but **there is no test suite**, so the
+compile only proves it type-checks, not that runtime behaviour is unchanged. The risk is concentrated
+in the `withControl{}` rewrite (it touches almost every CLI command's connect / error / exit path) and
+the unified watch matcher; this pass is the manual proxy for those.
+
+**Prerequisite:** the daemon running and a watch connected (any era).
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.240 | CLI round-trip (`withControl`) — **the priority** | run a spread: `stoandl list`, `battery`, `apps`, `settings`, `weather`, `notif list`, `language list`, `screenshot /tmp/s.png`, `logs /tmp/l.txt` | Each prints its normal output and exit code; with the daemon **stopped**, an error path still prints `Cannot connect to D-Bus…` / `Error: …` and exits non-zero. No hang, no missing output, no leaked connection — confirms the shared connect/disconnect/early-return scaffold preserved every subcommand. |
+| 5.241 | Watch matcher (`matchOneWatch`) | `stoandl connect <substring>`, `stoandl repair <substring>`, `stoandl unpair <name>`; plus a no-match and an ambiguous substring | Exact + unique-substring resolves the right watch; no match → `No known watch matching '…'`; ambiguous → `'…' matches multiple watches (…) — be more specific`. Wording identical across all three commands. |
+| 5.242 | Connect-time syncs (`onFreshConnect`) | restart daemon with `watch.*` prefs set + `firmware.notify` + `health.sync` on; let the watch connect | On the connect edge: prefs applied (`Applied watch pref …`), health requested, firmware check fires (≤once/day). All four `start*` hooks still trigger. |
+| 5.243 | Music control (MPRIS helpers) | play media; check now-playing on the watch; press play/pause/next/prev/volume | Title/**artist**/album show (artist via the collapsed `List`/`Array` branch); buttons drive the player; volume works (system or player per config). |
+| 5.244 | Weather location import (shared `runCommand`) | set `weather.location_source = command` (or `gnome`) with a working command; trigger a sync | Subprocess runs and locations import (`weather.location_command produced N location(s)`), unchanged. |
+| 5.245 | Install progress bar (`renderProgressBar`) | `stoandl firmware <file.pbz>` **or** `stoandl language install <locale>` | The `[####----]` bar renders and advances (now one shared renderer for both), then completes. |
+| 5.246 | Config / PKJS webview (`currentPkjsApps`) | `stoandl config "<pkjs app>"`, open then close the settings page | Config URL opens and close round-trips (`WebviewClose` → app); PKJS session enumeration unchanged. |
+| 5.247 | Clean shutdown (`pairingAgent.unregister`) | `systemctl --user stop stoandl` (or Ctrl-C), then `stoandl pair` a watch afterwards | Shutdown logs no agent error and unregisters the BlueZ agent; a later `pair` still registers a fresh agent and completes MITM numeric-comparison pairing. |
+| 5.248 | Config parses with the new example keys (`conf.example`) | copy the updated `packaging/stoandl.conf.example` (now incl. `music.*`, `geolocation.enabled`, `language.download`) to the config path; restart | Daemon starts and parses every key — no `Unknown …` warning for the newly-documented keys. |
+
+**Deliberately NOT changed** (so don't expect a diff there): the firmware/language status pollers were
+left as two separate state machines (divergent states), the `*Control` error/`notready` envelope was
+not unified (per-method diagnostics differ on purpose), and the MPRIS `SystemVolume` process calls keep
+their own logging (the shared `runCommand` warns on a missing backend, which would be noise there).
+
+**Rollback:** `git revert 230164d` (or `git checkout 230164d~1 -- <file>` for a single file) — it's a
+self-contained commit on top of the rebase.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect
