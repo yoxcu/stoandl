@@ -944,6 +944,51 @@ Classic-only class and expected to work, but are untested.
 
 ---
 
+## 5.23 libpebble3 rebase onto coredevices/master + review cleanup  ⚠️ UNVERIFIED (needs a watch)
+
+The libpebble3 submodule was rebased off its old micropebble base **directly onto upstream
+`coredevices/master`** — a ~166-commit jump — then a post-rebase code review applied cleanups (deduped
+the BlueZ D-Bus helpers, removed a dead scanner class, and **converged the JVM PKJS `startup.js` onto
+androidMain's ES6 version**, since GraalJS is fully spec-compliant and the old Rhino-era
+`function`/`.apply`/`.slice` downgrades were obsolete). It compiles, `:libpebble3:jvmTest` is green
+(80 passed), and the daemon fat-JAR builds — but two things need on-watch confirmation: that the
+upstream jump didn't regress any wired feature, and **especially that the rewritten `startup.js` still
+bootstraps PKJS correctly** (there is no offline JS test harness — see [CLAUDE.md → PKJS](CLAUDE.md)).
+
+```sh
+tail -f /tmp/stoandl.log | grep -E "Pebble JS Bridge initialized|OpenConfig|console|JsRunner|Watch connected"
+```
+
+**Prerequisite:** a watch (any era); a PKJS watchapp for 5.23a — easiest is a small one whose
+`pkjs/index.js` logs on `ready`, sends/receives an AppMessage, and ships a Clay (or plain) settings
+page. A Clay-based app is the strongest test (Clay's `tosource()` was the original Rhino→GraalJS
+trigger). Sideload with `stoandl sideload <app.pbw>`.
+
+### 5.23a PKJS regression after the `startup.js` ES6 rewrite  — **the priority**
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.230 | Bridge bootstraps | launch the PKJS app on the watch | Log: `Pebble JS Bridge initialized.` and the app's own `console.log` output. The ES6 `startup.js` (classes, arrow fns, spread/rest, `Map`/`Set`) must run on GraalJS with no `PolyglotException`. |
+| 5.231 | `console.*` levels | app calls `console.log/warn/error/info/debug` | All levels appear in the log at the right severity (the console shim — `sendLog` with rest params — was the most-rewritten part of `startup.js`). |
+| 5.232 | Settings / config page | `stoandl config "<app>"` (or open settings from the watch) | The config URL opens; log `OpenConfig: got URL: …`. Exercises `PebbleEventListener`/`addEventListener`/`dispatchEvent`/`requestConfigurationUrl` — all rewritten from Rhino prototypes to ES6 `class`. |
+| 5.233 | Clay settings render + save | open a Clay-based config page, change a value, **Save** | The page renders, the value round-trips back to the app (`webviewClosed` → AppMessage). Clay's `tosource()` runs on GraalJS's DFA regex (fast). |
+| 5.234 | AppMessage round-trip | app `Pebble.sendAppMessage({...}, ack, nack)` and receives an inbound message | ACK fires the success callback, a dropped/late one fires NACK (the `appMessageAckCallbacks`/`nackCallbacks` paths — reverted from the fork's `ackCallback` rename back to upstream's names). Inbound `appmessage` event delivered. |
+| 5.235 | XHR | app issues an `XMLHttpRequest` (incl. an `arraybuffer` response if it has one) | Request completes, body/headers correct; `arraybuffer` decodes (the JVM `_xhrDecodeBase64` path — GraalJS has no `Uint8Array.fromBase64`). |
+
+### 5.23b Upstream-jump smoke test (166 commits picked up)
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.236 | Connect + notify | restart daemon, let the watch connect, trigger a desktop notification | `Watch connected` then `Notification queued for watch`; the notification shows on the watch. No new errors on the connect path (incl. the upstream `ConnectivityStatus` crash-guard). |
+| 5.237 | Sideload a `.pbw` | `stoandl sideload <app.pbw>` (try an older single-platform pbw too) | Installs and launches. The upstream legacy-`.pbw` fallback is among the picked-up commits, so an older pbw that failed before should now install. |
+| 5.238 | Reconnect after out-of-range | walk out of range mid-use (ideally during a transfer), then return | Reconnects on its own; a test notification arrives. This is the **manual proxy for the WatchManager slot-release regression that couldn't be unit-tested** in the JVM fixture (the `cleanup()` `finally` must free the slot even if `disconnect()` throws). Repeat 3–5×; reconnection must never wedge. |
+| 5.239 | Quick wired-feature pass | `stoandl battery`, `stoandl screenshot`, `stoandl language list`, music play/pause from the watch | Each still works — confirms no public-API drift from the upstream jump broke a wired feature. |
+
+**Rollback:** if anything here fails, the pre-rebase branch is intact — repoint the submodule back
+(`git -C libs/libpebble3 checkout stoandl` at the old tip) and rebuild.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect
