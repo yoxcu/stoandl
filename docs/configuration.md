@@ -18,7 +18,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 |-----|------|---------|---------|
 | `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). |
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
-| `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. BLE-only, no web egress. |
+| `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. |
 | `call.dialer_apps` | list | `spacebar, calls` | Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the native call screen replaces them) and their title is used as a fallback caller name. |
 | `contacts.vcard_paths` | list | _(empty)_ | vCard (`.vcf`) files or directories scanned for caller-ID resolution. `~` expands to `$HOME`. |
 | `music.enabled` | bool | `true` | Bridge desktop media players (MPRIS) to the watch's Music app — now-playing display plus play/pause, next/previous and volume from the watch. Local-only; set `false` to disable. |
@@ -123,7 +123,7 @@ it always matches what the daemon accepts, and needs no daemon or watch.
 **`notification.sync_to_watch`** (off by default) additionally pushes the list + mute states to the
 watch via libpebble3's `NotificationAppItem` BlobDB. It's off because current firmware has no per-app
 *settings menu* to surface them (muting is via the action menu above, which needs no sync). Kept as an
-opt-in for firmware that does. BLE-only, no web egress.
+opt-in for firmware that does. Watch-link only, no web egress.
 
 ## Weather
 
@@ -407,9 +407,10 @@ notification arriving at or before the call rings.
 
 ## Firmware updates
 
-Flash watch firmware over BLE. The transfer, the `FIRMWARE_UPDATE_START`/`COMPLETE` handshake and the
+Flash watch firmware. The transfer, the `FIRMWARE_UPDATE_START`/`COMPLETE` handshake and the
 pre-flash safety checks (board, CRC, slot — a mismatched bundle is **refused before anything is sent**)
-are all libpebble3's; stoandl just drives them and shows progress.
+are all libpebble3's; stoandl just drives them and shows progress. It works the same over BLE or
+Bluetooth Classic — the flash rides the transport-agnostic Pebble protocol.
 
 ### Local sideload (no config, no network)
 
@@ -421,37 +422,44 @@ Flashes a firmware bundle already on disk. Always available — no keys, no egre
 progress bar and reports when the watch reboots to apply. A firmware `.pbz` for the *wrong* board is
 rejected by the safety check, so this can't flash a bundle your watch won't accept.
 
-### GitHub check / update (opt-in egress)
+### Online check / update (opt-in egress)
 
 ```sh
 stoandl firmware check     # is newer firmware available for this watch?
 stoandl firmware update    # download the matching bundle and flash it
 ```
 
-These fetch firmware from a public GitHub repo's **releases** and are **off by default** because they
-make network calls. Enable them in `stoandl.conf`:
+These fetch firmware over the network and are **off by default**. The source is chosen automatically
+by the watch's generation, so the two switches are independent — enable whichever matches your watch
+in `stoandl.conf`:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `firmware.github` | `false` | Allow `firmware check` / `update` to query GitHub and download firmware. |
+| `firmware.github` | `false` | **Core devices** (Pebble 2 Duo / Pebble Time 2): allow `check`/`update` to query GitHub releases and download firmware. |
 | `firmware.github_repo` | `coredevices/PebbleOS` | `owner/repo` whose releases publish `normal_<board>_<version>.pbz` bundles. |
 | `firmware.github_prereleases` | `false` | Consider pre-releases too (otherwise only the latest stable release). |
-| `firmware.notify` | `true` | When GitHub checks are on, also notify the watch when newer firmware appears (see below). |
+| `firmware.cohorts` | `false` | **Classic / Rebble watches** (Pebble Time / Time Steel / Time Round / Pebble 2): allow `check`/`update` to query Rebble's cohorts service. |
+| `firmware.cohorts_url` | `https://cohorts.rebble.io` | Base URL of the cohorts service — override only for a self-hosted/mirror instance. |
+| `firmware.notify` | `true` | When a source is on, also notify the watch when newer firmware appears (see below). |
 
 ### Update notifications on the watch
 
-With `firmware.github` on, stoandl checks for newer firmware **on each watch connect** (throttled to
-at most once a day) and, when it finds some, pushes a notification **to the watch** with an **Update**
-action button. Pressing Update downloads and flashes the matching bundle right there — no phone, no CLI.
-It only re-notifies when the available version actually changes, so reconnecting doesn't nag. Set
-`firmware.notify = false` to keep the GitHub checks for `firmware check`/`update` on the command line but
-suppress the automatic watch notification.
+With a source on, stoandl checks for newer firmware **on each watch connect** (throttled to at most
+once a day) and, when it finds some, pushes a notification **to the watch** with an **Update** action
+button. Pressing Update downloads and flashes the matching bundle right there — no phone, no CLI. It
+only re-notifies when the available version actually changes, so reconnecting doesn't nag. Set
+`firmware.notify = false` to keep `firmware check`/`update` on the command line but suppress the
+automatic watch notification.
 
-No account or token is needed — the PebbleOS releases are public. The connected watch's hardware
-platform reports a board revision (e.g. `obelix_pvt` for a Pebble Time 2) that **exactly matches** the
-release asset name `normal_<board>_<version>.pbz`, so the right bundle is picked with no mapping table.
-This covers **Core devices** (Pebble 2 Duo / Pebble Time 2); classic Pebbles don't publish here (their
-firmware lives on `cohorts.rebble.io`) and `firmware check` reports "no firmware published for board".
+No account or token is needed — both sources are public. **Core devices** (Pebble 2 Duo / Pebble
+Time 2) pull from GitHub: the watch's board revision (e.g. `obelix_pvt`) **exactly matches** the
+release asset `normal_<board>_<version>.pbz`, so the right bundle is picked with no mapping table.
+**Classic / Rebble watches** pull from Rebble's cohorts service (`GET /cohort?hardware=<board>&select=fw`,
+the same contract the classic Pebble app used) — the board is the same `WatchHardwarePlatform.revision`
+(e.g. `snowy_dvt`). stoandl routes to the right source via one shared `isCoreDevice()` partition (which
+also decides language-pack boards); if the chosen source ships nothing for the board, `firmware check`
+reports "no firmware published for board". A watch booted into recovery (PRF) is always offered a
+reflash so it can leave recovery.
 
 > **Risk note.** Flashing firmware is the highest-risk operation stoandl performs. It's mitigated by
 > the pre-flash safety checks and by Pebble's recovery (PRF) firmware — a failed flash drops the watch
@@ -463,7 +471,7 @@ firmware lives on `cohorts.rebble.io`) and `firmware check` reports "no firmware
 
 ### Recovery & factory reset (no config, no network)
 
-The companion to the firmware tooling — reset the connected watch over BLE.
+The companion to the firmware tooling — reset the connected watch.
 
 ```sh
 stoandl reset recovery     # reboot the watch into recovery (PRF) firmware
@@ -533,7 +541,7 @@ To revert to English, install the watch's English pack (`stoandl language instal
 
 ## Developer connection
 
-Bridge the Pebble SDK / CloudPebble to the connected watch over BLE, so you can install and live-debug
+Bridge the Pebble SDK / CloudPebble to the connected watch, so you can install and live-debug
 watchapps through stoandl the way the official phone app's developer connection does — not just
 `stoandl sideload`. `stoandl developer start` brings up libpebble3's LAN WebSocket server on **port
 9000**; it relays raw Pebble-protocol frames to/from the watch, installs `.pbw` bundles, and streams

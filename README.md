@@ -5,30 +5,30 @@
 > Built with heavy assistance from [Claude](https://claude.ai) (Anthropic's AI).
 
 Headless Pebble smartwatch companion app / bridge for Linux / postmarketOS — a background
-daemon that bridges D-Bus desktop notifications to a Pebble watch over BLE (or Bluetooth Classic
-for classic-era watches).
+daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE** for modern watches
+(Pebble 2 / Time 2) and **Bluetooth Classic** for classic-era ones (Pebble Time / Time Steel …).
 
 *Stoandl* is Bavarian dialect for "Steinchen" (little stone / pebble).
 
 ## What it does
 
-- Forwards desktop notifications (`org.freedesktop.Notifications`) to the watch over BLE
+- Forwards desktop notifications (`org.freedesktop.Notifications`) to the watch
 - Manages the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app and as sunrise/sunset timeline pins (Open-Meteo — free, no account)
 - Bridges desktop media players (MPRIS) to the watch's Music app — now-playing plus play/pause, next/previous and volume from the watch
 - Syncs calendar events (and their reminders) to the watch's timeline as native pins — DE-agnostic (local `.ics`, iCal feeds or CalDAV), reusing the calendars your desktop already keeps where it can
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
-- Flashes watch firmware over BLE — a local `.pbz`, or (opt-in) the latest build for your watch's board straight from the PebbleOS GitHub releases, with an optional "update available" notification on the watch
+- Flashes watch firmware — a local `.pbz`, or (opt-in) the latest build for your watch's board, pulled from the right source automatically (PebbleOS GitHub releases for Core devices, cohorts.rebble.io for classic Pebbles), with an optional "update available" notification on the watch
 - Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
-- Resets the watch over BLE — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
+- Resets the watch — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
 - Reads the watch's battery level — `stoandl battery`, and inline in `stoandl list`
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range. BLE watches are handed to BlueZ's own background auto-connect (no polling); classic-era watches reconnect by paging the watch's fixed address (no advertising needed, so it survives airplane mode). Either way it links up on its own, with no restarts
 - Runs as a background daemon with no UI
 
-It also runs PKJS companion scripts, serves Clay config pages, and has (untested) phone-call support.
+It also syncs health/activity data, captures custom-app datalogs, mutes notifications per app (including from the wrist), finds a misplaced watch, syncs time/timezone, exposes a Pebble-SDK developer connection, runs PKJS companion scripts + Clay config pages, and has phone-call support (caller ID, missed-call pins).
 → [docs/features.md](docs/features.md) — full feature list, comparison with other companion apps, and what's not yet implemented.
 
 ## Compatibility
@@ -51,7 +51,7 @@ BLE-native watches (Pebble 2 / Time 2) connect over **BLE** and work reliably. C
 ## Requirements
 
 - JDK 21
-- BlueZ (bluetoothd running), in LE-only mode (see below)
+- BlueZ (bluetoothd running) — the default dual-mode adapter is fine; see [Bluetooth setup](#bluetooth-setup)
 - D-Bus session bus with a notification daemon (dunst, mako, GNOME, etc.)
 
 > BLE is driven entirely through BlueZ over D-Bus — no glibc-only native
@@ -131,7 +131,8 @@ to these watches over Bluetooth Classic directly. The BLE path is untouched: BLE
 What works (hardware-verified on a Time Steel): discover → pair → connect → the full Pebble protocol →
 automatic reconnect after the watch goes out of range or into airplane mode. The protocol layer is
 transport-agnostic, so everything in [What it does](#what-it-does) — notifications, the locker, health,
-datalog, calendar, music, … — works the same over Classic.
+datalog, calendar, music, firmware, … — works the same over Classic. (The lone exception is the battery
+read-out: it rides a BLE GATT service, so `stoandl battery` is unavailable over Classic.)
 
 ### Enabling it
 
@@ -153,9 +154,10 @@ With `classic.discover` on, a known watch reconnects on its own afterwards: stoa
 address, so no advertising is needed and it survives airplane mode / out-of-range. A BR/EDR inquiry
 only runs while a pairing window is open, so the radio stays quiet the rest of the time.
 
-`connect`, `unpair [name]`, `repair`, `list` and `battery` all work for classic watches just like BLE
-ones — `unpair` forgets a classic watch by its address even while it's connected. Only one watch is
-connected at a time; `stoandl connect <name>` hands the active slot to another known watch.
+`connect`, `unpair [name]`, `repair` and `list` all work for classic watches just like BLE ones —
+`unpair` forgets a classic watch by its address even while it's connected. Only one watch is
+connected at a time; `stoandl connect <name>` hands the active slot to another known watch. (Only
+`stoandl battery` differs — see the battery note above.)
 
 > **Pairing falls back to manual?** Pairing a dual-mode watch occasionally creates an LE bond instead
 > of the BR/EDR link key RFCOMM needs. If the watch pairs but won't connect, bond it explicitly with
@@ -242,22 +244,23 @@ handling, and the egress note.
 
 ## Firmware
 
-Flash watch firmware over BLE. A local bundle works offline with no setup; libpebble3 checks it
-against the connected watch (board, CRC, slot) and refuses a mismatched bundle before sending
-anything.
+Flash watch firmware. A local bundle works offline with no setup; libpebble3 checks it against the
+connected watch (board, CRC, slot) and refuses a mismatched bundle before sending anything.
 
 ```sh
 stoandl firmware <file.pbz>   # flash a local firmware bundle (shows a progress bar)
-stoandl firmware check        # is newer firmware available for this watch? (needs firmware.github)
-stoandl firmware update       # download the matching build from GitHub and flash it
+stoandl firmware check        # is newer firmware available for this watch?
+stoandl firmware update       # download the matching build and flash it
 stoandl firmware status       # current firmware-update state
 ```
 
-`check`/`update` fetch firmware from a public GitHub repo's releases (default `coredevices/PebbleOS`)
-— opt-in egress, off until you set `firmware.github = true`. The watch's board maps exactly to the
-release asset, so the right build is picked automatically; with `firmware.notify` (on by default once
-GitHub checks are) stoandl also pushes an "update available" notification to the watch with an Update
-button. Core devices (Pebble 2 Duo / Pebble Time 2) only — classic Pebbles aren't published there.
+`check`/`update` fetch firmware online for the connected watch, choosing the source by its generation:
+**Core devices** (Pebble 2 Duo / Pebble Time 2) from the PebbleOS GitHub releases (default
+`coredevices/PebbleOS`), **classic Pebbles** (Pebble Time / Time Steel …) from `cohorts.rebble.io`.
+Each is opt-in egress, off until you enable it (`firmware.github` / `firmware.cohorts`). The watch's
+board maps exactly to the right bundle, so the build is picked automatically; with `firmware.notify`
+(on by default once a source is) stoandl also pushes an "update available" notification to the watch
+with an Update button.
 
 > Flashing is the riskiest thing stoandl does. It's guarded by the pre-flash safety checks and
 > Pebble's recovery firmware, but flash on charger and keep the watch in range.
@@ -317,7 +320,7 @@ Review the archive before sharing: the watch logs can still contain personal dat
 
 ## Factory reset & recovery
 
-Reset the connected watch over BLE — the companion to the firmware tooling, for un-bricking a bad flash
+Reset the connected watch — the companion to the firmware tooling, for un-bricking a bad flash
 or wiping the watch for handoff.
 
 ```sh
