@@ -15,8 +15,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import de.yoxcu.stoandl.util.openSystemBus
 import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.interfaces.Properties
 import java.util.concurrent.ConcurrentHashMap
@@ -80,9 +80,7 @@ class ModemManagerCallMonitor(
     }
 
     private suspend fun runMonitor() {
-        val c = withContext(Dispatchers.IO) {
-            DBusConnectionBuilder.forSystemBus().build() as DBusConnection
-        }
+        val c = withContext(Dispatchers.IO) { openSystemBus() }
         conn = c
         log.info { "ModemManager call monitor: connected to system bus" }
 

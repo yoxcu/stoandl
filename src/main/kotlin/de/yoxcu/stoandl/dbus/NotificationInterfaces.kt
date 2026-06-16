@@ -23,15 +23,6 @@ interface FreedesktopNotifications : DBusInterface {
     fun GetCapabilities(): List<String>
     fun GetServerInformation(): Array<String>
 
-    class NotificationClosed(
-        path: String,
-        id: UInt32,
-        reason: UInt32,
-    ) : DBusSignal(path, id, reason) {
-        val id: UInt32 = id
-        val reason: UInt32 = reason
-    }
-
     class ActionInvoked(
         path: String,
         id: UInt32,

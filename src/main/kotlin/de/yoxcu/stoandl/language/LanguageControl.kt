@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.language
 
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -40,12 +41,10 @@ class LanguageControl(
 
     /** Language packs need a *normal* connection ([ConnectedPebbleDevice]); a recovery-mode watch
      *  (firmware-only) can't take one. */
-    private fun device(): ConnectedPebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
+    private fun device(): ConnectedPebbleDevice? = libPebbleRef.connectedDevice()
 
     /** Install a local `.pbl` at [path] (absolute — the daemon's cwd differs from the CLI's). */
     fun sideload(path: String): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         val file = File(path)
         if (!file.isFile) return "error:No such file: $path"

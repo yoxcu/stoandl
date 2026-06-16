@@ -103,12 +103,14 @@ class WatchPrefsControl(
         else -> throw IllegalArgumentException("'$raw' is not a boolean (use true/false)")
     }
 
+    /** A leading-space unit suffix (e.g. ` ms`), or empty when the pref is unitless. */
+    private fun NumberWatchPref.unitSuffix(): String = if (unit.isNotEmpty()) " $unit" else ""
+
     private fun parseNumber(pref: NumberWatchPref, raw: String): Long {
         val n = raw.trim().toLongOrNull()
             ?: throw IllegalArgumentException("'$raw' is not a number for ${pref.id}")
         if (n < pref.min || n > pref.max) {
-            val unit = if (pref.unit.isNotEmpty()) " ${pref.unit}" else ""
-            throw IllegalArgumentException("${pref.id} must be ${pref.min}..${pref.max}$unit (got $n)")
+            throw IllegalArgumentException("${pref.id} must be ${pref.min}..${pref.max}${pref.unitSuffix()} (got $n)")
         }
         return n
     }
@@ -153,7 +155,7 @@ class WatchPrefsControl(
 
     private fun allowed(pref: WatchPref<*>): String = when (pref) {
         is BoolWatchPref -> "true|false"
-        is NumberWatchPref -> "${pref.min}..${pref.max}" + if (pref.unit.isNotEmpty()) " ${pref.unit}" else ""
+        is NumberWatchPref -> "${pref.min}..${pref.max}" + pref.unitSuffix()
         is EnumWatchPref -> pref.options.joinToString("|") { (it as Enum<*>).name }
         is QuicklaunchWatchPref -> "off|<app name or uuid>"
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
@@ -161,7 +163,7 @@ class WatchPrefsControl(
 
     private fun format(pref: WatchPref<*>, value: Any?): String = when (pref) {
         is BoolWatchPref -> (value as? Boolean)?.toString() ?: "?"
-        is NumberWatchPref -> (value as? Long)?.let { "$it" + if (pref.unit.isNotEmpty()) " ${pref.unit}" else "" } ?: "?"
+        is NumberWatchPref -> (value as? Long)?.let { "$it" + pref.unitSuffix() } ?: "?"
         is EnumWatchPref -> (value as? WatchPrefEnum)?.let { (it as Enum<*>).name } ?: "?"
         is QuicklaunchWatchPref -> (value as? QuickLaunchSetting)?.let {
             val u = it.uuid

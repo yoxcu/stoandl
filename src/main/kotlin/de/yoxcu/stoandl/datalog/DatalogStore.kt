@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.datalog
 
+import de.yoxcu.stoandl.util.toNdjson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.datalogging.DataLogRecord
 import io.rebble.libpebblecommon.datalogging.Datalogging
@@ -9,7 +10,6 @@ import io.rebble.libpebblecommon.packets.DataItemType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -57,12 +57,7 @@ class DatalogStore(
         dir.mkdirs()
         val file = File(dir, "${r.tag}.ndjson")
         val rx = System.currentTimeMillis() / 1000
-        val text = buildString {
-            for (item in splitItems(r.data, r.itemSize.toInt())) {
-                append(Json.encodeToString(JsonObject.serializer(), line(r, item, rx)))
-                append('\n')
-            }
-        }
+        val text = splitItems(r.data, r.itemSize.toInt()).map { item -> line(r, item, rx) }.toNdjson()
         if (text.isNotEmpty()) file.appendText(text)
         log.debug { "datalog ${r.uuid} tag=${r.tag} +${r.data.size}B type=${r.itemType} (${r.itemsLeft} left)" }
     }

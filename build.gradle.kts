@@ -28,7 +28,9 @@ kotlin {
 }
 
 dependencies {
-    implementation("com.coredevices:libpebble3:micropebble")
+    // The version here is irrelevant: settings.gradle.kts substitutes this module with the
+    // libs/libpebble3 composite build, so the coordinate is never resolved against a repository.
+    implementation("com.coredevices:libpebble3:composite")
 
     // Koin DI (needed because libpebble3 exposes it as implementation, not api)
     implementation("io.insert-koin:koin-core:4.1.1")

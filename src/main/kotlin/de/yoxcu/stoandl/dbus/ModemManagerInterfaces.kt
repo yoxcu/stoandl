@@ -44,9 +44,10 @@ interface ModemCall : DBusInterface {
     fun Accept()
     fun Hangup()
 
+    // `reason` stays in the constructor (it defines the signal's wire signature for dbus-java to
+    // unmarshal) but isn't exposed — nothing reads the disconnect reason.
     class StateChanged(path: String, old: Int, new: Int, reason: UInt32) : DBusSignal(path, old, new, reason) {
         val oldState: Int = old
         val newState: Int = new
-        val reason: UInt32 = reason
     }
 }

@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.developer
 
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -32,8 +33,7 @@ private val log = KotlinLogging.logger {}
 class DeveloperControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
 ) {
-    private fun device(): ConnectedPebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
+    private fun device(): ConnectedPebbleDevice? = libPebbleRef.connectedDevice()
 
     /**
      * Start the LAN developer-connection server (port 9000). The server lives in the watch's
@@ -41,7 +41,6 @@ class DeveloperControl(
      * reconnect. Returns `ok:9000`, `notready:<msg>` (no watch), or `error:<msg>`.
      */
     fun start(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             runBlocking { dev.startDevConnection() }
@@ -55,7 +54,6 @@ class DeveloperControl(
 
     /** Stop the developer-connection server. Returns `ok:`, `notready:<msg>`, or `error:<msg>`. */
     fun stop(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             runBlocking { dev.stopDevConnection() }
@@ -69,7 +67,6 @@ class DeveloperControl(
 
     /** Report whether the server is running. Returns `ok:active`/`ok:inactive` or `notready:<msg>`. */
     fun status(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return "ok:${if (dev.devConnectionActive.value) "active" else "inactive"}"
     }

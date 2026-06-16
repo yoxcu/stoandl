@@ -38,7 +38,6 @@
     <logger name="CompanionAppLifecycleManager" level="INFO"/>
     <logger name="PKJSApp" level="INFO"/>
     <logger name="GraalJsRunner" level="INFO"/>
-    <logger name="RhinoJsRunner" level="INFO"/>
     <!-- XHR: only log errors; PKJS console.log covers the normal case -->
     <logger name="JvmXHR" level="WARN"/>
     <logger name="JvmPKJS" level="INFO"/>
@@ -50,7 +49,6 @@
     <logger name="PebbleBle" level="${logLevel}"/>
     <logger name="PebbleConnector" level="${logLevel}"/>
     <logger name="PairingJvm" level="${logLevel}"/>
-    <logger name="KableGattConnector" level="${logLevel}"/>
     <!-- Decoded Pebble-protocol packet traces (inbound + outbound) — DEBUG-only firehose,
          but the only way to see what the watch actually sends (e.g. timeline actions). -->
     <logger name="PebbleProtocol" level="${logLevel}"/>
@@ -70,7 +68,6 @@
     <logger name="AppOrderManager" level="WARN"/>
     <logger name="HealthDataProcessor" level="WARN"/>
     <logger name="Health" level="WARN"/>
-    <logger name="KableConnectedGattClient" level="WARN"/>
     <logger name="ConnectivityWatcher" level="WARN"/>
     <!-- Follows STOANDL_LOG: at DEBUG it logs each watch insert ("insert: Weather …") and, crucially,
          "handleInsert: value is null: Weather …" when a record is dropped for a missing watch

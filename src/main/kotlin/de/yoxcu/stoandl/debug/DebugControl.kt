@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.debug
 
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -25,8 +26,7 @@ private val log = KotlinLogging.logger {}
 class DebugControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
 ) {
-    private fun device(): ConnectedPebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
+    private fun device(): ConnectedPebbleDevice? = libPebbleRef.connectedDevice()
 
     /**
      * Wipe the connected watch back to factory state (clears bonds, installed apps, settings — the
@@ -34,7 +34,6 @@ class DebugControl(
      * comes back, be in its out-of-box state, so it needs re-pairing afterwards.
      */
     fun factoryReset(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             dev.factoryReset()
@@ -52,7 +51,6 @@ class DebugControl(
      * (`stoandl firmware …`) from there.
      */
     fun resetIntoRecovery(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             dev.resetIntoPrf()

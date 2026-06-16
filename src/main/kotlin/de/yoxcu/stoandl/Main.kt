@@ -7,6 +7,8 @@ import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.monitorNotifications
 import de.yoxcu.stoandl.pebble.PebbleIntegration
+import de.yoxcu.stoandl.util.openSessionBus
+import de.yoxcu.stoandl.util.softOpenSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +27,6 @@ import de.yoxcu.stoandl.pebble.VIBE_PRESETS
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import java.io.File
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -33,7 +34,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "health")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "dev", "health")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -58,9 +59,7 @@ fun main(args: Array<String>) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val notificationBus = MutableSharedFlow<IncomingNotification>(extraBufferCapacity = 64)
 
-    val serviceConn = DBusConnectionBuilder.forSessionBus()
-        .withShared(false)
-        .build() as DBusConnection
+    val serviceConn = openSessionBus()
     serviceConn.requestBusName(STOANDL_BUS_NAME)
     log.info { "D-Bus bus name acquired: $STOANDL_BUS_NAME" }
 
@@ -148,9 +147,7 @@ private fun printUsage() {
 /** Report the running daemon's version (over D-Bus), falling back to this CLI's own embedded version. */
 private fun printVersion() {
     val cliVersion = BuildInfo.version
-    val conn = try {
-        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
-    } catch (e: Exception) {
+    val conn = softOpenSessionBus() ?: run {
         println("stoandl $cliVersion (couldn't reach D-Bus to query the service)")
         return
     }
@@ -186,31 +183,21 @@ private fun ctl(args: Array<String>) {
                 System.err.println("No such file: ${args[1]}"); System.exit(1); return
             }
             val path = file.absolutePath
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 val resp = try { control.SideloadApp(path) } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
                 handleStatusResponse(resp)
-            } finally {
-                conn.disconnect()
             }
         }
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
         "notif" -> ctlNotif(args.drop(1))
-        "apps" -> {
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                val records = try { control.ListApps() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
-                printAppList(records)
-            } finally {
-                conn.disconnect()
+        "apps" -> withControl { control ->
+            val records = try { control.ListApps() } catch (e: Exception) {
+                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
             }
+            printAppList(records)
         }
         "backup" -> {
             val out = args.drop(1).firstOrNull { !it.startsWith("-") }
@@ -230,24 +217,18 @@ private fun ctl(args: Array<String>) {
                 System.err.println("Usage: stoandl ${args[0]} <name|uuid>"); System.exit(1)
             }
             val query = args.drop(1).joinToString(" ")
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 val resp = try {
                     if (args[0] == "launch") control.LaunchApp(query) else control.RemoveApp(query)
                 } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
                 handleStatusResponse(resp)
-            } finally {
-                conn.disconnect()
             }
         }
         "config" -> {
             val app = args.getOrNull(1) ?: ""
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 val configUrl = try { control.OpenConfig(app) } catch (e: Exception) {
                     System.err.println("Error contacting daemon: ${e.message}")
                     System.exit(1); return
@@ -258,74 +239,56 @@ private fun ctl(args: Array<String>) {
                     return
                 }
                 runConfigProxy(configUrl) { data -> control.WebviewClose(data) }
-            } finally {
-                conn.disconnect()
             }
         }
         "fakecall" -> {
             val sub = args.getOrNull(1) ?: "ring"
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                when (sub) {
-                    "ring" -> {
-                        val name = args.getOrNull(2) ?: "Test Caller"
-                        val number = args.getOrNull(3) ?: "+15551234567"
-                        if (control.FakeCallRing(name, number)) println("Ringing watch: $name <$number>")
-                        else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
+            withControl { control ->
+                try {
+                    when (sub) {
+                        "ring" -> {
+                            val name = args.getOrNull(2) ?: "Test Caller"
+                            val number = args.getOrNull(3) ?: "+15551234567"
+                            if (control.FakeCallRing(name, number)) println("Ringing watch: $name <$number>")
+                            else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
+                        }
+                        "end" -> {
+                            control.FakeCallEnd()
+                            println("Call ended")
+                        }
+                        else -> {
+                            System.err.println("Usage: stoandl fakecall [ring [name] [number] | end]")
+                            System.exit(1)
+                        }
                     }
-                    "end" -> {
-                        control.FakeCallEnd()
-                        println("Call ended")
-                    }
-                    else -> {
-                        System.err.println("Usage: stoandl fakecall [ring [name] [number] | end]")
-                        System.exit(1)
-                    }
+                } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}")
+                    System.exit(1)
                 }
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}")
-                System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
-        "findwatch" -> {
-            val conn = connectDbusOrExit() ?: return
+        "findwatch" -> withControl { control ->
             try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
                 if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
                 else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}")
                 System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
-        "weather" -> {
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                val resp = try { control.SyncWeather() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
-                handleStatusResponse(resp)
-            } finally {
-                conn.disconnect()
+        "weather" -> withControl { control ->
+            val resp = try { control.SyncWeather() } catch (e: Exception) {
+                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
             }
+            handleStatusResponse(resp)
         }
         "settings" -> {
             val filter = args.getOrNull(1)
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 val records = try { control.ListWatchPrefs() } catch (e: Exception) {
                     System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
                 }
                 printWatchPrefs(records, filter)
-            } finally {
-                conn.disconnect()
             }
         }
         "set-setting" -> {
@@ -334,21 +297,15 @@ private fun ctl(args: Array<String>) {
             }
             val id = args[1]
             val value = args.drop(2).joinToString(" ")
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 val resp = try { control.SetWatchPref(id, value) } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
                 handleStatusResponse(resp)
-            } finally {
-                conn.disconnect()
             }
         }
-        "pair" -> {
-            val conn = connectDbusOrExit() ?: return
+        "pair" -> withControl { control ->
             try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
                 val startResp = try { control.Pair() } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
@@ -357,59 +314,47 @@ private fun ctl(args: Array<String>) {
                 pollPairStatus(control)
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
         "repair" -> {
             if (args.size < 2) {
                 System.err.println("Usage: stoandl repair <watch name>"); System.exit(1); return
             }
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                val startResp = try { control.Repair(args[1]) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
+            withControl { control ->
+                try {
+                    val startResp = try { control.Repair(args[1]) } catch (e: Exception) {
+                        System.err.println("Error: ${e.message}"); System.exit(1); return
+                    }
+                    if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+                    println(startResp.removePrefix("ok:"))
+                    pollPairStatus(control)
+                } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1)
                 }
-                if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
-                println(startResp.removePrefix("ok:"))
-                pollPairStatus(control)
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
-        "unpair" -> {
-            val conn = connectDbusOrExit() ?: return
+        "unpair" -> withControl { control ->
             try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
                 // `unpair` = blanket (all); `unpair <name>` = just the matching watch (like `repair`).
                 handleStatusResponse(control.Unpair(if (args.size >= 2) args[1] else ""))
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
         "connect" -> {
             if (args.size < 2) {
                 System.err.println("Usage: stoandl connect <watch name>"); System.exit(1); return
             }
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                handleStatusResponse(control.Connect(args[1]))
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1)
-            } finally {
-                conn.disconnect()
+            withControl { control ->
+                try {
+                    handleStatusResponse(control.Connect(args[1]))
+                } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1)
+                }
             }
         }
-        "list" -> {
-            val conn = connectDbusOrExit() ?: return
+        "list" -> withControl { control ->
             try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
                 val watches = control.ListWatches()
                 if (watches.isEmpty()) {
                     println("No known watches. Run 'stoandl pair' to add one.")
@@ -423,28 +368,20 @@ private fun ctl(args: Array<String>) {
                 }
             } catch (e: Exception) {
                 System.err.println("Error: ${e.message}"); System.exit(1)
-            } finally {
-                conn.disconnect()
             }
         }
-        "battery" -> {
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                val resp = try { control.Battery() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
+        "battery" -> withControl { control ->
+            val resp = try { control.Battery() } catch (e: Exception) {
+                System.err.println("Error: ${e.message}"); System.exit(1); return
+            }
+            val (kind, body) = splitStatus(resp)
+            when (kind) {
+                "ok" -> {
+                    val f = body.split('\t')
+                    println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" }))
                 }
-                val (kind, body) = splitStatus(resp)
-                when (kind) {
-                    "ok" -> {
-                        val f = body.split('\t')
-                        println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" }))
-                    }
-                    "unknown" -> println("$body: battery level not available yet")
-                    else -> handleStatusResponse(resp)
-                }
-            } finally {
-                conn.disconnect()
+                "unknown" -> println("$body: battery level not available yet")
+                else -> handleStatusResponse(resp)
             }
         }
         "health" -> ctlHealth(args.drop(1))
@@ -457,45 +394,35 @@ private fun ctl(args: Array<String>) {
                     }
                     dumpCalendar(src)
                 }
-                "list" -> {
-                    val conn = connectDbusOrExit() ?: return
-                    try {
-                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                        val cals = try { control.ListCalendars() } catch (e: Exception) {
-                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                "list" -> withControl { control ->
+                    val cals = try { control.ListCalendars() } catch (e: Exception) {
+                        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                    }
+                    if (cals.isEmpty()) {
+                        println("No calendars synced (configure calendar.* in stoandl.conf, or none discovered yet).")
+                    } else {
+                        cals.forEach { entry ->
+                            val p = entry.split('\t')
+                            println("  %-4s %-30s %s".format(p.getOrElse(0) { "" }, p.getOrElse(1) { entry }, p.getOrElse(2) { "" }))
                         }
-                        if (cals.isEmpty()) {
-                            println("No calendars synced (configure calendar.* in stoandl.conf, or none discovered yet).")
-                        } else {
-                            cals.forEach { entry ->
-                                val p = entry.split('\t')
-                                println("  %-4s %-30s %s".format(p.getOrElse(0) { "" }, p.getOrElse(1) { entry }, p.getOrElse(2) { "" }))
-                            }
-                            println("\nToggle one with:  stoandl calendar disable <id|name>")
-                        }
-                    } finally { conn.disconnect() }
+                        println("\nToggle one with:  stoandl calendar disable <id|name>")
+                    }
                 }
-                "sync" -> {
-                    val conn = connectDbusOrExit() ?: return
-                    try {
-                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-                        handleStatusResponse(try { control.SyncCalendar() } catch (e: Exception) {
-                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                        })
-                    } finally { conn.disconnect() }
+                "sync" -> withControl { control ->
+                    handleStatusResponse(try { control.SyncCalendar() } catch (e: Exception) {
+                        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                    })
                 }
                 "enable", "disable" -> {
                     val query = args.drop(2).joinToString(" ")
                     if (query.isBlank()) {
                         System.err.println("Usage: stoandl calendar $sub <id|name>"); System.exit(1); return
                     }
-                    val conn = connectDbusOrExit() ?: return
-                    try {
-                        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+                    withControl { control ->
                         handleStatusResponse(try { control.SetCalendarEnabled(query, sub == "enable") } catch (e: Exception) {
                             System.err.println("Error: ${e.message}"); System.exit(1); return
                         })
-                    } finally { conn.disconnect() }
+                    }
                 }
                 else -> {
                     System.err.println("Usage: stoandl calendar <list|sync|enable <id|name>|disable <id|name>|dump <file|url>>")
@@ -536,9 +463,7 @@ private fun ctl(args: Array<String>) {
             val arg = args.getOrNull(1)
             val target = resolveOutPath(arg, "pebble-screenshot-${timestamp()}.png", listOf(".png"))
             val path = target.absolutePath
-            val conn = connectDbusOrExit() ?: return
-            try {
-                val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+            withControl { control ->
                 println("Capturing watch screen…")
                 val resp = try { control.TakeScreenshot(path) } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
@@ -552,8 +477,6 @@ private fun ctl(args: Array<String>) {
                 } else {
                     handleStatusResponse(resp)
                 }
-            } finally {
-                conn.disconnect()
             }
         }
         "logs" -> ctlLogs(args.drop(1))
@@ -573,9 +496,7 @@ private fun ctl(args: Array<String>) {
 
 /** Parse a `status:message` response from a control method and exit non-zero on failure. */
 private fun handleStatusResponse(resp: String) {
-    val idx = resp.indexOf(':')
-    val status = if (idx >= 0) resp.substring(0, idx) else resp
-    val message = if (idx >= 0) resp.substring(idx + 1) else ""
+    val (status, message) = splitStatus(resp)
     if (status == "ok") {
         println(message)
     } else {
@@ -778,15 +699,11 @@ private fun healthActivities(days: Int) {
 }
 
 private fun healthSync() {
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         val resp = try { control.SyncHealth() } catch (e: Exception) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         handleStatusResponse(resp)
-    } finally {
-        conn.disconnect()
     }
 }
 
@@ -825,9 +742,7 @@ private fun ctlFirmware(rest: List<String>) {
         System.err.println("Usage: stoandl firmware <file.pbz> | check | update | status")
         System.exit(1); return
     }
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         when (sub) {
             "check" -> {
                 val resp = try { control.CheckFirmware() } catch (e: Exception) {
@@ -873,8 +788,6 @@ private fun ctlFirmware(rest: List<String>) {
                 pollFirmwareStatus(control)
             }
         }
-    } finally {
-        conn.disconnect()
     }
 }
 
@@ -949,10 +862,10 @@ private fun pollFirmwareStatus(control: StoandlControl) {
             "waiting" -> sawActivity = true
             "inprogress" -> {
                 sawActivity = true
-                renderFirmwareBar(body.toIntOrNull() ?: 0); barShown = true
+                renderProgressBar("Flashing", body.toIntOrNull() ?: 0); barShown = true
             }
             "reboot" -> {
-                if (barShown) { renderFirmwareBar(100); println() }
+                if (barShown) { renderProgressBar("Flashing", 100); println() }
                 println("Done — watch rebooting to apply the firmware.")
                 return
             }
@@ -963,7 +876,7 @@ private fun pollFirmwareStatus(control: StoandlControl) {
             }
             "notready" -> if (sawActivity) {
                 // The watch reboots and drops the link once the transfer completes.
-                if (barShown) { renderFirmwareBar(100); println() }
+                if (barShown) { renderProgressBar("Flashing", 100); println() }
                 println("Watch disconnected — it's rebooting to apply the firmware.")
                 return
             }
@@ -977,24 +890,23 @@ private fun pollFirmwareStatus(control: StoandlControl) {
     }
 }
 
-private fun renderFirmwareBar(pct: Int) {
+/** A 20-wide `[####----]` progress bar on the current line (carriage return, no newline). */
+private fun renderProgressBar(label: String, pct: Int) {
     val clamped = pct.coerceIn(0, 100)
     val width = 20
     val filled = clamped * width / 100
     val bar = "#".repeat(filled) + "-".repeat(width - filled)
-    print("\rFlashing [$bar] %3d%%".format(clamped))
+    print("\r$label [$bar] %3d%%".format(clamped))
     System.out.flush()
 }
 
-/** Dispatch `stoandl language ...`: `catalog`/`search` (offline), `list`/`sideload`/`install`/`status`. */
+/** Dispatch `stoandl notif ...`: `styles` (offline), else `list`/`mute`/`unmute`/`mute-all`/`unmute-all`/`style`. */
 private fun ctlNotif(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
     // `styles` lists the available colours/icons/vibes — generated from the enums, fully offline
     // (no daemon, no watch), so handle it before opening the control bus.
     if (sub == "styles") { printNotifStyles(); return }
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         when (sub) {
             "list" -> {
                 val rows = try { control.NotifList() } catch (e: Exception) {
@@ -1039,7 +951,7 @@ private fun ctlNotif(rest: List<String>) {
                 System.exit(1)
             }
         }
-    } finally { conn.disconnect() }
+    }
 }
 
 /** Value following [flag] in [args], or null if the flag is absent or has no following token. */
@@ -1127,9 +1039,7 @@ private fun ctlLanguage(rest: List<String>) {
     // `list` is resilient: it shows the watch's packs when the daemon+watch are there, and otherwise
     // falls back to the full bundled catalog (offline), so it works before pairing / with no daemon.
     if (sub == "list") { ctlLanguageList(); return }
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         when (sub) {
             "status" -> {
                 val resp = try { control.LanguageStatus() } catch (e: Exception) {
@@ -1169,8 +1079,6 @@ private fun ctlLanguage(rest: List<String>) {
                 System.exit(1)
             }
         }
-    } finally {
-        conn.disconnect()
     }
 }
 
@@ -1180,11 +1088,7 @@ private fun ctlLanguage(rest: List<String>) {
  * missing daemon (or no watch) degrades to the offline catalog instead of erroring out.
  */
 private fun ctlLanguageList() {
-    val conn = try {
-        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
-    } catch (e: Exception) {
-        printFullCatalog(); return
-    }
+    val conn = softOpenSessionBus() ?: run { printFullCatalog(); return }
     try {
         val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
         val records = try { control.ListLanguages() } catch (e: Exception) { emptyList() }
@@ -1293,10 +1197,10 @@ private fun pollLanguageStatus(control: StoandlControl) {
             }
             "installing" -> {
                 sawActivity = true
-                renderLanguageBar(body.toIntOrNull() ?: 0); barShown = true
+                renderProgressBar("Installing", body.toIntOrNull() ?: 0); barShown = true
             }
             "done" -> {
-                if (barShown) { renderLanguageBar(100); println() }
+                if (barShown) { renderProgressBar("Installing", 100); println() }
                 println("Done — installed ${body.ifEmpty { "the language pack" }}.")
                 return
             }
@@ -1306,7 +1210,7 @@ private fun pollLanguageStatus(control: StoandlControl) {
                 System.exit(1); return
             }
             "notready" -> if (sawActivity) {
-                if (barShown) { renderLanguageBar(100); println() }
+                if (barShown) { renderProgressBar("Installing", 100); println() }
                 println("Watch disconnected during install.")
                 return
             }
@@ -1318,15 +1222,6 @@ private fun pollLanguageStatus(control: StoandlControl) {
             System.exit(1); return
         }
     }
-}
-
-private fun renderLanguageBar(pct: Int) {
-    val clamped = pct.coerceIn(0, 100)
-    val width = 20
-    val filled = clamped * width / 100
-    val bar = "#".repeat(filled) + "-".repeat(width - filled)
-    print("\rInstalling [$bar] %3d%%".format(clamped))
-    System.out.flush()
 }
 
 /** Render the tab-separated locker records from ListApps() as an aligned table. */
@@ -1436,7 +1331,7 @@ private fun resolveOutPath(arg: String?, defaultName: String, exts: List<String>
 /** True if the stoandl daemon currently owns its D-Bus name. Returns false (with a warning) if
  *  the bus can't be reached, so a detection glitch doesn't block a restore. */
 private fun daemonRunning(): Boolean = try {
-    val conn = DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    val conn = openSessionBus()
     try {
         val bus = conn.getRemoteObject(
             "org.freedesktop.DBus", "/org/freedesktop/DBus",
@@ -1536,17 +1431,13 @@ private fun ctlLogs(rest: List<String>) {
     val arg = rest.firstOrNull { !it.startsWith("-") }
     val target = resolveOutPath(arg, "pebble-logs-${timestamp()}.txt", listOf(".txt", ".log"))
     val path = target.absolutePath
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         println("Gathering watch logs… (this can take a few seconds)")
         val resp = try { control.GatherLogs(path) } catch (e: Exception) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         val (kind, body) = splitStatus(resp)
         if (kind == "ok") println("Saved $body") else handleStatusResponse(resp)
-    } finally {
-        conn.disconnect()
     }
 }
 
@@ -1570,9 +1461,7 @@ private fun ctlSupport(rest: List<String>) {
     println("Building support bundle…")
 
     // --- Watch-side pieces (need the daemon + a connected watch) ---
-    val conn = try {
-        DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
-    } catch (e: Exception) { null }
+    val conn = softOpenSessionBus()
     var daemonVersion: String? = null
     if (conn != null) {
         try {
@@ -1688,26 +1577,18 @@ private fun ctlReset(rest: List<String>) {
 }
 
 /** Run a reset RPC and print its status-prefixed result. */
-private fun sendReset(call: (StoandlControl) -> String) {
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
-        val resp = try { call(control) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
-        handleStatusResponse(resp)
-    } finally {
-        conn.disconnect()
+private fun sendReset(call: (StoandlControl) -> String) = withControl { control ->
+    val resp = try { call(control) } catch (e: Exception) {
+        System.err.println("Error: ${e.message}"); System.exit(1); return@withControl
     }
+    handleStatusResponse(resp)
 }
 
 /** `stoandl developer <start|stop|status>` — toggle the developer connection (libpebble3's LAN
  *  WebSocket server on port 9000) so the Pebble SDK / CloudPebble can install and live-debug apps
  *  through stoandl over BLE. */
 private fun ctlDeveloper(rest: List<String>) {
-    val conn = connectDbusOrExit() ?: return
-    try {
-        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+    withControl { control ->
         when (rest.firstOrNull()) {
             "start" -> {
                 val resp = try { control.StartDevConnection() } catch (e: Exception) {
@@ -1747,8 +1628,6 @@ private fun ctlDeveloper(rest: List<String>) {
                 System.exit(1)
             }
         }
-    } finally {
-        conn.disconnect()
     }
 }
 
@@ -1795,11 +1674,27 @@ private fun sanitizeConfig(text: String): String {
 }
 
 private fun connectDbusOrExit(): DBusConnection? = try {
-    DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+    openSessionBus()
 } catch (e: Exception) {
     System.err.println("Cannot connect to D-Bus session bus: ${e.message}")
     System.exit(1)
     null
+}
+
+/**
+ * Connect to the session bus, resolve the daemon's [StoandlControl] proxy, run [block], and always
+ * disconnect afterwards. Centralises the connect → getRemoteObject → try/finally-disconnect scaffold
+ * that nearly every CLI subcommand needs. Inline so a non-local `return` in [block] (the usual
+ * bail-after-error idiom) still runs the `finally`. If the bus can't be reached, [connectDbusOrExit]
+ * has already exited the process.
+ */
+private inline fun withControl(block: (StoandlControl) -> Unit) {
+    val conn = connectDbusOrExit() ?: return
+    try {
+        block(conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java))
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {

@@ -60,7 +60,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         val now = Clock.System.now()
         var pins = 0
         for (slot in PinDay.entries) {
-            pins += buildForDay(primary, others, slot, slot.ordinal, now)
+            pins += buildForDay(primary, others, slot, now)
         }
         log.info { "Weather pins updated: $pins pin(s) across ${PinDay.entries.size} day(s)" }
     }
@@ -79,10 +79,9 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         primary: LocationForecast?,
         others: List<LocationForecast>,
         slot: PinDay,
-        index: Int,
         now: Instant,
     ): Int {
-        val forecast = primary?.days?.getOrNull(index)
+        val forecast = primary?.days?.getOrNull(slot.ordinal)
         if (primary == null || forecast == null) {
             libPebble.delete(slot.dayUuid)
             libPebble.delete(slot.nightUuid)
@@ -90,7 +89,10 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         }
         // "high°/low°" — the same daily span shown on both the sunrise and sunset pins.
         val subtitle = "${forecast.day.temp}°/${forecast.night.temp}°"
-        val otherDays = others.mapNotNull { it.days.getOrNull(index)?.let { d -> it.name to d } }
+        val otherDays = others.mapNotNull { it.days.getOrNull(slot.ordinal)?.let { d -> it.name to d } }
+        // Each other-location detail line: "<name>\n<high>°/<low>°, <phrase for this period>".
+        fun otherLines(part: (DayForecast) -> DayPart) =
+            otherDays.map { (name, d) -> "$name\n${d.day.temp}°/${d.night.temp}°, ${part(d).phrase}" }
 
         insertPin(
             uuid = slot.dayUuid,
@@ -100,7 +102,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
             timestamp = forecast.sunrise,
             location = primary.name,
             now = now,
-            otherLocations = otherDays.map { (name, d) -> "$name\n${d.day.temp}°/${d.night.temp}°, ${d.day.phrase}" },
+            otherLocations = otherLines { it.day },
         )
         insertPin(
             uuid = slot.nightUuid,
@@ -110,7 +112,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
             timestamp = forecast.sunset,
             location = primary.name,
             now = now,
-            otherLocations = otherDays.map { (name, d) -> "$name\n${d.day.temp}°/${d.night.temp}°, ${d.night.phrase}" },
+            otherLocations = otherLines { it.night },
         )
         return 2
     }

@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.screenshot
 
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -26,8 +27,7 @@ private val log = KotlinLogging.logger {}
 class ScreenshotControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
 ) {
-    private fun device(): ConnectedPebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
+    private fun device(): ConnectedPebbleDevice? = libPebbleRef.connectedDevice()
 
     /**
      * Capture to the absolute [path] (the daemon's cwd differs from the CLI's, so the CLI resolves and sends
@@ -35,7 +35,6 @@ class ScreenshotControl(
      * (no watch), or `error:<msg>` (transfer timed out, watch busy, or the file couldn't be written).
      */
     fun capture(path: String): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             val shot = runBlocking { dev.takeScreenshotPixels() }

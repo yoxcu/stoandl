@@ -5,10 +5,9 @@ package de.yoxcu.stoandl.weather
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherUnits
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
+import de.yoxcu.stoandl.util.LenientJson
+import de.yoxcu.stoandl.util.stoandlHttpClient
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
@@ -34,14 +33,12 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.security.MessageDigest
 import kotlin.math.roundToInt
 import kotlin.time.Clock
-import kotlin.time.Duration
 import kotlin.time.Instant
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -86,13 +83,7 @@ class WeatherSync(
     private val pins = WeatherPins(libPebble)
     // Avoid re-issuing pin deletions every sync once they've been cleared while pins are disabled.
     @Volatile private var pinsCleared = false
-    private val client = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 30_000
-            connectTimeoutMillis = 15_000
-        }
-    }
-    private val json = Json { ignoreUnknownKeys = true }
+    private val client = stoandlHttpClient()
     // Serialise syncs: the periodic loop and the on-connect trigger must never overlap.
     private val syncMutex = Mutex()
     // Whether the last sync populated every location; drives the periodic loop's retry backoff.
@@ -239,9 +230,10 @@ class WeatherSync(
             log.warn { "Open-Meteo returned HTTP ${response.status} for $name" }
             return failedForecast(key, name, isCurrentLocation)
         }
-        val resp = json.decodeFromString<OpenMeteoResponse>(response.bodyAsText())
+        val resp = LenientJson.decodeFromString<OpenMeteoResponse>(response.bodyAsText())
+        val cur = resp.current
         val daily = resp.daily
-        val currentTemp = resp.current?.temperature
+        val currentTemp = cur?.temperature
         if (currentTemp == null || daily == null ||
             daily.tempMax.size < 2 || daily.tempMin.size < 2 || daily.weatherCode.size < 2
         ) {
@@ -249,7 +241,7 @@ class WeatherSync(
             return failedForecast(key, name, isCurrentLocation)
         }
 
-        val currentCode = resp.current?.weatherCode ?: -1
+        val currentCode = cur.weatherCode ?: -1
         val appData = WeatherLocationData.WeatherLocationDataPopulated(
             key = key,
             currentTemp = currentTemp.roundToInt().toShort(),
@@ -334,7 +326,7 @@ class WeatherSync(
                 // Nominatim's policy requires an identifying User-Agent.
                 header("User-Agent", "stoandl/0.1 (Pebble companion daemon; https://github.com/yoxcu/stoandl)")
             }.bodyAsText()
-            val address = json.parseToJsonElement(body).jsonObject["address"]?.jsonObject
+            val address = LenientJson.parseToJsonElement(body).jsonObject["address"]?.jsonObject
             val name = listOf("city", "town", "village", "municipality", "county")
                 .firstNotNullOfOrNull { address?.get(it)?.jsonPrimitive?.contentOrNull }
             reverseGeocodeCacheKey = cacheKey

@@ -9,8 +9,8 @@ import de.yoxcu.stoandl.dbus.GeoClueClient
 import de.yoxcu.stoandl.dbus.GeoClueManager
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.freedesktop.dbus.DBusPath
+import de.yoxcu.stoandl.util.openSystemBus
 import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.Properties
 import org.freedesktop.dbus.types.UInt32
 
@@ -125,7 +125,7 @@ class GeoClueLocationProvider(private val desktopId: String) {
         if (existing != null && existing.isConnected && clientPath != null) return
         try { existing?.disconnect() } catch (_: Exception) {}
 
-        val c = DBusConnectionBuilder.forSystemBus().build() as DBusConnection
+        val c = openSystemBus()
         conn = c
         val manager = c.getRemoteObject(GEOCLUE_BUS_NAME, GEOCLUE_MANAGER_PATH, GeoClueManager::class.java)
         val client = manager.GetClient()

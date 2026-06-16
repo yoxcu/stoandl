@@ -4,6 +4,7 @@ package de.yoxcu.stoandl.firmware
 
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.pebble.isCoreDevice
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
@@ -87,12 +88,10 @@ class FirmwareControl(
         ) : CheckResult()
     }
 
-    private fun device(): CommonConnectedDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<CommonConnectedDevice>()?.firstOrNull()
+    private fun device(): CommonConnectedDevice? = libPebbleRef.connectedDevice()
 
     /** Flash a local `.pbz` at [path]. The path must be absolute (the daemon's cwd differs from the CLI's). */
     fun sideload(path: String): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         if (!File(path).isFile) return "error:No such file: $path"
         return try {

@@ -1,11 +1,11 @@
 package de.yoxcu.stoandl.language
 
 import de.yoxcu.stoandl.pebble.isCoreDevice
+import de.yoxcu.stoandl.util.LenientJson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 private val log = KotlinLogging.logger {}
 
@@ -47,8 +47,6 @@ class LanguagePackCatalog private constructor(private val packs: List<LanguagePa
     }
 
     companion object {
-        private val json = Json { ignoreUnknownKeys = true }
-
         /** Load and parse the bundled catalog. Returns an empty catalog (not an error) if it's
          *  missing or malformed, so the daemon still starts — language packs just won't be listed. */
         fun load(): LanguagePackCatalog {
@@ -58,7 +56,7 @@ class LanguagePackCatalog private constructor(private val packs: List<LanguagePa
                 return LanguagePackCatalog(emptyList())
             }
             return try {
-                val file = json.decodeFromString<LanguagePackFile>(stream.bufferedReader().use { it.readText() })
+                val file = LenientJson.decodeFromString<LanguagePackFile>(stream.bufferedReader().use { it.readText() })
                 LanguagePackCatalog(dedupe(file.languages))
             } catch (e: Exception) {
                 log.error(e) { "Failed to parse language-packs.json; language catalog is empty" }
@@ -71,7 +69,8 @@ class LanguagePackCatalog private constructor(private val packs: List<LanguagePa
         private fun dedupe(all: List<LanguagePack>): List<LanguagePack> =
             all.groupBy { "${it.isoLocal}/${it.hardware}/${it.source()}" }
                 .values
-                .map { group -> group.maxByOrNull { semver(it.firmwareVersion) } ?: group.first() }
+                // `values` groups are never empty, so maxBy always returns an element.
+                .map { group -> group.maxBy { semver(it.firmwareVersion) } }
 
         /** Rebble publishes every pack under one host; collapse its URLs to that host so all of a
          *  locale+board's firmware revisions group together (community GitHub URLs stay distinct). */

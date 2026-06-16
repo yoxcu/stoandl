@@ -1,11 +1,11 @@
 package de.yoxcu.stoandl.firmware
 
+import de.yoxcu.stoandl.util.LenientJson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.net.URLEncoder
 
 private val log = KotlinLogging.logger {}
@@ -32,8 +32,6 @@ class CohortsFirmwareSource(
     /** Base URL of the cohorts service, no trailing slash (default `https://cohorts.rebble.io`). */
     private val baseUrl: String,
 ) : FirmwareSource {
-    private val json = Json { ignoreUnknownKeys = true }
-
     override val label: String = "cohorts.rebble.io"
     override val disabledHint: String =
         "Rebble cohorts firmware updates are off (set firmware.cohorts = true in stoandl.conf)"
@@ -52,7 +50,7 @@ class CohortsFirmwareSource(
                 resp.statusCode() !in 200..299 ->
                     FirmwareSource.Resolution.Unreachable("Rebble cohorts HTTP ${resp.statusCode()}")
                 else -> try {
-                    val normal = json.decodeFromString<CohortResponse>(resp.body()).fw?.normal
+                    val normal = LenientJson.decodeFromString<CohortResponse>(resp.body()).fw?.normal
                     if (normal == null || normal.url.isBlank()) {
                         FirmwareSource.Resolution.NoFirmware
                     } else {

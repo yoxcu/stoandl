@@ -32,7 +32,6 @@ private val log = KotlinLogging.logger {}
 class RawCalendar(
     val platformId: String,
     val name: String,
-    val color: Int = 0,
     val fetchEvents: suspend (start: Instant, end: Instant) -> List<CalendarEvent>,
 )
 
@@ -197,7 +196,7 @@ class CalDavSource(private val entries: List<Entry>, private val client: HttpCli
                 info.principalHref != null -> {
                     val principalUrl = resolveHref(baseUrl, info.principalHref)
                     val homeXml = propfind(principalUrl, auth, "0", PROPFIND_HOME_SET) ?: return emptyList()
-                    val home = withContext(Dispatchers.IO) { firstHomeHref(homeXml) } ?: return emptyList()
+                    val home = withContext(Dispatchers.IO) { firstHomeHref(parseXml(homeXml)) } ?: return emptyList()
                     listCalendars(resolveHref(principalUrl, home), auth)
                 }
                 else -> emptyList()
@@ -278,12 +277,12 @@ class CalDavSource(private val entries: List<Entry>, private val client: HttpCli
             selfName = self?.firstTextNS(DAV_NS, "displayname"),
             principalHref = (doc.getElementsByTagNameNS(DAV_NS, "current-user-principal").item(0) as? Element)
                 ?.firstTextNS(DAV_NS, "href"),
-            homeHref = firstHomeHref(xml),
+            homeHref = firstHomeHref(doc),
         )
     }
 
-    private fun firstHomeHref(xml: String): String? =
-        (parseXml(xml).getElementsByTagNameNS(CALDAV_NS, "calendar-home-set").item(0) as? Element)
+    private fun firstHomeHref(doc: Document): String? =
+        (doc.getElementsByTagNameNS(CALDAV_NS, "calendar-home-set").item(0) as? Element)
             ?.firstTextNS(DAV_NS, "href")
 
     companion object {

@@ -9,12 +9,15 @@ class KermitSlf4jWriter : LogWriter() {
     private val cache = ConcurrentHashMap<String, org.slf4j.Logger>()
 
     // Strip device-path suffix: "BlobDB-{...}" → "BlobDB", "PebbleBle/{...}" → "PebbleBle"
-    // Also strip plain app-name suffix: "RhinoJsRunner-Hooky" → "RhinoJsRunner"
+    // Also strip plain app-name suffix: "GraalJsRunner-Hooky" → "GraalJsRunner"
     private fun cleanTag(tag: String) = tag
-        .replace(Regex("[/-]\\{.*"), "")
-        .replace(Regex("-[^{].*"), "")
+        .replace(DEVICE_PATH_SUFFIX, "")
+        .replace(APP_NAME_SUFFIX, "")
 
-    private fun slf4j(tag: String) = cache.getOrPut(cleanTag(tag)) { LoggerFactory.getLogger(cleanTag(tag)) }
+    private fun slf4j(tag: String): org.slf4j.Logger {
+        val name = cleanTag(tag)
+        return cache.getOrPut(name) { LoggerFactory.getLogger(name) }
+    }
 
     override fun isLoggable(tag: String, severity: Severity): Boolean {
         val log = slf4j(tag)
@@ -36,5 +39,11 @@ class KermitSlf4jWriter : LogWriter() {
             Severity.Warn    -> log.warn(message, throwable)
             else             -> log.error(message, throwable)
         }
+    }
+
+    companion object {
+        // Constant patterns — hoisted out of cleanTag so they aren't recompiled on every log line.
+        private val DEVICE_PATH_SUFFIX = Regex("[/-]\\{.*")
+        private val APP_NAME_SUFFIX = Regex("-[^{].*")
     }
 }

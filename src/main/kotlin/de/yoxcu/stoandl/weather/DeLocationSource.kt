@@ -2,10 +2,10 @@ package de.yoxcu.stoandl.weather
 
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
+import de.yoxcu.stoandl.util.runCommand
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.concurrent.TimeUnit
 
 /**
  * Imports weather locations the user already configured in their desktop environment, so they don't
@@ -52,7 +52,7 @@ class DeLocationSource(private val mode: Mode, private val command: String) {
             log.warn { "weather.location_source=command but weather.location_command is empty" }
             return emptyList()
         }
-        val out = runCommand(listOf("sh", "-c", command)) ?: return emptyList()
+        val out = runCommand(listOf("sh", "-c", command), 10) ?: return emptyList()
         val lines = out.lines().map { it.trim() }.filter { it.isNotEmpty() }
         val locs = StoandlConfig.parseWeatherLocations(lines)
         log.info { "weather.location_command produced ${locs.size} location(s)" }
@@ -61,7 +61,7 @@ class DeLocationSource(private val mode: Mode, private val command: String) {
 
     private fun readGnome(): List<WeatherLocation> {
         for (schema in GNOME_SCHEMAS) {
-            val out = runCommand(listOf("gsettings", "get", schema, "locations")) ?: continue
+            val out = runCommand(listOf("gsettings", "get", schema, "locations"), 10) ?: continue
             val locs = parseGnomeLocations(out)
             if (locs.isNotEmpty()) {
                 log.info { "Imported ${locs.size} location(s) from $schema: ${locs.map { it.name }}" }
@@ -70,24 +70,6 @@ class DeLocationSource(private val mode: Mode, private val command: String) {
         }
         log.warn { "No GNOME weather locations found (tried ${GNOME_SCHEMAS.joinToString()})" }
         return emptyList()
-    }
-
-    private fun runCommand(cmd: List<String>): String? = try {
-        val p = ProcessBuilder(cmd).redirectErrorStream(false).start()
-        val out = p.inputStream.bufferedReader().readText()
-        if (!p.waitFor(10, TimeUnit.SECONDS)) {
-            p.destroy()
-            log.warn { "command timed out: ${cmd.joinToString(" ")}" }
-            null
-        } else if (p.exitValue() != 0) {
-            log.warn { "command exited ${p.exitValue()}: ${cmd.joinToString(" ")}" }
-            null
-        } else {
-            out
-        }
-    } catch (e: Exception) {
-        log.warn { "cannot run '${cmd.firstOrNull()}': ${e.message}" }
-        null
     }
 
     companion object {

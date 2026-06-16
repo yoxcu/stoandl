@@ -27,9 +27,10 @@ import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.rebble.libpebblecommon.calls.SystemCallLog
-import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
+import de.yoxcu.stoandl.util.openSessionBus
+import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
@@ -113,6 +114,7 @@ import org.freedesktop.dbus.types.Variant
 import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
@@ -391,6 +393,8 @@ class PebbleIntegration(
             }
             delay(1.5.seconds)
         }
+        // Tear down the BlueZ pairing agent registered in init() (no-op if it never registered).
+        pairingAgent.unregister()
     }
 
     /**
@@ -867,7 +871,7 @@ class PebbleIntegration(
     private fun startNotificationActionListener() {
         scope.launch(Dispatchers.IO) {
             val conn = try {
-                DBusConnectionBuilder.forSessionBus().withShared(false).build()
+                openSessionBus()
             } catch (e: Exception) {
                 log.debug { "Notification action listener unavailable: ${e.message}" }
                 return@launch
@@ -1082,6 +1086,15 @@ class PebbleIntegration(
         return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs)
     }
 
+    /** Run [action] on each fresh watch connect — the false→true edge of "any device connected". */
+    private fun onFreshConnect(action: suspend () -> Unit) {
+        libPebble.watches
+            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
+            .distinctUntilChanged()
+            .onEach { connected -> if (connected) action() }
+            .launchIn(scope)
+    }
+
     private fun startWatchPrefsSync() {
         // Always build the control (the `settings`/`set-setting` CLI works even with nothing in the config).
         val control = WatchPrefsControl(
@@ -1097,11 +1110,7 @@ class PebbleIntegration(
         // Config is authoritative: re-apply the listed prefs on every connect so they win over any
         // on-watch change (most have no on-watch UI anyway).
         log.info { "Watch prefs: ${config.watchPrefs.size} configured (${config.watchPrefs.keys}), applied on connect" }
-        libPebble.watches
-            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
-            .distinctUntilChanged()
-            .onEach { connected -> if (connected) control.applyConfigured(config.watchPrefs) }
-            .launchIn(scope)
+        onFreshConnect { control.applyConfigured(config.watchPrefs) }
     }
 
     /** Proactively check for newer firmware on each watch connect (throttled to once a day) and, when
@@ -1114,14 +1123,10 @@ class PebbleIntegration(
             log.info { "Firmware update notifications off (needs firmware.github or firmware.cohorts, plus firmware.notify=true)" }
             return
         }
-        val dailyMs = 24L * 60 * 60 * 1000
+        val dailyMs = 1.days.inWholeMilliseconds
         log.info { "Firmware update notifications on (check on connect, at most once/day)" }
         // Check on each fresh connect; maybeNotify() self-throttles to once per day.
-        libPebble.watches
-            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
-            .distinctUntilChanged()
-            .onEach { connected -> if (connected) scope.launch { firmwareControl.maybeNotify(dailyMs) } }
-            .launchIn(scope)
+        onFreshConnect { scope.launch { firmwareControl.maybeNotify(dailyMs) } }
         // And re-check daily while a watch stays connected.
         scope.launch {
             while (true) {
@@ -1140,11 +1145,7 @@ class PebbleIntegration(
     private fun startDeveloperAutostart() {
         if (!config.developerAutostart) return
         log.info { "Developer connection autostart on (LAN server :9000 on every watch connect)" }
-        libPebble.watches
-            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
-            .distinctUntilChanged()
-            .onEach { connected -> if (connected) scope.launch { developerControl.start() } }
-            .launchIn(scope)
+        onFreshConnect { scope.launch { developerControl.start() } }
     }
 
     /**
@@ -1171,11 +1172,7 @@ class PebbleIntegration(
             return
         }
         log.info { "Health sync on (request steps/sleep/HR/workouts from the watch on each connect)" }
-        libPebble.watches
-            .map { devices -> devices.any { it is ConnectedPebbleDevice } }
-            .distinctUntilChanged()
-            .onEach { connected -> if (connected) libPebble.requestHealthData(fullSync = false) }
-            .launchIn(scope)
+        onFreshConnect { libPebble.requestHealthData(fullSync = false) }
     }
 
     private fun registerControlService() {
@@ -1435,8 +1432,7 @@ private class DbusNotificationActionHandler(
         val existing = dbusConn
         val conn = if (existing != null && existing.isConnected()) existing else {
             existing?.disconnect()
-            (DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection)
-                .also { dbusConn = it }
+            openSessionBus().also { dbusConn = it }
         }
         conn.getRemoteObject(
             "org.freedesktop.Notifications",
@@ -1608,7 +1604,7 @@ private const val BLUEZ_DEVICE1 = "org.bluez.Device1"
 // Pebble BLE manufacturer-data company IDs (mirrors libpebble3's BluezBleScanner).
 private val PEBBLE_VENDOR_IDS = setOf(0x0154, 0x0EEA)
 
-private fun variantValue(v: Any?): Any? = if (v is Variant<*>) v.value else v
+private fun variantValue(v: Any?): Any? = unwrapVariant(v)
 
 /**
  * Removes stale BlueZ bonds for Pebble watches that are bonded but NOT currently connected.
@@ -1665,7 +1661,6 @@ private fun clearStalePebbleBonds(): List<String> {
 private fun bluezObjectPath(identifierAsString: String): String? =
     Regex(""""object_path"\s*:\s*"([^"]+)"""").find(identifierAsString)?.groupValues?.get(1)
 
-/** Removes a single BlueZ bond by device object path via Adapter1.RemoveDevice. Returns true on success. */
 /**
  * True ONLY when the BlueZ device object EXISTS and reports Paired=false — a genuine host-side bond
  * removal (e.g. `bluetoothctl remove`). The fork's [isBonded] returns false even when the device object
@@ -1716,6 +1711,7 @@ private fun classicDevicePath(mac: String): String? {
     }
 }
 
+/** Removes a single BlueZ bond by device object path via Adapter1.RemoveDevice. Returns true on success. */
 private fun removeBluezBond(devicePath: String): Boolean {
     val adapterPath = devicePath.substringBeforeLast("/dev_") // -> /org/bluez/hciN
     val conn = try {
@@ -1771,7 +1767,7 @@ private fun disconnectBluezDevice(devicePath: String) {
 /** Posts a desktop notification on the session bus (best-effort). */
 private fun sendDesktopNotification(summary: String, body: String) {
     try {
-        val conn = DBusConnectionBuilder.forSessionBus().withShared(false).build()
+        val conn = openSessionBus()
         try {
             conn.getRemoteObject(
                 "org.freedesktop.Notifications",
@@ -2147,14 +2143,18 @@ private class StoandlControlImpl(
         }
     }
 
+    /** Every live PKJS session across all connected watches (empty when libPebble isn't ready). */
+    private fun currentPkjsApps(): List<PKJSApp> =
+        libPebbleRef.get()?.watches?.value
+            ?.filterIsInstance<ConnectedPebbleDevice>()
+            ?.flatMap { it.currentCompanionAppSessions.value }?.filterIsInstance<PKJSApp>()
+            ?: emptyList()
+
     /** Poll for the PKJS session of the app with [uuid] (it appears a few seconds after launch, once
      *  the JS bridge initialises), up to [timeoutMs]. */
     private suspend fun awaitPkjsApp(uuid: Uuid, timeoutMs: Long): PKJSApp? = withTimeoutOrNull(timeoutMs) {
         while (true) {
-            val match = libPebbleRef.get()?.watches?.value
-                ?.filterIsInstance<ConnectedPebbleDevice>()
-                ?.flatMap { it.currentCompanionAppSessions.value }?.filterIsInstance<PKJSApp>()
-                ?.firstOrNull { it.appInfo.uuid.equals(uuid.toString(), ignoreCase = true) }
+            val match = currentPkjsApps().firstOrNull { it.appInfo.uuid.equals(uuid.toString(), ignoreCase = true) }
             if (match != null) return@withTimeoutOrNull match
             delay(300)
         }
@@ -2162,11 +2162,7 @@ private class StoandlControlImpl(
     }
 
     override fun WebviewClose(data: String) {
-        val lp = libPebbleRef.get() ?: return
-        lp.watches.value
-            .filterIsInstance<ConnectedPebbleDevice>()
-            .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
-            .forEach { it.triggerOnWebviewClosed(data) }
+        currentPkjsApps().forEach { it.triggerOnWebviewClosed(data) }
     }
 
     override fun FakeCallRing(name: String, number: String): Boolean {
@@ -2235,10 +2231,7 @@ private class StoandlControlImpl(
     }
 
     private fun findPkjsApp(query: String): PKJSApp? {
-        val lp = libPebbleRef.get() ?: return null
-        val apps = lp.watches.value
-            .filterIsInstance<ConnectedPebbleDevice>()
-            .flatMap { it.currentCompanionAppSessions.value }.filterIsInstance<PKJSApp>()
+        val apps = currentPkjsApps()
         if (query.isEmpty()) return apps.firstOrNull()
         // Prefer an exact shortName / uuid match before a substring hit, so "whatsapp" doesn't pick a
         // running "whatsapps".
@@ -2330,13 +2323,9 @@ private class StoandlControlImpl(
         // `repair`), leaving any other watches untouched (multi-watch safe).
         if (watch.isNotBlank()) {
             if (known.isEmpty()) return "error:No known watches"
-            val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
-                .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
-            val match = when {
-                matches.size == 1 -> matches[0]
-                matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
-                    known.joinToString(", ") { it.displayName() }
-                else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
+            val match = when (val m = matchOneWatch(known, watch)) {
+                is WatchMatch.One -> m.device
+                is WatchMatch.Error -> return m.message
             }
             val name = match.displayName()
             unpairOne(match)
@@ -2380,6 +2369,26 @@ private class StoandlControlImpl(
         else -> { d.forget(); false }
     }
 
+    private sealed interface WatchMatch {
+        data class One(val device: KnownPebbleDevice) : WatchMatch
+        data class Error(val message: String) : WatchMatch
+    }
+
+    /** Resolve [watch] against [known] (the shared repair/unpair/connect semantics): an exact
+     *  case-insensitive displayName match wins, else a unique substring match; zero or several
+     *  matches are an `error:` string. The empty-`known` guard is left to each caller (its wording
+     *  differs). */
+    private fun matchOneWatch(known: List<KnownPebbleDevice>, watch: String): WatchMatch {
+        val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
+            .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
+        return when {
+            matches.size == 1 -> WatchMatch.One(matches[0])
+            matches.isEmpty() -> WatchMatch.Error("error:No known watch matching '$watch'. Known: " +
+                known.joinToString(", ") { it.displayName() })
+            else -> WatchMatch.Error("error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific")
+        }
+    }
+
     override fun Repair(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
@@ -2387,13 +2396,9 @@ private class StoandlControlImpl(
         // Substring match (case-insensitive) so 'repair B349' matches "Pebble B349" — no need to type
         // (and shell-escape) the full name. Prefer an exact match if one exists; else require a unique
         // substring hit so we never re-pair the wrong watch.
-        val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
-            .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
-        val match = when {
-            matches.size == 1 -> matches[0]
-            matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
-                known.joinToString(", ") { it.displayName() }
-            else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
+        val match = when (val m = matchOneWatch(known, watch)) {
+            is WatchMatch.One -> m.device
+            is WatchMatch.Error -> return m.message
         }
         // Forget ONLY this watch — its libpebble3 state, standing (Trusted) connect intent and BlueZ
         // bond — leaving any other watches untouched (multi-watch safe). Then open the pairing window
@@ -2413,13 +2418,9 @@ private class StoandlControlImpl(
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "error:No known watches — use 'stoandl pair' to add one"
         // Same exact-then-unique-substring match as repair/unpair.
-        val matches = known.filter { it.displayName().equals(watch, ignoreCase = true) }
-            .ifEmpty { known.filter { it.displayName().contains(watch, ignoreCase = true) } }
-        val match = when {
-            matches.size == 1 -> matches[0]
-            matches.isEmpty() -> return "error:No known watch matching '$watch'. Known: " +
-                known.joinToString(", ") { it.displayName() }
-            else -> return "error:'$watch' matches multiple watches (${matches.joinToString(", ") { it.displayName() }}) — be more specific"
+        val match = when (val m = matchOneWatch(known, watch)) {
+            is WatchMatch.One -> m.device
+            is WatchMatch.Error -> return m.message
         }
         if (match is ConnectedPebbleDevice) return "ok:${match.displayName()} already connected"
         // requestConnection: in single-watch mode this sets connectGoal on the chosen watch and clears

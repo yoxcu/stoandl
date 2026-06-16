@@ -53,16 +53,9 @@ class NotificationAppsControl(
     fun setMute(query: String, spec: String): String = try {
         val now = Clock.System.now()
         val parsed = parseSpec(spec, now) ?: return "error:Unknown mute '$spec' (use always|weekdays|weekends|never or a duration like 1h/30m/2d)"
-        val apps = runBlocking { dao.allApps() }
-        val matches = apps.resolve(query)
-        when {
-            matches.isEmpty() -> "notfound:No tracked app matching '$query'"
-            matches.size > 1 -> ambiguous(matches)
-            else -> {
-                val app = matches.first()
-                runBlocking { dao.insertOrReplace(parsed.applyTo(app, now)) }
-                "ok:${describe(app.name, parsed)}"
-            }
+        resolveSingle(query) { app ->
+            runBlocking { dao.insertOrReplace(parsed.applyTo(app, now)) }
+            "ok:${describe(app.name, parsed)}"
         }
     } catch (e: Exception) {
         log.warn(e) { "notif setMute failed" }
@@ -89,23 +82,27 @@ class NotificationAppsControl(
      * values are stored but fall back to the default at send time.
      */
     fun setStyle(query: String, color: String, icon: String, vibe: String): String = try {
-        val apps = runBlocking { dao.allApps() }
-        val matches = apps.resolve(query)
-        when {
-            matches.isEmpty() -> "notfound:No tracked app matching '$query'"
-            matches.size > 1 -> ambiguous(matches)
-            else -> {
-                val app = matches.first()
-                val newColor = resolveStyle(color, app.colorName)
-                val newIcon = resolveStyle(icon, app.iconCode)
-                val newVibe = resolveStyle(vibe, app.vibePatternName)
-                runBlocking { dao.updateAppState(app.packageName, newVibe, newColor, newIcon) }
-                "ok:Updated style for ${app.name} (color=${newColor ?: "default"}, icon=${newIcon ?: "default"}, vibe=${newVibe ?: "default"})"
-            }
+        resolveSingle(query) { app ->
+            val newColor = resolveStyle(color, app.colorName)
+            val newIcon = resolveStyle(icon, app.iconCode)
+            val newVibe = resolveStyle(vibe, app.vibePatternName)
+            runBlocking { dao.updateAppState(app.packageName, newVibe, newColor, newIcon) }
+            "ok:Updated style for ${app.name} (color=${newColor ?: "default"}, icon=${newIcon ?: "default"}, vibe=${newVibe ?: "default"})"
         }
     } catch (e: Exception) {
         log.warn(e) { "notif setStyle failed" }
         "error:${e.message ?: "failed"}"
+    }
+
+    /** Resolve [query] to exactly one tracked app and run [onMatch], or return the empty/ambiguous
+     *  status string. Shared by [setMute] and [setStyle]. */
+    private fun resolveSingle(query: String, onMatch: (NotificationAppItem) -> String): String {
+        val matches = runBlocking { dao.allApps() }.resolve(query)
+        return when {
+            matches.isEmpty() -> "notfound:No tracked app matching '$query'"
+            matches.size > 1 -> ambiguous(matches)
+            else -> onMatch(matches.first())
+        }
     }
 
     private fun resolveStyle(arg: String, current: String?): String? = when (arg.trim().lowercase()) {

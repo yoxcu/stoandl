@@ -1,5 +1,7 @@
 package de.yoxcu.stoandl.dbus
 
+import de.yoxcu.stoandl.util.openSessionBus
+import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.endpointmanager.musiccontrol.MusicTrack
 import io.rebble.libpebblecommon.music.PlaybackState
@@ -18,7 +20,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBus
 import org.freedesktop.dbus.interfaces.Properties
 import org.freedesktop.dbus.types.Variant
@@ -105,9 +106,7 @@ class MprisMusicControl(
     }
 
     private suspend fun runMonitor() {
-        val c = withContext(Dispatchers.IO) {
-            DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
-        }
+        val c = withContext(Dispatchers.IO) { openSessionBus() }
         conn = c
         log.info { "MPRIS music monitor: connected to session bus" }
 
@@ -260,11 +259,13 @@ class MprisMusicControl(
     }
 
     /** `xesam:artist` is an array of strings; tolerate a bare string from sloppy players too. */
-    private fun artistOf(v: Any?): String? = when (v) {
-        is List<*> -> v.filterIsInstance<String>().filter { it.isNotBlank() }.joinToString(", ").ifBlank { null }
-        is Array<*> -> v.filterIsInstance<String>().filter { it.isNotBlank() }.joinToString(", ").ifBlank { null }
-        is String -> v.ifBlank { null }
-        else -> null
+    private fun artistOf(v: Any?): String? {
+        val list = (v as? List<*>) ?: (v as? Array<*>)?.asList()
+        return when {
+            list != null -> list.filterIsInstance<String>().filter { it.isNotBlank() }.joinToString(", ").ifBlank { null }
+            v is String -> v.ifBlank { null }
+            else -> null
+        }
     }
 
     /** Human-readable player name from the root `Identity` property, cached; falls back to the suffix. */
@@ -333,7 +334,7 @@ class MprisMusicControl(
             .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
 
     /** `GetAll` returns a{sv}, so values arrive as [Variant]s; `Get` returns them already unwrapped. */
-    private fun unwrap(v: Any?): Any? = if (v is Variant<*>) v.value else v
+    private fun unwrap(v: Any?): Any? = unwrapVariant(v)
 
     /** Coerce a D-Bus integer (Int32/Int64/UInt32/UInt64 — all [Number] in dbus-java) to Long. */
     private fun asLong(v: Any?): Long? = (v as? Number)?.toLong()

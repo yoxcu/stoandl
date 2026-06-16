@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.dbus
 
+import de.yoxcu.stoandl.util.openSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
@@ -10,8 +11,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.base.AbstractConnectionBase
-import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.connections.transports.AbstractTransport
 import org.freedesktop.dbus.connections.transports.TransportConnection
 import org.freedesktop.dbus.interfaces.DBusInterface
@@ -40,7 +39,6 @@ data class IncomingNotification(
     val appName: String,
     val summary: String,
     val body: String,
-    val hints: Map<String, Variant<*>>,
 )
 
 private data class PendingNotify(val appName: String, val summary: String, val body: String)
@@ -97,7 +95,7 @@ private class InterceptingReader(
                     val dedupeKey = "${p.appName}|${p.summary}"
                     val prev = lastSeen.put(dedupeKey, now)
                     if (prev == null || now - prev >= 200L) {
-                        emit(IncomingNotification(id, p.appName, p.summary, p.body, emptyMap()))
+                        emit(IncomingNotification(id, p.appName, p.summary, p.body))
                     }
                 }
             }
@@ -128,7 +126,7 @@ fun monitorNotifications(): Flow<IncomingNotification> = callbackFlow {
 
         while (isActive) {
             val monitorConn = try {
-                DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
+                openSessionBus()
             } catch (e: Exception) {
                 log.warn { "BecomeMonitor: cannot open DBus connection: ${e.message}" }
                 delay(2000)

@@ -12,6 +12,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Debug drop-in: path + payload shared by the local and remote install paths (single source).
+DROPIN=/usr/lib/systemd/user/stoandl.service.d/debug.conf
+DEBUG_DROPIN='[Service]\nEnvironment=STOANDL_LOG=DEBUG\n'
+
 # clean first so build/libs holds only the freshly built jar. Without it, jars from
 # previous builds linger and the selection below can grab a stale one.
 ./gradlew clean shadowJar
@@ -30,15 +34,15 @@ if [ -n "$REMOTE" ]; then
     cat > "$SCRIPT" << EOF
 #!/bin/sh
 set -e
-DROPIN=/usr/lib/systemd/user/stoandl.service.d/debug.conf
+DROPIN=$DROPIN
 sudo install -Dm644 $TMP/$JARNAME /usr/lib/stoandl/stoandl.jar
 sudo install -Dm644 $TMP/stoandl.service /usr/lib/systemd/user/stoandl.service
 sudo install -Dm755 $TMP/stoandl-ctl /usr/local/bin/stoandl
 EOF
     if $DEBUG; then
-        cat >> "$SCRIPT" << 'EOF'
-sudo mkdir -p "$(dirname "$DROPIN")"
-printf '[Service]\nEnvironment=STOANDL_LOG=DEBUG\n' | sudo tee "$DROPIN" > /dev/null
+        cat >> "$SCRIPT" << EOF
+sudo mkdir -p "\$(dirname "\$DROPIN")"
+printf '$DEBUG_DROPIN' | sudo tee "\$DROPIN" > /dev/null
 EOF
     else
         cat >> "$SCRIPT" << 'EOF'
@@ -66,10 +70,9 @@ else
     sudo install -Dm755 packaging/stoandl-ctl     /usr/local/bin/stoandl
 
     # Install or remove the debug drop-in
-    DROPIN=/usr/lib/systemd/user/stoandl.service.d/debug.conf
     if $DEBUG; then
         sudo mkdir -p "$(dirname "$DROPIN")"
-        printf '[Service]\nEnvironment=STOANDL_LOG=DEBUG\n' | sudo tee "$DROPIN" > /dev/null
+        printf "$DEBUG_DROPIN" | sudo tee "$DROPIN" > /dev/null
         echo "Debug logging enabled (STOANDL_LOG=DEBUG)"
     else
         sudo rm -f "$DROPIN"

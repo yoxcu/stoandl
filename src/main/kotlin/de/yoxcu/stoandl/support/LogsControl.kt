@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.support
 
+import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -28,8 +29,7 @@ private val log = KotlinLogging.logger {}
 class LogsControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
 ) {
-    private fun device(): CommonConnectedDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<CommonConnectedDevice>()?.firstOrNull()
+    private fun device(): CommonConnectedDevice? = libPebbleRef.connectedDevice()
 
     /**
      * Dump the watch's firmware logs to the absolute [path] (the daemon's cwd differs from the CLI's,
@@ -38,7 +38,6 @@ class LogsControl(
      * so it can take a handful of seconds.
      */
     fun gatherLogs(path: String): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             val src = runBlocking { dev.gatherLogs() }
@@ -58,7 +57,6 @@ class LogsControl(
      * Fetches any coredump (read or unread).
      */
     fun getCoreDump(path: String): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return try {
             val src = runBlocking { dev.getCoreDump(unread = false) }
@@ -77,7 +75,6 @@ class LogsControl(
      * language, capabilities …). Returns `ok:<text>` or `notready:<msg>`.
      */
     fun watchInfoText(): String {
-        libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = device() ?: return "notready:No watch connected"
         return "ok:${formatWatchInfo(dev.watchInfo, dev.batteryLevel)}"
     }

@@ -70,7 +70,7 @@ class LinuxSystemCalendar(
                 name = rc.name,
                 ownerName = "",
                 ownerId = "",
-                color = rc.color,
+                color = 0,            // no Linux calendar source exposes a usable colour; leave unset
                 enabled = true,       // default new calendars on; libpebble3 persists the user's choice after
                 syncEvents = true,
             )

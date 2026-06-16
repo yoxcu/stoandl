@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.health
 
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.util.toNdjson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.health.OverlayType
@@ -15,7 +16,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
 import java.time.LocalDate
@@ -85,16 +85,14 @@ class HealthExporter(
     private suspend fun export() {
         baseDir.mkdirs()
         val today = LocalDate.now(zone)
-        val days = (0 until exportDays).map { today.minusDays(it.toLong()) }.sortedBy { it }
-        val windowStart = days.first().atStartOfDay(zone).toEpochSecond()
-        val windowEnd = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
+        val days = (0 until exportDays).map { today.minusDays(it.toLong()) }.sorted()
+        val windowStart = days.first().epochStart()
+        val windowEnd = today.plusDays(1).epochStart()
 
         // --- daily summary -------------------------------------------------------------------
         val daily = LinkedHashMap<String, JsonObject>()
         for (date in days) {
-            val dayStart = date.atStartOfDay(zone).toEpochSecond()
-            val dayEnd = date.plusDays(1).atStartOfDay(zone).toEpochSecond()
-            buildDay(date.toString(), dayStart, dayEnd)?.let { daily[date.toString()] = it }
+            buildDay(date.toString(), date.epochStart(), date.plusDays(1).epochStart())?.let { daily[date.toString()] = it }
         }
         upsert(File(baseDir, "daily.ndjson"), "date", daily)
 
@@ -118,26 +116,24 @@ class HealthExporter(
         if (exportSamples) {
             val samplesDir = File(baseDir, "samples").apply { mkdirs() }
             for (date in days) {
-                val dayStart = date.atStartOfDay(zone).toEpochSecond()
-                val dayEnd = date.plusDays(1).atStartOfDay(zone).toEpochSecond()
-                val rows = libPebble.getHealthDataForRange(dayStart, dayEnd)
+                val rows = libPebble.getHealthDataForRange(date.epochStart(), date.plusDays(1).epochStart())
                     .filter { it.steps > 0 || it.heartRate > 0 }
                 if (rows.isEmpty()) continue
-                val text = buildString {
-                    for (r in rows) {
-                        append(Json.encodeToString(JsonObject.serializer(), buildJsonObject {
-                            put("ts", r.timestamp)
-                            put("steps", r.steps)
-                            put("hr", r.heartRate)
-                            put("hr_zone", r.heartRateZone)
-                        }))
-                        append('\n')
+                val text = rows.map { r ->
+                    buildJsonObject {
+                        put("ts", r.timestamp)
+                        put("steps", r.steps)
+                        put("hr", r.heartRate)
+                        put("hr_zone", r.heartRateZone)
                     }
-                }
+                }.toNdjson()
                 File(samplesDir, "${date}.ndjson").writeText(text)
             }
         }
     }
+
+    /** Epoch-seconds at the start of this date in the export [zone]. */
+    private fun LocalDate.epochStart(): Long = atStartOfDay(zone).toEpochSecond()
 
     /** Build one daily-summary object, or null when the day has no movement, sleep or heart-rate data. */
     private suspend fun buildDay(date: String, dayStart: Long, dayEnd: Long): JsonObject? {
@@ -197,13 +193,7 @@ class HealthExporter(
         // Numeric keys (session start times) sort numerically; date strings sort lexicographically,
         // which is also chronological for YYYY-MM-DD.
         val sorted = merged.entries.sortedWith(compareBy({ it.key.toLongOrNull() == null }, { it.key.toLongOrNull() ?: 0L }, { it.key }))
-        val text = buildString {
-            for ((_, obj) in sorted) {
-                append(Json.encodeToString(JsonObject.serializer(), obj))
-                append('\n')
-            }
-        }
-        file.writeText(text)
+        file.writeText(sorted.map { it.value }.toNdjson())
     }
 
     companion object {

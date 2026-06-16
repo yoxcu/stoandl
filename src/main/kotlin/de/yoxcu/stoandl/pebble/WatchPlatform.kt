@@ -16,6 +16,10 @@ import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
  * Mirrors libpebble3's Core app partition: only the known legacy boards are listed; any newer board
  * defaults to Core (`else -> true`). Note this is firmware-ecosystem, not transport — a Pebble 2
  * (`silk`) connects over BLE yet is a Rebble device, so it correctly routes to cohorts.
+ *
+ * Hand-synced with the upstream list in `coredevices/pebble`'s
+ * `firmware/FirmwareUpdateCheck.kt` (`isCoreDevice`) — that Compose module isn't on stoandl's
+ * classpath, so when a board is added upstream it must be mirrored here too.
  */
 fun WatchHardwarePlatform.isCoreDevice(): Boolean = when (this) {
     WatchHardwarePlatform.UNKNOWN,

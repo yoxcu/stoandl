@@ -114,6 +114,24 @@ calendar.caldav =
 # Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).
 calendar.sync_interval = 30
 
+# ── Music control ────────────────────────────────────────────────────────────────────────────────
+# Bridge desktop media players (MPRIS) to the watch's native Music app: now-playing title/artist/
+# album + play state, and the watch buttons drive play/pause, next/previous and volume. On by default.
+music.enabled = true
+# What the watch's volume buttons control: system (master/output volume, the default) or player
+# (the active player's own MPRIS volume).
+music.volume = system
+# Override the system-volume commands (only used when music.volume = system). Both must be set;
+# otherwise stoandl auto-detects wpctl / pactl / amixer on PATH. Each runs once per button press.
+# music.volume_up_command = wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
+# music.volume_down_command = wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+
+# ── Geolocation (watchapps) ──────────────────────────────────────────────────────────────────────
+# Provide GPS to watchapps that request it (PebbleKit JS navigator.geolocation, and sports/GPS apps)
+# via GeoClue2 — the same provider weather.gps uses (and the same geoclue.conf allow rule). Off by
+# default: it discloses your location to whatever watchapp asks for it.
+geolocation.enabled = false
+
 # ── Datalog ────────────────────────────────────────────────────────────────────────────────────
 # Capture data logged by custom watchapps via the PebbleKit DataLogging API. Frames are written
 # append-only as NDJSON, one file per (app UUID, tag): ~/.config/stoandl/datalog/<uuid>/<tag>.ndjson.
@@ -153,6 +171,12 @@ firmware.cohorts_url = https://cohorts.rebble.io
 # (checked on connect and at most once a day). The notification has an "Update" button that downloads
 # and flashes it. On by default once a source is enabled; set false for check-on-demand only.
 firmware.notify = true
+
+# ── Language packs ───────────────────────────────────────────────────────────────────────────────
+# `stoandl language list|sideload <file.pbl>` always work offline. This key only enables
+# `stoandl language install <locale|name|id>`, which DOWNLOADS a pack from Rebble's CDN / GitHub —
+# opt-in egress, so off by default.
+language.download = false
 
 # ── Developer connection ─────────────────────────────────────────────────────────────────────────
 # Bridge the Pebble SDK / CloudPebble to the watch over BLE, so `pebble install --phone <this-host>`
