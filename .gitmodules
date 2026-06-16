@@ -1,4 +1,4 @@
 [submodule "libs/libpebble3"]
 	path = libs/libpebble3
 	url = https://github.com/yoxcu/libpebble3.git
-	branch = stoandl
+	branch = stoandl-rebased
