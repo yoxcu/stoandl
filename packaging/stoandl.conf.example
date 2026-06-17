@@ -242,19 +242,24 @@ dnd.sync = off
 
 # ── Extensions (companion apps) ──────────────────────────────────────────────────────────────────
 # Plug in your own host-side integrations (Matrix, Signal, Discord, SMS, "find my phone", …) that
-# drive watch notifications — and reply/actions back — WITHOUT needing a watchapp. Each extension is a
-# child process stoandl spawns and talks to over a small JSON-RPC-over-stdio protocol; write them in
-# any language. See docs/extensions.md and the runnable examples in examples/extensions/.
+# drive watch notifications (with reply/actions back) — no watchapp needed — and/or act as a
+# PebbleKit-style companion to a watchapp (AppMessage to/from a UUID). Each extension is a child
+# process stoandl spawns and talks to over a small JSON-RPC-over-stdio protocol; write them in any
+# language. See docs/extensions.md and the runnable examples in examples/extensions/.
 #
 # Nothing spawns unless you list it here AND give it a command. Comma-separated names:
 # extensions.enabled = findphone,matrix
 #
 # Per-extension keys (one block per name):
 #   extension.<name>.cmd     = <argv to spawn>          # %h and ~ expand to your home dir
-#   extension.<name>.allow   = notify                   # user-granted capabilities (default: notify)
+#   extension.<name>.allow   = notify                   # user-granted caps (default: notify); also
+#                                                       # appmessage / appmessage:<watchapp-uuid> for a
+#                                                       # watchapp companion
 #   extension.<name>.confine = false                    # true → run under systemd-run --scope (MemoryMax)
 #   extension.<name>.<key>   = <value>                  # anything else is passed to the extension
 #
-# Example — the bundled Find My Phone (copy examples/extensions/{stoandl_ext,findphone}.py first):
-# extensions.enabled      = findphone
-# extension.findphone.cmd = /usr/bin/python3 %h/.config/stoandl/ext/findphone.py
+# Example — the bundled Find My Phone (a watchapp companion: rings this computer from the watch).
+# Build+install the watchapp (testing/findphone), copy the two .py files to the ext dir, then:
+# extensions.enabled        = findphone
+# extension.findphone.cmd   = /usr/bin/python3 %h/.config/stoandl/ext/findphone.py
+# extension.findphone.allow = appmessage:de72f1d0-1111-4a17-9a6b-0123456789ab

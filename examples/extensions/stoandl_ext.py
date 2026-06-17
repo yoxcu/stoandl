@@ -17,6 +17,18 @@ import threading
 _NS = uuid.uuid5(uuid.NAMESPACE_URL, "stoandl-ext")
 
 
+# --- AppMessage value tags (for send_app_message). JSON has one number type but the watchapp's
+# --- dict_read_uint8 / dict_read_int distinguish width, so each value carries its Pebble type. ---
+def u8(v):    return {"t": "uint8", "v": int(v)}
+def u16(v):   return {"t": "uint16", "v": int(v)}
+def u32(v):   return {"t": "uint", "v": int(v)}
+def i8(v):    return {"t": "int8", "v": int(v)}
+def i16(v):   return {"t": "int16", "v": int(v)}
+def i32(v):   return {"t": "int", "v": int(v)}
+def cstr(v):  return {"t": "cstring", "v": str(v)}
+def blob(b):  import base64; return {"t": "bytes", "v": base64.b64encode(bytes(b)).decode()}
+
+
 class Extension:
     def __init__(self):
         self._ids = itertools.count(1)
@@ -32,6 +44,8 @@ class Extension:
         self.on_action = None         # (item_id, action)   -> a named action was chosen
         self.on_reply = None          # (item_id, text)     -> a (canned/dictated) reply was sent
         self.on_dismiss = None        # (item_id)           -> the notification was dismissed
+        self.on_app_message = None    # (uuid, txn, data)   -> a watchapp sent an AppMessage; data is
+                                      #                        {int_key: value} (already untagged)
 
     # ---- outgoing -------------------------------------------------------------------------------
 
@@ -80,12 +94,41 @@ class Extension:
         if canned_replies:
             params["reply"] = {"cannedReplies": list(canned_replies), "allowVoice": allow_voice}
         if on_item:
-            self._pending[rid] = on_item
+            self._pending[rid] = lambda res: on_item(res.get("itemId"))
         self._send({"jsonrpc": "2.0", "id": rid, "method": "notify", "params": params})
 
     def close(self, item_id):
         """Clear a notification from the watch (e.g. the message was read elsewhere)."""
         self._send({"jsonrpc": "2.0", "method": "closeNotification", "params": {"itemId": item_id}})
+
+    # ---- watchapp companion (needs an `appmessage:<uuid>` grant) ---------------------------------
+
+    def _request(self, method, params, on_result=None):
+        rid = next(self._ids)
+        if on_result:
+            self._pending[rid] = on_result
+        self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+
+    def register_app(self, app_uuid):
+        """Arm inbound AppMessages from the watchapp `app_uuid` — they arrive via on_app_message."""
+        self._request("registerApp", {"uuid": app_uuid})
+
+    def send_app_message(self, app_uuid, data, on_result=None):
+        """Send an AppMessage to the watchapp. `data` is {int_key: u8(...)/i32(...)/cstr(...)/...}.
+        on_result(str) receives "ack" / "nack" / "timeout" / "error"."""
+        self._request("sendAppMessage", {"uuid": app_uuid, "data": {str(k): v for k, v in data.items()}},
+                      (lambda res: on_result(res.get("result"))) if on_result else None)
+
+    def launch_app(self, app_uuid):
+        self._request("launchApp", {"uuid": app_uuid})
+
+    def stop_app(self, app_uuid):
+        self._request("stopApp", {"uuid": app_uuid})
+
+    def install_pbw(self, path, on_result=None):
+        """Sideload a .pbw onto the watch. on_result(bool) receives success."""
+        self._request("installPbw", {"path": path},
+                      (lambda res: on_result(res.get("ok"))) if on_result else None)
 
     # ---- run loop -------------------------------------------------------------------------------
 
@@ -130,9 +173,15 @@ class Extension:
                 p = msg.get("params", {})
                 if self.on_dismiss:
                     self.on_dismiss(p.get("itemId"))
+            elif method == "onAppMessage":
+                p = msg.get("params", {})
+                if self.on_app_message:
+                    # Untag the typed dict {key: {"t":..,"v":..}} → {int_key: value}.
+                    data = {int(k): tv.get("v") for k, tv in (p.get("data") or {}).items()}
+                    self.on_app_message(p.get("uuid"), p.get("transactionId"), data)
             elif method == "shutdown":
                 break
             elif method is None and "result" in msg:
                 cb = self._pending.pop(msg.get("id"), None)
                 if cb:
-                    cb(msg["result"].get("itemId"))
+                    cb(msg["result"])

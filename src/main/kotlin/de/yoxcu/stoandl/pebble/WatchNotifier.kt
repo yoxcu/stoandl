@@ -22,11 +22,8 @@ import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.timeline.toPebbleColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.types.UInt32
-import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -74,9 +71,10 @@ interface NotifOwner {
     suspend fun onDismiss(itemId: Uuid, token: String?)
 }
 
-/** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. Persisted as JSON, so
- *  every field is a plain serializable type (action ids are UByte on the wire but stored as Int). */
-@Serializable
+/** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. (Action ids are UByte
+ *  on the wire but stored as Int.) In-memory only: the firmware presents the action menu solely on the
+ *  *live* notification, never from the history, so a route never needs to outlive the daemon — once a
+ *  notification scrolls out of the active view its actions can't be invoked regardless. */
 data class NotifRoute(
     val ownerId: String,
     val ownerToken: String? = null,
@@ -84,62 +82,21 @@ data class NotifRoute(
     val muteActionId: Int? = null,         // actionId of that Mute action
     val replyActionId: Int? = null,        // actionId of the Reply (Response) action, if any
     val namedActions: Map<Int, String> = emptyMap(),  // actionId → the owner's action id (Generic)
-    val createdMs: Long = 0,               // for age-based pruning of the persisted table
 )
 
-/** Resolves an owner id (e.g. "desktop", or an extension name) to the live [NotifOwner]. Owners
- *  re-register under the same id on each startup, which is what lets persisted routes reconnect. */
+/** Resolves an owner id (e.g. "desktop", or an extension name) to the live [NotifOwner]. */
 class NotifOwnerRegistry {
     private val owners = ConcurrentHashMap<String, NotifOwner>()
     fun register(owner: NotifOwner) { owners[owner.id] = owner }
     fun get(id: String): NotifOwner? = owners[id]
 }
 
-/**
- * `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]. Persists to
- * [file] (JSON) so routes survive a daemon restart; on load, entries older than a day (the watch's
- * notification window) are pruned so the file stays bounded.
- */
-class NotifRouteTable(private val file: File?) {
-    private val log = KotlinLogging.logger {}
-    private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+/** `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]. */
+class NotifRouteTable {
     private val routes = ConcurrentHashMap<String, NotifRoute>()  // key = itemId.toString()
-
-    init { load() }
-
-    fun put(itemId: Uuid, route: NotifRoute) { routes[itemId.toString()] = route; save() }
+    fun put(itemId: Uuid, route: NotifRoute) { routes[itemId.toString()] = route }
     fun get(itemId: Uuid): NotifRoute? = routes[itemId.toString()]
-    fun remove(itemId: Uuid) { if (routes.remove(itemId.toString()) != null) save() }
-
-    private fun load() {
-        val f = file ?: return
-        if (!f.isFile) return
-        try {
-            val loaded = json.decodeFromString<Map<String, NotifRoute>>(f.readText())
-            val cutoff = System.currentTimeMillis() - PRUNE_AGE_MS
-            val fresh = loaded.filterValues { it.createdMs <= 0 || it.createdMs >= cutoff }
-            routes.putAll(fresh)
-            log.info { "Loaded ${routes.size} notification route(s) from ${f.name}" + if (fresh.size < loaded.size) " (pruned ${loaded.size - fresh.size} stale)" else "" }
-            if (fresh.size < loaded.size) save()
-        } catch (e: Exception) {
-            log.warn { "Couldn't read notification routes (${f.path}): ${e.message}" }
-        }
-    }
-
-    @Synchronized
-    private fun save() {
-        val f = file ?: return
-        try {
-            f.parentFile?.mkdirs()
-            f.writeText(json.encodeToString(routes.toMap()))
-        } catch (e: Exception) {
-            log.warn { "Couldn't persist notification routes (${f.path}): ${e.message}" }
-        }
-    }
-
-    companion object {
-        private const val PRUNE_AGE_MS = 24L * 60 * 60 * 1000  // matches the watch's 1-day window
-    }
+    fun remove(itemId: Uuid) { routes.remove(itemId.toString()) }
 }
 
 class WatchNotifier(
@@ -235,7 +192,6 @@ class WatchNotifier(
             NotifRoute(
                 ownerId = ownerId, ownerToken = ownerToken, mutePkg = app?.packageName,
                 muteActionId = muteActionId, replyActionId = replyActionId, namedActions = named,
-                createdMs = System.currentTimeMillis(),
             ),
         )
         val lp = libPebbleRef.get()

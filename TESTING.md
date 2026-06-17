@@ -1101,25 +1101,42 @@ verify it still behaves exactly as before.
 text in (assumed **Title**, 0x01). 5.268 logs the raw attribute ids at debug — verify and adjust
 `WatchActionRouter.responseText` if the firmware uses a different attribute.
 
-### 5.26 (Phase 2) — route persistence + dismiss hygiene
+### 5.26 (Phase 2) — dismiss hygiene + in-memory routes
 
-Phase 2 made notification action routes **persist** (`<configDir>/notif-routes.json`) and owners resolve
-by id ([NotifOwnerRegistry]), so a notification's actions survive a daemon restart. Dismiss now
-`markForDeletion`s the notification (instead of `markNotificationRead`, which re-inserted it with a
-changed hash → re-sync), so a dismissal sticks. An extension can also pass a stable `replace_id`
-(find-my-phone uses `"findphone-ring"`) so re-sends replace the same item instead of piling up.
+**Firmware reality (confirmed on v4.x):** PebbleOS presents a notification's action menu **only while
+it is the live/incoming notification** — from the notification *history/list* pressing Select does
+nothing and the watch emits no `InvokeAction` (verified: 0 action packets from the list view). So
+notification actions are inherently a "while it's on screen" affair, and an always-available trigger
+(find-my-phone) must be a **watchapp** (Phase 3), not a notification.
+
+Given that, routes are **in-memory** (the route only needs to live as long as the notification is
+actionable, which is never across a restart). Dismiss now `markForDeletion`s the notification (instead
+of `markNotificationRead`, which re-inserted it with a changed hash → re-sync), so a dismissal sticks.
+An extension can pass a stable `replace_id` (find-my-phone's watchapp doesn't need it, but messaging
+extensions can) so re-sends replace the same item instead of piling up.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.26c | Stable replace (no pile-up) | restart daemon with findphone a few times, reconnect | Exactly **one** Find-My-Phone notification on the watch; Ring works (`owner=findphone`). |
-| 5.26d | Actions survive restart | trigger a desktop notification; **restart** the daemon; reconnect; open that notification on the watch and pick **Mute** | Mute works (`owner=desktop` in the log, *not* `owner=?`); `Loaded N notification route(s)` appears at startup. |
-| 5.26e | Dismiss sticks (no resync) | dismiss notifications on the watch (incl. hold-select dismiss-all) | They stay gone — no `BlobDB - insert: Notification …` re-insert of a just-dismissed item; routes removed (`notif-routes.json` shrinks). |
-| 5.26f | Ring actually rings | tap **Ring phone**, then **Stop** | Host plays the sound on a loop (`[findphone] ringing with …`) and stops on Stop. (Fixed: `paplay` has no `--loop`; now wraps the player in a shell loop + kills the group.) |
-| 5.26g | Reply token survives restart | a reply-capable extension sends a notification; restart daemon; reconnect; reply on the watch | `onReply` reaches the extension **with its `extToken`** (the token rides in the persisted route). |
+| 5.26c | Live-notification actions | trigger a desktop notification; **while it's on screen** open it → Mute | Mute works (`owner=desktop`). (From the history list, Select does nothing — that's the firmware, not stoandl.) |
+| 5.26d | Dismiss sticks (no resync) | dismiss notifications on the watch — "clear all" and hold-select | "Clear all" sticks (no `BlobDB - insert: Notification …` re-insert of a just-dismissed item). _Hold-select may be a watch-local clear that doesn't round-trip (no `InvokeAction`); if so it can still resync — use clear-all._ |
 
-**Remaining limitation:** notifications sent by code *before* this branch (the pre-existing hoard) have
-no persisted route, so their non-Dismiss actions still show "Not supported" — dismiss them once (now
-sticks) to clear them. Everything sent from this build onward persists.
+### 5.26 (Phase 3) — watchapp AppMessage companion  ⚠️ UNVERIFIED
+
+Extensions can now be PebbleKit-style companions to a watchapp UUID: `registerApp` (arms an inbound
+`onAppMessage` stream, ACKing each to the watch), `sendAppMessage` (typed-tagged dict → watch),
+`launchApp`/`stopApp`, `installPbw`. Capability `appmessage` / `appmessage:<uuid>`. Bundled example:
+the **find-my-phone watchapp** (`testing/findphone`) + `examples/extensions/findphone.py`.
+
+**Prerequisite:** build + install `testing/findphone` (`pebble build && pebble install`, or `stoandl
+sideload …/findphone.pbw`); configure the findphone extension with `allow = appmessage:de72f1d0-…`.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.26h | Watchapp build | `cd testing/findphone && pebble build` | Builds with the Core SDK (same harness as datalogtest); produces `build/findphone.pbw`. |
+| 5.26i | Register + inbound | start daemon with findphone configured; open the watchapp | `[findphone] registered for AppMessages from de72f1d0-…`. |
+| 5.26j | Ring from watchapp | open **Find My Phone**, press **UP** | Watch shows "Ringing…"; host plays the looping sound (`[findphone] ringing with …`); the watchapp's send is ACKed (no "Send failed"). Press **DOWN** → sound stops. |
+| 5.26k | Capability gate | set `extension.findphone.allow = notify` (no appmessage), restart | `registerApp`/`onAppMessage` rejected (`not permitted: grant 'appmessage:…'`); nothing rings. |
+| 5.26l | Typed dict | (a richer app) send mixed `u8`/`i32`/`cstr` from the watch | The companion's `on_app_message` receives the right values; a C `dict_read_uint8` on a value sent as `u8` reads it correctly (no width mismatch). |
 
 ---
 

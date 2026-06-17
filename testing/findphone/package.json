@@ -1,0 +1,32 @@
+{
+  "name": "findphone",
+  "author": "stoandl",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Find My Phone",
+    "uuid": "de72f1d0-1111-4a17-9a6b-0123456789ab",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "cmd"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}

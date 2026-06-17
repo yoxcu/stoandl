@@ -259,8 +259,9 @@ class PebbleIntegration(
         // holds the watch-item → D-Bus-id map so a wrist dismiss can CloseNotification the original.
         val notifDao = if (config.notificationPerApp) koin.get<NotificationAppRealDao>() else null
         val timelineNotifDao = koin.get<TimelineNotificationRealDao>()
-        // Routes persist (so notification actions survive a daemon restart) under the config dir.
-        val routeTable = NotifRouteTable(File(StoandlConfig.configDir(), "notif-routes.json"))
+        // In-memory route table: the firmware only offers the action menu on the live notification (not
+        // from history), so a route never needs to outlive the daemon.
+        val routeTable = NotifRouteTable()
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
         val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)

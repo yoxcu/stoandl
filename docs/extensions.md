@@ -115,11 +115,11 @@ Callbacks (host→ext notifications, dispatched **async** — never blocking the
 {"id":11,"method":"registerApp","params":{"uuid":"6f1c…"}}      // arms inbound; UUID must be in grant
 {"id":12,"method":"sendAppMessage","params":{"uuid":"6f1c…",
    "data":{"0":{"t":"cstring","v":"Berlin"},"1":{"t":"uint8","v":21}}}}  // -> {"result":"ack"|"nack"|"timeout"}
-{"id":13,"method":"launchApp","params":{"uuid":"6f1c…"}}        // / stopApp
-{"id":14,"method":"installPbw","params":{"path":"/abs/app.pbw"}}        // -> {ok,uuid?}  (wraps sideloadApp)
-// host -> ext (REQUEST, expects a timely result; daemon auto-NACKs before the 10s firmware timeout)
-{"id":99,"method":"onAppMessage","params":{"uuid":"6f1c…","transactionId":7,
-   "data":{"0":{"t":"int","v":12}}}}                            // child returns {"ack":true|false}
+{"id":13,"method":"launchApp","params":{"uuid":"6f1c…"}}        // / stopApp   -> {"ok":true}
+{"id":14,"method":"installPbw","params":{"path":"/abs/app.pbw"}}        // -> {"ok":true}  (wraps sideloadApp)
+// host -> ext (NOTIFICATION). The daemon ACKs the watch on receipt, then forwards; fire-and-forget.
+{"method":"onAppMessage","params":{"uuid":"6f1c…","transactionId":7,
+   "data":{"0":{"t":"int","v":12}}}}
 ```
 
 Dict keys are integers-as-JSON-strings (`AppMessageDictionary = Map<Int,Any>`). **Values are
@@ -273,40 +273,43 @@ reconnect without re-push (only if the §"deferred" re-push proves lossy on hard
 
 ## Phased plan (each phase shippable)
 
-- **Phase 0 — Refactor (no behavior change).** Extract `pushToWatch` from
-  `DbusNotificationListenerConnection`; introduce the single `itemId→owner` route map generalizing
-  `itemIdToDbusId`/`itemIdToMutePkg`. Desktop notifications still work identically.
-- **Phase 1 — MVP: notify-only extensions (goals a + b).** `ExtensionManager` supervisor +
-  `initialize` handshake + `notify`/`onAction`/`onReply`/`onDismiss`/`closeNotification`, async
-  dispatch, per-call timeouts, restart/backoff, stderr→logback, user-granted capabilities. Ship the
-  **find-my-phone** built-in example + the `stoandl_ext.py` reference helper. Delivers Matrix/Signal/SMS
-  push + reply.
-- **Phase 2 — Reconnect hardening + spam guard + CLI.** Re-push live extension notifications on
-  `onWatchConnected`; per-extension `notify` rate limit; `ExtList`/`ExtStatus`/`ExtRestart`; the
-  `systemd-run` `confine` template.
-- **Phase 3 — Watchapp companion (goal c).** `registerApp`/`sendAppMessage`/`onAppMessage`/`launchApp`/
-  `stopApp`/`installPbw` with the typed-tagged dict codec, UUID collision rejection, auto-NACK deadline.
-  Ship a Matrix extension that also drives a small `.pbw`.
-- **Phase 4 — Polish.** JSON-Schema for the wire contract + mirror helpers (Rust/Go); voice
-  `TranscriptionProvider` wiring if a backend exists; protocol-version negotiation beyond `1`.
+- **Phase 0 — Refactor (no behavior change). ✅ done.** `WatchNotifier` choke point + `WatchActionRouter`
+  + shared `NotifRouteTable`, collapsing `itemIdToDbusId`/`itemIdToMutePkg`. Desktop notifications
+  unchanged.
+- **Phase 1 — MVP: notify-only extensions (goals a + b). ✅ done.** `ExtensionManager` supervisor +
+  `initialize` handshake + `notify`/`onAction`/`onReply`/`onDismiss`/`onWatchConnected`/
+  `closeNotification`, async dispatch, restart/backoff + quarantine, stderr→logback, user-granted caps,
+  `confine` via `systemd-run`. Reference `stoandl_ext.py` helper.
+- **Phase 2 — Dismiss hygiene + in-memory routes. ✅ done.** Dismiss `markForDeletion`s (no resync);
+  owner registry + token-in-route. (Route *persistence* was prototyped then dropped — pointless given
+  the firmware only actions live notifications.) `onWatchConnected` settle delay.
+- **Phase 3 — Watchapp companion (goal c). ✅ done.** `registerApp`/`sendAppMessage`/`onAppMessage`
+  (ACK-on-receipt)/`launchApp`/`stopApp`/`installPbw` with the typed-tagged dict codec; capability
+  `appmessage[:uuid]`. Ships the find-my-phone **watchapp** (`testing/findphone`) + companion.
+- **Phase 4 — Polish (TODO).** A real reply extension (Matrix/SMS); `stoandl ext` CLI + per-extension
+  rate limit; JSON-Schema + Rust/Go helpers; voice `TranscriptionProvider`; cross-extension UUID
+  collision rejection; protocol-version negotiation beyond `1`.
 
-## Reconnect / restart handling (resolved in Phase 2)
+## Action routing, dismiss, and the firmware reality
 
 stoandl routes watch actions through the **global** `PlatformNotificationActionHandler`
 (`WatchActionRouter`) keyed by a shared `itemId → NotifRoute` table — not via libpebble3's per-item
 `actionHandlerOverrides` (those are `ConnectionCoroutineScope`-scoped and die on disconnect; they remain
-in use only for one-shot notifications like FirmwareControl's Update button). The route table is
-**persisted** to `<configDir>/notif-routes.json` and owners are resolved by id
-(`NotifOwnerRegistry`, re-registered under the same id each startup), with the owner-opaque token
-(desktop: the D-Bus id; extension: its conversation token) carried *in* the route — so a notification's
-actions, reply routing, and dismiss-closes-the-original all survive a **daemon restart**, with no fork
-change. The table is pruned to the watch's 1-day window on load.
+in use only for one-shot notifications like FirmwareControl's Update button). Owners are resolved by id
+(`NotifOwnerRegistry`), and the owner-opaque token (desktop: the D-Bus id; extension: its conversation
+token) is carried *in* the route, so `onReply`/`onAction`/`onDismiss` need no per-owner map.
+
+**Firmware reality (confirmed on PebbleOS 4.x):** the watch presents a notification's action menu
+**only while it is the live/incoming notification**. From the notification history/list, Select is a
+no-op and no `InvokeAction` is emitted. So notification actions are inherently "while it's on screen,"
+and the route table is **in-memory** — a route never needs to outlive the daemon (you can't act on an
+old notification regardless). This is also why an always-available trigger like find-my-phone is a
+**watchapp**, not a notification.
 
 Dismiss uses `markForDeletion` (not `markNotificationRead`, which re-inserts the record with a changed
 hash and makes the BlobDB re-sync it — so a dismissal would bounce back); this makes dismissals stick.
-A persistent notification (find-my-phone) passes a stable `replace_id` so re-sends replace the same item
-instead of accumulating orphaned copies.
+(A watch-local "hold-select" clear that doesn't round-trip can still resync — "clear all" is the
+reliable clear.) A messaging extension can pass a stable `replace_id` so re-sends replace the same item.
 
-**Still open:** notifications sent before route persistence existed have no stored route (dismiss them
-once — now sticks). Mid-session, a `notify()` issued before the BlobDB finishes negotiating is dropped
-(`onlyInsertAfter=true`); the `onWatchConnected` settle delay is the current mitigation.
+Mid-session, a `notify()` issued before the BlobDB finishes negotiating is dropped
+(`onlyInsertAfter=true`); the `onWatchConnected` settle delay is the mitigation.

@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Find My Phone — a stoandl extension that puts a persistent notification on the watch with a "Ring"
-action. Choosing it on the wrist plays a sound on this computer until you choose "Stop". It's the
-watch->host mirror of the built-in "find my watch", and needs no watchapp.
+Find My Phone — the companion for the find-my-phone *watchapp* (testing/findphone). The watchapp's UP
+button rings this computer, DOWN stops it. A watchapp is used (rather than a notification) because the
+firmware only offers a notification's action menu while it's on screen, whereas a watchapp's buttons
+work whenever you open it.
 
-Enable it in stoandl.conf:
+The watchapp sends an AppMessage with a single uint8 at key 0 (1 = ring, 2 = stop); this companion
+registers that app's UUID, receives the message via on_app_message, and plays/stops a sound.
 
-    extensions.enabled       = findphone
-    extension.findphone.cmd  = /usr/bin/python3 %h/.config/stoandl/ext/findphone.py
-    # extension.findphone.allow defaults to "notify" — nothing else is needed.
-    # Optional: override the sound the host plays.
-    # extension.findphone.sound = /usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga
-
-Put stoandl_ext.py next to this file (both under ~/.config/stoandl/ext/ above), then restart stoandl.
+Setup:
+  1. Build + install the watchapp once:  cd testing/findphone && pebble build && pebble install --phone <ip>
+     (or `stoandl sideload testing/findphone/build/findphone.pbw`).
+  2. Copy stoandl_ext.py + findphone.py to ~/.config/stoandl/ext/ and add to stoandl.conf:
+        extensions.enabled       = findphone
+        extension.findphone.cmd  = /usr/bin/python3 %h/.config/stoandl/ext/findphone.py
+        extension.findphone.allow = appmessage:de72f1d0-1111-4a17-9a6b-0123456789ab
+        # optional: extension.findphone.sound = /path/to/alarm.oga
+  3. Restart stoandl, open "Find My Phone" on the watch, press UP.
 """
 import os
 import shlex
@@ -20,6 +24,11 @@ import signal
 import subprocess
 import shutil
 from stoandl_ext import Extension
+
+# Must match testing/findphone/package.json "uuid" and the extension.findphone.allow grant.
+APP_UUID = "de72f1d0-1111-4a17-9a6b-0123456789ab"
+KEY_CMD = 0
+CMD_RING, CMD_STOP = 1, 2
 
 ext = Extension()
 _player = None  # the running sound process group, if any
@@ -30,8 +39,6 @@ def sound_path():
 
 
 def _player_argv(snd):
-    """Pick an available audio player. None of paplay/pw-play/aplay loop on their own, so we wrap the
-    chosen one in a shell `while` loop (see ring) and kill the whole group to stop."""
     if shutil.which("paplay"):
         return ["paplay", snd]
     if shutil.which("pw-play"):
@@ -43,29 +50,13 @@ def _player_argv(snd):
     return None
 
 
-def arm():
-    # One persistent notification with Ring/Stop actions, re-sent on (re)connect. The stable
-    # replace_id means each re-send REPLACES the same watch item (across restarts too) rather than
-    # piling up stale, un-actionable copies — so its Ring/Stop route is always current.
-    ext.notify(
-        app_name="Find My Phone",
-        title="Find My Phone",
-        body="Choose Ring to make this computer play a sound.",
-        actions=[("ring", "Ring phone"), ("stop", "Stop")],
-        ext_token="findphone",
-        replace_id="findphone-ring",
-    )
-
-
 def ring():
     global _player
-    stop()  # don't stack players
-    snd = sound_path()
-    argv = _player_argv(snd)
+    stop()
+    argv = _player_argv(sound_path())
     if argv is None:
         ext.log("no audio player found (install pulseaudio-utils / pipewire / ffmpeg / alsa-utils)")
         return
-    # Loop the player in its own process group so stop() can kill the whole loop, not just one play.
     cmd = "while true; do %s; done" % " ".join(shlex.quote(a) for a in argv)
     _player = subprocess.Popen(["sh", "-c", cmd], start_new_session=True)
     ext.log("ringing with %s" % " ".join(argv))
@@ -81,15 +72,17 @@ def stop():
     _player = None
 
 
-def on_action(item_id, action):
-    if action == "ring":
+def on_app_message(app_uuid, txn, data):
+    cmd = data.get(KEY_CMD)
+    if cmd == CMD_RING:
         ring()
-    elif action == "stop":
+    elif cmd == CMD_STOP:
         stop()
+    else:
+        ext.log("unknown command in AppMessage: %r" % data)
 
 
-ext.on_initialize = lambda: arm() if ext.watch.get("connected") else None
-ext.on_watch_connected = arm
-ext.on_action = on_action
-ext.on_dismiss = lambda item_id: stop()
-ext.run("findphone", capabilities=["notify"])
+ext.on_app_message = on_app_message
+ext.on_initialize = lambda: ext.register_app(APP_UUID)
+ext.on_watch_connected = lambda: ext.register_app(APP_UUID)  # idempotent; re-arm after a reconnect
+ext.run("findphone", capabilities=["appmessage"])
