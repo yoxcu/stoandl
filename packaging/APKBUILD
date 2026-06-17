@@ -5,14 +5,17 @@ pkgver=0.1.0
 pkgrel=0
 pkgdesc="Headless Pebble smartwatch companion daemon for Linux (D-Bus notifications over BLE)"
 url="https://github.com/yoxcu/stoandl"
-arch="noarch"   # pure-Java fat JAR — same artifact runs on any arch with a JDK 21 JRE
+arch="noarch"   # pure-Java fat JAR — same artifact runs on any arch with a JDK 25 JRE
 license="GPL-3.0-or-later"
-# Runtime: a Java 21 JRE, plus BlueZ for the BLE GATT server and a D-Bus session bus.
-depends="openjdk21-jre-headless bluez dbus"
-# Build: full JDK 21. The Gradle wrapper downloads Gradle + the Kotlin/libpebble3
-# dependency graph from the network, so this package must be built with network
-# access (`abuild -P` / a builder that does not sandbox the network).
-makedepends="openjdk21-jdk"
+# Runtime: a Java 25 JRE (libpebble3's BT Classic transport uses java.lang.foreign, final on
+# JDK 22+), plus BlueZ for the BLE GATT server and a D-Bus session bus.
+depends="openjdk25-jre-headless bluez dbus"
+# Build: BOTH JDKs. Gradle 8.14 cannot run on JDK 25 (its launcher hard-fails on class major 69),
+# so the build runs on JDK 21 while the Kotlin jvmToolchain(25) auto-detects openjdk25-jdk under
+# /usr/lib/jvm and emits JDK 25 bytecode. The Gradle wrapper downloads Gradle + the Kotlin/libpebble3
+# dependency graph from the network, so this package must be built with network access
+# (`abuild -P` / a builder that does not sandbox the network).
+makedepends="openjdk21-jdk openjdk25-jdk"
 # Pinned upstream commits. stoandl pulls libpebble3 in as a Gradle composite build
 # (settings.gradle.kts -> includeBuild("libs/libpebble3")); we vendor it from a
 # second source tarball rather than relying on git submodules.
@@ -31,7 +34,10 @@ builddir="$srcdir/$pkgname-$_commit"
 
 # Keep Gradle's caches and the wrapper download inside the build tree.
 export GRADLE_USER_HOME="$srcdir/.gradle"
+# Gradle 8.14 runs on JDK 21 (it cannot launch on JDK 25); jvmToolchain(25) auto-detects the
+# openjdk25-jdk under /usr/lib/jvm and emits JDK 25 bytecode. The daemon + CLI then RUN on JDK 25.
 export JAVA_HOME="/usr/lib/jvm/java-21-openjdk"
+_runtime_java="/usr/lib/jvm/java-25-openjdk/bin/java"
 
 prepare() {
 	default_prepare
@@ -52,18 +58,19 @@ package() {
 	# Fat JAR.
 	install -Dm644 "$jar" "$pkgdir/usr/share/java/$pkgname/$pkgname.jar"
 
-	# `stoandl` CLI wrapper (sideload / settings / fakecall).
+	# `stoandl` CLI wrapper (sideload / settings / fakecall). Runs on the JDK 25 runtime, with
+	# --enable-native-access=ALL-UNNAMED for libpebble3's java.lang.foreign use.
 	install -Dm755 /dev/stdin "$pkgdir/usr/bin/stoandl" <<-EOF
 		#!/bin/sh
 		# Thin wrapper: delegates to the stoandl fat JAR in ctl mode.
-		exec "$JAVA_HOME/bin/java" -jar /usr/share/java/$pkgname/$pkgname.jar ctl "\$@"
+		exec "$_runtime_java" --enable-native-access=ALL-UNNAMED -jar /usr/share/java/$pkgname/$pkgname.jar ctl "\$@"
 	EOF
 
 	# systemd *user* service (Plasma Mobile / Phosh on systemd). Patch the repo's
-	# unit so it calls the openjdk21 java by absolute path rather than /usr/bin/java,
-	# which Alpine does not put on PATH. default_systemd() splits this out into the
-	# -systemd subpackage.
-	sed "s|/usr/bin/java|$JAVA_HOME/bin/java|; s|/usr/lib/stoandl/stoandl.jar|/usr/share/java/$pkgname/$pkgname.jar|" \
+	# unit so it calls the openjdk25 java by absolute path rather than /usr/bin/java,
+	# which Alpine does not put on PATH (the --enable-native-access flag is already in the
+	# repo unit). default_systemd() splits this out into the -systemd subpackage.
+	sed "s|/usr/bin/java|$_runtime_java|; s|/usr/lib/stoandl/stoandl.jar|/usr/share/java/$pkgname/$pkgname.jar|" \
 		packaging/stoandl.service \
 		> "$srcdir/stoandl.service.patched"
 	install -Dm644 "$srcdir/stoandl.service.patched" \

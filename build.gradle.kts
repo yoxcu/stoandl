@@ -24,7 +24,10 @@ val projectVersion: String = run {
 version = projectVersion
 
 kotlin {
-    jvmToolchain(21)
+    // JDK 25 toolchain (auto-detected). The Gradle 8.14 daemon stays on JDK 21 — only the compiled
+    // bytecode and the daemon/CLI runtime need JDK 25 (libpebble3's BT Classic transport uses the
+    // finalized java.lang.foreign API). Bumping Gradle is intentionally avoided (see CLAUDE.md).
+    jvmToolchain(25)
 }
 
 dependencies {
@@ -120,6 +123,12 @@ tasks.named("processResources") { dependsOn(generateLanguagePackCatalog) }
 // "WARNING: Unknown module: org.freedesktop.dbus specified to --add-opens" — see packaging/.
 application {
     mainClass.set("de.yoxcu.stoandl.MainKt")
+    // libpebble3's BT Classic transport reaches libc via java.lang.foreign; on JDK 25 native access
+    // for unnamed-module code is restricted and warns without this. NEVER --enable-preview (FFM is a
+    // final API on 22+; --enable-preview would fail on a release JDK). The packaging launchers
+    // (stoandl.service / stoandl.openrc / stoandl-ctl / APKBUILD) pass the same flag, since the fat
+    // JAR is run directly there rather than via the application start scripts.
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 // Fat JAR for deployment to postmarketOS.

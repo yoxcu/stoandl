@@ -50,14 +50,22 @@ BLE-native watches (Pebble 2 / Time 2) connect over **BLE** and work reliably. C
 
 ## Requirements
 
-- JDK 21
+- **JDK 25 to run.** The Bluetooth Classic transport reaches the kernel through `java.lang.foreign`,
+  finalized in JDK 22. Make sure `/usr/bin/java` (and `java` on `PATH`) is JDK 25 on the machine that
+  runs the daemon — e.g. Arch: `archlinux-java set java-25-openjdk`.
+- **JDK 21 to build** (in addition to 25). Gradle 8.14 cannot run on JDK 25, so the build runs on 21
+  while the Kotlin toolchain compiles against 25 — install both; see [Build](#build).
 - BlueZ (bluetoothd running) — the default dual-mode adapter is fine; see [Bluetooth setup](#bluetooth-setup)
 - D-Bus session bus with a notification daemon (dunst, mako, GNOME, etc.)
 
-> BLE is driven entirely through BlueZ over D-Bus — no glibc-only native
-> libraries — so stoandl runs on **musl** (postmarketOS / Alpine) as well as
-> glibc distros. Verified end-to-end (pair, connect, notifications) on both a
-> glibc laptop and a OnePlus 6 running postmarketOS.
+> BLE is driven entirely through BlueZ over D-Bus, and the Bluetooth Classic transport reaches the
+> kernel via `java.lang.foreign` (no JNI/JNA) — so stoandl loads **no glibc-only native library at
+> runtime** and runs on **musl** (postmarketOS / Alpine) as well as glibc distros. (The fat JAR still
+> *bundles* kable's btleplug/JNA blobs as an unused transitive dependency — kable's types back the
+> shared BLE abstraction, but its native backend is never instantiated on JVM/Linux, which uses
+> BlueZ.) BLE is verified end-to-end (pair, connect, notifications) on a glibc laptop and a OnePlus 6
+> running postmarketOS; the FFM Classic path is musl-clean by construction but not yet
+> hardware-verified on musl.
 
 ## Bluetooth setup
 
@@ -169,17 +177,28 @@ BR/EDR scanner and Classic pairing). → [docs/devices.md](docs/devices.md) for 
 
 ## Build
 
+Gradle 8.14 runs on **JDK 21**, but the Kotlin toolchain compiles libpebble3's `java.lang.foreign`
+code against **JDK 25** (auto-detected under `/usr/lib/jvm`) — both must be installed:
+
 ```sh
-./gradlew shadowJar   # → build/libs/stoandl-<version>-all.jar
+# Arch/Manjaro:  sudo pacman -S jdk21-openjdk jdk-openjdk
+# Debian/Ubuntu: sudo apt install openjdk-21-jdk openjdk-25-jdk
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew shadowJar   # → build/libs/stoandl-<version>-all.jar
 ```
+
+If your default `java` is already JDK 21, the `JAVA_HOME=` prefix is unnecessary. (`install.sh`
+applies this pin for you via `BUILD_JAVA_HOME`.)
 
 ## Run
 
+The daemon requires a **JDK 25** runtime (see [Requirements](#requirements)). `gradlew` itself still
+needs JDK 21, but the `run` task launches the app on the JDK 25 toolchain:
+
 ```sh
-./gradlew run
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew run
 ```
 
-Or with the fat JAR:
+Or with the fat JAR (here `java` must be JDK 25):
 
 ```sh
 java -jar build/libs/stoandl-*-all.jar
@@ -365,6 +384,11 @@ and (re)starts it:
 `--remote` is handy for a phone (e.g. postmarketOS) where building on-device is
 slow — it builds the architecture-independent JAR on your fast machine and pushes
 it. (It uses `ssh -t` so `sudo` can prompt for a password.)
+
+> The installed service + `stoandl` wrapper call `/usr/bin/java` / `java`, which **must be JDK 25**
+> on the target (see [Requirements](#requirements)). The build runs on JDK 21; `install.sh` pins
+> that automatically via `BUILD_JAVA_HOME` (default `/usr/lib/jvm/java-21-openjdk`). On Alpine /
+> postmarketOS the `APKBUILD` handles both JDKs and writes absolute JDK-25 paths into the unit.
 
 Or install manually:
 

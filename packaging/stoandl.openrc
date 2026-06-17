@@ -5,10 +5,13 @@ description="Pebble companion daemon for Linux"
 : "${STOANDL_USER:=user}"
 : "${STOANDL_DBUS_SESSION_BUS_ADDRESS:=unix:path=/run/user/1000/bus}"
 
-_java="/usr/lib/jvm/java-21-openjdk/bin/java"
+# JDK 25 runtime: libpebble3's BT Classic transport uses java.lang.foreign (final on 22+).
+_java="/usr/lib/jvm/java-25-openjdk/bin/java"
 
 command="$_java"
-command_args="-jar /usr/share/java/stoandl/stoandl.jar"
+# --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning (never
+# --enable-preview). JVM flags must precede -jar.
+command_args="--enable-native-access=ALL-UNNAMED -jar /usr/share/java/stoandl/stoandl.jar"
 command_user="$STOANDL_USER"
 command_background=true
 pidfile="/run/$RC_SVCNAME.pid"

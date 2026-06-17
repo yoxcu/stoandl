@@ -5,4 +5,5 @@
 # (DbusNotificationMonitor). CLI subcommands just make plain D-Bus client calls, and on the
 # classpath dbus-java is in the unnamed module anyway — passing them only produced
 # "WARNING: Unknown module: org.freedesktop.dbus specified to --add-opens".
-exec java -jar /usr/lib/stoandl/stoandl.jar ctl "$@"
+# --enable-native-access=ALL-UNNAMED: libpebble3 reaches libc via java.lang.foreign on JDK 25.
+exec java --enable-native-access=ALL-UNNAMED -jar /usr/lib/stoandl/stoandl.jar ctl "$@"

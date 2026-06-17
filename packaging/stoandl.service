@@ -5,7 +5,10 @@ Wants=bluetooth.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/java -jar /usr/lib/stoandl/stoandl.jar
+# Requires a JDK 25 runtime (libpebble3's BT Classic transport uses java.lang.foreign).
+# --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning; never
+# --enable-preview (FFM is final on 22+, that flag would fail on a release JDK).
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -jar /usr/lib/stoandl/stoandl.jar
 Restart=on-failure
 RestartSec=5
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
