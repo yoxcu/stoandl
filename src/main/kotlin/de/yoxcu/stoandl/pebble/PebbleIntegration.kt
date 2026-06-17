@@ -337,7 +337,9 @@ class PebbleIntegration(
 
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
-        firmwareControl = FirmwareControl(libPebbleRef, scope, config)
+        firmwareControl = FirmwareControl(libPebbleRef, scope, config, notifyDesktop = { summary, body, label, onAction ->
+            sendActionableNotification(summary, body, label, onInvoke = onAction)
+        })
         languageControl = LanguageControl(libPebbleRef, config)
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)

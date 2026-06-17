@@ -46,6 +46,13 @@ class FirmwareControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
     private val config: StoandlConfig,
+    /**
+     * Optional hook to mirror the "firmware available" alert as a host *desktop* notification, so it
+     * reaches the laptop and not only the watch. Args: summary, body, the action-button label, and the
+     * callback to run when that button is tapped. Null when no session bus / notifier is wired (e.g. a
+     * truly headless host) — the watch notification is still sent regardless.
+     */
+    private val notifyDesktop: ((summary: String, body: String, actionLabel: String, onAction: () -> Unit) -> Unit)? = null,
 ) {
     private val github by lazy {
         GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
@@ -265,6 +272,20 @@ class FirmwareControl(
         )
         lp.sendNotification(notif, handlers)
         log.info { "Sent firmware-update notification to watch: ${info.current} → ${info.latest}" }
+
+        // Also surface it on the host desktop (the laptop), with an Update button that flashes exactly
+        // the same way the watch's button does — tapping it runs update() like the watch action above.
+        notifyDesktop?.invoke(
+            "Firmware update available",
+            "${info.latest} is available — you're on ${info.current}. " +
+                "Click Update to install, or run: stoandl firmware update",
+            "Update",
+        ) {
+            scope.launch {
+                val result = update()
+                log.info { "Desktop-triggered firmware update: $result" }
+            }
+        }
     }
 
     /** True if firmware [tag] (e.g. `v4.12.0`) is a newer major.minor.patch than the [running] version. */
