@@ -225,3 +225,17 @@ classic.discover = false
 #     bluetoothctl remove <MAC>            # clear any half-bond; put the watch in pairing mode, then:
 #     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
 #     bluetoothctl trust <MAC>
+
+# ── Do Not Disturb ↔ Quiet Time ──────────────────────────────────────────────────────────────────
+# Mirror the desktop's "Do Not Disturb" toggle and the watch's manual Quiet Time so enabling one
+# enables the other. The host backend is auto-detected: GNOME/Phosh (the show-banners GSettings) or
+# KDE/Plasma (the Inhibited notification property). Local-only — nothing is uploaded.
+#
+# Off by default because it actively changes state on BOTH the host and the watch. Values:
+#   off        no mirroring (default)
+#   to_watch   host DND → watch Quiet Time only
+#   to_host    watch Quiet Time → host DND only
+#   both       keep them in sync in both directions
+# (watch Quiet Time here is the *manual* toggle, watch.dndManuallyEnabled — don't also pin that under
+# `watch.*`, it would be re-applied on every connect and fight this.)
+dnd.sync = off

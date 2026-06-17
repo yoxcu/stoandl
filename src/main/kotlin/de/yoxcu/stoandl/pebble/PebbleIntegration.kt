@@ -13,6 +13,9 @@ import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
+import de.yoxcu.stoandl.dnd.DndSync
+import de.yoxcu.stoandl.dnd.detectHostDnd
+import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
@@ -206,6 +209,9 @@ class PebbleIntegration(
     private val healthExporterRef = AtomicReference<HealthExporter?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
     private val calendarSyncRef = AtomicReference<LinuxSystemCalendar?>(null)
+    // Held for the daemon lifetime so its host-DND backend (bus connection / gsettings monitor) and
+    // sync coroutines aren't dropped; null when dnd.sync=off or no host backend was detected.
+    private var dndSync: DndSync? = null
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
@@ -360,6 +366,7 @@ class PebbleIntegration(
         startCallMonitor()
         startWeatherSync()
         startWatchPrefsSync()
+        startDndSync()
         startFirmwareNotifier()
         startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
@@ -1119,6 +1126,33 @@ class PebbleIntegration(
         // on-watch change (most have no on-watch UI anyway).
         log.info { "Watch prefs: ${config.watchPrefs.size} configured (${config.watchPrefs.keys}), applied on connect" }
         onFreshConnect { control.applyConfigured(config.watchPrefs) }
+    }
+
+    /** Mirror desktop Do Not Disturb ↔ watch Quiet Time (manual). Off unless `dnd.sync` is set; the
+     *  GNOME/KDE host backend is auto-detected. The actual sync (and its loop avoidance) lives in
+     *  [DndSync]; setWatchPref persists, so a host→watch change applied while disconnected still syncs
+     *  on the next connect. */
+    private fun startDndSync() {
+        if (config.dndSync == StoandlConfig.DndSyncMode.OFF) {
+            log.info { "DND ↔ Quiet Time sync disabled (dnd.sync=off)" }
+            return
+        }
+        if (config.watchPrefs.containsKey(BoolWatchPref.QuietTimeManuallyEnabled.id)) {
+            log.warn {
+                "dnd.sync is on but watch.${BoolWatchPref.QuietTimeManuallyEnabled.id} is also configured — " +
+                    "the configured value is re-applied on every connect and will fight DND sync; remove one"
+            }
+        }
+        val backend = detectHostDnd(scope)
+        if (backend == null) {
+            log.warn {
+                "dnd.sync=${config.dndSync.name.lowercase()} but no host DND backend detected " +
+                    "(need GNOME's notification GSettings or a KDE/Plasma notification server) — disabled"
+            }
+            return
+        }
+        log.info { "DND ↔ Quiet Time sync on (mode=${config.dndSync.name.lowercase()}, host=${backend.name})" }
+        dndSync = DndSync(libPebble, scope, config.dndSync, backend).also { it.start() }
     }
 
     /** Proactively check for newer firmware on each watch connect (throttled to once a day) and, when

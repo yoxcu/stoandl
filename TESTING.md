@@ -1026,6 +1026,43 @@ self-contained commit on top of the rebase.
 
 ---
 
+## 5.25 Do Not Disturb ↔ Quiet Time sync  ⚠️ UNVERIFIED (needs a watch + a GNOME or KDE session)
+
+Mirrors the desktop's Do Not Disturb toggle and the watch's **manual** Quiet Time
+(`BoolWatchPref.QuietTimeManuallyEnabled` / `dndManuallyEnabled`), which libpebble3 already syncs over the
+WatchPrefs BlobDB in both directions (no fork change — `LibPebble.setWatchPref` / `watchPrefs` Flow;
+`enableWatchSettingsSync` defaults on and is pinned via the `WatchConfigFlow` override). The host backend
+is auto-detected (`detectHostDnd`): **GNOME/Phosh** via the inverted `org.gnome.desktop.notifications
+show-banners` GSettings key (read/written with `gsettings`, watched live with `gsettings monitor`), or
+**KDE/Plasma** via the freedesktop `Inhibited` property on `org.freedesktop.Notifications`
+(`Inhibit()`/`UnInhibit()` to set; gnome-shell lacks the property, which is how the two are told apart).
+`DndSync` reconciles both ends through a single shared boolean so pushing one direction doesn't echo back
+and ping-pong (the `mode=both` stability check). Off by default (`dnd.sync=off`) — it changes state on the
+host **and** the watch. Local-only, no egress.
+
+**Prerequisite:** a connected watch; a GNOME (or Phosh) **or** KDE/Plasma (incl. Plasma Mobile) session;
+`dnd.sync` set and the daemon restarted. The watch→host tests assume the on-watch manual Quiet Time toggle
+(e.g. the default hold-Back quick-launch `QUIET_TIME_TOGGLE`) propagates back to the phone's WatchPrefs
+BlobDB — **the main unknown to confirm on hardware.**
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.250 | Backend detected | set `dnd.sync = both`, restart, watch the log | `DND ↔ Quiet Time sync on (mode=both, host=GNOME)` (or `host=KDE/Plasma`). On a session with neither: `…no host DND backend detected… — disabled`. |
+| 5.251 | Host → watch (GNOME) | `mode=to_watch` or `both`; toggle GNOME "Do Not Disturb" on | Log `Host DND → true; updating watch Quiet Time`; the watch's Quiet Time turns on (moon icon; notifications muted/stay on-screen). Toggle off → Quiet Time off. |
+| 5.252 | Host → watch (KDE) | same on Plasma (toggle "Do Not Disturb" in the notification applet) | Same as 5.251 via the `Inhibited` property. |
+| 5.253 | Startup seed | with host DND **on**, restart the daemon, connect the watch | The watch comes up in Quiet Time without any toggle (host is seeded as source-of-truth and pushed once). |
+| 5.254 | Applied while disconnected | `mode=to_watch`, watch **off**; toggle host DND on; then connect the watch | `setWatchPref` persisted the change → Quiet Time is already on when the watch connects (BlobDB sync on connect). |
+| 5.255 | Watch → host | `mode=to_host` or `both`; toggle Quiet Time **on the watch** (hold Back, or the QT toggle) | Log `Watch Quiet Time → true; updating host DND`; the host's DND turns on (GNOME banners hidden / KDE applet shows DND). Toggle off on the watch → host DND off. |
+| 5.256 | No ping-pong (`both`) | `mode=both`; toggle DND on the host a few times, then on the watch | Each toggle propagates **once** to the other side and settles; the log shows no repeating back-and-forth `Host DND →`/`Watch Quiet Time →` storm. |
+| 5.257 | Off by default | unset `dnd.sync` (or `off`), restart | `DND ↔ Quiet Time sync disabled (dnd.sync=off)`; toggling host DND does nothing to the watch and vice-versa. |
+| 5.258 | Config conflict warning | set both `dnd.sync = both` **and** `watch.dndManuallyEnabled = true`, restart | A warning that the pinned `watch.*` value will fight DND sync (it's re-applied on every connect). |
+
+**Known limitation:** KDE's `Inhibited` is true whenever *anything* inhibits notifications (e.g. a
+screen-recording app), not only the manual DND toggle — so on Plasma a third-party inhibition will also
+turn the watch's Quiet Time on while it lasts. The GNOME backend keys on the user-facing DND toggle only.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

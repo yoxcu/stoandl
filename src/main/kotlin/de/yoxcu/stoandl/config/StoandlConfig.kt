@@ -144,6 +144,11 @@ data class StoandlConfig(
      *  watches via a BR/EDR inquiry (during a pairing window) and auto-pairs + connects them over a
      *  secure RFCOMM socket. Off by default. The BLE path is unaffected — BLE-native watches use BLE. */
     val classicDiscover: Boolean,
+    /** Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time. [DndSyncMode.OFF]
+     *  by default — it actively changes state on both the host and the watch, so it's opt-in (it never
+     *  touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property)
+     *  are auto-detected. */
+    val dndSync: DndSyncMode,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -155,6 +160,10 @@ data class StoandlConfig(
 
     /** What the watch volume buttons drive: the system/master output, or the active player's own volume. */
     enum class MusicVolumeMode { SYSTEM, PLAYER }
+
+    /** Which way desktop DND ↔ watch Quiet Time is mirrored: not at all, host→watch only, watch→host
+     *  only, or both. */
+    enum class DndSyncMode { OFF, TO_WATCH, TO_HOST, BOTH }
 
     /** Source for DE-imported locations: none (manual only), the GNOME/Phosh weather GSettings,
      *  or a user-provided command that prints `Name:lat:lon` lines (DE-agnostic escape hatch). */
@@ -214,6 +223,7 @@ data class StoandlConfig(
             healthExportSamples = false,
             healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
             classicDiscover = false,
+            dndSync = DndSyncMode.OFF,
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -301,6 +311,7 @@ data class StoandlConfig(
                 classicDiscover = parseBool(map["classic.discover"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
+                dndSync = parseDndSync(map["dnd.sync"]),
             )
             log.info {
                 "Config loaded from ${file.path}: " +
@@ -323,7 +334,8 @@ data class StoandlConfig(
                     ", languageDownload=${cfg.languageDownload}" +
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
-                    (if (cfg.classicDiscover) ", classicDiscover=true" else "")
+                    (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
+                    (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "")
             }
             return cfg
         }
@@ -378,6 +390,17 @@ data class StoandlConfig(
             else -> {
                 log.warn { "Unknown music.volume '$raw'; defaulting to system" }
                 MusicVolumeMode.SYSTEM
+            }
+        }
+
+        private fun parseDndSync(raw: String?): DndSyncMode = when (raw?.trim()?.lowercase()) {
+            null, "", "off", "false", "no", "none" -> DndSyncMode.OFF
+            "to_watch", "watch", "host_to_watch" -> DndSyncMode.TO_WATCH
+            "to_host", "host", "watch_to_host" -> DndSyncMode.TO_HOST
+            "both", "true", "yes", "on" -> DndSyncMode.BOTH
+            else -> {
+                log.warn { "Unknown dnd.sync '$raw'; defaulting to off" }
+                DndSyncMode.OFF
             }
         }
 
