@@ -64,16 +64,32 @@ class ExtensionManager(
         // Tell extensions when a watch (re)connects so they can re-arm their notifications. Until the
         // Phase-2 re-push lands, a notify() issued while disconnected is dropped, so this edge is how a
         // long-lived extension (e.g. find-my-phone) gets its notification back onto a fresh connection.
+        //
+        // The device reports `Connected` BEFORE its timeline/app BlobDB finishes negotiating, and a
+        // notification sent in that window is silently dropped by the watch (its parent app isn't synced
+        // yet). So settle for a moment after the connect edge — and re-check we're still connected —
+        // before broadcasting. (Phase 2's readiness-gated re-push will replace this heuristic.)
         libPebbleRef.get()?.let { lp ->
             scope.launch {
                 lp.watches
                     .map { devices -> devices.any { it is ConnectedPebbleDevice } }
                     .distinctUntilChanged()
-                    .collect { connected -> if (connected) processes.forEach { it.onWatchConnected() } }
+                    .collect { connected ->
+                        if (!connected) return@collect
+                        delay(CONNECT_SETTLE_MS)
+                        if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
+                            processes.forEach { it.onWatchConnected() }
+                        }
+                    }
             }
         }
     }
 }
+
+// The watch reports Connected before its BlobDB is ready to accept timeline notifications; give it this
+// long to settle before telling extensions to (re)send. Empirically the BlobDB is up well under 1s
+// after connect; 3s leaves margin for a slow phone.
+private const val CONNECT_SETTLE_MS = 3_000L
 
 private const val MAX_FAST_FAILURES = 5
 private const val STABLE_UPTIME_MS = 60_000L
