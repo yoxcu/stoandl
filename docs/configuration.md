@@ -440,16 +440,18 @@ in `stoandl.conf`:
 | `firmware.github_prereleases` | `false` | Consider pre-releases too (otherwise only the latest stable release). |
 | `firmware.cohorts` | `false` | **Classic / Rebble watches** (Pebble Time / Time Steel / Time Round / Pebble 2): allow `check`/`update` to query Rebble's cohorts service. |
 | `firmware.cohorts_url` | `https://cohorts.rebble.io` | Base URL of the cohorts service — override only for a self-hosted/mirror instance. |
-| `firmware.notify` | `true` | When a source is on, also notify the watch when newer firmware appears (see below). |
+| `firmware.notify` | `true` | When a source is on, notify you when newer firmware appears — on both the watch and your desktop (see below). |
 
-### Update notifications on the watch
+### Update notifications (watch + desktop)
 
 With a source on, stoandl checks for newer firmware **on each watch connect** (throttled to at most
-once a day) and, when it finds some, pushes a notification **to the watch** with an **Update** action
-button. Pressing Update downloads and flashes the matching bundle right there — no phone, no CLI. It
-only re-notifies when the available version actually changes, so reconnecting doesn't nag. Set
-`firmware.notify = false` to keep `firmware check`/`update` on the command line but suppress the
-automatic watch notification.
+once a day) and, when it finds some, pushes an **Update** notification to **both the watch and the
+host desktop** (your laptop). Pressing Update on either downloads and flashes the matching bundle right
+there — no phone, no CLI. The desktop notification reuses the same mechanism as the re-pair prompt
+(`org.freedesktop.Notifications`); if no session bus is reachable it falls back to a plain notification
+whose text points you at `stoandl firmware update`. It only re-notifies when the available version
+actually changes, so reconnecting doesn't nag. Set `firmware.notify = false` to keep
+`firmware check`/`update` on the command line but suppress the automatic notifications.
 
 No account or token is needed — both sources are public. **Core devices** (Pebble 2 Duo / Pebble
 Time 2) pull from GitHub: the watch's board revision (e.g. `obelix_pvt`) **exactly matches** the

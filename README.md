@@ -19,7 +19,7 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 - Bridges desktop media players (MPRIS) to the watch's Music app — now-playing plus play/pause, next/previous and volume from the watch
 - Syncs calendar events (and their reminders) to the watch's timeline as native pins — DE-agnostic (local `.ics`, iCal feeds or CalDAV), reusing the calendars your desktop already keeps where it can
 - Configures the watch's advanced settings (quick-launch buttons, backlight, ambient-light, …) — the ones the official app exposes but the watch menus don't
-- Flashes watch firmware — a local `.pbz`, or (opt-in) the latest build for your watch's board, pulled from the right source automatically (PebbleOS GitHub releases for Core devices, cohorts.rebble.io for classic Pebbles), with an optional "update available" notification on the watch
+- Flashes watch firmware — a local `.pbz`, or (opt-in) the latest build for your watch's board, pulled from the right source automatically (PebbleOS GitHub releases for Core devices, cohorts.rebble.io for classic Pebbles), with an optional "update available" notification on the watch and your desktop
 - Installs watch language packs — a local `.pbl`, or pick one for your watch from the built-in catalog (the official app's, bundled) and download+install it
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
@@ -278,8 +278,8 @@ stoandl firmware status       # current firmware-update state
 `coredevices/PebbleOS`), **classic Pebbles** (Pebble Time / Time Steel …) from `cohorts.rebble.io`.
 Each is opt-in egress, off until you enable it (`firmware.github` / `firmware.cohorts`). The watch's
 board maps exactly to the right bundle, so the build is picked automatically; with `firmware.notify`
-(on by default once a source is) stoandl also pushes an "update available" notification to the watch
-with an Update button.
+(on by default once a source is) stoandl also pushes an "update available" notification — to both the
+watch and your desktop — each with an Update button that flashes it.
 
 > Flashing is the riskiest thing stoandl does. It's guarded by the pre-flash safety checks and
 > Pebble's recovery firmware, but flash on charger and keep the watch in range.

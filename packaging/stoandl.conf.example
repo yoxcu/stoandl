@@ -167,9 +167,10 @@ firmware.cohorts = false
 # Base URL of the cohorts service (no trailing slash). Override only for a self-hosted/mirror instance.
 firmware.cohorts_url = https://cohorts.rebble.io
 
-# When a source above is on, also push a notification TO THE WATCH when newer firmware is available
-# (checked on connect and at most once a day). The notification has an "Update" button that downloads
-# and flashes it. On by default once a source is enabled; set false for check-on-demand only.
+# When a source above is on, push an "update available" notification — to BOTH the watch and your
+# desktop — when newer firmware is available (checked on connect and at most once a day). Each carries
+# an "Update" button that downloads and flashes it. On by default once a source is enabled; set false
+# for check-on-demand only.
 firmware.notify = true
 
 # ── Language packs ───────────────────────────────────────────────────────────────────────────────
