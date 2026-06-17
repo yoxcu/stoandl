@@ -74,6 +74,7 @@ GraalJS is a full, spec-compliant ECMAScript engine — modern JS (classes, `for
 
 **GraalJS gotchas (build/runtime, not syntax):**
 - The fat JAR **must** merge `META-INF/services/` (Shadow plugin `mergeServiceFiles()`). A plain `DuplicatesStrategy.EXCLUDE` silently drops the TruffleRegex service registration → `No language for id regex found` at runtime.
+- The fat JAR **must** keep `Multi-Release: true` in its manifest. GraalVM polyglot 25.x ships Multi-Release JARs (`META-INF/versions/{9,21}/…`); Shadow preserves the versioned classes but drops the manifest attribute, so the JVM ignores them and Truffle throws `InternalError: Truffle could not be initialized because Multi-Release classes are not configured correctly … Multi-Release … has been lost` at `Context.build()` (PKJS never inits). Fix: `manifest { attributes["Multi-Release"] = "true" }` in `tasks.shadowJar`.
 - Don't set `js.esversion` as a `GraalJsRunner` option — it isn't a valid GraalJS option and throws.
 - When building JS strings to `eval` (e.g. injecting an XHR response body), JSON-encode the value (`Json.encodeToString(...)`) — don't hand-escape. Unescaped `\n`/`\r`/control chars cause a silent `PolyglotException` and the JS callbacks never fire.
 

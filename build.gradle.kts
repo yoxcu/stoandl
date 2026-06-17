@@ -136,6 +136,11 @@ application {
 tasks.shadowJar {
     manifest {
         attributes["Main-Class"] = "de.yoxcu.stoandl.MainKt"
+        // GraalVM polyglot 25.x ships Multi-Release JARs (META-INF/versions/{9,21}/…). Shadow keeps
+        // the versioned classes but drops the manifest attribute, so the JVM ignores them and
+        // Truffle's CheckMultiReleaseSupport throws "Multi-Release … lost" at Context.build() (PKJS
+        // init). Re-declaring it makes the JVM load the versioned Truffle classes again.
+        attributes["Multi-Release"] = "true"
     }
     mergeServiceFiles()
 }
