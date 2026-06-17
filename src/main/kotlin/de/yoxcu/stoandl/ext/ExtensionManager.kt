@@ -5,6 +5,7 @@ package de.yoxcu.stoandl.ext
 import de.yoxcu.stoandl.config.StoandlConfig.ExtensionDef
 import de.yoxcu.stoandl.pebble.NotifAction
 import de.yoxcu.stoandl.pebble.NotifOwner
+import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
 import de.yoxcu.stoandl.pebble.NotifRequest
 import de.yoxcu.stoandl.pebble.ReplySpec
 import de.yoxcu.stoandl.pebble.WatchNotifier
@@ -51,6 +52,7 @@ private val log = KotlinLogging.logger {}
 class ExtensionManager(
     private val defs: List<ExtensionDef>,
     private val watchNotifier: WatchNotifier,
+    private val owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
 ) {
@@ -60,7 +62,7 @@ class ExtensionManager(
             return
         }
         log.info { "Starting ${defs.size} extension(s): ${defs.map { it.name }}" }
-        val processes = defs.map { def -> ExtensionProcess(def, watchNotifier, libPebbleRef, scope).also { it.launch() } }
+        val processes = defs.map { def -> ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope).also { it.launch() } }
         // Tell extensions when a watch (re)connects so they can re-arm their notifications. Until the
         // Phase-2 re-push lands, a notify() issued while disconnected is dropped, so this edge is how a
         // long-lived extension (e.g. find-my-phone) gets its notification back onto a fresh connection.
@@ -101,14 +103,16 @@ private const val INIT_TIMEOUT_MS = 10_000L
 private class ExtensionProcess(
     private val def: ExtensionDef,
     private val watchNotifier: WatchNotifier,
+    owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
 ) {
     private val tag = def.name
-    // The owner is stable across restarts; the write channel is swapped on each spawn.
+    // The write channel is swapped on each spawn.
     @Volatile private var writeChannel: Channel<String>? = null
     @Volatile private var ready = false
-    private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }
+    // Registered under the extension name so persisted routes reconnect to it after a restart.
+    private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }.also { owners.register(it) }
 
     /** Notify the child that a watch connected (so it can re-arm). No-op until the handshake completes. */
     fun onWatchConnected() {
@@ -283,8 +287,8 @@ private class ExtensionProcess(
             vibeName = params.str("vibe"),
             itemId = requestedId,
         )
-        val itemId = watchNotifier.push(req, owner)
-        if (itemId != null && extToken != null) owner.bind(itemId, extToken)
+        // The ext's correlation token rides in the persisted route, so callbacks survive a restart.
+        val itemId = watchNotifier.push(req, def.name, extToken)
         if (id != null) {
             enqueue(buildJsonObject {
                 put("jsonrpc", "2.0")
@@ -297,7 +301,6 @@ private class ExtensionProcess(
     private suspend fun handleClose(params: JsonObject?) {
         val itemId = params?.str("itemId")?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: return
         watchNotifier.close(itemId)
-        owner.unbind(itemId)
     }
 
     private fun replyError(id: JsonElement?, message: String) {
@@ -313,37 +316,37 @@ private class ExtensionProcess(
 private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
 /**
- * [NotifOwner] for an extension: maps the watch item back to the extension's own correlation token and
- * forwards the user's wrist action/reply/dismiss as a JSON-RPC notification to the child (enqueued —
- * never blocks libpebble3's action flow). The extension then acts via its own service account.
+ * [NotifOwner] for an extension: forwards the user's wrist action/reply/dismiss as a JSON-RPC
+ * notification to the child (enqueued — never blocks libpebble3's action flow). The correlation token
+ * is supplied by the router from the persisted route (so it survives a restart); the extension then
+ * acts via its own service account.
  */
 private class ExtensionOwner(
     private val name: String,
     private val send: (JsonObject) -> Unit,
 ) : NotifOwner {
     override val id = name
-    private val itemToToken = java.util.concurrent.ConcurrentHashMap<Uuid, String>()
 
-    fun bind(itemId: Uuid, extToken: String) { itemToToken[itemId] = extToken }
-    fun unbind(itemId: Uuid) { itemToToken.remove(itemId) }
+    override suspend fun onAction(itemId: Uuid, token: String?, actionId: String) =
+        notify("onAction", itemId, token) { put("action", actionId) }
 
-    override suspend fun onAction(itemId: Uuid, actionId: String) =
-        notify("onAction", itemId) { put("action", actionId) }
+    override suspend fun onReply(itemId: Uuid, token: String?, text: String) =
+        notify("onReply", itemId, token) { put("text", text) }
 
-    override suspend fun onReply(itemId: Uuid, text: String) =
-        notify("onReply", itemId) { put("text", text) }
+    override suspend fun onDismiss(itemId: Uuid, token: String?) =
+        notify("onDismiss", itemId, token) {}
 
-    override suspend fun onDismiss(itemId: Uuid) {
-        notify("onDismiss", itemId) {}
-        itemToToken.remove(itemId)
-    }
-
-    private inline fun notify(method: String, itemId: Uuid, extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) {
+    private inline fun notify(
+        method: String,
+        itemId: Uuid,
+        token: String?,
+        extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit,
+    ) {
         send(buildJsonObject {
             put("jsonrpc", "2.0")
             put("method", method)
             put("params", buildJsonObject {
-                itemToToken[itemId]?.let { put("extToken", it) }
+                token?.let { put("extToken", it) }
                 put("itemId", itemId.toString())
                 extra()
             })

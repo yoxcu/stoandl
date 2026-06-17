@@ -290,13 +290,23 @@ reconnect without re-push (only if the §"deferred" re-push proves lossy on hard
 - **Phase 4 — Polish.** JSON-Schema for the wire contract + mirror helpers (Rust/Go); voice
   `TranscriptionProvider` wiring if a backend exists; protocol-version negotiation beyond `1`.
 
-## Deferred decision
+## Reconnect / restart handling (resolved in Phase 2)
 
-**Reconnect handling.** `TimelineActionManager` is `ConnectionCoroutineScope`-scoped, so a sent
-notification's per-item `actionHandlers` die on disconnect (after reconnect a `Generic` action would
-fall through to the global handler and be misread). The `itemId→owner` map survives (held by the
-singleton handler). Default plan: **re-push** each extension's still-live notifications on
-`onWatchConnected` (preserves the zero-fork property). The alternative — a tiny fork hook making
-`actionHandlerOverrides` connection-scope-independent — is cleaner but breaks the no-fork rule. **Decide
-after Phase 2 hardware testing** shows whether re-push is actually lossy (it may briefly re-surface or
-re-vibe a notification on the wrist).
+stoandl routes watch actions through the **global** `PlatformNotificationActionHandler`
+(`WatchActionRouter`) keyed by a shared `itemId → NotifRoute` table — not via libpebble3's per-item
+`actionHandlerOverrides` (those are `ConnectionCoroutineScope`-scoped and die on disconnect; they remain
+in use only for one-shot notifications like FirmwareControl's Update button). The route table is
+**persisted** to `<configDir>/notif-routes.json` and owners are resolved by id
+(`NotifOwnerRegistry`, re-registered under the same id each startup), with the owner-opaque token
+(desktop: the D-Bus id; extension: its conversation token) carried *in* the route — so a notification's
+actions, reply routing, and dismiss-closes-the-original all survive a **daemon restart**, with no fork
+change. The table is pruned to the watch's 1-day window on load.
+
+Dismiss uses `markForDeletion` (not `markNotificationRead`, which re-inserts the record with a changed
+hash and makes the BlobDB re-sync it — so a dismissal would bounce back); this makes dismissals stick.
+A persistent notification (find-my-phone) passes a stable `replace_id` so re-sends replace the same item
+instead of accumulating orphaned copies.
+
+**Still open:** notifications sent before route persistence existed have no stored route (dismiss them
+once — now sticks). Mid-session, a `notify()` issued before the BlobDB finishes negotiating is dropped
+(`onlyInsertAfter=true`); the `onWatchConnected` settle delay is the current mitigation.

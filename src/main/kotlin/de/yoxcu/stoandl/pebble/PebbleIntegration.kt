@@ -65,6 +65,7 @@ import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
+import io.rebble.libpebblecommon.database.dao.TimelineNotificationRealDao
 import io.rebble.libpebblecommon.database.entity.MuteState
 import io.rebble.libpebblecommon.database.entity.NotificationAppItem
 import io.rebble.libpebblecommon.di.PlatformConfig
@@ -257,10 +258,12 @@ class PebbleIntegration(
         // action routes back through `watchActionRouter` via the shared `routeTable`. The desktop owner
         // holds the watch-item → D-Bus-id map so a wrist dismiss can CloseNotification the original.
         val notifDao = if (config.notificationPerApp) koin.get<NotificationAppRealDao>() else null
-        val routeTable = NotifRouteTable()
-        val desktopNotifOwner = DesktopNotifOwner()
-        val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute))
-        val watchActionRouter = WatchActionRouter(libPebbleRef, routeTable, notifDao)
+        val timelineNotifDao = koin.get<TimelineNotificationRealDao>()
+        // Routes persist (so notification actions survive a daemon restart) under the config dir.
+        val routeTable = NotifRouteTable(File(StoandlConfig.configDir(), "notif-routes.json"))
+        val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
+        val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao)
+        val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
 
         // Build the Linux calendar source from config (null if nothing is configured). libpebble3's
         // PhoneCalendarSyncer reads it and handles all pin creation/diffing/deletion itself.
@@ -276,7 +279,6 @@ class PebbleIntegration(
                     dialerApps = config.dialerApps,
                     dialerNameCache = dialerNameCache,
                     watchNotifier = watchNotifier,
-                    desktopOwner = desktopNotifOwner,
                 )
             }
             // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
@@ -367,7 +369,7 @@ class PebbleIntegration(
         // (and reply/actions) over stdio JSON-RPC. Off unless extensions.enabled lists them. They push
         // through the same watchNotifier choke point as desktop notifications, so per-app mute/style
         // applies to them too.
-        extensionManager = ExtensionManager(config.extensions, watchNotifier, libPebbleRef, scope).also { it.start() }
+        extensionManager = ExtensionManager(config.extensions, watchNotifier, notifOwners, libPebbleRef, scope).also { it.start() }
         startFirmwareNotifier()
         startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
@@ -1289,7 +1291,6 @@ private class DbusNotificationListenerConnection(
     // The shared choke point: per-app tracking/mute/style + build + send + route now live here, used by
     // extensions too. This bridge just turns a desktop notification into a [NotifRequest].
     private val watchNotifier: WatchNotifier,
-    private val desktopOwner: DesktopNotifOwner,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
@@ -1306,16 +1307,17 @@ private class DbusNotificationListenerConnection(
                     return@collect
                 }
                 // subtitle defaults to appName inside WatchNotifier; per-app mute/style + the "Mute"
-                // action are applied there. Record the D-Bus id so a wrist dismiss closes the original.
-                val itemId = watchNotifier.push(
+                // action are applied there. The D-Bus id rides in the route as the owner token, so a
+                // wrist dismiss closes the original desktop notification (even after a restart).
+                watchNotifier.push(
                     NotifRequest(
                         appName = notification.appName,
                         title = notification.summary,
                         body = notification.body,
                     ),
-                    desktopOwner,
+                    ownerId = "desktop",
+                    ownerToken = notification.id.toString(),
                 )
-                if (itemId != null) desktopOwner.bind(itemId, notification.id)
             }
         }
     }

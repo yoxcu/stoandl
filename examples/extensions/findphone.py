@@ -14,16 +14,33 @@ Enable it in stoandl.conf:
 
 Put stoandl_ext.py next to this file (both under ~/.config/stoandl/ext/ above), then restart stoandl.
 """
+import os
+import shlex
+import signal
 import subprocess
 import shutil
 from stoandl_ext import Extension
 
 ext = Extension()
-_player = None  # the running sound process, if any
+_player = None  # the running sound process group, if any
 
 
 def sound_path():
     return ext.config.get("sound", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga")
+
+
+def _player_argv(snd):
+    """Pick an available audio player. None of paplay/pw-play/aplay loop on their own, so we wrap the
+    chosen one in a shell `while` loop (see ring) and kill the whole group to stop."""
+    if shutil.which("paplay"):
+        return ["paplay", snd]
+    if shutil.which("pw-play"):
+        return ["pw-play", snd]
+    if shutil.which("ffplay"):
+        return ["ffplay", "-nodisp", "-autoexit", snd]
+    if shutil.which("aplay"):
+        return ["aplay", snd]
+    return None
 
 
 def arm():
@@ -44,23 +61,23 @@ def ring():
     global _player
     stop()  # don't stack players
     snd = sound_path()
-    # paplay loops the file; fall back to whatever audio player is around.
-    if shutil.which("paplay"):
-        _player = subprocess.Popen(["paplay", "--loop", snd])
-    elif shutil.which("ffplay"):
-        _player = subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loop", "0", snd])
-    elif shutil.which("aplay"):
-        _player = subprocess.Popen(["aplay", snd])
-    else:
-        ext.log("no audio player found (install pulseaudio-utils / ffmpeg / alsa-utils)")
+    argv = _player_argv(snd)
+    if argv is None:
+        ext.log("no audio player found (install pulseaudio-utils / pipewire / ffmpeg / alsa-utils)")
         return
-    ext.log("ringing with %s" % snd)
+    # Loop the player in its own process group so stop() can kill the whole loop, not just one play.
+    cmd = "while true; do %s; done" % " ".join(shlex.quote(a) for a in argv)
+    _player = subprocess.Popen(["sh", "-c", cmd], start_new_session=True)
+    ext.log("ringing with %s" % " ".join(argv))
 
 
 def stop():
     global _player
     if _player and _player.poll() is None:
-        _player.terminate()
+        try:
+            os.killpg(os.getpgid(_player.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     _player = None
 
 

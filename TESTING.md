@@ -1101,16 +1101,25 @@ verify it still behaves exactly as before.
 text in (assumed **Title**, 0x01). 5.268 logs the raw attribute ids at debug — verify and adjust
 `WatchActionRouter.responseText` if the firmware uses a different attribute.
 
-**Known limitations (route table is in-memory):**
-- An extension's notification action route lives only in memory, so after a **daemon restart** any
-  notification still on the watch from a previous run is orphaned (`owner=?` in the log) — its named/
-  reply actions return "Not supported" (only Dismiss works). A *persistent* notification should pass a
-  stable `replace_id` (find-my-phone does: `"findphone-ring"`) so each (re)send REPLACES the same watch
-  item — across restarts too — keeping exactly one copy with a current route. | 5.26c | Stable replace | restart the daemon with findphone, reconnect, tap Ring on the (single) Find-My-Phone notification | Exactly one Find-My-Phone notification exists (no pile-up); Ring works (`owner=findphone`, not "Not supported"). |
-- Dismissing a notification still present in libpebble3's local DB re-inserts it with a read flag
-  (libpebble3's `markNotificationRead` changes the record hash → re-sync) — old accumulated
-  notifications from before this branch can re-appear when dismissed. Proper startup notification
-  hygiene / route persistence is Phase-2 work.
+### 5.26 (Phase 2) — route persistence + dismiss hygiene
+
+Phase 2 made notification action routes **persist** (`<configDir>/notif-routes.json`) and owners resolve
+by id ([NotifOwnerRegistry]), so a notification's actions survive a daemon restart. Dismiss now
+`markForDeletion`s the notification (instead of `markNotificationRead`, which re-inserted it with a
+changed hash → re-sync), so a dismissal sticks. An extension can also pass a stable `replace_id`
+(find-my-phone uses `"findphone-ring"`) so re-sends replace the same item instead of piling up.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.26c | Stable replace (no pile-up) | restart daemon with findphone a few times, reconnect | Exactly **one** Find-My-Phone notification on the watch; Ring works (`owner=findphone`). |
+| 5.26d | Actions survive restart | trigger a desktop notification; **restart** the daemon; reconnect; open that notification on the watch and pick **Mute** | Mute works (`owner=desktop` in the log, *not* `owner=?`); `Loaded N notification route(s)` appears at startup. |
+| 5.26e | Dismiss sticks (no resync) | dismiss notifications on the watch (incl. hold-select dismiss-all) | They stay gone — no `BlobDB - insert: Notification …` re-insert of a just-dismissed item; routes removed (`notif-routes.json` shrinks). |
+| 5.26f | Ring actually rings | tap **Ring phone**, then **Stop** | Host plays the sound on a loop (`[findphone] ringing with …`) and stops on Stop. (Fixed: `paplay` has no `--loop`; now wraps the player in a shell loop + kills the group.) |
+| 5.26g | Reply token survives restart | a reply-capable extension sends a notification; restart daemon; reconnect; reply on the watch | `onReply` reaches the extension **with its `extToken`** (the token rides in the persisted route). |
+
+**Remaining limitation:** notifications sent by code *before* this branch (the pre-existing hoard) have
+no persisted route, so their non-Dismiss actions still show "Not supported" — dismiss them once (now
+sticks) to clear them. Everything sent from this build onward persists.
 
 ---
 

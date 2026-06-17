@@ -10,6 +10,7 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
+import io.rebble.libpebblecommon.database.dao.TimelineNotificationRealDao
 import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.MuteState
 import io.rebble.libpebblecommon.database.entity.NotificationAppItem
@@ -21,8 +22,11 @@ import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.timeline.toPebbleColor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.types.UInt32
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
@@ -32,10 +36,11 @@ import kotlin.uuid.Uuid
  * bridge ([DesktopNotifOwner]) and every [de.yoxcu.stoandl.ext.ExtensionManager] extension alike. It
  * owns the per-app mute/style policy (drop-before-send, so a source can't bypass mute) and records a
  * [NotifRoute] per item so [WatchActionRouter] can route the watch-side action/reply/dismiss back to
- * whoever sent it. There is no second notification pipeline.
+ * whoever sent it.
  *
- * Notification sources implement [NotifOwner]; the watch-side callbacks are dispatched on libpebble3's
- * action flow, so owners must return quickly (enqueue, don't block) — see [DesktopNotifOwner].
+ * Routes are persisted ([NotifRouteTable]) and owners resolved by id ([NotifOwnerRegistry]), so a
+ * notification's actions keep working across a daemon restart (the route survives; the owner re-
+ * registers under the same id; the owner-opaque token travels in the route).
  */
 data class NotifAction(val id: String, val label: String)
 data class ReplySpec(val cannedReplies: List<String>, val allowVoice: Boolean)
@@ -52,34 +57,89 @@ data class NotifRequest(
     val colorName: String? = null,
     val vibeName: String? = null,
     // Stable watch-item id. When set, a re-send replaces the same notification (even across daemon
-    // restarts) instead of creating a duplicate — and its action route is refreshed. Used by
-    // long-lived/persistent extension notifications (e.g. find-my-phone). Random when null.
+    // restarts) instead of creating a duplicate — and its action route is refreshed. Random when null.
     val itemId: Uuid? = null,
 )
 
-/** Who sent a notification and what to do when the user acts on it on the wrist. */
+/**
+ * Who sent a notification and what to do when the user acts on it on the wrist. [token] is the
+ * owner-opaque correlation value recorded in the [NotifRoute] at send time (the desktop owner stores
+ * the D-Bus id; an extension stores its own conversation token) — it travels in the persisted route,
+ * so callbacks work after a restart without any in-memory per-item map.
+ */
 interface NotifOwner {
     val id: String
-    suspend fun onAction(itemId: Uuid, actionId: String)
-    suspend fun onReply(itemId: Uuid, text: String)
-    suspend fun onDismiss(itemId: Uuid)
+    suspend fun onAction(itemId: Uuid, token: String?, actionId: String)
+    suspend fun onReply(itemId: Uuid, token: String?, text: String)
+    suspend fun onDismiss(itemId: Uuid, token: String?)
 }
 
-/** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. */
-class NotifRoute(
-    val owner: NotifOwner,
-    val mutePkg: String?,                  // non-null → a "Mute <app>" action exists; mute this app
-    val muteActionId: UByte?,              // actionId of that Mute action
-    val replyActionId: UByte?,             // actionId of the Reply (Response) action, if any
-    val namedActions: Map<UByte, String>,  // actionId → the owner's action id (its named Generic actions)
+/** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. Persisted as JSON, so
+ *  every field is a plain serializable type (action ids are UByte on the wire but stored as Int). */
+@Serializable
+data class NotifRoute(
+    val ownerId: String,
+    val ownerToken: String? = null,
+    val mutePkg: String? = null,           // non-null → a "Mute <app>" action exists; mute this app
+    val muteActionId: Int? = null,         // actionId of that Mute action
+    val replyActionId: Int? = null,        // actionId of the Reply (Response) action, if any
+    val namedActions: Map<Int, String> = emptyMap(),  // actionId → the owner's action id (Generic)
+    val createdMs: Long = 0,               // for age-based pruning of the persisted table
 )
 
-/** Shared `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]. */
-class NotifRouteTable {
-    private val routes = ConcurrentHashMap<Uuid, NotifRoute>()
-    fun put(itemId: Uuid, route: NotifRoute) { routes[itemId] = route }
-    fun get(itemId: Uuid): NotifRoute? = routes[itemId]
-    fun remove(itemId: Uuid): NotifRoute? = routes.remove(itemId)
+/** Resolves an owner id (e.g. "desktop", or an extension name) to the live [NotifOwner]. Owners
+ *  re-register under the same id on each startup, which is what lets persisted routes reconnect. */
+class NotifOwnerRegistry {
+    private val owners = ConcurrentHashMap<String, NotifOwner>()
+    fun register(owner: NotifOwner) { owners[owner.id] = owner }
+    fun get(id: String): NotifOwner? = owners[id]
+}
+
+/**
+ * `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]. Persists to
+ * [file] (JSON) so routes survive a daemon restart; on load, entries older than a day (the watch's
+ * notification window) are pruned so the file stays bounded.
+ */
+class NotifRouteTable(private val file: File?) {
+    private val log = KotlinLogging.logger {}
+    private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+    private val routes = ConcurrentHashMap<String, NotifRoute>()  // key = itemId.toString()
+
+    init { load() }
+
+    fun put(itemId: Uuid, route: NotifRoute) { routes[itemId.toString()] = route; save() }
+    fun get(itemId: Uuid): NotifRoute? = routes[itemId.toString()]
+    fun remove(itemId: Uuid) { if (routes.remove(itemId.toString()) != null) save() }
+
+    private fun load() {
+        val f = file ?: return
+        if (!f.isFile) return
+        try {
+            val loaded = json.decodeFromString<Map<String, NotifRoute>>(f.readText())
+            val cutoff = System.currentTimeMillis() - PRUNE_AGE_MS
+            val fresh = loaded.filterValues { it.createdMs <= 0 || it.createdMs >= cutoff }
+            routes.putAll(fresh)
+            log.info { "Loaded ${routes.size} notification route(s) from ${f.name}" + if (fresh.size < loaded.size) " (pruned ${loaded.size - fresh.size} stale)" else "" }
+            if (fresh.size < loaded.size) save()
+        } catch (e: Exception) {
+            log.warn { "Couldn't read notification routes (${f.path}): ${e.message}" }
+        }
+    }
+
+    @Synchronized
+    private fun save() {
+        val f = file ?: return
+        try {
+            f.parentFile?.mkdirs()
+            f.writeText(json.encodeToString(routes.toMap()))
+        } catch (e: Exception) {
+            log.warn { "Couldn't persist notification routes (${f.path}): ${e.message}" }
+        }
+    }
+
+    companion object {
+        private const val PRUNE_AGE_MS = 24L * 60 * 60 * 1000  // matches the watch's 1-day window
+    }
 }
 
 class WatchNotifier(
@@ -88,16 +148,17 @@ class WatchNotifier(
     // Per-app mute/style store (null when notification.per_app is off). Lazy-add + host-side mute.
     private val notifAppDao: NotificationAppRealDao?,
     private val defaultMute: MuteState,
+    private val timelineNotifDao: TimelineNotificationRealDao,
 ) {
     private val log = KotlinLogging.logger {}
 
     /**
-     * Build, mute-check, style, send, and route a notification. Returns the watch item UUID, or null
-     * if the app is muted (dropped host-side) or there's no watch connection. The action order
-     * (named… , reply, Mute, Dismiss) is mirrored into the [NotifRoute] so action ids line up with the
-     * sequential ids the timeline DSL assigns.
+     * Build, mute-check, style, send, and route a notification on behalf of [ownerId] (with the
+     * owner-opaque [ownerToken] recorded for the action callbacks). Returns the watch item UUID, or
+     * null if the app is muted (dropped host-side) or there's no watch connection. The action order
+     * (named… , reply, Mute, Dismiss) is mirrored into the [NotifRoute] so action ids line up.
      */
-    suspend fun push(req: NotifRequest, owner: NotifOwner): Uuid? {
+    suspend fun push(req: NotifRequest, ownerId: String, ownerToken: String?): Uuid? {
         val dao = notifAppDao
         var app: NotificationAppItem? = null
         if (dao != null && req.appName.isNotBlank()) {
@@ -126,10 +187,10 @@ class WatchNotifier(
 
         // Action ids are assigned sequentially by the DSL in declaration order; mirror that here.
         var aid = 0
-        val named = LinkedHashMap<UByte, String>()
-        req.actions.forEach { named[(aid++).toUByte()] = it.id }
-        val replyActionId = if (req.reply != null) (aid++).toUByte() else null
-        val muteActionId = if (app != null) (aid++).toUByte() else null
+        val named = LinkedHashMap<Int, String>()
+        req.actions.forEach { named[aid++] = it.id }
+        val replyActionId = if (req.reply != null) aid++ else null
+        val muteActionId = if (app != null) aid++ else null
         // (the Dismiss action takes the next id; it's matched by type, not stored)
 
         val reply = req.reply
@@ -169,7 +230,14 @@ class WatchNotifier(
             }
         }
 
-        routeTable.put(notif.itemId, NotifRoute(owner, app?.packageName, muteActionId, replyActionId, named))
+        routeTable.put(
+            notif.itemId,
+            NotifRoute(
+                ownerId = ownerId, ownerToken = ownerToken, mutePkg = app?.packageName,
+                muteActionId = muteActionId, replyActionId = replyActionId, namedActions = named,
+                createdMs = System.currentTimeMillis(),
+            ),
+        )
         val lp = libPebbleRef.get()
         if (lp == null) {
             log.warn { "No watch connection; notification from ${req.appName} dropped" }
@@ -187,25 +255,28 @@ class WatchNotifier(
         return notif.itemId
     }
 
-    /** Clear a notification from the watch (a source's proactive `closeNotification`). */
+    /** Clear a notification from the watch (a source's proactive `closeNotification`). Marks it deleted
+     *  rather than read so it doesn't re-sync (same reasoning as the Dismiss path). */
     suspend fun close(itemId: Uuid) {
-        libPebbleRef.get()?.markNotificationRead(itemId)
+        runCatching { timelineNotifDao.markForDeletion(itemId) }
         routeTable.remove(itemId)
     }
 }
 
 /**
  * The single [PlatformNotificationActionHandler] for the daemon. Looks up the [NotifRoute] for the
- * acted-on item and dispatches: Dismiss → mark read on the watch + [NotifOwner.onDismiss]; the Mute
- * action → host-side per-app mute; the Reply action → extract the chosen canned/dictated text and
- * [NotifOwner.onReply]; a named Generic action → [NotifOwner.onAction]. Per-item overrides registered
- * via `sendNotification(notif, handlers)` (e.g. FirmwareControl's Update button) still take precedence
- * upstream in libpebble3 and never reach here.
+ * acted-on item, resolves its owner via [NotifOwnerRegistry], and dispatches: Dismiss → remove the
+ * notification (markForDeletion — NOT markNotificationRead, which would re-insert and re-sync) +
+ * [NotifOwner.onDismiss]; the Mute action → host-side per-app mute; the Reply action → extract the
+ * chosen canned/dictated text and [NotifOwner.onReply]; a named Generic action → [NotifOwner.onAction].
+ * Per-item overrides registered via `sendNotification(notif, handlers)` (e.g. FirmwareControl's Update
+ * button) still take precedence upstream in libpebble3 and never reach here.
  */
 class WatchActionRouter(
-    private val libPebbleRef: java.util.concurrent.atomic.AtomicReference<LibPebble?>,
     private val routeTable: NotifRouteTable,
+    private val owners: NotifOwnerRegistry,
     private val notifAppDao: NotificationAppRealDao?,
+    private val timelineNotifDao: TimelineNotificationRealDao,
 ) : PlatformNotificationActionHandler {
     private val log = KotlinLogging.logger {}
 
@@ -215,14 +286,17 @@ class WatchActionRouter(
         attributes: List<TimelineItem.Attribute>,
     ): TimelineActionResult {
         val route = routeTable.get(itemId)
-        log.info { "Watch action: type=${action.type} id=${action.actionID} itemId=$itemId owner=${route?.owner?.id ?: "?"}" }
+        log.info { "Watch action: type=${action.type} id=${action.actionID} itemId=$itemId owner=${route?.ownerId ?: "?"}" }
 
         if (action.type == TimelineItem.Action.Type.Dismiss ||
             action.type == TimelineItem.Action.Type.AncsDismiss
         ) {
-            libPebbleRef.get()?.markNotificationRead(itemId)
+            // Delete (not just mark-read): markNotificationRead re-inserts the record with a changed
+            // hash, which the BlobDB re-syncs — so a dismissed notification would reappear. Marking it
+            // deleted removes it from our sync set so the dismissal sticks.
+            runCatching { timelineNotifDao.markForDeletion(itemId) }
             try {
-                route?.owner?.onDismiss(itemId)
+                route?.let { owners.get(it.ownerId)?.onDismiss(itemId, it.ownerToken) }
             } catch (e: Exception) {
                 log.warn(e) { "onDismiss failed for $itemId" }
             }
@@ -231,10 +305,11 @@ class WatchActionRouter(
         }
 
         if (route == null) {
-            log.info { "Action on unmapped item $itemId — not supported" }
+            log.info { "Action on unmapped item $itemId — not supported (route lost, e.g. sent before a restart)" }
             return TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
         }
-        val aid = action.actionID
+        val owner = owners.get(route.ownerId)
+        val aid = action.actionID.toInt()
         return when {
             aid == route.muteActionId -> {
                 val pkg = route.mutePkg
@@ -250,7 +325,8 @@ class WatchActionRouter(
             aid == route.replyActionId -> {
                 val text = responseText(attributes)
                 try {
-                    route.owner.onReply(itemId, text)
+                    owner?.onReply(itemId, route.ownerToken, text)
+                        ?: return TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
                 } catch (e: Exception) {
                     log.warn(e) { "onReply failed for $itemId" }
                     return TimelineActionResult(false, TimelineIcon.ResultFailed, "Failed")
@@ -260,7 +336,8 @@ class WatchActionRouter(
             }
             route.namedActions[aid] != null -> {
                 try {
-                    route.owner.onAction(itemId, route.namedActions.getValue(aid))
+                    owner?.onAction(itemId, route.ownerToken, route.namedActions.getValue(aid))
+                        ?: return TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
                 } catch (e: Exception) {
                     log.warn(e) { "onAction failed for $itemId" }
                     return TimelineActionResult(false, TimelineIcon.ResultFailed, "Failed")
@@ -283,30 +360,26 @@ class WatchActionRouter(
         val titleId = TimelineAttribute.Title.id
         val attr = attributes.firstOrNull { it.attributeId.get() == titleId } ?: attributes.firstOrNull()
         // Wire strings are NUL-terminated; trim that (and any trailing space) off the chosen text.
-        return attr?.content?.get()?.toByteArray()?.decodeToString()?.trimEnd('\u0000', ' ').orEmpty()
+        return attr?.content?.get()?.toByteArray()?.decodeToString()?.trimEnd(' ', ' ').orEmpty()
     }
 }
 
 /**
- * [NotifOwner] for the passive desktop-notification bridge. Holds the `watch item → D-Bus id` map so a
- * wrist dismiss can close the originating desktop notification via `CloseNotification()` (the one
+ * [NotifOwner] for the passive desktop-notification bridge. The route's token is the originating
+ * desktop notification's D-Bus id, so a wrist dismiss can close it via `CloseNotification()` (the one
  * method a non-owner may call on `org.freedesktop.Notifications`). Desktop notifications carry no named
  * actions or reply, so those callbacks are no-ops.
  */
 class DesktopNotifOwner : NotifOwner {
     override val id = "desktop"
     private val log = KotlinLogging.logger {}
-    private val itemToDbus = ConcurrentHashMap<Uuid, UInt32>()
     @Volatile private var conn: DBusConnection? = null
 
-    /** Record the D-Bus id of the desktop notification backing [itemId] (called after a successful push). */
-    fun bind(itemId: Uuid, dbusId: UInt32) { itemToDbus[itemId] = dbusId }
+    override suspend fun onAction(itemId: Uuid, token: String?, actionId: String) {}
+    override suspend fun onReply(itemId: Uuid, token: String?, text: String) {}
 
-    override suspend fun onAction(itemId: Uuid, actionId: String) {}
-    override suspend fun onReply(itemId: Uuid, text: String) {}
-
-    override suspend fun onDismiss(itemId: Uuid) {
-        val dbusId = itemToDbus.remove(itemId) ?: return
+    override suspend fun onDismiss(itemId: Uuid, token: String?) {
+        val dbusId = token?.toLongOrNull()?.let { UInt32(it) } ?: return
         withContext(Dispatchers.IO) {
             try {
                 notifService()?.CloseNotification(dbusId)
