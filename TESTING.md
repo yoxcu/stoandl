@@ -1063,6 +1063,46 @@ turn the watch's Quiet Time on while it lasts. The GNOME backend keys on the use
 
 ---
 
+## 5.26 Extensions (companion apps) — Phase 0/1 MVP  ⚠️ UNVERIFIED (needs a watch)
+
+The extension system (design: [docs/extensions.md](docs/extensions.md)). **Phase 0** is a
+behavior-preserving refactor: the desktop-notification listener and the watch-action handler were
+replaced by a single `WatchNotifier` (the push choke point: per-app mute/style + build + send + route)
+and a single `WatchActionRouter` (dispatches Dismiss / the "Mute" action / Reply / named actions via a
+shared `itemId → NotifRoute` table). The two ad-hoc maps (`itemIdToDbusId`/`itemIdToMutePkg`) collapsed
+into that table + a `DesktopNotifOwner`. **Phase 1** adds `ExtensionManager`: user extensions are child
+processes spawned from `extensions.enabled` + `extension.<name>.cmd`, speaking newline-delimited
+JSON-RPC over stdio (`initialize`, `notify`, `onAction`/`onReply`/`onDismiss`, `onWatchConnected`,
+`closeNotification`). No libpebble3 fork change. Bundled example: **find-my-phone** (a watch action that
+rings the host). AppMessage/watchapp companions and a `stoandl ext` CLI are NOT in this phase.
+
+**The Phase-0 regression risk is the priority** — the desktop notification path was rewritten, so
+verify it still behaves exactly as before.
+
+**Prerequisite:** daemon running, a connected watch; for the extension tests, Python 3 and
+`examples/extensions/{stoandl_ext,findphone}.py` copied to `~/.config/stoandl/ext/`.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.260 | Desktop notif still works (Phase 0) | trigger a desktop notification (e.g. `notify-send hi there`) | It appears on the watch with title/body/subtitle = app name, exactly as before; `Notification queued for watch: …` in the log. |
+| 5.261 | Dismiss round-trip (Phase 0) | open that notification on the watch → Dismiss | Cleared on the watch AND the desktop notification closes (`Closed D-Bus notification …`); no "unmapped item" warning. |
+| 5.262 | Per-app mute still works (Phase 0) | `stoandl notif mute <app>`, trigger again; then the wrist "Mute <app>" action on a fresh one | Muted app is dropped host-side (`Muted notification from …`); the wrist Mute action sets the app to Always-mute (`Muted '<app>' from watch action`). |
+| 5.263 | Per-app style still works (Phase 0) | `stoandl notif style <app> icon=… color=… vibe=…`, trigger | The notification shows the configured icon/color/vibe (unchanged from before the refactor). |
+| 5.264 | Firmware Update button still works (Phase 0) | with `firmware.notify` on, force an update notification (or recall §5.11) | Its per-item Update handler still fires (per-item overrides take precedence over the router). |
+| 5.265 | Extension spawns | configure findphone, restart, watch the log | `Starting 1 extension(s): [findphone]`, `[findphone] spawning: …`, `[findphone] initialized (granted: [notify]; …)`. |
+| 5.266 | find-my-phone notification | with the watch connected | A "Find My Phone" notification appears (on connect via `onWatchConnected`, or immediately if already connected). |
+| 5.267 | Ring / Stop | choose **Ring phone** on the wrist → then **Stop** | The host starts playing the sound on Ring (`[findphone] ringing with …`) and stops on Stop. The watch shows "Done". |
+| 5.268 | Reply round-trip | write a tiny extension that sends `canned_replies=["OK","Later"]`; choose a reply on the watch | `on_reply` fires in the extension with the chosen text; the log shows `Reply attributes: […]` (note which attribute id carried the text — **confirm it's Title (1)**; adjust `responseText` if not). |
+| 5.269 | Crash isolation | make the extension exit/throw | The daemon keeps running and the BLE link is unaffected; the supervisor restarts it with backoff (`[findphone] exited …; restarting in …ms`); after 5 rapid failures it quarantines (`quarantined after …`). |
+| 5.26a | Capability gate | set `extension.findphone.allow = appmessage:x` (a non-`notify` cap; an *unset* or empty `allow` defaults to `notify`), restart | `notify` is rejected with `not permitted: grant 'notify' …` and nothing reaches the watch. |
+| 5.26b | Off by default | remove `extensions.enabled`, restart | `No extensions configured`; no child processes spawned. |
+
+**Hardware unknown to confirm:** which attribute the watch returns the chosen canned/dictated reply
+text in (assumed **Title**, 0x01). 5.268 logs the raw attribute ids at debug — verify and adjust
+`WatchActionRouter.responseText` if the firmware uses a different attribute.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect
