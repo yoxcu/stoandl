@@ -269,6 +269,8 @@ private class ExtensionProcess(
             val canned = r["cannedReplies"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
             ReplySpec(canned, r["allowVoice"]?.jsonPrimitive?.booleanOrNull ?: false)
         }
+        // Optional stable id so a re-send replaces the same notification (across restarts too).
+        val requestedId = params.str("itemId")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         val req = NotifRequest(
             appName = params.str("appName") ?: def.name,
             title = params.str("title") ?: "",
@@ -279,6 +281,7 @@ private class ExtensionProcess(
             iconCode = params.str("iconCode"),
             colorName = params.str("color"),
             vibeName = params.str("vibe"),
+            itemId = requestedId,
         )
         val itemId = watchNotifier.push(req, owner)
         if (itemId != null && extToken != null) owner.bind(itemId, extToken)

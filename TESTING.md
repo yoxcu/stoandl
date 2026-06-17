@@ -1101,6 +1101,17 @@ verify it still behaves exactly as before.
 text in (assumed **Title**, 0x01). 5.268 logs the raw attribute ids at debug — verify and adjust
 `WatchActionRouter.responseText` if the firmware uses a different attribute.
 
+**Known limitations (route table is in-memory):**
+- An extension's notification action route lives only in memory, so after a **daemon restart** any
+  notification still on the watch from a previous run is orphaned (`owner=?` in the log) — its named/
+  reply actions return "Not supported" (only Dismiss works). A *persistent* notification should pass a
+  stable `replace_id` (find-my-phone does: `"findphone-ring"`) so each (re)send REPLACES the same watch
+  item — across restarts too — keeping exactly one copy with a current route. | 5.26c | Stable replace | restart the daemon with findphone, reconnect, tap Ring on the (single) Find-My-Phone notification | Exactly one Find-My-Phone notification exists (no pile-up); Ring works (`owner=findphone`, not "Not supported"). |
+- Dismissing a notification still present in libpebble3's local DB re-inserts it with a read flag
+  (libpebble3's `markNotificationRead` changes the record hash → re-sync) — old accumulated
+  notifications from before this branch can re-appear when dismissed. Proper startup notification
+  hygiene / route persistence is Phase-2 work.
+
 ---
 
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)

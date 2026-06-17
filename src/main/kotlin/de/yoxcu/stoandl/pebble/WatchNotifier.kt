@@ -51,6 +51,10 @@ data class NotifRequest(
     val iconCode: String? = null,
     val colorName: String? = null,
     val vibeName: String? = null,
+    // Stable watch-item id. When set, a re-send replaces the same notification (even across daemon
+    // restarts) instead of creating a duplicate — and its action route is refreshed. Used by
+    // long-lived/persistent extension notifications (e.g. find-my-phone). Random when null.
+    val itemId: Uuid? = null,
 )
 
 /** Who sent a notification and what to do when the user acts on it on the wrist. */
@@ -130,12 +134,15 @@ class WatchNotifier(
 
         val reply = req.reply
         val styled = app
+        val fixedId = req.itemId
         val notif = buildTimelineNotification(
             // Pin to the same parent UUID the official Android app uses: the firmware only round-trips
             // dismiss/actions for a recognized notification-source app, never for a random parentId.
             parentId = SystemAppIDs.ANDROID_NOTIFICATIONS_UUID,
             timestamp = Clock.System.now(),
         ) {
+            // Stable id (when given) → a re-send replaces the same item instead of duplicating.
+            if (fixedId != null) itemID = fixedId
             attributes {
                 title { req.title }
                 if (req.body.isNotEmpty()) body { req.body }

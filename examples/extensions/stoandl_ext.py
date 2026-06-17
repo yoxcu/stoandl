@@ -9,8 +9,12 @@ stderr, folded into stoandl's log). stdout is the wire; a stray print corrupts i
 """
 import sys
 import json
+import uuid
 import itertools
 import threading
+
+# Namespace for turning a human-friendly replace_id string into a stable UUID.
+_NS = uuid.uuid5(uuid.NAMESPACE_URL, "stoandl-ext")
 
 
 class Extension:
@@ -42,7 +46,7 @@ class Extension:
 
     def notify(self, title, body="", app_name=None, subtitle=None, actions=None,
                canned_replies=None, allow_voice=False, ext_token=None,
-               icon=None, color=None, vibe=None, on_item=None):
+               icon=None, color=None, vibe=None, on_item=None, replace_id=None):
         """Push a notification to the watch.
 
         actions: list of (action_id, label) tuples — each becomes a menu item; the chosen one comes
@@ -51,9 +55,14 @@ class Extension:
                  on_reply(item_id, text).
         on_item: optional callback(item_id) invoked with the watch item id once the watch accepts it
                  (None if the app was muted or no watch is connected). Use it to correlate replies.
+        replace_id: an optional stable string. Re-sending with the same replace_id REPLACES the same
+                 watch notification (across daemon restarts too) instead of piling up duplicates — use
+                 it for a persistent/standing notification like find-my-phone.
         """
         rid = next(self._ids)
         params = {"title": title, "body": body}
+        if replace_id:
+            params["itemId"] = str(uuid.uuid5(_NS, replace_id))
         if app_name:
             params["appName"] = app_name
         if subtitle:

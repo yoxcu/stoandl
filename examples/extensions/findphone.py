@@ -27,13 +27,16 @@ def sound_path():
 
 
 def arm():
-    # One persistent notification with Ring/Stop actions. Re-sent on (re)connect.
+    # One persistent notification with Ring/Stop actions, re-sent on (re)connect. The stable
+    # replace_id means each re-send REPLACES the same watch item (across restarts too) rather than
+    # piling up stale, un-actionable copies — so its Ring/Stop route is always current.
     ext.notify(
         app_name="Find My Phone",
         title="Find My Phone",
         body="Choose Ring to make this computer play a sound.",
         actions=[("ring", "Ring phone"), ("stop", "Stop")],
         ext_token="findphone",
+        replace_id="findphone-ring",
     )
 
 
