@@ -1703,18 +1703,23 @@ private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
     val latch = java.util.concurrent.CountDownLatch(1)
     var closedData = ""
 
+    // Save capture. The config page's "close" target is rewritten (below) to point here, so clicking
+    // Save arrives as an ordinary HTTP GET with the settings JSON in ?d= — no pebblejs:// custom
+    // scheme to intercept. Clay percent-encodes the JSON (encodeURIComponent), which URLDecoder reverses.
     server.createContext("/pebblejs-close") { exchange ->
-        if (exchange.requestMethod == "POST") {
-            closedData = exchange.requestBody.bufferedReader().readText()
-            val resp = "OK".toByteArray()
-            exchange.sendResponseHeaders(200, resp.size.toLong())
-            exchange.responseBody.write(resp)
-            exchange.responseBody.close()
-            latch.countDown()
-        } else {
-            exchange.sendResponseHeaders(405, -1)
-            exchange.responseBody.close()
+        if (exchange.requestMethod != "GET") {
+            exchange.sendResponseHeaders(405, -1); exchange.responseBody.close(); return@createContext
         }
+        val q = exchange.requestURI.rawQuery ?: ""
+        closedData = if (q.startsWith("d=")) java.net.URLDecoder.decode(q.substring(2), "UTF-8") else ""
+        val body = ("<!doctype html><meta charset=\"utf-8\"><title>stoandl</title><body " +
+            "style=\"font-family:sans-serif;padding:2em\">Settings saved — you can close this tab.</body>")
+            .toByteArray(Charsets.UTF_8)
+        exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+        exchange.sendResponseHeaders(200, body.size.toLong())
+        exchange.responseBody.write(body)
+        exchange.responseBody.close()
+        latch.countDown()
     }
 
     server.createContext("/") { exchange ->
@@ -1739,49 +1744,22 @@ private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
             System.err.println("Failed to fetch config page: ${e.message}")
             exchange.sendResponseHeaders(502, -1); exchange.responseBody.close(); return@createContext
         }
-        // For http(s) URLs inject a <base> tag so relative resources resolve; not needed for data: URIs.
-        val baseTag = if (!configUrl.startsWith("data:"))
-            "<base href=\"${configUrl.substringBeforeLast('/') + '/'}\">\\n" else ""
-        val interceptJs = buildString {
-            if (baseTag.isNotEmpty()) append(baseTag)
-            append("<script>\n(function(){\n")
-            // Relative URL: same origin as the config page, no hard-coded port needed
-            append("  function sendClose(url){\n")
-            append("    var h=url.indexOf('#'),d=h>=0?decodeURIComponent(url.slice(h+1)):'';\n")
-            append("    var r=new XMLHttpRequest();\n")
-            append("    r.open('POST','/pebblejs-close',false);\n")
-            append("    r.setRequestHeader('Content-Type','text/plain');\n")
-            append("    try{r.send(d);}catch(e){}\n")
-            append("  }\n")
-            // Chrome 102+: Navigation API fires for ALL JS-initiated navigations incl. custom protocols
-            append("  if(typeof navigation!=='undefined'&&navigation.addEventListener){\n")
-            append("    navigation.addEventListener('navigate',function(e){\n")
-            append("      try{\n")
-            append("        var url=e.destination&&e.destination.url||'';\n")
-            append("        if(url.indexOf('pebblejs://')===0)sendClose(url);\n")
-            append("      }catch(ex){}\n")
-            append("    });\n")
-            append("  }\n")
-            // Firefox/older: override Location.prototype.href (Chrome blocks this with a TypeError)
-            append("  try{\n")
-            append("    var d=Object.getOwnPropertyDescriptor(Location.prototype,'href');\n")
-            append("    if(d&&d.set)Object.defineProperty(Location.prototype,'href',{\n")
-            append("      set:function(u){\n")
-            append("        if(typeof u==='string'&&u.indexOf('pebblejs://')===0)sendClose(u);\n")
-            append("        else d.set.call(this,u);\n")
-            append("      },get:d.get,configurable:true,enumerable:true\n")
-            append("    });\n")
-            append("  }catch(e){}\n")
-            append("})();\n</script>\n")
+        // Redirect the config page's "close" target away from the pebblejs://close# custom scheme
+        // (which browsers refuse as an unknown protocol — the page can't post settings back) to a real
+        // localhost URL on this proxy. Clay builds the return URL as `returnTo + encodeURIComponent(json)`,
+        // so turning the trailing "#" into "?d=" lands the settings JSON in the query string (which the
+        // browser sends to the server) instead of the fragment (which it doesn't). Save then becomes a
+        // plain HTTP navigation — no Location/Navigation interception, works in every browser.
+        var page = content.replace("pebblejs://close#", "http://localhost:$port/pebblejs-close?d=")
+        // http(s) config pages need a <base> so their relative resources resolve; data: pages inline everything.
+        if (!configUrl.startsWith("data:")) {
+            val baseTag = "<base href=\"${configUrl.substringBeforeLast('/') + '/'}\">"
+            val headMatch = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(page)
+            page = if (headMatch != null)
+                page.substring(0, headMatch.range.last + 1) + "\n$baseTag\n" + page.substring(headMatch.range.last + 1)
+            else baseTag + page
         }
-        val headMatch = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(content)
-        val injected = if (headMatch != null) {
-            content.substring(0, headMatch.range.last + 1) + "\n$interceptJs" +
-                content.substring(headMatch.range.last + 1)
-        } else {
-            interceptJs + content
-        }
-        val bytes = injected.toByteArray(Charsets.UTF_8)
+        val bytes = page.toByteArray(Charsets.UTF_8)
         exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
         exchange.sendResponseHeaders(200, bytes.size.toLong())
         exchange.responseBody.write(bytes)
