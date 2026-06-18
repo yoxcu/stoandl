@@ -1120,7 +1120,7 @@ extensions can) so re-sends replace the same item instead of piling up.
 | 5.26c | Live-notification actions | trigger a desktop notification; **while it's on screen** open it → Mute | Mute works (`owner=desktop`). (From the history list, Select does nothing — that's the firmware, not stoandl.) |
 | 5.26d | Dismiss sticks (no resync) | dismiss notifications on the watch — "clear all" and hold-select | "Clear all" sticks (no `BlobDB - insert: Notification …` re-insert of a just-dismissed item). _Hold-select may be a watch-local clear that doesn't round-trip (no `InvokeAction`); if so it can still resync — use clear-all._ |
 
-### 5.26 (Phase 3) — watchapp AppMessage companion  ⚠️ UNVERIFIED
+### 5.26 (Phase 3) — watchapp AppMessage companion  ✅ Verified on hardware (find-my-phone: Ring + Stop)
 
 Extensions can now be PebbleKit-style companions to a watchapp UUID: `registerApp` (arms an inbound
 `onAppMessage` stream, ACKing each to the watch), `sendAppMessage` (typed-tagged dict → watch),
@@ -1132,9 +1132,9 @@ sideload …/findphone.pbw`); configure the findphone extension with `allow = ap
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.26h | Watchapp build | `cd testing/findphone && pebble build` | Builds with the Core SDK (same harness as datalogtest); produces `build/findphone.pbw`. |
-| 5.26i | Register + inbound | start daemon with findphone configured; open the watchapp | `[findphone] registered for AppMessages from de72f1d0-…`. |
-| 5.26j | Ring from watchapp | open **Find My Phone**, press **UP** | Watch shows "Ringing…"; host plays the looping sound (`[findphone] ringing with …`); the watchapp's send is ACKed (no "Send failed"). Press **DOWN** → sound stops. |
+| 5.26h | Watchapp build | `cd testing/findphone && pebble build` | Builds with the Core SDK (same harness as datalogtest); produces `build/findphone.pbw`. ✅ |
+| 5.26i | Register + inbound | start daemon with findphone configured; open the watchapp | `[findphone] registered for AppMessages from de72f1d0-…`. ✅ |
+| 5.26j | Ring from watchapp | open **Find My Phone**, press **UP** | Watch shows "Ringing…"; host plays the looping sound (`[findphone] ringing with …`); the watchapp's send is ACKed (no "Send failed"). Press **DOWN** → sound stops. ✅ **Verified.** |
 | 5.26k | Capability gate | set `extension.findphone.allow = notify` (no appmessage), restart | `registerApp`/`onAppMessage` rejected (`not permitted: grant 'appmessage:…'`); nothing rings. |
 | 5.26l | Typed dict | (a richer app) send mixed `u8`/`i32`/`cstr` from the watch | The companion's `on_app_message` receives the right values; a C `dict_read_uint8` on a value sent as `u8` reads it correctly (no width mismatch). |
 
