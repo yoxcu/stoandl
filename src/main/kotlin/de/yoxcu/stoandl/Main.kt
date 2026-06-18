@@ -98,9 +98,9 @@ private fun printUsage() {
     println()
     println("Commands:")
     println("  apps                       List the apps and watchfaces in the watch locker")
-    println("  launch <name|uuid>         Launch an app or watchface on the watch")
-    println("  remove <name|uuid>         Uninstall an app or watchface from the locker")
-    println("  sideload <path>            Install a .pbw watchface or app onto the watch (alias: add)")
+    println("  apps launch <name|uuid>    Launch an app or watchface on the watch")
+    println("  apps remove <name|uuid>    Uninstall an app or watchface from the locker")
+    println("  apps install <path>        Install a .pbw watchface or app onto the watch (aliases: sideload, add)")
     println("  config [app]               Open a PKJS app's Clay config page (launches the app if needed)")
     println("  backup [out.tar.gz]        Archive the locker, app cache and PKJS settings")
     println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
@@ -141,6 +141,9 @@ private fun printUsage() {
     println("  reset factory [--yes]      Factory-reset the watch — WIPES it (apps, settings, pairing); needs confirmation")
     println("                             Add --coredump to also pull a coredump off the watch")
     println("  developer start|stop|status  Toggle the developer connection (Pebble SDK / CloudPebble install + live-debug over BLE, port 9000)")
+    println("  ext [list]                 List installed extensions (companion apps) and their state")
+    println("  ext install <archive>      Install an extension from a .tar.gz/.zip (sideloads a bundled .pbw too)")
+    println("  ext enable|disable|restart|uninstall <name>   Manage an extension live (no daemon restart)")
     println("  help                       Show this help")
 }
 
@@ -170,36 +173,14 @@ private fun ctl(args: Array<String>) {
         return
     }
     when (args[0]) {
-        "sideload", "add" -> {
-            if (args.size < 2) {
-                System.err.println("Usage: stoandl ${args[0]} <path>")
-                System.exit(1); return
-            }
-            // Resolve against THIS process's working directory and send an absolute path: the daemon
-            // runs as a systemd user service with its own cwd ($HOME), so a relative path would be
-            // looked up in the wrong place (and surface as a misleading "Pbw does not contain manifest").
-            val file = File(args[1])
-            if (!file.isFile) {
-                System.err.println("No such file: ${args[1]}"); System.exit(1); return
-            }
-            val path = file.absolutePath
-            withControl { control ->
-                val resp = try { control.SideloadApp(path) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
-                handleStatusResponse(resp)
-            }
-        }
+        // App/locker management is grouped under `stoandl apps <verb>`; the bare verbs are kept as
+        // back-compat aliases.
+        "apps" -> ctlApps(args.drop(1))
+        "sideload", "add" -> appSideload(args.getOrNull(1))
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
         "notif" -> ctlNotif(args.drop(1))
         "ext" -> ctlExt(args.drop(1))
-        "apps" -> withControl { control ->
-            val records = try { control.ListApps() } catch (e: Exception) {
-                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-            }
-            printAppList(records)
-        }
         "backup" -> {
             val out = args.drop(1).firstOrNull { !it.startsWith("-") }
             doBackup(out)
@@ -213,20 +194,7 @@ private fun ctl(args: Array<String>) {
             }
             doRestore(path, force)
         }
-        "launch", "remove" -> {
-            if (args.size < 2) {
-                System.err.println("Usage: stoandl ${args[0]} <name|uuid>"); System.exit(1)
-            }
-            val query = args.drop(1).joinToString(" ")
-            withControl { control ->
-                val resp = try {
-                    if (args[0] == "launch") control.LaunchApp(query) else control.RemoveApp(query)
-                } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
-                handleStatusResponse(resp)
-            }
-        }
+        "launch", "remove" -> appLaunchOrRemove(args[0] == "launch", args.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
         "config" -> {
             val app = args.getOrNull(1) ?: ""
             withControl { control ->
@@ -952,6 +920,56 @@ private fun ctlNotif(rest: List<String>) {
                 System.exit(1)
             }
         }
+    }
+}
+
+private fun ctlApps(rest: List<String>) {
+    when (val sub = rest.firstOrNull() ?: "list") {
+        "list" -> withControl { control ->
+            val records = try { control.ListApps() } catch (e: Exception) {
+                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+            }
+            printAppList(records)
+        }
+        "launch" -> appLaunchOrRemove(true, rest.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
+        "remove" -> appLaunchOrRemove(false, rest.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
+        "sideload", "install", "add" -> appSideload(rest.getOrNull(1))
+        else -> {
+            System.err.println("Usage: stoandl apps <list|launch <name|uuid>|remove <name|uuid>|install <path.pbw>>")
+            System.exit(1)
+        }
+    }
+}
+
+/** Install a .pbw onto the watch. Resolves a relative path against THIS process's cwd and sends an
+ *  absolute path: the daemon runs as a systemd user service with its own cwd ($HOME), so a relative
+ *  path would be looked up in the wrong place (a misleading "Pbw does not contain manifest"). */
+private fun appSideload(pathArg: String?) {
+    if (pathArg.isNullOrBlank()) {
+        System.err.println("Usage: stoandl apps install <path.pbw>  (aliases: sideload, add)"); System.exit(1); return
+    }
+    val file = File(pathArg)
+    if (!file.isFile) { System.err.println("No such file: $pathArg"); System.exit(1); return }
+    val path = file.absolutePath
+    withControl { control ->
+        val resp = try { control.SideloadApp(path) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        handleStatusResponse(resp)
+    }
+}
+
+private fun appLaunchOrRemove(launch: Boolean, query: String?) {
+    if (query.isNullOrBlank()) {
+        System.err.println("Usage: stoandl apps ${if (launch) "launch" else "remove"} <name|uuid>"); System.exit(1); return
+    }
+    withControl { control ->
+        val resp = try {
+            if (launch) control.LaunchApp(query) else control.RemoveApp(query)
+        } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        handleStatusResponse(resp)
     }
 }
 

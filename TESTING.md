@@ -1159,7 +1159,8 @@ the archive with `examples/extensions/findphone/package.sh`.
 | 5.26o | List | `stoandl ext list` | A row `findphone   installed   enabled   running`. |
 | 5.26p | Disable / enable | `stoandl ext disable findphone`; then `stoandl ext enable findphone` | Disable stops the process (`[findphone] stopped`) + drops it from `extensions.enabled`; enable re-adds + restarts it — both live. |
 | 5.26q | Restart | `stoandl ext restart findphone` | Process is stopped and respawned (`[findphone] spawning …`). |
-| 5.26r | Uninstall | `stoandl ext uninstall findphone` | Stops it, removes from `extensions.enabled`, deletes `ext/findphone/`; `stoandl ext list` no longer shows it. |
+| 5.26r | Uninstall | `stoandl ext uninstall findphone` (watch connected) | Stops it, removes from `extensions.enabled`, deletes `ext/findphone/`, **and removes its watchapp from the watch** (reads the bundled .pbw's UUID → `removeApp`): `ok:Uninstalled 'findphone'; removed its watchapp from the watch`. `stoandl ext list` no longer shows it (and not `__pycache__`). |
+| 5.26v | `apps` grouping | `stoandl apps`, `stoandl apps launch <q>`, `stoandl apps install <a.pbw>`, `stoandl apps remove <q>` | Same behaviour as the old top-level `apps`/`launch`/`sideload`/`remove` (which still work as aliases). |
 | 5.26s | Survives restart | after install, restart the daemon | `findphone` auto-starts (it's in `extensions.enabled`); no re-install needed. |
 | 5.26t | Default entry / no config | install an extension whose dir has only `<name>.py` + `stoandl_ext.py` (no `allow`, no `cmd`) | It runs via the default `python3 <name>.py`. The only config is its presence in `extensions.enabled`. |
 | 5.26u | Custom cmd / manifest | an extension with `manifest.json` `{"cmd":"node index.js"}` (or `extension.<name>.cmd`) | Spawns with that command instead of the python default. |

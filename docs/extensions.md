@@ -58,6 +58,7 @@ archive-installed extension is self-contained. The usual way to add one:
 stoandl ext install findphone.tar.gz   # extract to ext/findphone/, sideload a bundled .pbw,
                                         # enable (append to extensions.enabled) + hotplug-start
 stoandl ext list | enable <n> | disable <n> | restart <n> | uninstall <n>
+# uninstall also removes a bundled watchapp from the watch (reads the .pbw's UUID → removeApp)
 ```
 
 `ExtensionManager` spawns each enabled child and does the **`initialize` handshake first** (host→ext

@@ -13,6 +13,7 @@ import de.yoxcu.stoandl.util.runCommand
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.disk.pbw.PbwApp
 import io.rebble.libpebblecommon.packets.AppMessage
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
@@ -120,7 +121,10 @@ class ExtensionManager(
 
     fun list(): List<String> {
         val enabled = currentEnabled().toSet()
-        val installed = extDir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet() ?: emptySet()
+        // Skip dotfiles (e.g. our .install-tmp-*) and python's __pycache__ — not extensions.
+        val installed = extDir.listFiles()
+            ?.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("__") }
+            ?.map { it.name }?.toSet() ?: emptySet()
         return (installed + enabled).sorted().map { n ->
             listOf(
                 n,
@@ -171,8 +175,25 @@ class ExtensionManager(
         setEnabled(n, false)
         val dir = File(extDir, n)
         val existed = dir.isDirectory
+        val watchMsg = if (existed) removeBundledWatchapp(dir) else ""
         dir.deleteRecursively()
-        return if (existed) "ok:Uninstalled '$n'" else "ok:'$n' disabled (no files were installed)"
+        return if (existed) "ok:Uninstalled '$n'$watchMsg" else "ok:'$n' disabled (no files were installed)"
+    }
+
+    /** If the extension bundled a `.pbw`, remove that watchapp from the watch's locker too (read its
+     *  UUID from the pbw). Best-effort — returns a status suffix. */
+    private fun removeBundledWatchapp(dir: File): String {
+        val pbw = dir.listFiles()?.firstOrNull { it.extension.equals("pbw", ignoreCase = true) } ?: return ""
+        val lp = libPebbleRef.get() ?: return "; its watchapp left on the watch (no watch connected)"
+        val uuid = runCatching { Uuid.parse(PbwApp(kotlinx.io.files.Path(pbw.absolutePath)).info.uuid) }.getOrNull()
+            ?: return "; couldn't read ${pbw.name} UUID (watchapp left on the watch)"
+        return try {
+            if (runBlocking { lp.removeApp(uuid) }) "; removed its watchapp from the watch"
+            else "; watchapp removal not confirmed"
+        } catch (e: Exception) {
+            log.warn(e) { "removeApp($uuid) failed" }
+            "; watchapp removal failed (${e.message})"
+        }
     }
 
     fun enable(name: String): String {
