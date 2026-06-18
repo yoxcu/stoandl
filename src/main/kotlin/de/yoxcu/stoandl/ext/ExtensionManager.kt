@@ -109,6 +109,13 @@ class ExtensionManager(
 
     private fun stopProcess(name: String): Boolean = running.remove(name)?.let { it.shutdown(); true } ?: false
 
+    /** Stop every running extension (called on daemon shutdown so child processes don't orphan). */
+    fun shutdownAll() {
+        val names = running.keys.toList()
+        names.forEach { stopProcess(it) }
+        if (names.isNotEmpty()) log.info { "Stopped ${names.size} extension(s)" }
+    }
+
     // ---- `stoandl ext` operations (return status-prefixed strings) ------------------------------
 
     fun list(): List<String> {
@@ -129,8 +136,8 @@ class ExtensionManager(
     fun install(archivePath: String): String {
         val archive = File(archivePath)
         if (!archive.isFile) return "error:No such file: $archivePath"
-        val tmp = File(extDir, ".install-tmp-${archive.name.hashCode()}")
-        tmp.deleteRecursively(); tmp.mkdirs()
+        val tmp = File(extDir, ".install-tmp-${System.nanoTime()}")
+        extDir.mkdirs(); tmp.deleteRecursively(); tmp.mkdirs()
         try {
             if (!extract(archive, tmp)) {
                 return "error:Could not extract ${archive.name} (need tar/unzip; supported: .tar.gz/.tgz/.tar/.zip)"
@@ -216,29 +223,36 @@ class ExtensionManager(
         return runCommand(cmd, 60) != null
     }
 
-    private fun currentEnabled(): List<String> {
-        if (!confFile.isFile) return emptyList()
-        val line = confFile.readLines().firstOrNull {
-            val code = it.substringBefore('#').trimStart()
-            code.startsWith("extensions.enabled") && code.contains('=')
-        } ?: return emptyList()
-        return line.substringBefore('#').substringAfter('=').split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    // True for an uncommented `extensions.enabled [=...] ` line, with a real key boundary so we don't
+    // match `extensions.enabled_backup` etc.
+    private fun isEnabledLine(line: String): Boolean {
+        val code = line.substringBefore('#').trimStart()
+        if (!code.startsWith(ENABLED_KEY)) return false
+        val after = code.getOrNull(ENABLED_KEY.length)
+        return (after == null || after == ' ' || after == '\t' || after == '=') && code.contains('=')
     }
 
-    /** Add/remove [name] from the `extensions.enabled` line in stoandl.conf (rewriting only that line). */
+    private fun namesIn(line: String): List<String> =
+        line.substringBefore('#').substringAfter('=').split(',').map { it.trim() }.filter { it.isNotEmpty() }
+
+    private fun currentEnabled(): List<String> {
+        if (!confFile.isFile) return emptyList()
+        return confFile.readLines().firstOrNull { isEnabledLine(it) }?.let { namesIn(it) } ?: emptyList()
+    }
+
+    /** Add/remove [name] from the `extensions.enabled` line in stoandl.conf, rewriting only that line
+     *  (its inline comment is preserved) and replacing the file atomically (temp + rename). */
     private fun setEnabled(name: String, enabled: Boolean) = synchronized(confLock) {
         val lines = if (confFile.isFile) confFile.readLines().toMutableList() else mutableListOf()
-        val idx = lines.indexOfFirst {
-            val code = it.substringBefore('#').trimStart()
-            code.startsWith("extensions.enabled") && code.contains('=')
-        }
+        val idx = lines.indexOfFirst { isEnabledLine(it) }
         val names = LinkedHashSet<String>()
+        var comment = ""
         if (idx >= 0) {
-            lines[idx].substringBefore('#').substringAfter('=').split(',')
-                .map { it.trim() }.filter { it.isNotEmpty() }.forEach { names.add(it) }
+            namesIn(lines[idx]).forEach { names.add(it) }
+            lines[idx].indexOf('#').takeIf { it >= 0 }?.let { comment = "  " + lines[idx].substring(it) }
         }
         if (enabled) names.add(name) else names.remove(name)
-        val newLine = "extensions.enabled = " + names.joinToString(", ")
+        val newLine = "extensions.enabled = " + names.joinToString(", ") + comment
         if (idx >= 0) {
             lines[idx] = newLine
         } else {
@@ -247,10 +261,21 @@ class ExtensionManager(
         }
         try {
             confFile.parentFile?.mkdirs()
-            confFile.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
+            val tmp = File(confFile.parentFile, confFile.name + ".tmp")
+            tmp.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
+            val src = tmp.toPath(); val dst = confFile.toPath()
+            try {
+                java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            } catch (e: Exception) {
+                java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
         } catch (e: Exception) {
             log.warn { "Couldn't update extensions.enabled in ${confFile.path}: ${e.message}" }
         }
+    }
+
+    companion object {
+        private const val ENABLED_KEY = "extensions.enabled"
     }
 }
 
@@ -288,8 +313,10 @@ private class ExtensionProcess(
 
     fun shutdown() {
         ready = false
-        proc?.destroy()
-        job.cancel()
+        writeChannel = null      // stop new enqueues before tearing down
+        val p = proc
+        job.cancel()             // cancels the supervise loop + writer/reader/collector coroutines
+        p?.destroy()             // then actually kill the child (waitFor was just cancelled, not the proc)
         log.info { "[$tag] stopped" }
     }
 
@@ -327,7 +354,10 @@ private class ExtensionProcess(
 
     private suspend fun runOnce() {
         log.info { "[$tag] spawning: ${def.command.joinToString(" ")} (cwd ${def.workingDir.path})" }
-        val process = ProcessBuilder(def.command).directory(def.workingDir).redirectErrorStream(false).start()
+        val process = ProcessBuilder(def.command)
+            .apply { if (def.workingDir.isDirectory) directory(def.workingDir) }  // ProcessBuilder throws on a missing cwd
+            .redirectErrorStream(false)
+            .start()
         proc = process
         val ch = Channel<String>(Channel.UNLIMITED)
         writeChannel = ch
@@ -341,7 +371,7 @@ private class ExtensionProcess(
             }
         }
         val stderrJob = scope.launch(Dispatchers.IO) {
-            try { process.errorStream.bufferedReader().forEachLine { log.info { "[$tag] $it" } } } catch (_: Exception) {}
+            try { process.errorStream.bufferedReader().forEachLine { log.info { "[$tag] $it" } } } catch (e: Exception) { log.debug { "[$tag] stderr reader ended: ${e.message}" } }
         }
         val inbound = Channel<String>(Channel.UNLIMITED)
         val readerJob = scope.launch(Dispatchers.IO) {

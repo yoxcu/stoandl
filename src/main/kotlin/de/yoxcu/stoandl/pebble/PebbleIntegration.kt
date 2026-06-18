@@ -412,6 +412,8 @@ class PebbleIntegration(
 
     fun gracefulShutdown() {
         if (!::libPebble.isInitialized) return
+        // Stop extension child processes first so they don't orphan when the JVM exits.
+        if (::extensionManager.isInitialized) extensionManager.shutdownAll()
         log.info { "graceful BLE shutdown: disconnecting watches" }
         runBlocking {
             // Drop the BLE link at the BlueZ level (watch sees us go down → re-advertises), but do NOT
