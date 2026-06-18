@@ -263,5 +263,5 @@ dnd.sync = off
 # (a self-contained extension can instead carry these in a manifest.json inside its dir/archive.)
 #
 # Example — Find My Phone (rings this computer from the watch; a watchapp companion):
-#     examples/extensions/package-findphone.sh        # builds findphone.tar.gz
-#     stoandl ext install examples/extensions/findphone.tar.gz
+#     (cd examples/extensions/findphone && ./package.sh)   # builds findphone.tar.gz (Pebble SDK needed)
+#     stoandl ext install examples/extensions/findphone/findphone.tar.gz

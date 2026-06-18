@@ -1124,15 +1124,17 @@ extensions can) so re-sends replace the same item instead of piling up.
 
 Extensions can now be PebbleKit-style companions to a watchapp UUID: `registerApp` (arms an inbound
 `onAppMessage` stream, ACKing each to the watch), `sendAppMessage` (typed-tagged dict → watch),
-`launchApp`/`stopApp`, `installPbw`. Capability `appmessage` / `appmessage:<uuid>`. Bundled example:
-the **find-my-phone watchapp** (`testing/findphone`) + `examples/extensions/findphone.py`.
+`launchApp`/`stopApp`, `installPbw`. Bundled example: the **find-my-phone watchapp + companion**, the
+[yoxcu/findphone](https://github.com/yoxcu/findphone) boilerplate vendored as the
+`examples/extensions/findphone` submodule.
 
-**Prerequisite:** build + install `testing/findphone` (`pebble build && pebble install`, or `stoandl
-sideload …/findphone.pbw`); configure the findphone extension with `allow = appmessage:de72f1d0-…`.
+**Prerequisite:** `git submodule update --init`; then `examples/extensions/findphone/package.sh` (needs
+the Pebble SDK) → `findphone.tar.gz`; install it (5.26m). No capability config — `extensions.enabled`
+is the only knob.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.26h | Watchapp build | `cd testing/findphone && pebble build` | Builds with the Core SDK (same harness as datalogtest); produces `build/findphone.pbw`. ✅ |
+| 5.26h | Watchapp build | `cd examples/extensions/findphone && pebble build` | Builds with the Core SDK (same harness as datalogtest); produces `build/findphone.pbw`. ✅ |
 | 5.26i | Register + inbound | start daemon with findphone configured; open the watchapp | `[findphone] registered for AppMessages from de72f1d0-…`. ✅ |
 | 5.26j | Ring from watchapp | open **Find My Phone**, press **UP** | Watch shows "Ringing…"; host plays the looping sound (`[findphone] ringing with …`); the watchapp's send is ACKed (no "Send failed"). Press **DOWN** → sound stops. ✅ **Verified.** |
 | 5.26k | Capability gate | set `extension.findphone.allow = notify` (no appmessage), restart | `registerApp`/`onAppMessage` rejected (`not permitted: grant 'appmessage:…'`); nothing rings. |
@@ -1148,7 +1150,7 @@ capability gate and `confine` sandbox knob were **removed** (no sandbox → they
 explicit `extension.<name>.cmd` still works (and no longer requires the dir, for back-compat).
 
 **Prerequisite:** `python3`, `tar`/`unzip` on PATH; a connected watch for the `.pbw` auto-install. Build
-the archive with `examples/extensions/package-findphone.sh`.
+the archive with `examples/extensions/findphone/package.sh`.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|

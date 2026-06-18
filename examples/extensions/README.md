@@ -23,17 +23,17 @@ extension dir (`{ "cmd": "node index.js", "config": { … } }`) for self-contain
   `on_action`/`on_reply`/`on_dismiss`/`on_watch_connected` callbacks, and the watchapp verbs
   `register_app`/`send_app_message`/`launch_app`/`install_pbw` + `on_app_message`). Ship a copy in your
   extension dir.
-- **`findphone.py`** — *Find My Phone*: the companion for the find-my-phone **watchapp**
-  (`../../testing/findphone`). The watchapp's UP rings this computer, DOWN stops it.
-- **`package-findphone.sh`** — builds the watchapp and bundles it + the companion into
-  `findphone.tar.gz`, ready for `stoandl ext install`.
+- **`findphone/`** — a git submodule ([yoxcu/findphone](https://github.com/yoxcu/findphone)): the
+  *Find My Phone* watchapp + its companion, a complete, forkable boilerplate. UP rings this computer,
+  DOWN stops it. Has its own README, build, and `package.sh`. After cloning stoandl, run
+  `git submodule update --init` to populate it.
 
 ## Install find-my-phone (one shot)
 
 ```sh
-./package-findphone.sh                       # builds the .pbw + makes findphone.tar.gz
-stoandl ext install findphone.tar.gz         # extracts to ext/findphone/, sideloads the .pbw,
-                                             # enables + starts it — no daemon restart
+cd findphone && ./package.sh                 # builds the .pbw + makes findphone.tar.gz (needs the Pebble SDK)
+stoandl ext install findphone/findphone.tar.gz   # extracts to ext/findphone/, sideloads the .pbw,
+                                                 # enables + starts it — no daemon restart
 ```
 
 Open **Find My Phone** on the watch → **UP** rings the computer, **DOWN** stops it.

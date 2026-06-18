@@ -281,7 +281,8 @@ reconnect without re-push (only if the §"deferred" re-push proves lossy on hard
 - **Phase 3 — Watchapp companion (goal c). ✅ done, hardware-verified.** `registerApp`/`sendAppMessage`/
   `onAppMessage` (ACK-on-receipt, via the broadcast packet flow so the companion manager can't steal it)/
   `launchApp`/`stopApp`/`installPbw` with the typed-tagged dict codec. Ships the find-my-phone
-  **watchapp** (`testing/findphone`) + companion.
+  **watchapp** + companion (the [yoxcu/findphone](https://github.com/yoxcu/findphone) boilerplate,
+  vendored as the `examples/extensions/findphone` submodule).
 - **Phase 4 — Install & hotplug + config simplification. ✅ done.** `stoandl ext install <archive>`
   (extract → sideload bundled `.pbw` → enable → start) + `list`/`enable`/`disable`/`restart`/`uninstall`,
   all **without a daemon restart**. Dropped the `allow` capability gate and the `confine` knob (no
