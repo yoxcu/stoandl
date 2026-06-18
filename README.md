@@ -13,6 +13,7 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 ## What it does
 
 - Forwards desktop notifications (`org.freedesktop.Notifications`) to the watch
+- Extends to any service (Matrix, Signal, SMS, "find my phone", …) via **companion apps** — small host-side programs, in any language, that drive watch notifications (with replies + actions) and optionally ship their own watchapp, no watchface coding required; `stoandl ext` installs and manages them
 - Manages the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces
 - Backs up and restores your locker, app cache and PKJS/Clay settings
 - Syncs weather to the watch's Weather app and as sunrise/sunset timeline pins (Open-Meteo — free, no account)
@@ -224,6 +225,32 @@ then substring. If the name is ambiguous the command lists the candidates so you
 UUID. `apps` flags each entry as `active` (current watchface), `sideloaded`, `config`
 (has a settings page) or `system`. System apps cannot be removed.
 
+## Extensions (companion apps)
+
+Plug in your own integrations — Matrix, Signal, Discord, SMS, "find my phone", anything — **host-side**,
+the way Android PebbleKit companion apps work. An extension is a small program in any language that
+stoandl spawns and supervises, talking newline-delimited JSON-RPC over stdio. It can push notifications
+to the watch (with named actions and canned replies), receive a callback when you act on the watch and
+send the reply back through that service's own account, and/or be a PebbleKit-style companion to a
+watchapp UUID it ships (AppMessage send/receive, launch, `.pbw` install) — so no watchapp is required,
+but one is supported. A ~40-line per-language helper (e.g. `stoandl_ext.py`) is shipped as a template.
+
+```sh
+stoandl ext install matrix.tar.gz   # extract to ~/.config/stoandl/ext/, sideload any bundled .pbw,
+                                     # enable + hotplug-start (no daemon restart)
+stoandl ext list                    # installed extensions + enabled/running state
+stoandl ext enable <name>           # add to the run-list and start (disable to stop + drop)
+stoandl ext restart <name>          # restart one after editing it
+stoandl ext uninstall <name>        # stop, remove its dir, and remove any watchapp it installed
+```
+
+Extensions run as you, like any script — there's no sandbox. The default entry point is `<name>.py`
+under `~/.config/stoandl/ext/<name>/`; override with `extension.<name>.cmd` (any language) or a bundled
+`manifest.json`. `examples/extensions/` has working templates (the find-my-phone example lives in its
+own repo, vendored as a submodule). Set `extensions.enabled` to the run-list, or just use `stoandl ext`.
+
+→ [docs/extensions.md](docs/extensions.md) — the wire protocol, the helper API, and how to write one.
+
 ## Backup & restore
 
 stoandl keeps your whole setup — the locker, the cached `.pbw` binaries, app order, the active
@@ -267,7 +294,7 @@ Flash watch firmware. A local bundle works offline with no setup; libpebble3 che
 connected watch (board, CRC, slot) and refuses a mismatched bundle before sending anything.
 
 ```sh
-stoandl firmware <file.pbz>   # flash a local firmware bundle (shows a progress bar)
+stoandl firmware sideload <file.pbz>   # flash a local firmware bundle (shows a progress bar)
 stoandl firmware check        # is newer firmware available for this watch?
 stoandl firmware update       # download the matching build and flash it
 stoandl firmware status       # current firmware-update state
@@ -348,7 +375,7 @@ stoandl reset factory                # wipe the watch back to out-of-box state (
 stoandl reset factory --yes          # …skip the confirmation prompt
 ```
 
-`reset recovery` is recoverable — from PRF, reflash a normal firmware with `stoandl firmware <file.pbz>`.
+`reset recovery` is recoverable — from PRF, reflash a normal firmware with `stoandl firmware sideload <file.pbz>`.
 `reset factory` is **irreversible**: it erases all apps, settings and the host pairing (you'll re-pair
 afterwards), so the CLI requires a typed `yes` unless you pass `--yes`. Both are local — nothing is
 uploaded, and there's no config to set.

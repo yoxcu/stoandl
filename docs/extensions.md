@@ -1,7 +1,7 @@
 # Extensions (companion apps) — design
 
-> **Status: approved design, not yet implemented.** Architectural decisions locked 2026-06-17.
-> This is the spec the implementation tracks; phases land incrementally (see the bottom).
+> **Status: implemented (Phases 0–4), on `main`.** Architectural decisions locked 2026-06-17.
+> This is the spec the implementation tracks; the per-phase status is at the bottom (Phase 5 = polish TODO).
 
 ## Goal
 
