@@ -217,7 +217,7 @@ health.export_days = 30
 # (the default — not LE-only mode).
 #
 # Turn this on to discover, pair and connect classic-era watches over a BR/EDR inquiry. To pair a NEW
-# watch, run `stoandl pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH — same
+# watch, run `stoandl watch pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH — same
 # flow as BLE; the RFCOMM channel is resolved via SDP. A bonded watch then reconnects on its own.
 classic.discover = false
 #

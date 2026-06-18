@@ -41,7 +41,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
 | `calendar.caldav` | list | _(empty)_ | CalDAV calendars, each `url\|user\|password`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
-| `classic.discover` | bool | `false` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl pair`) is open. Off by default. |
+| `classic.discover` | bool | `false` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open. Off by default. |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
 ## Bluetooth Classic
@@ -60,7 +60,7 @@ The hands-off path is `classic.discover`:
 classic.discover = true            # discover + auto-pair + auto-connect classic-era Pebbles
 ```
 
-Then `stoandl pair` (confirm the 6-digit code on the watch; the host auto-confirms). A BR/EDR
+Then `stoandl watch pair` (confirm the 6-digit code on the watch; the host auto-confirms). A BR/EDR
 inquiry runs only while that pairing window is open — the rest of the time the radio is quiet. A
 bonded watch reconnects on its own afterwards: stoandl pages its fixed address (no advertising), so
 it survives airplane mode / out-of-range. There's no kernel-side background auto-connect for BR/EDR
@@ -71,7 +71,7 @@ needs; if it pairs but won't connect, run `btmgmt pair -t bredr <mac>` by hand a
 
 All other commands (`connect`, `unpair [name]`, `repair`, `list`, `battery`) and every feature work
 over Classic just as over BLE — the Pebble protocol layer is transport-agnostic. Only one watch is
-connected at a time; `stoandl connect <name>` switches the active watch.
+connected at a time; `stoandl watch connect <name>` switches the active watch.
 
 No web egress: Bluetooth Classic is local-radio only.
 
@@ -366,9 +366,9 @@ Discover them with the CLI — it lists every setting, its current value and all
 ```sh
 stoandl settings                  # all settings (one row each)
 stoandl settings light            # filter by id/name substring
-stoandl set-setting lightAmbientThreshold 200
-stoandl set-setting qlUp "Music"  # hold-Up quick-launches the Music app (by name or UUID; "off" to clear)
-stoandl set-setting clock24h true
+stoandl settings set lightAmbientThreshold 200
+stoandl settings set qlUp "Music"  # hold-Up quick-launches the Music app (by name or UUID; "off" to clear)
+stoandl settings set clock24h true
 ```
 
 To make them stick across restarts, put them in the config as `watch.<id> = <value>`:
@@ -545,7 +545,7 @@ To revert to English, install the watch's English pack (`stoandl language instal
 
 Bridge the Pebble SDK / CloudPebble to the connected watch, so you can install and live-debug
 watchapps through stoandl the way the official phone app's developer connection does — not just
-`stoandl sideload`. `stoandl developer start` brings up libpebble3's LAN WebSocket server on **port
+`stoandl apps install`. `stoandl developer start` brings up libpebble3's LAN WebSocket server on **port
 9000**; it relays raw Pebble-protocol frames to/from the watch, installs `.pbw` bundles, and streams
 PKJS logs. Point the SDK at this host:
 

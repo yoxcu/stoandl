@@ -17,7 +17,7 @@ cp datalog-test.c datalog-build/src/c/datalog-build.c    # overwrite the generat
 cd datalog-build
 pebble build
 pebble install --phone <host-ip>      # via stoandl's developer connection (stoandl developer start)
-# or, from the repo:  stoandl sideload build/datalog-build.pbw
+# or, from the repo:  stoandl apps install build/datalog-build.pbw
 ```
 
 (`pebble new-project` assigns a random UUID; find the app's UUID later with `stoandl datalog list`.)

@@ -46,7 +46,7 @@ BLE-native watches are unaffected.
 How it works: the host is the RFCOMM **client**, dialing the watch's SPP service
 (`00001101-0000-1000-8000-00805F9B34FB`) over a secure socket that reuses the stored BR/EDR link key.
 Reconnect pages the watch's fixed address (no advertising, no BLE bootstrap), so it survives airplane
-mode. A BR/EDR inquiry runs only while a pairing window (`stoandl pair`) is open; a bonded watch needs
+mode. A BR/EDR inquiry runs only while a pairing window (`stoandl watch pair`) is open; a bonded watch needs
 no scan. The transport spans this repo and the libpebble3 fork (BlueZ RFCOMM socket via a
 `java.lang.foreign` (FFM) `AF_BLUETOOTH` socket — no native library, so it ships no glibc-only blob —
 the BR/EDR scanner, and Classic pairing over D-Bus).

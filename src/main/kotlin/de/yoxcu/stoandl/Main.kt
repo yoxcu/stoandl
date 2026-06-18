@@ -34,7 +34,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "dev", "health", "ext")
+private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "backup", "restore", "config", "fakecall")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -51,6 +51,12 @@ fun main(args: Array<String>) {
     if (args.isNotEmpty() && (args[0] == "ctl" || args[0] in CTL_COMMANDS)) {
         ctl(if (args[0] == "ctl") args.drop(1).toTypedArray() else args)
         return
+    }
+    // A non-empty arg that isn't a known command/flag is a typo — don't silently start the daemon.
+    if (args.isNotEmpty()) {
+        System.err.println("Unknown command: ${args.joinToString(" ")}\n")
+        printUsage()
+        System.exit(1); return
     }
 
     Logger.setLogWriters(KermitSlf4jWriter())
@@ -90,61 +96,43 @@ fun main(args: Array<String>) {
 }
 
 private fun printUsage() {
-    println("stoandl — Pebble companion daemon for Linux")
+    // Compact, phone-narrow help: one line per command group; the verb list is the description. Run a
+    // group with no verb (e.g. `stoandl watch`) for its own usage. Keep every line short (~46 cols).
+    fun row(name: String, rest: String) = println("  " + name.padEnd(9) + " " + rest)
+    println("stoandl — headless Pebble companion (Linux)")
     println()
-    println("Usage:")
-    println("  stoandl                    Run the daemon (foreground; used by the systemd service)")
     println("  stoandl <command> [args]")
     println()
-    println("Commands:")
-    println("  apps                       List the apps and watchfaces in the watch locker")
-    println("  apps launch <name|uuid>    Launch an app or watchface on the watch")
-    println("  apps remove <name|uuid>    Uninstall an app or watchface from the locker")
-    println("  apps install <path>        Install a .pbw watchface or app onto the watch (aliases: sideload, add)")
-    println("  config [app]               Open a PKJS app's Clay config page (launches the app if needed)")
-    println("  backup [out.tar.gz]        Archive the locker, app cache and PKJS settings")
-    println("  restore <in.tar.gz>        Restore a backup (daemon must be stopped; --force to override)")
-    println("  fakecall ring [name] [number]   Debug: ring the watch with a synthetic call")
-    println("  fakecall end               Debug: clear the synthetic call")
-    println("  findwatch                  Ring the watch to find it (press a watch button to silence)")
-    println("  version                    Show the running daemon's version (and this CLI's)")
-    println("  weather                    Fetch weather now and push it to the watch")
-    println("  settings [filter]          List the watch's advanced settings (optionally filtered)")
-    println("  set-setting <id> <value>   Set a watch setting (e.g. set-setting lightAmbientThreshold 200)")
-    println("  pair                       Pair a new Pebble watch (opens a ~2 min window; blocks until done)")
-    println("  unpair [name]              Forget watch(es) on this host — all, or just the named one")
-    println("  repair <name>              Re-pair one specific watch (forgets just it, then opens a pairing window)")
-    println("  connect <name>             Connect a specific known watch (switches the active watch)")
-    println("  list                       List known watches and their connection state")
-    println("  battery                    Show the connected watch's battery level")
-    println("  health [days]              Show daily steps/sleep/heart-rate (default 7; sync|activities|dump)")
-    println("  calendar [list|sync|enable|disable|dump]   Calendar→timeline sync (dump <file|url> works offline)")
-    println("  datalog [list|dump|tail]   Inspect captured watchapp datalog (set datalog.enabled in stoandl.conf)")
-    println("  firmware <file.pbz>        Flash a local firmware bundle onto the watch (shows progress)")
-    println("  firmware check             Check online for newer firmware (GitHub for Core, cohorts.rebble.io for classic)")
-    println("  firmware update            Download+flash the latest matching firmware for the watch")
-    println("  firmware status            Show the current firmware-update state")
-    println("  language [list]            List language packs for the watch (or the full catalog if none connected)")
-    println("  language sideload <file.pbl>   Install a local language pack onto the watch")
-    println("  language install <locale>  Download+install a pack (e.g. de_DE; needs language.download)")
-    println("  language status            Show the current language-pack install state")
-    println("  notif [list]               List tracked notification apps and their mute state")
-    println("  notif mute <app> [spec]    Mute an app: always|weekdays|weekends or a duration (1h/30m/2d)")
-    println("  notif unmute <app>         Deliver an app's notifications again")
-    println("  notif mute-all|unmute-all [spec]   Apply a mute state to every tracked app")
-    println("  notif style <app> [--color <c>] [--icon <i>] [--vibe <v>]   Per-app colour/icon/vibration")
-    println("  notif styles               List the available colours, icons and vibe presets (offline)")
-    println("  screenshot [path]          Capture the watch screen to a PNG (default: ./pebble-screenshot-<time>.png)")
-    println("  logs [path]                Dump the watch's firmware logs to a text file (default: ./pebble-logs-<time>.txt)")
-    println("  support [out.tar.gz]       Build a support bundle (watch logs + watch info + daemon log + config, secrets redacted)")
-    println("  reset recovery             Reboot the watch into recovery (PRF) firmware (un-brick a bad flash)")
-    println("  reset factory [--yes]      Factory-reset the watch — WIPES it (apps, settings, pairing); needs confirmation")
-    println("                             Add --coredump to also pull a coredump off the watch")
-    println("  developer start|stop|status  Toggle the developer connection (Pebble SDK / CloudPebble install + live-debug over BLE, port 9000)")
-    println("  ext [list]                 List installed extensions (companion apps) and their state")
-    println("  ext install <archive>      Install an extension from a .tar.gz/.zip (sideloads a bundled .pbw too)")
-    println("  ext enable|disable|restart|uninstall <name>   Manage an extension live (no daemon restart)")
-    println("  help                       Show this help")
+    println("Watch & apps")
+    row("watch", "list connect pair unpair repair")
+    row("", "battery find")
+    row("apps", "list launch install remove")
+    row("settings", "list · set <id> <value>")
+    row("notif", "list mute unmute style styles")
+    row("ext", "list install enable disable")
+    row("", "restart uninstall")
+    row("config", "[app]   PKJS config page")
+    println("Sync")
+    row("weather", "push weather to the watch now")
+    row("calendar", "list sync enable disable dump")
+    row("health", "[days] sync activities dump")
+    row("datalog", "list dump tail")
+    println("Maintenance")
+    row("firmware", "sideload check update status")
+    row("language", "list install sideload status")
+    row("screenshot", "[path]")
+    row("logs", "[path]")
+    row("support", "[out.tar.gz]")
+    row("reset", "recovery · factory")
+    row("backup", "[out.tar.gz]")
+    row("restore", "<in.tar.gz> [--force]")
+    row("developer", "start · stop · status")
+    println("Other")
+    row("fakecall", "ring · end   (debug)")
+    row("version", "· help")
+    println()
+    println("Run a group with no verb for its options")
+    println("(e.g. `stoandl watch` lists its verbs).")
 }
 
 /** Report the running daemon's version (over D-Bus), falling back to this CLI's own embedded version. */
@@ -173,10 +161,7 @@ private fun ctl(args: Array<String>) {
         return
     }
     when (args[0]) {
-        // App/locker management is grouped under `stoandl apps <verb>`; the bare verbs are kept as
-        // back-compat aliases.
         "apps" -> ctlApps(args.drop(1))
-        "sideload", "add" -> appSideload(args.getOrNull(1))
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
         "notif" -> ctlNotif(args.drop(1))
@@ -194,7 +179,6 @@ private fun ctl(args: Array<String>) {
             }
             doRestore(path, force)
         }
-        "launch", "remove" -> appLaunchOrRemove(args[0] == "launch", args.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
         "config" -> {
             val app = args.getOrNull(1) ?: ""
             withControl { control ->
@@ -236,123 +220,14 @@ private fun ctl(args: Array<String>) {
                 }
             }
         }
-        "findwatch" -> withControl { control ->
-            try {
-                if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
-                else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}")
-                System.exit(1)
-            }
-        }
+        "watch" -> ctlWatch(args.drop(1))
         "weather" -> withControl { control ->
             val resp = try { control.SyncWeather() } catch (e: Exception) {
                 System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
             }
             handleStatusResponse(resp)
         }
-        "settings" -> {
-            val filter = args.getOrNull(1)
-            withControl { control ->
-                val records = try { control.ListWatchPrefs() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
-                printWatchPrefs(records, filter)
-            }
-        }
-        "set-setting" -> {
-            if (args.size < 3) {
-                System.err.println("Usage: stoandl set-setting <id> <value>"); System.exit(1); return
-            }
-            val id = args[1]
-            val value = args.drop(2).joinToString(" ")
-            withControl { control ->
-                val resp = try { control.SetWatchPref(id, value) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
-                handleStatusResponse(resp)
-            }
-        }
-        "pair" -> withControl { control ->
-            try {
-                val startResp = try { control.Pair() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
-                if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
-                println("Searching for watch to pair (up to 2 minutes)...")
-                pollPairStatus(control)
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1)
-            }
-        }
-        "repair" -> {
-            if (args.size < 2) {
-                System.err.println("Usage: stoandl repair <watch name>"); System.exit(1); return
-            }
-            withControl { control ->
-                try {
-                    val startResp = try { control.Repair(args[1]) } catch (e: Exception) {
-                        System.err.println("Error: ${e.message}"); System.exit(1); return
-                    }
-                    if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
-                    println(startResp.removePrefix("ok:"))
-                    pollPairStatus(control)
-                } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1)
-                }
-            }
-        }
-        "unpair" -> withControl { control ->
-            try {
-                // `unpair` = blanket (all); `unpair <name>` = just the matching watch (like `repair`).
-                handleStatusResponse(control.Unpair(if (args.size >= 2) args[1] else ""))
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1)
-            }
-        }
-        "connect" -> {
-            if (args.size < 2) {
-                System.err.println("Usage: stoandl connect <watch name>"); System.exit(1); return
-            }
-            withControl { control ->
-                try {
-                    handleStatusResponse(control.Connect(args[1]))
-                } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1)
-                }
-            }
-        }
-        "list" -> withControl { control ->
-            try {
-                val watches = control.ListWatches()
-                if (watches.isEmpty()) {
-                    println("No known watches. Run 'stoandl pair' to add one.")
-                } else {
-                    watches.forEach { entry ->
-                        val parts = entry.split('\t')
-                        val battery = parts.getOrElse(2) { "" }
-                        val batteryStr = if (battery.isNotBlank()) "  ${battery}%" else ""
-                        println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, batteryStr))
-                    }
-                }
-            } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1)
-            }
-        }
-        "battery" -> withControl { control ->
-            val resp = try { control.Battery() } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1); return
-            }
-            val (kind, body) = splitStatus(resp)
-            when (kind) {
-                "ok" -> {
-                    val f = body.split('\t')
-                    println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" }))
-                }
-                "unknown" -> println("$body: battery level not available yet")
-                else -> handleStatusResponse(resp)
-            }
-        }
+        "settings" -> ctlSettings(args.drop(1))
         "health" -> ctlHealth(args.drop(1))
         "calendar" -> {
             when (val sub = args.getOrNull(1) ?: "list") {
@@ -451,7 +326,7 @@ private fun ctl(args: Array<String>) {
         "logs" -> ctlLogs(args.drop(1))
         "support" -> ctlSupport(args.drop(1))
         "reset" -> ctlReset(args.drop(1))
-        "developer", "dev" -> ctlDeveloper(args.drop(1))
+        "developer" -> ctlDeveloper(args.drop(1))
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -708,9 +583,13 @@ private fun pollPairStatus(control: StoandlControl) {
 private fun ctlFirmware(rest: List<String>) {
     val sub = rest.firstOrNull()
     if (sub == null) {
-        System.err.println("Usage: stoandl firmware <file.pbz> | check | update | status")
+        System.err.println("Usage: stoandl firmware <sideload <file.pbz> | check | update | status>")
         System.exit(1); return
     }
+    // `firmware sideload <file>` is the explicit verb; `firmware <file>` still works (handled below).
+    val target = if (sub == "sideload") (rest.getOrNull(1) ?: run {
+        System.err.println("Usage: stoandl firmware sideload <file.pbz>"); System.exit(1); return
+    }) else sub
     withControl { control ->
         when (sub) {
             "check" -> {
@@ -742,11 +621,11 @@ private fun ctlFirmware(rest: List<String>) {
                 printFirmwareStatusOnce(resp)
             }
             else -> {
-                // Anything else is treated as a path to a local .pbz to sideload.
-                val file = File(sub)
-                if (!file.isFile) { System.err.println("No such file: $sub"); System.exit(1); return }
+                // `firmware sideload <file>` or a bare `firmware <file>` — sideload a local .pbz.
+                val file = File(target)
+                if (!file.isFile) { System.err.println("No such file: $target"); System.exit(1); return }
                 if (!file.name.endsWith(".pbz")) {
-                    System.err.println("Not a firmware bundle (expected a .pbz): $sub"); System.exit(1); return
+                    System.err.println("Not a firmware bundle (expected a .pbz): $target"); System.exit(1); return
                 }
                 // Send an absolute path: the daemon's cwd differs from the caller's.
                 val resp = try { control.SideloadFirmware(file.absolutePath) } catch (e: Exception) {
@@ -920,6 +799,128 @@ private fun ctlNotif(rest: List<String>) {
                 System.exit(1)
             }
         }
+    }
+}
+
+// ---- watch group (list/connect/pair/unpair/repair/battery/find) --------------------------------
+
+private fun ctlWatch(rest: List<String>) {
+    when (rest.firstOrNull() ?: "list") {
+        "list" -> watchList()
+        "connect" -> watchConnect(rest.getOrNull(1))
+        "pair" -> watchPair()
+        "unpair" -> watchUnpair(rest.getOrNull(1))
+        "repair" -> watchRepair(rest.getOrNull(1))
+        "battery" -> watchBattery()
+        "find" -> watchFind()
+        else -> {
+            System.err.println("Usage: stoandl watch <list|connect <n>|pair|unpair [n]|repair <n>|battery|find>")
+            System.exit(1)
+        }
+    }
+}
+
+private fun watchList() = withControl { control ->
+    try {
+        val watches = control.ListWatches()
+        if (watches.isEmpty()) {
+            println("No known watches. Run 'stoandl watch pair' to add one.")
+        } else {
+            watches.forEach { entry ->
+                val parts = entry.split('\t')
+                val battery = parts.getOrElse(2) { "" }
+                val batteryStr = if (battery.isNotBlank()) "  ${battery}%" else ""
+                println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, batteryStr))
+            }
+        }
+    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+}
+
+private fun watchConnect(name: String?) {
+    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch connect <name>"); System.exit(1); return }
+    withControl { control ->
+        try { handleStatusResponse(control.Connect(name)) }
+        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    }
+}
+
+private fun watchPair() = withControl { control ->
+    try {
+        val startResp = try { control.Pair() } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+        println("Searching for watch to pair (up to 2 minutes)...")
+        pollPairStatus(control)
+    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+}
+
+private fun watchRepair(name: String?) {
+    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch repair <name>"); System.exit(1); return }
+    withControl { control ->
+        try {
+            val startResp = try { control.Repair(name) } catch (e: Exception) {
+                System.err.println("Error: ${e.message}"); System.exit(1); return
+            }
+            if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+            println(startResp.removePrefix("ok:"))
+            pollPairStatus(control)
+        } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    }
+}
+
+// `watch unpair` = blanket (all); `watch unpair <name>` = just the matching watch.
+private fun watchUnpair(name: String?) = withControl { control ->
+    try { handleStatusResponse(control.Unpair(name ?: "")) }
+    catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+}
+
+private fun watchBattery() = withControl { control ->
+    val resp = try { control.Battery() } catch (e: Exception) {
+        System.err.println("Error: ${e.message}"); System.exit(1); return
+    }
+    val (kind, body) = splitStatus(resp)
+    when (kind) {
+        "ok" -> { val f = body.split('\t'); println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" })) }
+        "unknown" -> println("$body: battery level not available yet")
+        else -> handleStatusResponse(resp)
+    }
+}
+
+private fun watchFind() = withControl { control ->
+    try {
+        if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
+        else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
+    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+}
+
+// ---- settings group (list/set) ------------------------------------------------------------------
+
+private fun ctlSettings(rest: List<String>) {
+    when (val sub = rest.firstOrNull()) {
+        null -> settingsList(null)
+        "list" -> settingsList(rest.getOrNull(1))
+        "set" -> settingsSet(rest.getOrNull(1), rest.drop(2).joinToString(" ").takeIf { it.isNotBlank() })
+        else -> settingsList(sub)  // back-compat: `settings <filter>`
+    }
+}
+
+private fun settingsList(filter: String?) = withControl { control ->
+    val records = try { control.ListWatchPrefs() } catch (e: Exception) {
+        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+    }
+    printWatchPrefs(records, filter)
+}
+
+private fun settingsSet(id: String?, value: String?) {
+    if (id.isNullOrBlank() || value.isNullOrBlank()) {
+        System.err.println("Usage: stoandl settings set <id> <value>"); System.exit(1); return
+    }
+    withControl { control ->
+        val resp = try { control.SetWatchPref(id, value) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        handleStatusResponse(resp)
     }
 }
 

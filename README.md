@@ -24,7 +24,7 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
 - Resets the watch — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
-- Reads the watch's battery level — `stoandl battery`, and inline in `stoandl list`
+- Reads the watch's battery level — `stoandl watch battery`, and inline in `stoandl watch list`
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range. BLE watches are handed to BlueZ's own background auto-connect (no polling); classic-era watches reconnect by paging the watch's fixed address (no advertising needed, so it survives airplane mode). Either way it links up on its own, with no restarts
 - Runs as a background daemon with no UI
 
@@ -100,22 +100,22 @@ On first connection the watch shows a **6-digit code**. stoandl auto-accepts on 
 just confirm the code on the watch. Subsequent reconnects are automatic.
 
 ```sh
-stoandl pair                 # pair a new watch (opens a ~2 min window; finds BLE and classic watches)
-stoandl list                 # known watches, their connection state and battery level
-stoandl battery              # the connected watch's battery level
-stoandl connect B349         # connect a specific known watch by name/substring (switches the active watch)
-stoandl repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
-stoandl unpair [name]        # forget watches on this host — all of them, or just the named one
+stoandl watch pair                 # pair a new watch (opens a ~2 min window; finds BLE and classic watches)
+stoandl watch list                 # known watches, their connection state and battery level
+stoandl watch battery              # the connected watch's battery level
+stoandl watch connect B349         # connect a specific known watch by name/substring (switches the active watch)
+stoandl watch repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
+stoandl watch unpair [name]        # forget watches on this host — all of them, or just the named one
 ```
 
 If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
 re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
-`stoandl repair <name>`. `pair` never disturbs other watches, so it's safe with multiple Pebbles.
+`stoandl watch repair <name>`. `pair` never disturbs other watches, so it's safe with multiple Pebbles.
 
 Conversely, if the pairing is removed **on this computer** (e.g. `bluetoothctl remove`, while the
 watch still holds its side), stoandl forgets the now-unusable watch and notifies you that the only
-way back is to unpair it on the watch too, then `stoandl pair` — a half-removed bond can't be
-restored. (To forget a watch cleanly in the first place, use `stoandl unpair`, not `bluetoothctl`.)
+way back is to unpair it on the watch too, then `stoandl watch pair` — a half-removed bond can't be
+restored. (To forget a watch cleanly in the first place, use `stoandl watch unpair`, not `bluetoothctl`.)
 
 > **Won't reconnect?** The most common cause is *another process running Bluetooth discovery* — an
 > open Bluetooth settings panel or pairing window (GNOME/KDE), or a stray `bluetoothctl scan on`.
@@ -140,7 +140,7 @@ What works (hardware-verified on a Time Steel): discover → pair → connect �
 automatic reconnect after the watch goes out of range or into airplane mode. The protocol layer is
 transport-agnostic, so everything in [What it does](#what-it-does) — notifications, the locker, health,
 datalog, calendar, music, firmware, … — works the same over Classic. (The lone exception is the battery
-read-out: it rides a BLE GATT service, so `stoandl battery` is unavailable over Classic.)
+read-out: it rides a BLE GATT service, so `stoandl watch battery` is unavailable over Classic.)
 
 ### Enabling it
 
@@ -154,7 +154,7 @@ Make sure the adapter has **BR/EDR enabled** (the default — *not* LE-only mode
 [Bluetooth setup](#bluetooth-setup)). Then pair as usual:
 
 ```sh
-stoandl pair                 # opens a pairing window; inquires for BLE and classic watches alike
+stoandl watch pair                 # opens a pairing window; inquires for BLE and classic watches alike
 # then confirm the matching 6-digit code ON THE WATCH — stoandl auto-confirms on the host side
 ```
 
@@ -164,8 +164,8 @@ only runs while a pairing window is open, so the radio stays quiet the rest of t
 
 `connect`, `unpair [name]`, `repair` and `list` all work for classic watches just like BLE ones —
 `unpair` forgets a classic watch by its address even while it's connected. Only one watch is
-connected at a time; `stoandl connect <name>` hands the active slot to another known watch. (Only
-`stoandl battery` differs — see the battery note above.)
+connected at a time; `stoandl watch connect <name>` hands the active slot to another known watch. (Only
+`stoandl watch battery` differs — see the battery note above.)
 
 > **Pairing falls back to manual?** Pairing a dual-mode watch occasionally creates an LE bond instead
 > of the BR/EDR link key RFCOMM needs. If the watch pairs but won't connect, bond it explicitly with
@@ -210,12 +210,12 @@ With the daemon running and a watch connected, the `stoandl` CLI talks to it ove
 
 ```sh
 stoandl apps                 # list watchfaces and apps in the locker
-stoandl launch <name|uuid>   # launch an app or watchface on the watch
-stoandl remove <name|uuid>   # uninstall an app or watchface from the locker
-stoandl sideload app.pbw     # install a .pbw onto the connected watch
+stoandl apps launch <name|uuid>   # launch an app or watchface on the watch
+stoandl apps remove <name|uuid>   # uninstall an app or watchface from the locker
+stoandl apps install app.pbw     # install a .pbw onto the connected watch
 stoandl config [app]         # open a PKJS app's Clay config page (launches it if needed)
 stoandl settings [filter]    # list the watch's advanced settings (quick-launch, backlight, …)
-stoandl set-setting <id> <v> # set one, e.g. set-setting lightAmbientThreshold 200
+stoandl settings set <id> <v> # set one, e.g. settings set lightAmbientThreshold 200
 stoandl version              # version of the running daemon (and this CLI)
 ```
 

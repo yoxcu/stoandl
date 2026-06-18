@@ -30,17 +30,17 @@ as test targets.
 | # | Test | Command | Expected |
 |---|------|---------|----------|
 | 1.1 | List | `stoandl apps` | Aligned table: NAME / TYPE / DEVELOPER / FLAGS / UUID. Your current watchface row has `active`; sideloaded apps show `sideloaded`; PKJS apps show `config`; built-ins show `system`. |
-| 1.2 | Launch by name | `stoandl launch "<app name>"` | Prints `Launched <title>`; the app/watchface opens **on the watch**. Log: `LaunchApp: <title>`. |
-| 1.3 | Launch by UUID | `stoandl launch <uuid>` | Same as 1.2. |
+| 1.2 | Launch by name | `stoandl apps launch "<app name>"` | Prints `Launched <title>`; the app/watchface opens **on the watch**. Log: `LaunchApp: <title>`. |
+| 1.3 | Launch by UUID | `stoandl apps launch <uuid>` | Same as 1.2. |
 | 1.4 | Launch sets active watchface | launch a *watchface*, then `stoandl apps` | That watchface now carries the `active` flag. |
-| 1.5 | Ambiguous name | `stoandl launch e` (a substring matching several) | Non-zero exit; stderr lists candidates with their UUIDs; nothing launches. |
-| 1.6 | Not found | `stoandl launch zzzzz` | Non-zero exit; `No app matching 'zzzzz'`. |
-| 1.7 | Remove sideloaded | `stoandl remove "<sideloaded app>"` | `Removed <title>`; it disappears from `stoandl apps` **and** from the watch's app menu. Log: `RemoveApp: <title>`. |
-| 1.8 | Remove refuses system app | `stoandl remove "<system app>"` | Non-zero exit; `Refusing to remove system app <title>`; app still present. |
-| 1.9 | Re-add after remove | `stoandl sideload <that>.pbw` then `stoandl apps` | App is back (confirms remove was clean, not corrupting). |
+| 1.5 | Ambiguous name | `stoandl apps launch e` (a substring matching several) | Non-zero exit; stderr lists candidates with their UUIDs; nothing launches. |
+| 1.6 | Not found | `stoandl apps launch zzzzz` | Non-zero exit; `No app matching 'zzzzz'`. |
+| 1.7 | Remove sideloaded | `stoandl apps remove "<sideloaded app>"` | `Removed <title>`; it disappears from `stoandl apps` **and** from the watch's app menu. Log: `RemoveApp: <title>`. |
+| 1.8 | Remove refuses system app | `stoandl apps remove "<system app>"` | Non-zero exit; `Refusing to remove system app <title>`; app still present. |
+| 1.9 | Re-add after remove | `stoandl apps install <that>.pbw` then `stoandl apps` | App is back (confirms remove was clean, not corrupting). |
 | 1.10 | Daemon down | `systemctl --user stop stoandl; stoandl apps` | Clear error (can't reach D-Bus), non-zero exit — not a stack trace. Restart after. |
-| 1.11 | Sideload relative path | `cd` to a dir holding `x.pbw`, then `stoandl sideload x.pbw` | Installs — the CLI resolves the path absolutely before handing it to the daemon (whose cwd is `$HOME`). Prints `Sideloaded x.pbw`. |
-| 1.12 | Sideload missing file | `stoandl sideload /nope/x.pbw` | Non-zero exit; `No such file: /nope/x.pbw` (not a misleading "Pbw does not contain manifest"). |
+| 1.11 | Sideload relative path | `cd` to a dir holding `x.pbw`, then `stoandl apps install x.pbw` | Installs — the CLI resolves the path absolutely before handing it to the daemon (whose cwd is `$HOME`). Prints `Sideloaded x.pbw`. |
+| 1.12 | Sideload missing file | `stoandl apps install /nope/x.pbw` | Non-zero exit; `No such file: /nope/x.pbw` (not a misleading "Pbw does not contain manifest"). |
 
 **Watch-side check for 1.7:** the removed app should be gone from the watch
 menu, not just the list — confirms `removeApp` synced the deletion.
@@ -56,7 +56,7 @@ menu, not just the list — confirms `removeApp` synced the deletion.
 | 2.3 | Restore refused while running | `stoandl restore /tmp/snap.tar.gz` | Non-zero exit; tells you to `systemctl --user stop stoandl`; **nothing changed** in `~/.config/stoandl`. |
 | 2.4 | Reject foreign archive | `tar czf /tmp/bad.tar.gz -C /etc hostname; stoandl restore /tmp/bad.tar.gz --force` | `Not a stoandl backup …`; non-zero; nothing extracted. |
 | 2.5 | Missing file | `stoandl restore /tmp/nope.tar.gz` | `Backup not found …`. |
-| 2.6 | **Round-trip integrity** | (a) `stoandl backup /tmp/snap.tar.gz` → (b) `stoandl remove "<an app>"` → (c) `systemctl --user stop stoandl` → (d) `stoandl restore /tmp/snap.tar.gz` → (e) start service | Restore prints the `stoandl.old-<ts>` location + "Start the daemon…". After restart, `stoandl apps` shows the removed app **back**. Confirms DB+cache restored. |
+| 2.6 | **Round-trip integrity** | (a) `stoandl backup /tmp/snap.tar.gz` → (b) `stoandl apps remove "<an app>"` → (c) `systemctl --user stop stoandl` → (d) `stoandl restore /tmp/snap.tar.gz` → (e) start service | Restore prints the `stoandl.old-<ts>` location + "Start the daemon…". After restart, `stoandl apps` shows the removed app **back**. Confirms DB+cache restored. |
 | 2.7 | Non-destructive | after 2.6 | `~/.config/stoandl.old-<ts>/` exists (your pre-restore state, recoverable). |
 | 2.8 | PKJS settings survive | configure a Clay app (`stoandl config <app>`, save) → backup → change a setting → restore → reopen config | The backed-up values are back (verifies `pkjs/<uuid>.properties` round-trips). |
 
@@ -137,8 +137,8 @@ still holds it, the watch doesn't).
   dead link every few seconds — `Broken-bond detector …`) and sends a **"Pebble
   won't stay connected"** notification with a **Re-pair** button.
 - Tap **Re-pair** (with the watch in pairing mode) → it re-pairs. Or run
-  `stoandl repair <name>` (substring, e.g. `stoandl repair B349`).
-- `stoandl list` shows known watches + state. `stoandl pair` must NOT disturb a
+  `stoandl watch repair <name>` (substring, e.g. `stoandl watch repair B349`).
+- `stoandl watch list` shows known watches + state. `stoandl watch pair` must NOT disturb a
   second watch that's merely out of range (multi-watch safety).
 - ⚠️ **Still to verify:** the **Re-pair action button** depends on the
   notification server supporting actions — confirmed on GNOME, **unverified on
@@ -154,7 +154,7 @@ fresh pair.
 bluetoothctl remove <MAC>     # external bond loss; the watch is NOT touched
 ```
 
-> The *clean* way to forget a watch is `stoandl unpair` (removes it from both
+> The *clean* way to forget a watch is `stoandl watch unpair` (removes it from both
 > BlueZ and stoandl's DB). This test is the messy case where an *external*
 > removal leaves stoandl's DB and the watch out of sync.
 
@@ -164,7 +164,7 @@ bluetoothctl remove <MAC>     # external bond loss; the watch is NOT touched
   button), and **forgets** the watch — which stops the retry loop. The radio then
   goes quiet (no scan storm — see 3g).
 - **Recover:** unpair the host on the **watch** too, then tap **Pair** (or run
-  `stoandl pair`) → it re-pairs and reconnects; data flows.
+  `stoandl watch pair`) → it re-pairs and reconnects; data flows.
 - Must **not** fire for a healthy watch merely out of range (its bond is intact →
   `isBonded` stays true), nor transiently during `systemctl restart bluetooth`
   (BlueZ reloads bonds within the grace).
@@ -178,7 +178,7 @@ discover an *unbonded* watch during pairing.
 - With **no watch connected and no pairing window** (idle, just-unpaired, or a
   just-forgotten watch from 3f), the log shows **no** repeating `Starting BLE
   scan` and a `btmon` capture stays quiet — not a flood of advertising reports.
-- `stoandl pair` / the **Pair** button still kicks discovery within ~1 s of
+- `stoandl watch pair` / the **Pair** button still kicks discovery within ~1 s of
   opening the window (`Starting BLE scan` → `pebble match count 0 -> 1`).
 - Sanity: this must not break 3a — a healthy watch still reconnects after
   out-of-range/airplane **without** any `Starting BLE scan` (BlueZ does it).
@@ -194,7 +194,7 @@ deployment target is the phone, so re-run **3a–3g there**:
   scanner running, that's the same collision (3b) and needs handling there.
 - Confirm the **action buttons** render and `ActionInvoked` fires — both the
   Re-pair (3e) and the Pair (3f) buttons.
-- Confirm the idle radio stays quiet (3g) and `stoandl pair` still discovers.
+- Confirm the idle radio stays quiet (3g) and `stoandl watch pair` still discovers.
 - Notifications, weather, and PKJS still flow after a phone-side reconnect.
 
 ---
@@ -333,14 +333,14 @@ Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backl
 |---|------|----------------|----------|
 | 5.21 | List | `stoandl settings` | Aligned table of settings (SETTING/NAME/CURRENT/ALLOWED); `*` marks debug ones. Works even with no watch connected (shows defaults). |
 | 5.22 | Filter | `stoandl settings light` | Only rows whose id/name contains "light". |
-| 5.23 | Set number | `stoandl set-setting lightAmbientThreshold 200` | `Set lightAmbientThreshold = 200 …`; `stoandl settings light` shows current=200; watch behaviour changes. |
-| 5.24 | Range check | `stoandl set-setting lightAmbientThreshold 99999` | Non-zero exit; `lightAmbientThreshold must be 1..4096 …`. |
-| 5.25 | Set bool | `stoandl set-setting clock24h true` | Clock switches to 24h on the watch. |
-| 5.26 | Quick launch by name | `stoandl set-setting qlUp "Music"` | Holding Up on the watch launches Music. `off` clears it. Bad name → `no single app matching …`. |
-| 5.27 | Enum by name | `stoandl set-setting textStyle Larger` | Text size changes; a bad value lists the allowed names. |
+| 5.23 | Set number | `stoandl settings set lightAmbientThreshold 200` | `Set lightAmbientThreshold = 200 …`; `stoandl settings light` shows current=200; watch behaviour changes. |
+| 5.24 | Range check | `stoandl settings set lightAmbientThreshold 99999` | Non-zero exit; `lightAmbientThreshold must be 1..4096 …`. |
+| 5.25 | Set bool | `stoandl settings set clock24h true` | Clock switches to 24h on the watch. |
+| 5.26 | Quick launch by name | `stoandl settings set qlUp "Music"` | Holding Up on the watch launches Music. `off` clears it. Bad name → `no single app matching …`. |
+| 5.27 | Enum by name | `stoandl settings set textStyle Larger` | Text size changes; a bad value lists the allowed names. |
 | 5.28 | Config applied on connect | put `watch.clock24h = true` in stoandl.conf, restart, reconnect | Log: `Applied watch pref clock24h = true`; watch shows 24h. |
 | 5.29 | Config is authoritative | with `watch.clock24h = true` set, change it on the watch, reconnect | Reverts to 24h (config wins). |
-| 5.30 | Unknown id | `stoandl set-setting nope 1` | `Unknown watch pref 'nope' …`, non-zero. |
+| 5.30 | Unknown id | `stoandl settings set nope 1` | `Unknown watch pref 'nope' …`, non-zero. |
 
 ---
 
@@ -557,7 +557,7 @@ wait for the next reconnect (or a watch-initiated time request). Catching them w
 
 ## 5.10 Find my watch  ✅ Verified on hardware
 
-`stoandl findwatch` rings a misplaced watch by injecting a synthetic incoming call named "Find My
+`stoandl watch find` rings a misplaced watch by injecting a synthetic incoming call named "Find My
 Watch" into the same `currentCall` path the telephony integration uses (`FindWatch` in
 `PebbleIntegration`). The watch rings continuously like a real call until a button on the call screen
 is pressed (it just clears the call — there is nothing to hold). Host→watch only,
@@ -565,9 +565,9 @@ no `.pbw`, no egress, no config — always available while a watch is connected.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.90 | Ring | with a watch connected, run `stoandl findwatch` | CLI prints `Ringing watch — press a button on the watch to silence it`. The watch shows a call screen titled **Find My Watch** and vibrates/rings continuously. Log (INFO): `[findwatch] ringing watch (cookie=…)`. |
+| 5.90 | Ring | with a watch connected, run `stoandl watch find` | CLI prints `Ringing watch — press a button on the watch to silence it`. The watch shows a call screen titled **Find My Watch** and vibrates/rings continuously. Log (INFO): `[findwatch] ringing watch (cookie=…)`. |
 | 5.91 | Silence | on the watch's call screen, press the button to dismiss it | The ring stops; the call screen dismisses. Log: `[findwatch] watch declined — ring silenced (cookie=…)`. (The Find-My-Watch screen has a single dismiss/Decline button — no Answer — which is expected; pressing it clears the call.) |
-| 5.93 | No watch connected | run `stoandl findwatch` with no watch | CLI prints `Daemon not ready (no watch connected?)` and exits non-zero. Log (WARN): `FindWatch: libPebble not ready`. |
+| 5.93 | No watch connected | run `stoandl watch find` with no watch | CLI prints `Daemon not ready (no watch connected?)` and exits non-zero. Log (WARN): `FindWatch: libPebble not ready`. |
 
 ---
 
@@ -622,7 +622,7 @@ override backed by `GeoClueLocationProvider` (the same provider weather uses).
   (e.g. `weather.gps = true` shows a current-location weather entry, or use a GeoClue demo agent).
 - A watchapp that requests location. Easiest is a tiny PKJS test app — a `pkjs/index.js` that on
   `ready` calls `navigator.geolocation.getCurrentPosition(p => console.log('geo', JSON.stringify(p.coords)), e => console.log('geo err', e.message))`
-  — sideloaded with `stoandl sideload <app.pbw>`. A real sports/GPS watchapp also exercises it.
+  — sideloaded with `stoandl apps install <app.pbw>`. A real sports/GPS watchapp also exercises it.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
@@ -861,18 +861,18 @@ network can install apps and relay protocol traffic to the watch. Off by default
 
 Surfaces the connected watch's battery level (`ConnectedPebble.Battery.batteryLevel` — the standard BLE
 Battery Service `0x180F` / level characteristic `0x2A19` libpebble3 subscribes to). Read-only,
-local-only, no config, no egress. Surfaced three ways: the dedicated `stoandl battery` command, a trailing
-`NN%` on each connected watch's `stoandl list` line, and a `Battery:` line in the watch-info block of the
+local-only, no config, no egress. Surfaced three ways: the dedicated `stoandl watch battery` command, a trailing
+`NN%` on each connected watch's `stoandl watch list` line, and a `Battery:` line in the watch-info block of the
 `stoandl support` bundle.
 
 **Prerequisite:** daemon running, a connected watch.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.200 | Dedicated command | connect a watch, `stoandl battery` | Prints `<watch name>: NN%`. With no watch connected: `No watch connected` (non-zero exit). |
-| 5.201 | List shows level | connect a watch, `stoandl list` | The connected watch's line ends with its battery percentage, e.g. `  Pebble Time 2          connected     87%`. |
-| 5.202 | Disconnected shows none | `stoandl list` with a known-but-disconnected watch | That watch's line shows the state but **no** percentage (battery is only read on a live connection). |
-| 5.203 | Reflects a change | let the watch charge/drain (or toggle on the watch), then `stoandl list` again | The reported percentage tracks the watch (libpebble3 also pushes level-change notifications, so it updates without a reconnect). |
+| 5.200 | Dedicated command | connect a watch, `stoandl watch battery` | Prints `<watch name>: NN%`. With no watch connected: `No watch connected` (non-zero exit). |
+| 5.201 | List shows level | connect a watch, `stoandl watch list` | The connected watch's line ends with its battery percentage, e.g. `  Pebble Time 2          connected     87%`. |
+| 5.202 | Disconnected shows none | `stoandl watch list` with a known-but-disconnected watch | That watch's line shows the state but **no** percentage (battery is only read on a live connection). |
+| 5.203 | Reflects a change | let the watch charge/drain (or toggle on the watch), then `stoandl watch list` again | The reported percentage tracks the watch (libpebble3 also pushes level-change notifications, so it updates without a reconnect). |
 | 5.204 | Support bundle | `stoandl support`, then inspect the watch-info file in the bundle | Contains a `Battery:  NN%` line (or `—` if unavailable). |
 
 ---
@@ -928,14 +928,14 @@ enabled** (NOT LE-only mode); `classic.discover = true` in `stoandl.conf`; daemo
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
 | 5.220 | BR/EDR is enabled | `btmgmt info` (or `bluetoothctl show`) | Current settings include **`br/edr`** (alongside `le`) — the adapter is not LE-only. If it is, Classic can't work: `sudo btmgmt bredr on` (and don't set `ControllerMode = le`). |
-| 5.221 | Discover → pair → connect | `classic.discover = true`, restart, `stoandl pair`, then confirm the 6-digit code **on the watch** | Log: `BT Classic: discovering (BR/EDR inquiry — pairing window open)` → `Found <name> — pairing...` → `BT Classic: connecting <mac>` → `connected and services resolved`. Host auto-confirms; the code matches the watch. `stoandl list` shows the watch `connected`. |
-| 5.222 | Full protocol over Classic | with it connected: trigger a desktop notification; `stoandl apps`; `stoandl battery` | The notification reaches the watch; `apps` lists the locker; `battery` prints a level. Every feature rides the same transport-agnostic protocol — it behaves like a BLE watch. |
+| 5.221 | Discover → pair → connect | `classic.discover = true`, restart, `stoandl watch pair`, then confirm the 6-digit code **on the watch** | Log: `BT Classic: discovering (BR/EDR inquiry — pairing window open)` → `Found <name> — pairing...` → `BT Classic: connecting <mac>` → `connected and services resolved`. Host auto-confirms; the code matches the watch. `stoandl watch list` shows the watch `connected`. |
+| 5.222 | Full protocol over Classic | with it connected: trigger a desktop notification; `stoandl apps`; `stoandl watch battery` | The notification reaches the watch; `apps` lists the locker; `battery` prints a level. Every feature rides the same transport-agnostic protocol — it behaves like a BLE watch. |
 | 5.223 | Reconnect after out-of-range | walk out of range / toggle the watch's airplane mode, then bring it back | Reconnects on its own — stoandl pages the fixed MAC, no advertising needed. Log: one out-of-range INFO, then `BT Classic: connecting <mac>` → `connected and services resolved` on return. A test notification arrives. Repeat 3–5×. |
 | 5.224 | Standing loop stays quiet | leave it out of range several minutes, then `grep -c "BT Classic" /tmp/stoandl.log` and skim the log | The retry loop is quiet — roughly one "out" + one "back" line per cycle, **not** a per-attempt ERROR storm. No `RealPebbleConnector` ERROR spam, no WatchManager re-spawn churn. |
-| 5.225 | Inquiry only while pairing | with **no** pairing window open: `bluetoothctl show \| grep Discovering` (or watch `btmon`) | `Discovering: no` — there is no always-on BR/EDR inquiry. A bonded watch reconnects with no scan; inquiry appears only during the ~2 min after `stoandl pair`. |
-| 5.226 | BLE-native watch unaffected | have a Pebble Time 2 / Pebble 2 around too; `stoandl list` + log | The Time 2 connects over **BLE** as before and is **not** misclassified as Classic (the classic scanner requires a Class-of-Device, which BLE-only devices lack). No regression to the BLE path. |
-| 5.227 | `connect <name>` switches the active watch | with two known watches, `stoandl connect <other>` | The named watch becomes the connected one (single-watch mode hands over the slot). Exact-then-substring match. Works for BLE and classic watches alike. |
-| 5.228 | `unpair <name>` forgets one watch | `stoandl unpair <name>` for a classic watch (even while connected) | Only that watch is forgotten — its BlueZ bond removed by MAC; other watches untouched. `stoandl unpair` with no name still forgets **all**. `stoandl list` reflects the change. |
+| 5.225 | Inquiry only while pairing | with **no** pairing window open: `bluetoothctl show \| grep Discovering` (or watch `btmon`) | `Discovering: no` — there is no always-on BR/EDR inquiry. A bonded watch reconnects with no scan; inquiry appears only during the ~2 min after `stoandl watch pair`. |
+| 5.226 | BLE-native watch unaffected | have a Pebble Time 2 / Pebble 2 around too; `stoandl watch list` + log | The Time 2 connects over **BLE** as before and is **not** misclassified as Classic (the classic scanner requires a Class-of-Device, which BLE-only devices lack). No regression to the BLE path. |
+| 5.227 | `connect <name>` switches the active watch | with two known watches, `stoandl watch connect <other>` | The named watch becomes the connected one (single-watch mode hands over the slot). Exact-then-substring match. Works for BLE and classic watches alike. |
+| 5.228 | `unpair <name>` forgets one watch | `stoandl watch unpair <name>` for a classic watch (even while connected) | Only that watch is forgotten — its BlueZ bond removed by MAC; other watches untouched. `stoandl watch unpair` with no name still forgets **all**. `stoandl watch list` reflects the change. |
 | 5.229 | Pairing fallback to manual | a dual-mode watch that pairs but won't connect (got an LE bond, not a BR/EDR link key) | Log: `BT Classic: pairing <mac> failed — try btmgmt pair -t bredr <mac> by hand`. Running that, then restarting the daemon, yields a working link. |
 
 **Known limitation:** one watch is connected at a time (`connect` switches the active one); simultaneous
@@ -962,7 +962,7 @@ tail -f /tmp/stoandl.log | grep -E "Pebble JS Bridge initialized|OpenConfig|cons
 **Prerequisite:** a watch (any era); a PKJS watchapp for 5.23a — easiest is a small one whose
 `pkjs/index.js` logs on `ready`, sends/receives an AppMessage, and ships a Clay (or plain) settings
 page. A Clay-based app is the strongest test (Clay's `tosource()` was the original Rhino→GraalJS
-trigger). Sideload with `stoandl sideload <app.pbw>`.
+trigger). Sideload with `stoandl apps install <app.pbw>`.
 
 ### 5.23a PKJS regression after the `startup.js` ES6 rewrite  — **the priority**
 
@@ -980,9 +980,9 @@ trigger). Sideload with `stoandl sideload <app.pbw>`.
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
 | 5.236 | Connect + notify | restart daemon, let the watch connect, trigger a desktop notification | `Watch connected` then `Notification queued for watch`; the notification shows on the watch. No new errors on the connect path (incl. the upstream `ConnectivityStatus` crash-guard). |
-| 5.237 | Sideload a `.pbw` | `stoandl sideload <app.pbw>` (try an older single-platform pbw too) | Installs and launches. The upstream legacy-`.pbw` fallback is among the picked-up commits, so an older pbw that failed before should now install. |
+| 5.237 | Sideload a `.pbw` | `stoandl apps install <app.pbw>` (try an older single-platform pbw too) | Installs and launches. The upstream legacy-`.pbw` fallback is among the picked-up commits, so an older pbw that failed before should now install. |
 | 5.238 | Reconnect after out-of-range | walk out of range mid-use (ideally during a transfer), then return | Reconnects on its own; a test notification arrives. This is the **manual proxy for the WatchManager slot-release regression that couldn't be unit-tested** in the JVM fixture (the `cleanup()` `finally` must free the slot even if `disconnect()` throws). Repeat 3–5×; reconnection must never wedge. |
-| 5.239 | Quick wired-feature pass | `stoandl battery`, `stoandl screenshot`, `stoandl language list`, music play/pause from the watch | Each still works — confirms no public-API drift from the upstream jump broke a wired feature. |
+| 5.239 | Quick wired-feature pass | `stoandl watch battery`, `stoandl screenshot`, `stoandl language list`, music play/pause from the watch | Each still works — confirms no public-API drift from the upstream jump broke a wired feature. |
 
 **Rollback:** if anything here fails, the pre-rebase branch is intact — repoint the submodule back
 (`git -C libs/libpebble3 checkout stoandl` at the old tip) and rebuild.
@@ -1006,14 +1006,14 @@ the unified watch matcher; this pass is the manual proxy for those.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.240 | CLI round-trip (`withControl`) — **the priority** | run a spread: `stoandl list`, `battery`, `apps`, `settings`, `weather`, `notif list`, `language list`, `screenshot /tmp/s.png`, `logs /tmp/l.txt` | Each prints its normal output and exit code; with the daemon **stopped**, an error path still prints `Cannot connect to D-Bus…` / `Error: …` and exits non-zero. No hang, no missing output, no leaked connection — confirms the shared connect/disconnect/early-return scaffold preserved every subcommand. |
-| 5.241 | Watch matcher (`matchOneWatch`) | `stoandl connect <substring>`, `stoandl repair <substring>`, `stoandl unpair <name>`; plus a no-match and an ambiguous substring | Exact + unique-substring resolves the right watch; no match → `No known watch matching '…'`; ambiguous → `'…' matches multiple watches (…) — be more specific`. Wording identical across all three commands. |
+| 5.240 | CLI round-trip (`withControl`) — **the priority** | run a spread: `stoandl watch list`, `battery`, `apps`, `settings`, `weather`, `notif list`, `language list`, `screenshot /tmp/s.png`, `logs /tmp/l.txt` | Each prints its normal output and exit code; with the daemon **stopped**, an error path still prints `Cannot connect to D-Bus…` / `Error: …` and exits non-zero. No hang, no missing output, no leaked connection — confirms the shared connect/disconnect/early-return scaffold preserved every subcommand. |
+| 5.241 | Watch matcher (`matchOneWatch`) | `stoandl watch connect <substring>`, `stoandl watch repair <substring>`, `stoandl watch unpair <name>`; plus a no-match and an ambiguous substring | Exact + unique-substring resolves the right watch; no match → `No known watch matching '…'`; ambiguous → `'…' matches multiple watches (…) — be more specific`. Wording identical across all three commands. |
 | 5.242 | Connect-time syncs (`onFreshConnect`) | restart daemon with `watch.*` prefs set + `firmware.notify` + `health.sync` on; let the watch connect | On the connect edge: prefs applied (`Applied watch pref …`), health requested, firmware check fires (≤once/day). All four `start*` hooks still trigger. |
 | 5.243 | Music control (MPRIS helpers) | play media; check now-playing on the watch; press play/pause/next/prev/volume | Title/**artist**/album show (artist via the collapsed `List`/`Array` branch); buttons drive the player; volume works (system or player per config). |
 | 5.244 | Weather location import (shared `runCommand`) | set `weather.location_source = command` (or `gnome`) with a working command; trigger a sync | Subprocess runs and locations import (`weather.location_command produced N location(s)`), unchanged. |
 | 5.245 | Install progress bar (`renderProgressBar`) | `stoandl firmware <file.pbz>` **or** `stoandl language install <locale>` | The `[####----]` bar renders and advances (now one shared renderer for both), then completes. |
 | 5.246 | Config / PKJS webview (`currentPkjsApps`) | `stoandl config "<pkjs app>"`, open then close the settings page | Config URL opens and close round-trips (`WebviewClose` → app); PKJS session enumeration unchanged. |
-| 5.247 | Clean shutdown (`pairingAgent.unregister`) | `systemctl --user stop stoandl` (or Ctrl-C), then `stoandl pair` a watch afterwards | Shutdown logs no agent error and unregisters the BlueZ agent; a later `pair` still registers a fresh agent and completes MITM numeric-comparison pairing. |
+| 5.247 | Clean shutdown (`pairingAgent.unregister`) | `systemctl --user stop stoandl` (or Ctrl-C), then `stoandl watch pair` a watch afterwards | Shutdown logs no agent error and unregisters the BlueZ agent; a later `pair` still registers a fresh agent and completes MITM numeric-comparison pairing. |
 | 5.248 | Config parses with the new example keys (`conf.example`) | copy the updated `packaging/stoandl.conf.example` (now incl. `music.*`, `geolocation.enabled`, `language.download`) to the config path; restart | Daemon starts and parses every key — no `Unknown …` warning for the newly-documented keys. |
 
 **Deliberately NOT changed** (so don't expect a diff there): the firmware/language status pollers were
@@ -1182,8 +1182,8 @@ peripheral connections at once.
 | 6.2 | Notifications fan out | trigger a desktop notification | Log: `Notification queued for watch` once per connected watch; **both** watches show the notification. |
 | 6.3 | One disconnects | power off one watch | That watch's disconnect appears in the log; the other stays connected; notifications still reach the remaining watch. |
 | 6.4 | Reconnect | power the disconnected watch back on | It reconnects cleanly; both are connected again. |
-| 6.5 | `stoandl pair` — bonded watch absent | one watch bonded but out of range, run `stoandl pair` for a new (unbonded) watch | Should work: the absent watch is `KnownPebbleDevice` (not `ConnectedPebbleDevice`), so the guard doesn't fire; the `alreadyBonded` snapshot prevents false-positive completion on the old watch. New watch bonds and `pair` returns `"ok:Paired"`. |
-| 6.6 | `stoandl pair` — watch already connected | one watch actively connected, run `stoandl pair` for a second (unbonded) watch | **Known broken**: the early-return guard in `Pair()` exits immediately with `"Watch already connected"`. Fix requires removing that guard and scoping the connected-detector to newly connected devices only. |
+| 6.5 | `stoandl watch pair` — bonded watch absent | one watch bonded but out of range, run `stoandl watch pair` for a new (unbonded) watch | Should work: the absent watch is `KnownPebbleDevice` (not `ConnectedPebbleDevice`), so the guard doesn't fire; the `alreadyBonded` snapshot prevents false-positive completion on the old watch. New watch bonds and `pair` returns `"ok:Paired"`. |
+| 6.6 | `stoandl watch pair` — watch already connected | one watch actively connected, run `stoandl watch pair` for a second (unbonded) watch | **Known broken**: the early-return guard in `Pair()` exits immediately with `"Watch already connected"`. Fix requires removing that guard and scoping the connected-detector to newly connected devices only. |
 
 ---
 
