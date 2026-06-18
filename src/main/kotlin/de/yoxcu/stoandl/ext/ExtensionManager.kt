@@ -12,6 +12,7 @@ import de.yoxcu.stoandl.pebble.WatchNotifier
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.packets.AppMessage
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
 import kotlinx.coroutines.CoroutineScope
@@ -333,19 +334,26 @@ private class ExtensionProcess(
         if (registeredApps.add(uuid)) {
             scope.launch {
                 val lp = libPebbleRef.get() ?: return@launch
+                // Use the BROADCAST inbound packet flow, not inboundAppMessages(uuid): the latter is a
+                // single competitive Channel that libpebble3's CompanionAppLifecycleManager also drains
+                // for every running locker app, so it would steal our messages (and not ACK them). The
+                // SharedFlow lets us observe every AppMessagePush independently; we ACK it ourselves.
                 lp.watches
                     .map { devices -> devices.filterIsInstance<ConnectedPebbleDevice>().firstOrNull() }
                     .distinctUntilChanged()
-                    .flatMapLatest { dev -> dev?.inboundAppMessages(uuid)?.map { dev to it } ?: emptyFlow() }
-                    .collect { (dev, msg) ->
-                        runCatching { dev.sendAppMessageResult(AppMessageResult.ACK(msg.transactionId)) }
+                    .flatMapLatest { dev -> dev?.inboundMessages?.map { dev to it } ?: emptyFlow() }
+                    .collect { (dev, pkt) ->
+                        if (pkt !is AppMessage.AppMessagePush || pkt.uuid.get() != uuid) return@collect
+                        val txn = pkt.transactionId.get()
+                        runCatching { dev.sendAppMessageResult(AppMessageResult.ACK(txn)) }
+                        val data = pkt.dictionary.list.associate { it.key.get().toInt() to it.getTypedData() }
                         enqueue(buildJsonObject {
                             put("jsonrpc", "2.0")
                             put("method", "onAppMessage")
                             put("params", buildJsonObject {
                                 put("uuid", uuid.toString())
-                                put("transactionId", msg.transactionId.toInt())
-                                put("data", encodeAppData(msg.data))
+                                put("transactionId", txn.toInt())
+                                put("data", encodeAppData(data))
                             })
                         })
                     }
@@ -404,6 +412,10 @@ private class ExtensionProcess(
         data.forEach { (k, v) ->
             put(k.toString(), buildJsonObject {
                 when (v) {
+                    // libpebble3's AppMessageTuple.getTypedData() returns ULong for UInt tuples and
+                    // Long for Int tuples (regardless of 1/2/4-byte width) — handle those first.
+                    is ULong -> { put("t", "uint"); put("v", v.toLong()) }
+                    is Long -> { put("t", "int"); put("v", v) }
                     is UByte -> { put("t", "uint8"); put("v", v.toInt()) }
                     is UShort -> { put("t", "uint16"); put("v", v.toInt()) }
                     is UInt -> { put("t", "uint"); put("v", v.toLong()) }
