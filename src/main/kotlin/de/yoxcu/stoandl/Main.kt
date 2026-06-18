@@ -34,7 +34,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "dev", "health")
+private val CTL_COMMANDS = setOf("sideload", "add", "config", "fakecall", "findwatch", "apps", "launch", "remove", "backup", "restore", "weather", "settings", "set-setting", "pair", "unpair", "repair", "connect", "list", "battery", "calendar", "datalog", "firmware", "language", "notif", "screenshot", "logs", "support", "reset", "developer", "dev", "health", "ext")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -193,6 +193,7 @@ private fun ctl(args: Array<String>) {
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
         "notif" -> ctlNotif(args.drop(1))
+        "ext" -> ctlExt(args.drop(1))
         "apps" -> withControl { control ->
             val records = try { control.ListApps() } catch (e: Exception) {
                 System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
@@ -948,6 +949,56 @@ private fun ctlNotif(rest: List<String>) {
             }
             else -> {
                 System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]>")
+                System.exit(1)
+            }
+        }
+    }
+}
+
+private fun ctlExt(rest: List<String>) {
+    val sub = rest.firstOrNull() ?: "list"
+    withControl { control ->
+        when (sub) {
+            "list", "status" -> {
+                val rows = try { control.ExtList() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                if (rows.isEmpty()) { println("No extensions installed. (stoandl ext install <archive>)"); return }
+                println(String.format("%-20s %-10s %-9s %s", "NAME", "INSTALLED", "ENABLED", "RUNNING"))
+                rows.forEach { row ->
+                    val c = row.split('\t')
+                    println(String.format("%-20s %-10s %-9s %s",
+                        c.getOrElse(0) { "" }, c.getOrElse(1) { "" }, c.getOrElse(2) { "" }, c.getOrElse(3) { "" }))
+                }
+            }
+            "install" -> {
+                val p = rest.getOrNull(1)
+                if (p.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl ext install <archive.tar.gz|.tgz|.tar|.zip>"); System.exit(1); return
+                }
+                val f = File(p)
+                if (!f.isFile) { System.err.println("No such file: $p"); System.exit(1); return }
+                handleStatusResponse(try { control.ExtInstall(f.absolutePath) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            "uninstall", "remove", "enable", "disable", "restart" -> {
+                val name = rest.getOrNull(1)
+                if (name.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl ext $sub <name>"); System.exit(1); return
+                }
+                val resp = try {
+                    when (sub) {
+                        "uninstall", "remove" -> control.ExtUninstall(name)
+                        "enable" -> control.ExtEnable(name)
+                        "disable" -> control.ExtDisable(name)
+                        else -> control.ExtRestart(name)
+                    }
+                } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+                handleStatusResponse(resp)
+            }
+            else -> {
+                System.err.println("Usage: stoandl ext <list|install <archive>|uninstall <name>|enable <name>|disable <name>|restart <name>>")
                 System.exit(1)
             }
         }

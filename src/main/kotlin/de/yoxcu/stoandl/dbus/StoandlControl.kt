@@ -218,4 +218,25 @@ interface StoandlControl : DBusInterface {
     /** Whether the developer connection server is running. Returns `ok:active`/`ok:inactive` or
      *  `notready:<msg>`. */
     fun DevConnectionStatus(): String
+
+    /** Installed/enabled extensions, one tab-separated row each: `name \t installed|missing \t
+     *  enabled|disabled \t running|stopped`. */
+    fun ExtList(): List<String>
+
+    /** Install an extension from an archive (.tar.gz/.tgz/.tar/.zip) into `<configDir>/ext/<name>/`:
+     *  extracts it, sideloads a bundled `.pbw` if present, enables it, and hotplug-starts it.
+     *  Status-prefixed return. */
+    fun ExtInstall(path: String): String
+
+    /** Stop [name], remove it from `extensions.enabled`, and delete its files. Status-prefixed. */
+    fun ExtUninstall(name: String): String
+
+    /** Enable [name] (add to `extensions.enabled`) and hotplug-start it. Status-prefixed. */
+    fun ExtEnable(name: String): String
+
+    /** Disable [name] (remove from `extensions.enabled`) and stop it; files are kept. Status-prefixed. */
+    fun ExtDisable(name: String): String
+
+    /** Restart [name]'s process. Status-prefixed. */
+    fun ExtRestart(name: String): String
 }

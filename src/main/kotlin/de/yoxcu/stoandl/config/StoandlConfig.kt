@@ -149,11 +149,13 @@ data class StoandlConfig(
      *  touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property)
      *  are auto-detected. */
     val dndSync: DndSyncMode,
-    /** User extensions ("companion apps"): host-side child processes that drive watch notifications
-     *  (and, later, watchapp AppMessages) over a stdio JSON-RPC protocol. Built from `extensions.enabled`
-     *  + the `extension.<name>.*` keys. Empty by default — nothing spawns unless explicitly enabled.
-     *  See docs/extensions.md. */
-    val extensions: List<ExtensionDef>,
+    /** Enabled extensions ("companion apps"): the names from `extensions.enabled`. Each resolves to a
+     *  child process under `<configDir>/ext/<name>/` (default entry `<name>.py`, overridable). The
+     *  `stoandl ext` CLI edits this list live. See docs/extensions.md. */
+    val extensionsEnabled: List<String>,
+    /** Optional per-extension settings (`extension.<name>.<key>` → value), passed to the child in its
+     *  `initialize` handshake; `cmd` overrides the default entry command. Most extensions need none. */
+    val extensionConfig: Map<String, Map<String, String>>,
 ) {
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
@@ -169,17 +171,6 @@ data class StoandlConfig(
     /** Which way desktop DND ↔ watch Quiet Time is mirrored: not at all, host→watch only, watch→host
      *  only, or both. */
     enum class DndSyncMode { OFF, TO_WATCH, TO_HOST, BOTH }
-
-    /** A configured extension. [command] is the spawn argv; [allow] the user-granted capabilities
-     *  (e.g. `notify`, `appmessage:<uuid>`); [config] the remaining `extension.<name>.<key>` pairs
-     *  passed to the child in its `initialize` handshake. */
-    data class ExtensionDef(
-        val name: String,
-        val command: List<String>,
-        val allow: Set<String>,
-        val confine: Boolean,
-        val config: Map<String, String>,
-    )
 
     /** Source for DE-imported locations: none (manual only), the GNOME/Phosh weather GSettings,
      *  or a user-provided command that prints `Name:lat:lon` lines (DE-agnostic escape hatch). */
@@ -240,7 +231,8 @@ data class StoandlConfig(
             healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
             classicDiscover = false,
             dndSync = DndSyncMode.OFF,
-            extensions = emptyList(),
+            extensionsEnabled = emptyList(),
+            extensionConfig = emptyMap(),
         )
 
         /** The stoandl base directory, honouring `XDG_CONFIG_HOME` (falling back to `~/.config`).
@@ -329,7 +321,8 @@ data class StoandlConfig(
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
                 dndSync = parseDndSync(map["dnd.sync"]),
-                extensions = parseExtensions(map),
+                extensionsEnabled = parseList(map["extensions.enabled"]),
+                extensionConfig = parseExtensionConfig(map),
             )
             log.info {
                 "Config loaded from ${file.path}: " +
@@ -354,7 +347,7 @@ data class StoandlConfig(
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
-                    (if (cfg.extensions.isNotEmpty()) ", extensions=${cfg.extensions.map { it.name }}" else "")
+                    (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
             }
             return cfg
         }
@@ -412,30 +405,23 @@ data class StoandlConfig(
             }
         }
 
-        /** Build the [ExtensionDef] list from `extensions.enabled` + the `extension.<name>.*` keys.
-         *  An extension with no `cmd` is skipped (warned); `allow` defaults to `notify` (the baseline,
-         *  least-privileged capability) when unset; any other `extension.<name>.<key>` becomes config
-         *  passed to the child. `%h` and a leading `~` expand to the home directory. */
-        private fun parseExtensions(map: Map<String, String>): List<ExtensionDef> {
-            val names = map["extensions.enabled"]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
-                ?: return emptyList()
-            return names.distinct().mapNotNull { name ->
-                val prefix = "extension.$name."
-                val cmdRaw = map["${prefix}cmd"]?.trim()
-                if (cmdRaw.isNullOrEmpty()) {
-                    log.warn { "Extension '$name' is enabled but has no ${prefix}cmd — skipping" }
-                    return@mapNotNull null
-                }
-                val command = cmdRaw.split(Regex("\\s+")).map(::expandHome)
-                val allow = map["${prefix}allow"]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
-                    ?.toSet()?.takeIf { it.isNotEmpty() } ?: setOf("notify")
-                val confine = parseBool(map["${prefix}confine"])
-                val reserved = setOf("cmd", "allow", "confine")
-                val config = map.entries
-                    .filter { it.key.startsWith(prefix) && it.key.removePrefix(prefix) !in reserved }
-                    .associate { it.key.removePrefix(prefix) to expandHome(it.value) }
-                ExtensionDef(name, command, allow, confine, config)
+        private fun parseList(raw: String?): List<String> =
+            raw?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct() ?: emptyList()
+
+        /** Gather the `extension.<name>.<key> = value` settings into name → {key → value}. `%h`/`~` in
+         *  values expand to home. The keys (incl. `cmd`) are resolved against the ext dir at spawn time. */
+        private fun parseExtensionConfig(map: Map<String, String>): Map<String, Map<String, String>> {
+            val out = HashMap<String, MutableMap<String, String>>()
+            map.entries.forEach { (k, v) ->
+                if (!k.startsWith("extension.")) return@forEach
+                val rest = k.removePrefix("extension.")
+                val dot = rest.indexOf('.')
+                if (dot <= 0) return@forEach
+                val name = rest.substring(0, dot)
+                val key = rest.substring(dot + 1)
+                out.getOrPut(name) { LinkedHashMap() }[key] = expandHome(v)
             }
+            return out
         }
 
         private fun parseDndSync(raw: String?): DndSyncMode = when (raw?.trim()?.lowercase()) {

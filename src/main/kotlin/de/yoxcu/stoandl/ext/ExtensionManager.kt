@@ -2,13 +2,14 @@
 
 package de.yoxcu.stoandl.ext
 
-import de.yoxcu.stoandl.config.StoandlConfig.ExtensionDef
 import de.yoxcu.stoandl.pebble.NotifAction
 import de.yoxcu.stoandl.pebble.NotifOwner
 import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
 import de.yoxcu.stoandl.pebble.NotifRequest
 import de.yoxcu.stoandl.pebble.ReplySpec
 import de.yoxcu.stoandl.pebble.WatchNotifier
+import de.yoxcu.stoandl.util.LenientJson
+import de.yoxcu.stoandl.util.runCommand
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -17,6 +18,8 @@ import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -25,57 +28,58 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.uuid.Uuid
-import de.yoxcu.stoandl.util.LenientJson
 
 private val log = KotlinLogging.logger {}
 
 /**
  * Spawns and supervises user "extensions" — host-side companion processes (Matrix, Signal, SMS,
- * find-my-phone, …) in any language — that drive watch notifications without a watchapp. Each is a
- * child process speaking newline-delimited JSON-RPC over stdio (see docs/extensions.md). This is the
- * Phase-0/1 MVP: notify + reply/action/dismiss callbacks. AppMessage/watchapp companions (Phase 3) are
- * not wired yet.
+ * find-my-phone, …) in any language — that drive watch notifications and/or act as a PebbleKit-style
+ * companion to a watchapp, over a newline-delimited JSON-RPC stdio protocol (docs/extensions.md).
  *
- * Every extension's notifications go through the shared [WatchNotifier] choke point, so per-app
- * mute/style applies to them exactly as it does to desktop notifications.
+ * Each enabled extension is a directory `<extDir>/<name>/`; the default entry is `<name>.py` (run with
+ * its own dir as cwd, so `import stoandl_ext` works). `extensions.enabled` in stoandl.conf is the
+ * authoritative run-list, which the `stoandl ext` verbs ([install]/[uninstall]/[enable]/[disable]/
+ * [restart]/[list]) edit live — start/stop is **hotplug**, no daemon restart. There is no sandbox and
+ * no capability grant: an extension runs as you (like any script), and self-declares what it does.
+ *
+ * Every extension's notifications go through the shared [WatchNotifier], so per-app mute/style applies.
  */
 class ExtensionManager(
-    private val defs: List<ExtensionDef>,
+    private val extDir: File,
+    private val confFile: File,
+    private val enabledAtStart: List<String>,
+    private val extConfig: Map<String, Map<String, String>>,
     private val watchNotifier: WatchNotifier,
     private val owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
 ) {
+    private val running = ConcurrentHashMap<String, ExtensionProcess>()
+    private val confLock = Any()
+
     fun start() {
-        if (defs.isEmpty()) {
-            log.info { "No extensions configured (set extensions.enabled + extension.<name>.cmd)" }
-            return
+        if (enabledAtStart.isEmpty()) {
+            log.info { "No extensions enabled (set extensions.enabled or run `stoandl ext install`)" }
+        } else {
+            log.info { "Starting ${enabledAtStart.size} extension(s): $enabledAtStart" }
+            enabledAtStart.forEach { startProcess(it) }
         }
-        log.info { "Starting ${defs.size} extension(s): ${defs.map { it.name }}" }
-        val processes = defs.map { def -> ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope).also { it.launch() } }
-        // Tell extensions when a watch (re)connects so they can re-arm their notifications. Until the
-        // Phase-2 re-push lands, a notify() issued while disconnected is dropped, so this edge is how a
-        // long-lived extension (e.g. find-my-phone) gets its notification back onto a fresh connection.
-        //
-        // The device reports `Connected` BEFORE its timeline/app BlobDB finishes negotiating, and a
-        // notification sent in that window is silently dropped by the watch (its parent app isn't synced
-        // yet). So settle for a moment after the connect edge — and re-check we're still connected —
-        // before broadcasting. (Phase 2's readiness-gated re-push will replace this heuristic.)
+        // Tell running extensions when a watch (re)connects so they can re-arm. The watch reports
+        // Connected before its BlobDB is ready, so settle briefly (and re-check) before broadcasting.
         libPebbleRef.get()?.let { lp ->
             scope.launch {
                 lp.watches
@@ -85,58 +89,212 @@ class ExtensionManager(
                         if (!connected) return@collect
                         delay(CONNECT_SETTLE_MS)
                         if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
-                            processes.forEach { it.onWatchConnected() }
+                            running.values.forEach { it.onWatchConnected() }
                         }
                     }
             }
         }
     }
-}
 
-// The watch reports Connected before its BlobDB is ready to accept timeline notifications; give it this
-// long to settle before telling extensions to (re)send. Empirically the BlobDB is up well under 1s
-// after connect; 3s leaves margin for a slow phone.
-private const val CONNECT_SETTLE_MS = 3_000L
+    // ---- lifecycle (hotplug) --------------------------------------------------------------------
+
+    private fun startProcess(name: String): Boolean {
+        if (running.containsKey(name)) return true
+        val def = resolveExtension(name, extDir, extConfig[name] ?: emptyMap()) ?: return false
+        val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope)
+        running[name] = proc
+        proc.launch()
+        return true
+    }
+
+    private fun stopProcess(name: String): Boolean = running.remove(name)?.let { it.shutdown(); true } ?: false
+
+    // ---- `stoandl ext` operations (return status-prefixed strings) ------------------------------
+
+    fun list(): List<String> {
+        val enabled = currentEnabled().toSet()
+        val installed = extDir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.toSet() ?: emptySet()
+        return (installed + enabled).sorted().map { n ->
+            listOf(
+                n,
+                if (n in installed) "installed" else "missing",
+                if (n in enabled) "enabled" else "disabled",
+                if (running.containsKey(n)) "running" else "stopped",
+            ).joinToString("\t")
+        }
+    }
+
+    /** Extract an archive (.tar.gz/.tgz/.tar/.zip) into `<extDir>/<name>/`, sideload a bundled `.pbw`,
+     *  enable it, and hotplug-start it. */
+    fun install(archivePath: String): String {
+        val archive = File(archivePath)
+        if (!archive.isFile) return "error:No such file: $archivePath"
+        val tmp = File(extDir, ".install-tmp-${archive.name.hashCode()}")
+        tmp.deleteRecursively(); tmp.mkdirs()
+        try {
+            if (!extract(archive, tmp)) {
+                return "error:Could not extract ${archive.name} (need tar/unzip; supported: .tar.gz/.tgz/.tar/.zip)"
+            }
+            // A single top-level dir is the extension root; otherwise the archive's files are the root.
+            val entries = tmp.listFiles()?.filter { it.name != "__MACOSX" } ?: emptyList()
+            val root = entries.singleOrNull { it.isDirectory } ?: tmp
+            val rawName = manifestName(root) ?: archive.name
+                .removeSuffix(".tar.gz").removeSuffix(".tgz").removeSuffix(".tar").removeSuffix(".zip")
+            val name = rawName.substringAfterLast('/').filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+            if (name.isEmpty()) return "error:Could not determine an extension name from ${archive.name}"
+
+            stopProcess(name)
+            val dest = File(extDir, name)
+            dest.deleteRecursively()
+            dest.parentFile?.mkdirs()
+            if (!root.copyRecursively(dest, overwrite = true)) return "error:Failed to install files for '$name'"
+
+            val pbwMsg = sideloadBundledPbw(dest)
+            setEnabled(name, true)
+            val started = startProcess(name)
+            return if (started) "ok:Installed '$name'$pbwMsg" else "error:Installed '$name' but couldn't start it (no entry point?)$pbwMsg"
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    fun uninstall(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        stopProcess(n)
+        setEnabled(n, false)
+        val dir = File(extDir, n)
+        val existed = dir.isDirectory
+        dir.deleteRecursively()
+        return if (existed) "ok:Uninstalled '$n'" else "ok:'$n' disabled (no files were installed)"
+    }
+
+    fun enable(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        if (!File(extDir, n).isDirectory) return "error:'$n' is not installed (no ${extDir.path}/$n)"
+        setEnabled(n, true)
+        return if (startProcess(n)) "ok:Enabled '$n'" else "error:Enabled '$n' but couldn't start it (no entry point?)"
+    }
+
+    fun disable(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        stopProcess(n)
+        setEnabled(n, false)
+        return "ok:Disabled '$n'"
+    }
+
+    fun restart(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        stopProcess(n)
+        return if (startProcess(n)) "ok:Restarted '$n'" else "error:Couldn't start '$n'"
+    }
+
+    // ---- helpers --------------------------------------------------------------------------------
+
+    private fun sanitize(name: String): String? =
+        name.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }
+
+    private fun sideloadBundledPbw(dir: File): String {
+        val pbw = dir.listFiles()?.firstOrNull { it.extension.equals("pbw", ignoreCase = true) } ?: return ""
+        val lp = libPebbleRef.get() ?: return "; ${pbw.name} not installed (no watch connected — `stoandl sideload` it later)"
+        return try {
+            val ok = runBlocking { lp.sideloadApp(kotlinx.io.files.Path(pbw.absolutePath)) }
+            if (ok) "; installed ${pbw.name} on the watch" else "; ${pbw.name} sideload failed"
+        } catch (e: Exception) {
+            log.warn(e) { "sideload ${pbw.name} failed" }
+            "; ${pbw.name} sideload failed (${e.message})"
+        }
+    }
+
+    private fun extract(archive: File, dest: File): Boolean {
+        val n = archive.name.lowercase()
+        val cmd = when {
+            n.endsWith(".zip") -> listOf("unzip", "-q", "-o", archive.absolutePath, "-d", dest.absolutePath)
+            n.endsWith(".tar.gz") || n.endsWith(".tgz") -> listOf("tar", "-xzf", archive.absolutePath, "-C", dest.absolutePath)
+            n.endsWith(".tar") -> listOf("tar", "-xf", archive.absolutePath, "-C", dest.absolutePath)
+            else -> return false
+        }
+        return runCommand(cmd, 60) != null
+    }
+
+    private fun currentEnabled(): List<String> {
+        if (!confFile.isFile) return emptyList()
+        val line = confFile.readLines().firstOrNull {
+            val code = it.substringBefore('#').trimStart()
+            code.startsWith("extensions.enabled") && code.contains('=')
+        } ?: return emptyList()
+        return line.substringBefore('#').substringAfter('=').split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    /** Add/remove [name] from the `extensions.enabled` line in stoandl.conf (rewriting only that line). */
+    private fun setEnabled(name: String, enabled: Boolean) = synchronized(confLock) {
+        val lines = if (confFile.isFile) confFile.readLines().toMutableList() else mutableListOf()
+        val idx = lines.indexOfFirst {
+            val code = it.substringBefore('#').trimStart()
+            code.startsWith("extensions.enabled") && code.contains('=')
+        }
+        val names = LinkedHashSet<String>()
+        if (idx >= 0) {
+            lines[idx].substringBefore('#').substringAfter('=').split(',')
+                .map { it.trim() }.filter { it.isNotEmpty() }.forEach { names.add(it) }
+        }
+        if (enabled) names.add(name) else names.remove(name)
+        val newLine = "extensions.enabled = " + names.joinToString(", ")
+        if (idx >= 0) {
+            lines[idx] = newLine
+        } else {
+            if (lines.isNotEmpty() && lines.last().isNotBlank()) lines.add("")
+            lines.add(newLine)
+        }
+        try {
+            confFile.parentFile?.mkdirs()
+            confFile.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
+        } catch (e: Exception) {
+            log.warn { "Couldn't update extensions.enabled in ${confFile.path}: ${e.message}" }
+        }
+    }
+}
 
 private const val MAX_FAST_FAILURES = 5
 private const val STABLE_UPTIME_MS = 60_000L
 private const val BACKOFF_BASE_MS = 1_000L
 private const val BACKOFF_MAX_MS = 60_000L
 private const val INIT_TIMEOUT_MS = 10_000L
+private const val CONNECT_SETTLE_MS = 3_000L
 
-/** One supervised extension child: spawn → handshake → relay, restart-with-backoff on exit. */
+/** One supervised extension child: spawn → handshake → relay, restart-with-backoff on exit. Owns a
+ *  child scope so [shutdown] cleanly stops the supervise loop, the inbound collectors, and the child. */
 private class ExtensionProcess(
     private val def: ExtensionDef,
     private val watchNotifier: WatchNotifier,
     owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
 ) {
     private val tag = def.name
-    // The write channel is swapped on each spawn.
+    private val job = SupervisorJob(parentScope.coroutineContext[Job])
+    private val scope = CoroutineScope(parentScope.coroutineContext + job)
     @Volatile private var writeChannel: Channel<String>? = null
+    @Volatile private var proc: Process? = null
     @Volatile private var ready = false
-    // Registered under the extension name so routes resolve to it.
     private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }.also { owners.register(it) }
-    // Watchapp UUIDs this extension has registered an inbound-AppMessage collector for (once each).
-    private val registeredApps = java.util.concurrent.ConcurrentHashMap.newKeySet<Uuid>()
+    private val registeredApps = ConcurrentHashMap.newKeySet<Uuid>()
 
-    /** Notify the child that a watch connected (so it can re-arm). No-op until the handshake completes. */
     fun onWatchConnected() {
         if (!ready) return
         enqueue(buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("method", "onWatchConnected")
-            put("params", buildJsonObject {})
+            put("jsonrpc", "2.0"); put("method", "onWatchConnected"); put("params", buildJsonObject {})
         })
     }
 
+    fun shutdown() {
+        ready = false
+        proc?.destroy()
+        job.cancel()
+        log.info { "[$tag] stopped" }
+    }
+
     private fun enqueue(obj: JsonObject) {
-        val ch = writeChannel
-        if (ch == null) {
-            log.debug { "[$tag] drop outgoing (no live process): ${obj["method"]}" }
-            return
-        }
+        val ch = writeChannel ?: run { log.debug { "[$tag] drop outgoing (no live process): ${obj["method"]}" }; return }
         ch.trySend(LenientJson.encodeToString(JsonObject.serializer(), obj))
     }
 
@@ -153,10 +311,11 @@ private class ExtensionProcess(
                     log.warn(e) { "[$tag] extension crashed: ${e.message}" }
                 }
                 ready = false
+                if (!isActive) break
                 val uptime = System.currentTimeMillis() - startedAt
                 fastFailures = if (uptime >= STABLE_UPTIME_MS) 0 else fastFailures + 1
                 if (fastFailures >= MAX_FAST_FAILURES) {
-                    log.error { "[$tag] quarantined after $fastFailures rapid failures — not restarting (fix it and restart the daemon)" }
+                    log.error { "[$tag] quarantined after $fastFailures rapid failures — fix it and `stoandl ext restart $tag`" }
                     return@launch
                 }
                 val backoff = (BACKOFF_BASE_MS shl (fastFailures - 1).coerceAtLeast(0)).coerceAtMost(BACKOFF_MAX_MS)
@@ -167,17 +326,13 @@ private class ExtensionProcess(
     }
 
     private suspend fun runOnce() {
-        val cmd = if (def.confine) {
-            listOf("systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=256M") + def.command
-        } else {
-            def.command
-        }
-        log.info { "[$tag] spawning: ${cmd.joinToString(" ")}${if (def.confine) " (confined)" else ""}" }
-        val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
+        log.info { "[$tag] spawning: ${def.command.joinToString(" ")} (cwd ${def.workingDir.path})" }
+        val process = ProcessBuilder(def.command).directory(def.workingDir).redirectErrorStream(false).start()
+        proc = process
         val ch = Channel<String>(Channel.UNLIMITED)
         writeChannel = ch
 
-        val writer = proc.outputStream.bufferedWriter()
+        val writer = process.outputStream.bufferedWriter()
         val writerJob = scope.launch(Dispatchers.IO) {
             try {
                 for (line in ch) { writer.write(line); writer.write("\n"); writer.flush() }
@@ -186,47 +341,31 @@ private class ExtensionProcess(
             }
         }
         val stderrJob = scope.launch(Dispatchers.IO) {
-            try {
-                proc.errorStream.bufferedReader().forEachLine { log.info { "[$tag] $it" } }
-            } catch (_: Exception) {
-            }
+            try { process.errorStream.bufferedReader().forEachLine { log.info { "[$tag] $it" } } } catch (_: Exception) {}
         }
-        // Read stdout off-thread into a channel, process sequentially (preserves per-extension order
-        // while keeping blocking IO off the suspend handlers).
         val inbound = Channel<String>(Channel.UNLIMITED)
         val readerJob = scope.launch(Dispatchers.IO) {
-            try {
-                proc.inputStream.bufferedReader().forEachLine { inbound.trySend(it) }
-            } finally {
-                inbound.close()
-            }
+            try { process.inputStream.bufferedReader().forEachLine { inbound.trySend(it) } } finally { inbound.close() }
         }
-        val processorJob = scope.launch {
-            for (line in inbound) handleLine(line)
-        }
+        val processorJob = scope.launch { for (line in inbound) handleLine(line) }
 
         sendInitialize()
-        scope.launch {
-            delay(INIT_TIMEOUT_MS)
-            if (!ready) log.warn { "[$tag] no initialize response after ${INIT_TIMEOUT_MS}ms — extension may be stuck" }
-        }
+        scope.launch { delay(INIT_TIMEOUT_MS); if (!ready) log.warn { "[$tag] no initialize response after ${INIT_TIMEOUT_MS}ms" } }
 
-        withContext(Dispatchers.IO) { proc.waitFor() }
+        withContext(Dispatchers.IO) { process.waitFor() }
         ch.close()
         writeChannel = null
+        proc = null
         writerJob.cancel(); stderrJob.cancel(); readerJob.cancel(); processorJob.cancel()
         try { writer.close() } catch (_: Exception) {}
     }
 
     private fun sendInitialize() {
         enqueue(buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("id", 0)
-            put("method", "initialize")
+            put("jsonrpc", "2.0"); put("id", 0); put("method", "initialize")
             put("params", buildJsonObject {
                 put("protocolVersion", 1)
                 put("config", buildJsonObject { def.config.forEach { (k, v) -> put(k, v) } })
-                put("granted", buildJsonArray { def.allow.forEach { add(it) } })
                 put("watch", buildJsonObject {
                     put("connected", libPebbleRef.get()?.watches?.value?.any { it is ConnectedPebbleDevice } ?: false)
                 })
@@ -238,8 +377,7 @@ private class ExtensionProcess(
         val obj = try {
             LenientJson.parseToJsonElement(line).jsonObject
         } catch (e: Exception) {
-            log.warn { "[$tag] ignoring non-JSON line: ${line.take(200)}" }
-            return
+            log.warn { "[$tag] ignoring non-JSON line: ${line.take(200)}" }; return
         }
         val method = obj["method"]?.jsonPrimitive?.contentOrNull
         val id = obj["id"]
@@ -254,29 +392,20 @@ private class ExtensionProcess(
             method == "stopApp" -> handleAppRunState(id, params, launch = false)
             method == "installPbw" -> handleInstallPbw(id, params)
             method == "log" -> log.info { "[$tag] ${params?.str("message") ?: ""}" }
-            method == "initialize" -> {} // host→ext only; ignore an echo
+            method == "initialize" -> {}
             else -> log.debug { "[$tag] unhandled message: method=$method" }
         }
     }
 
     private fun handleResult(obj: JsonObject) {
-        // The only host→ext request in this phase is initialize (id 0); its result is the manifest.
         val manifest = obj["result"]?.jsonObject ?: return
-        val claimed = manifest["capabilities"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet() ?: emptySet()
-        val beyond = claimed.filterNot { cap -> def.allow.any { it == cap || it.substringBefore(':') == cap } }
-        if (beyond.isNotEmpty()) {
-            log.warn { "[$tag] manifest claims ungranted capabilities $beyond — ignored (grant them via extension.$tag.allow)" }
-        }
+        val caps = manifest["capabilities"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
         ready = true
-        log.info { "[$tag] initialized (granted: ${def.allow}; name='${manifest.str("name") ?: tag}')" }
+        log.info { "[$tag] initialized (name='${manifest.str("name") ?: tag}', capabilities=$caps)" }
     }
 
     private suspend fun handleNotify(id: JsonElement?, params: JsonObject?) {
         if (params == null) { replyError(id, "missing params"); return }
-        if (!def.allow.contains("notify")) {
-            replyError(id, "not permitted: grant 'notify' via extension.$tag.allow")
-            return
-        }
         val extToken = params.str("extToken")
         val actions = params["actions"]?.jsonArray?.mapNotNull { e ->
             val o = e.jsonObject
@@ -285,9 +414,8 @@ private class ExtensionProcess(
         } ?: emptyList()
         val reply = params["reply"]?.jsonObject?.let { r ->
             val canned = r["cannedReplies"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
-            ReplySpec(canned, r["allowVoice"]?.jsonPrimitive?.booleanOrNull ?: false)
+            ReplySpec(canned, r["allowVoice"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false)
         }
-        // Optional stable id so a re-send replaces the same notification (across restarts too).
         val requestedId = params.str("itemId")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         val req = NotifRequest(
             appName = params.str("appName") ?: def.name,
@@ -301,15 +429,8 @@ private class ExtensionProcess(
             vibeName = params.str("vibe"),
             itemId = requestedId,
         )
-        // The ext's correlation token rides in the persisted route, so callbacks survive a restart.
         val itemId = watchNotifier.push(req, def.name, extToken)
-        if (id != null) {
-            enqueue(buildJsonObject {
-                put("jsonrpc", "2.0")
-                put("id", id)
-                put("result", buildJsonObject { put("itemId", itemId?.toString()) })
-            })
-        }
+        if (id != null) reply(id) { put("itemId", itemId?.toString()) }
     }
 
     private suspend fun handleClose(params: JsonObject?) {
@@ -317,27 +438,18 @@ private class ExtensionProcess(
         watchNotifier.close(itemId)
     }
 
-    // ---- watchapp companion (AppMessage / launch / install) -------------------------------------
-
     private fun connectedDevice(): ConnectedPebbleDevice? =
         libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
 
-    private fun appmessageAllowed(uuid: Uuid): Boolean =
-        def.allow.contains("appmessage") || def.allow.contains("appmessage:$uuid")
-
-    /** Arm a per-connection inbound-AppMessage collector for [uuid]: ACK each message to the watch and
-     *  forward it to the child as an `onAppMessage` notification. Idempotent (one collector per uuid). */
     private fun handleRegisterApp(id: JsonElement?, params: JsonObject?) {
         val uuid = params?.str("uuid")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         if (uuid == null) { replyError(id, "registerApp: missing/invalid uuid"); return }
-        if (!appmessageAllowed(uuid)) { replyError(id, "not permitted: grant 'appmessage:$uuid' via extension.$tag.allow"); return }
         if (registeredApps.add(uuid)) {
             scope.launch {
                 val lp = libPebbleRef.get() ?: return@launch
-                // Use the BROADCAST inbound packet flow, not inboundAppMessages(uuid): the latter is a
-                // single competitive Channel that libpebble3's CompanionAppLifecycleManager also drains
-                // for every running locker app, so it would steal our messages (and not ACK them). The
-                // SharedFlow lets us observe every AppMessagePush independently; we ACK it ourselves.
+                // BROADCAST inbound packet flow, not inboundAppMessages(uuid): the latter is a single
+                // Channel that CompanionAppLifecycleManager also drains for every running app, which
+                // would steal our messages. The SharedFlow lets us observe + ACK independently.
                 lp.watches
                     .map { devices -> devices.filterIsInstance<ConnectedPebbleDevice>().firstOrNull() }
                     .distinctUntilChanged()
@@ -348,12 +460,9 @@ private class ExtensionProcess(
                         runCatching { dev.sendAppMessageResult(AppMessageResult.ACK(txn)) }
                         val data = pkt.dictionary.list.associate { it.key.get().toInt() to it.getTypedData() }
                         enqueue(buildJsonObject {
-                            put("jsonrpc", "2.0")
-                            put("method", "onAppMessage")
+                            put("jsonrpc", "2.0"); put("method", "onAppMessage")
                             put("params", buildJsonObject {
-                                put("uuid", uuid.toString())
-                                put("transactionId", txn.toInt())
-                                put("data", encodeAppData(data))
+                                put("uuid", uuid.toString()); put("transactionId", txn.toInt()); put("data", encodeAppData(data))
                             })
                         })
                     }
@@ -366,7 +475,6 @@ private class ExtensionProcess(
     private suspend fun handleSendAppMessage(id: JsonElement?, params: JsonObject?) {
         val uuid = params?.str("uuid")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         if (uuid == null) { replyError(id, "sendAppMessage: missing/invalid uuid"); return }
-        if (!appmessageAllowed(uuid)) { replyError(id, "not permitted: grant 'appmessage:$uuid'"); return }
         val dev = connectedDevice() ?: run { reply(id) { put("result", "timeout") }; return }
         val data = decodeAppData(params["data"]?.jsonObject)
         val result = try {
@@ -382,38 +490,25 @@ private class ExtensionProcess(
         val verb = if (launch) "launchApp" else "stopApp"
         val uuid = params?.str("uuid")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         if (uuid == null) { replyError(id, "$verb: missing/invalid uuid"); return }
-        if (!appmessageAllowed(uuid)) { replyError(id, "not permitted: grant 'appmessage:$uuid'"); return }
         val lp = libPebbleRef.get() ?: run { replyError(id, "no watch"); return }
-        try {
-            if (launch) lp.launchApp(uuid) else lp.stopApp(uuid)
-        } catch (e: Exception) {
-            replyError(id, e.message ?: "$verb failed"); return
-        }
+        try { if (launch) lp.launchApp(uuid) else lp.stopApp(uuid) } catch (e: Exception) { replyError(id, e.message ?: "$verb failed"); return }
         reply(id) { put("ok", true) }
     }
 
     private suspend fun handleInstallPbw(id: JsonElement?, params: JsonObject?) {
         val path = params?.str("path")
         if (path.isNullOrEmpty()) { replyError(id, "installPbw: missing path"); return }
-        if (def.allow.none { it == "appmessage" || it.startsWith("appmessage:") }) {
-            replyError(id, "not permitted: installPbw needs an 'appmessage:<uuid>' grant"); return
-        }
         val lp = libPebbleRef.get() ?: run { replyError(id, "no watch"); return }
-        val ok = try {
-            lp.sideloadApp(kotlinx.io.files.Path(path))
-        } catch (e: Exception) {
-            replyError(id, e.message ?: "install failed"); return
-        }
+        // Resolve a relative path against the extension's own dir.
+        val abs = File(path).let { if (it.isAbsolute) it else File(def.workingDir, path) }
+        val ok = try { lp.sideloadApp(kotlinx.io.files.Path(abs.absolutePath)) } catch (e: Exception) { replyError(id, e.message ?: "install failed"); return }
         reply(id) { put("ok", ok) }
     }
 
-    /** Inbound AppMessage dict (typed Kotlin values) → typed-tagged JSON for the child. */
     private fun encodeAppData(data: Map<Int, Any>): JsonObject = buildJsonObject {
         data.forEach { (k, v) ->
             put(k.toString(), buildJsonObject {
                 when (v) {
-                    // libpebble3's AppMessageTuple.getTypedData() returns ULong for UInt tuples and
-                    // Long for Int tuples (regardless of 1/2/4-byte width) — handle those first.
                     is ULong -> { put("t", "uint"); put("v", v.toLong()) }
                     is Long -> { put("t", "int"); put("v", v) }
                     is UByte -> { put("t", "uint8"); put("v", v.toInt()) }
@@ -431,8 +526,6 @@ private class ExtensionProcess(
         }
     }
 
-    /** Child's typed-tagged JSON → AppMessage dict with the right Kotlin runtime types (so libpebble3
-     *  emits the correct tuple width — JSON has one number type, the watchapp's dict_read_* doesn't). */
     private fun decodeAppData(obj: JsonObject?): Map<Int, Any> {
         if (obj == null) return emptyMap()
         val out = LinkedHashMap<Int, Any>()
@@ -450,7 +543,7 @@ private class ExtensionProcess(
                 "int", "int32" -> raw.toIntOrNull()
                 "bool" -> raw.toBooleanStrictOrNull()
                 "bytes" -> runCatching { java.util.Base64.getDecoder().decode(raw) }.getOrNull()
-                else -> raw // cstring/string
+                else -> raw
             }
             if (value != null) out[key] = value
         }
@@ -459,31 +552,20 @@ private class ExtensionProcess(
 
     private fun reply(id: JsonElement?, result: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) {
         if (id == null) return
-        enqueue(buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("id", id)
-            put("result", buildJsonObject(result))
-        })
+        enqueue(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("result", buildJsonObject(result)) })
     }
 
     private fun replyError(id: JsonElement?, message: String) {
         if (id == null) { log.warn { "[$tag] $message" }; return }
-        enqueue(buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("id", id)
-            put("error", buildJsonObject { put("message", message) })
-        })
+        enqueue(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("error", buildJsonObject { put("message", message) }) })
     }
 }
 
 private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
-/**
- * [NotifOwner] for an extension: forwards the user's wrist action/reply/dismiss as a JSON-RPC
- * notification to the child (enqueued — never blocks libpebble3's action flow). The correlation token
- * is supplied by the router from the persisted route (so it survives a restart); the extension then
- * acts via its own service account.
- */
+/** [NotifOwner] for an extension: forwards the user's wrist action/reply/dismiss as a JSON-RPC
+ *  notification to the child (enqueued — never blocks libpebble3's action flow). The correlation token
+ *  comes from the route (router), so the extension then acts via its own service account. */
 private class ExtensionOwner(
     private val name: String,
     private val send: (JsonObject) -> Unit,

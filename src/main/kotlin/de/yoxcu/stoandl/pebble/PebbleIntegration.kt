@@ -207,8 +207,9 @@ class PebbleIntegration(
     // Held for the daemon lifetime so its host-DND backend (bus connection / gsettings monitor) and
     // sync coroutines aren't dropped; null when dnd.sync=off or no host backend was detected.
     private var dndSync: DndSync? = null
-    // Holds the extension supervisor for the daemon lifetime; null when no extensions are configured.
-    private var extensionManager: ExtensionManager? = null
+    // The extension supervisor (companion apps). Constructed in init() before the control service so
+    // the `stoandl ext` D-Bus methods can drive it; started after libPebble is up.
+    private lateinit var extensionManager: ExtensionManager
     private val config = StoandlConfig.load()
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
@@ -265,6 +266,17 @@ class PebbleIntegration(
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
         val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
+        // Extension supervisor: constructed now (so the control service can reach it); started below.
+        extensionManager = ExtensionManager(
+            extDir = File(StoandlConfig.configDir(), "ext"),
+            confFile = StoandlConfig.configFile(),
+            enabledAtStart = config.extensionsEnabled,
+            extConfig = config.extensionConfig,
+            watchNotifier = watchNotifier,
+            owners = notifOwners,
+            libPebbleRef = libPebbleRef,
+            scope = scope,
+        )
 
         // Build the Linux calendar source from config (null if nothing is configured). libpebble3's
         // PhoneCalendarSyncer reads it and handles all pin creation/diffing/deletion itself.
@@ -367,10 +379,10 @@ class PebbleIntegration(
         startWatchPrefsSync()
         startDndSync()
         // User extensions (companion apps): host-side child processes that drive watch notifications
-        // (and reply/actions) over stdio JSON-RPC. Off unless extensions.enabled lists them. They push
-        // through the same watchNotifier choke point as desktop notifications, so per-app mute/style
-        // applies to them too.
-        extensionManager = ExtensionManager(config.extensions, watchNotifier, notifOwners, libPebbleRef, scope).also { it.start() }
+        // (and reply/actions / watchapp AppMessages) over stdio JSON-RPC. They push through the same
+        // watchNotifier choke point as desktop notifications, so per-app mute/style applies to them too.
+        // (Constructed above; started here, after libPebble is up.) Managed live via `stoandl ext`.
+        extensionManager.start()
         startFirmwareNotifier()
         startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
@@ -1223,7 +1235,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1697,6 +1709,7 @@ private class StoandlControlImpl(
     private val notificationAppsControl: NotificationAppsControl?,
     // Null when health.export is off (no exporter to re-project on demand).
     private val healthExporterRef: AtomicReference<HealthExporter?>,
+    private val extensionManager: ExtensionManager,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
@@ -1905,6 +1918,13 @@ private class StoandlControlImpl(
     override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
         notificationAppsControl?.setStyle(query, color, icon, vibe)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun ExtList(): List<String> = extensionManager.list()
+    override fun ExtInstall(path: String): String = extensionManager.install(path)
+    override fun ExtUninstall(name: String): String = extensionManager.uninstall(name)
+    override fun ExtEnable(name: String): String = extensionManager.enable(name)
+    override fun ExtDisable(name: String): String = extensionManager.disable(name)
+    override fun ExtRestart(name: String): String = extensionManager.restart(name)
 
     override fun ListApps(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()

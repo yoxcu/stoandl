@@ -45,43 +45,40 @@ One JSON object per line, framed by `\n`, JSON-RPC 2.0. The child reads on **std
 stdout, it corrupts the frame). Requests carry `id`; fire-and-forget host→ext callbacks are JSON-RPC
 *notifications* (no `id`).
 
-### Lifecycle & handshake
+### Layout, discovery & handshake
 
-Static, config-driven discovery (matches every other stoandl feature; no plugin-dir auto-scan). In
-`stoandl.conf`:
+Each extension is a directory `<configDir>/ext/<name>/`. The default entry point is `<name>.py` (run
+with `python3`, cwd = that dir, so `import stoandl_ext` finds its sibling). `extensions.enabled` in
+`stoandl.conf` is the run-list; the `stoandl ext` commands edit it. **No sandbox, no capability config**
+— an extension runs as you, like any script. Optional overrides: `extension.<name>.cmd` in `stoandl.conf`
+(any language), or a `manifest.json` in the dir (`{ "name":…, "cmd":…, "config":{…} }`) so an
+archive-installed extension is self-contained. The usual way to add one:
 
 ```
-extensions.enabled       = matrix,findphone
-extension.matrix.cmd     = /usr/bin/python3 %h/.config/stoandl/ext/matrix/main.py
-extension.matrix.allow   = notify                       # USER-granted capabilities (authoritative)
-extension.matrix.homeserver = https://matrix.example.org
-extension.matrix.token_file = %h/.config/stoandl/ext/matrix/token
-extension.matrix.confine = false                        # true → wrap in systemd-run --user --scope
-extension.matrix.pbw     = %h/.config/stoandl/ext/matrix/app.pbw   # optional
+stoandl ext install findphone.tar.gz   # extract to ext/findphone/, sideload a bundled .pbw,
+                                        # enable (append to extensions.enabled) + hotplug-start
+stoandl ext list | enable <n> | disable <n> | restart <n> | uninstall <n>
 ```
 
-At startup `ExtensionManager` (one new `start*()` hook, after `registerControlService()`) spawns each
-enabled child and does the **`initialize` handshake first** (host→ext events are buffered/dropped until
-it lands — the Android `onListenerConnected` analog):
+`ExtensionManager` spawns each enabled child and does the **`initialize` handshake first** (host→ext
+events are dropped until it lands — the Android `onListenerConnected` analog):
 
 ```jsonc
 // host -> ext (request)
 {"jsonrpc":"2.0","id":0,"method":"initialize",
  "params":{"protocolVersion":1,
-           "config":{"homeserver":"…","token_file":"…"},   // THIS extension's keys only, never cmd
-           "granted":["notify"],                            // echoes the user grant
-           "watch":{"connected":true,"platform":"emery","model":"…","firmware":"…"}}}
-// ext -> host (result = manifest; daemon INTERSECTS it with `granted`, excess is rejected + logged)
+           "config":{"homeserver":"…","token_file":"…"},   // this extension's settings (manifest + conf)
+           "watch":{"connected":true}}}
+// ext -> host (result = manifest; capabilities/egress are informational, logged, not enforced)
 {"jsonrpc":"2.0","id":0,
  "result":{"name":"matrix","protocolVersion":1,
            "capabilities":["notify"],
-           "ownsUuid":[],
-           "egress":["matrix.example.org:443"],            // advisory/audit, surfaced in `stoandl ext status`
+           "egress":["matrix.example.org:443"],
            "cannedReplyDefaults":["OK","On my way","Call you later"]}}
 ```
 
-The manifest is a *request*, not a grant: `extension.<name>.allow` is authoritative and the manifest is
-intersected with it (a child can't write its own permission slip).
+The manifest is informational (there's no grant to exceed): with no sandbox, a capability gate would be
+friction without real security, so it was dropped — `extensions.enabled` is the only knob.
 
 ### notify + actions + canned reply + dismiss
 
@@ -129,15 +126,16 @@ numbers would silently mismatch.
 
 ## Capabilities & config
 
-- **Opt-in, off by default.** Nothing spawns unless `extensions.enabled` lists it *and*
-  `extension.<name>.cmd` is set.
-- **Capabilities are user-granted** (`extension.<name>.allow = notify,appmessage:<uuid>`), not
-  self-declared; the manifest is validated against the grant.
-- **UUID ownership is first-writer-wins with collision rejection** — `inboundAppMessages(uuid)`
-  competitively consumes a single daemon-wide channel, so a second extension claiming an already-owned
-  UUID is refused (else it would silently steal the victim's traffic).
+- **Opt-in, off by default.** Nothing spawns unless `extensions.enabled` lists it (and a `<name>/`
+  dir / `cmd` resolves an entry point).
+- **No capability grant, no sandbox.** An extension runs as your user — like any script you run — so a
+  permission gate would be friction without real security. The manifest's `capabilities` are
+  informational. (Trust comes from *you* installing it.)
 - Per-extension config (tokens, homeserver) is injected only into that one child's `initialize` —
   never shared, so an extension can't read another's secrets via stoandl.
+- AppMessage UUIDs aren't gated; if two extensions register the same watchapp UUID they'd both observe
+  it (we read the broadcast packet flow, so no one *steals* — see below). Cross-extension UUID
+  arbitration is a possible future refinement.
 
 ## Reply UX on a keyboard-less watch
 
@@ -233,22 +231,19 @@ find-my-phone before is exactly what the extension system provides.
 ## Security & lifecycle
 
 - **Failure isolation by OS process boundary** — segfault/OOM/CPU-spin/deadlock in third-party code
-  can't touch the daemon heap or the BLE link; worst case is a dead pipe the supervisor reaps.
+  can't touch the daemon heap or the BLE link; worst case is a dead pipe the supervisor reaps. Each
+  extension runs in its own child coroutine scope; `shutdown` cancels it and destroys the process.
 - **No third-party code on the protocol thread** — every watch→ext callback returns an immediate
-  `TimelineActionResult`/auto-NACK and dispatches the real work async. The daemon owns all timeouts.
-- **Spam guard** — per-extension `notify()` rate limit/quota (a responsive-but-abusive child won't trip
-  the hang/backoff logic).
-- **Restart / quarantine** — per-child supervisor: restart with exponential backoff, cap (e.g. 5
-  restarts / 5 min) then quarantine + desktop-notify. Stale `itemId→owner` entries pruned on exit.
-  Clean shutdown: `shutdown` notification → close stdin → grace → SIGTERM → SIGKILL.
-- **Sandbox posture (opt-in)** — the child runs as the daemon UID with full FS/network, like any script
-  you run as your user. `extension.<name>.confine = true` launches `cmd` via
-  `systemd-run --user --scope -p MemoryMax= -p RuntimeMaxSec=` (additive — the transport is already
-  `exec`). `egress[]` is advisory/audit only. Documented bluntly: "an extension is as trusted as any
-  script you run as your user; enable `confine` for untrusted ones."
-- **CLI** — new `StoandlControl` methods on the existing object: `ExtList`/`ExtStatus`/`ExtRestart`
-  (status-prefixed strings, consistent with the existing methods). Config is load-once: enabling a new
-  extension needs a daemon restart, like every other feature.
+  result/ACK and dispatches the real work async to the child (enqueued).
+- **Restart / quarantine** — per-child supervisor: restart with exponential backoff; after 5 rapid
+  failures it quarantines (until `stoandl ext restart <name>`).
+- **No sandbox** — the child runs as your UID with full FS/network, like any script you run; trust comes
+  from you installing it. (A future opt-in `systemd-run --scope` wrap could be added per extension if a
+  use case appears, but it's deliberately not a default knob.)
+- **Hotplug CLI** — `StoandlControl.{ExtList,ExtInstall,ExtUninstall,ExtEnable,ExtDisable,ExtRestart}`
+  drive `ExtensionManager` live: install/enable/disable/restart **without a daemon restart**. Enable/
+  disable edit the `extensions.enabled` line in stoandl.conf (only that line) for persistence; the
+  process is started/stopped immediately.
 
 ## libpebble3 impact: none
 
@@ -278,17 +273,21 @@ reconnect without re-push (only if the §"deferred" re-push proves lossy on hard
   unchanged.
 - **Phase 1 — MVP: notify-only extensions (goals a + b). ✅ done.** `ExtensionManager` supervisor +
   `initialize` handshake + `notify`/`onAction`/`onReply`/`onDismiss`/`onWatchConnected`/
-  `closeNotification`, async dispatch, restart/backoff + quarantine, stderr→logback, user-granted caps,
-  `confine` via `systemd-run`. Reference `stoandl_ext.py` helper.
+  `closeNotification`, async dispatch, restart/backoff + quarantine, stderr→logback. Reference
+  `stoandl_ext.py` helper.
 - **Phase 2 — Dismiss hygiene + in-memory routes. ✅ done.** Dismiss `markForDeletion`s (no resync);
   owner registry + token-in-route. (Route *persistence* was prototyped then dropped — pointless given
   the firmware only actions live notifications.) `onWatchConnected` settle delay.
-- **Phase 3 — Watchapp companion (goal c). ✅ done.** `registerApp`/`sendAppMessage`/`onAppMessage`
-  (ACK-on-receipt)/`launchApp`/`stopApp`/`installPbw` with the typed-tagged dict codec; capability
-  `appmessage[:uuid]`. Ships the find-my-phone **watchapp** (`testing/findphone`) + companion.
-- **Phase 4 — Polish (TODO).** A real reply extension (Matrix/SMS); `stoandl ext` CLI + per-extension
-  rate limit; JSON-Schema + Rust/Go helpers; voice `TranscriptionProvider`; cross-extension UUID
-  collision rejection; protocol-version negotiation beyond `1`.
+- **Phase 3 — Watchapp companion (goal c). ✅ done, hardware-verified.** `registerApp`/`sendAppMessage`/
+  `onAppMessage` (ACK-on-receipt, via the broadcast packet flow so the companion manager can't steal it)/
+  `launchApp`/`stopApp`/`installPbw` with the typed-tagged dict codec. Ships the find-my-phone
+  **watchapp** (`testing/findphone`) + companion.
+- **Phase 4 — Install & hotplug + config simplification. ✅ done.** `stoandl ext install <archive>`
+  (extract → sideload bundled `.pbw` → enable → start) + `list`/`enable`/`disable`/`restart`/`uninstall`,
+  all **without a daemon restart**. Dropped the `allow` capability gate and the `confine` knob (no
+  sandbox → they bought nothing); default entry `ext/<name>/<name>.py`; optional `manifest.json`.
+- **Phase 5 — Further polish (TODO).** A real reply extension (Matrix/SMS); per-extension rate limit;
+  JSON-Schema + Rust/Go helpers; voice `TranscriptionProvider`; cross-extension UUID arbitration.
 
 ## Action routing, dismiss, and the firmware reality
 

@@ -1138,6 +1138,30 @@ sideload …/findphone.pbw`); configure the findphone extension with `allow = ap
 | 5.26k | Capability gate | set `extension.findphone.allow = notify` (no appmessage), restart | `registerApp`/`onAppMessage` rejected (`not permitted: grant 'appmessage:…'`); nothing rings. |
 | 5.26l | Typed dict | (a richer app) send mixed `u8`/`i32`/`cstr` from the watch | The companion's `on_app_message` receives the right values; a C `dict_read_uint8` on a value sent as `u8` reads it correctly (no width mismatch). |
 
+### 5.26 (Phase 4) — install & hotplug + config simplification  ⚠️ UNVERIFIED
+
+Extensions now live in `~/.config/stoandl/ext/<name>/` (default entry `<name>.py`, cwd = that dir).
+The `stoandl ext` verbs manage them **without a daemon restart**: `install <archive>` (extract →
+sideload a bundled `.pbw` → enable → start), `list`, `enable`/`disable`, `restart`, `uninstall`.
+`extensions.enabled` is the run-list (the verbs edit only that line in stoandl.conf). The `allow`
+capability gate and `confine` sandbox knob were **removed** (no sandbox → they bought nothing); an
+explicit `extension.<name>.cmd` still works (and no longer requires the dir, for back-compat).
+
+**Prerequisite:** `python3`, `tar`/`unzip` on PATH; a connected watch for the `.pbw` auto-install. Build
+the archive with `examples/extensions/package-findphone.sh`.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.26m | Install archive | `stoandl ext install findphone.tar.gz` (watch connected) | `ok:Installed 'findphone'; installed findphone.pbw on the watch`; `~/.config/stoandl/ext/findphone/` has the files; `extensions.enabled` now contains `findphone`. |
+| 5.26n | Hotplug start (no restart) | immediately after install, without restarting the daemon | `[findphone] registered for AppMessages …` in the log; open the watchapp → UP rings. No daemon restart was needed. |
+| 5.26o | List | `stoandl ext list` | A row `findphone   installed   enabled   running`. |
+| 5.26p | Disable / enable | `stoandl ext disable findphone`; then `stoandl ext enable findphone` | Disable stops the process (`[findphone] stopped`) + drops it from `extensions.enabled`; enable re-adds + restarts it — both live. |
+| 5.26q | Restart | `stoandl ext restart findphone` | Process is stopped and respawned (`[findphone] spawning …`). |
+| 5.26r | Uninstall | `stoandl ext uninstall findphone` | Stops it, removes from `extensions.enabled`, deletes `ext/findphone/`; `stoandl ext list` no longer shows it. |
+| 5.26s | Survives restart | after install, restart the daemon | `findphone` auto-starts (it's in `extensions.enabled`); no re-install needed. |
+| 5.26t | Default entry / no config | install an extension whose dir has only `<name>.py` + `stoandl_ext.py` (no `allow`, no `cmd`) | It runs via the default `python3 <name>.py`. The only config is its presence in `extensions.enabled`. |
+| 5.26u | Custom cmd / manifest | an extension with `manifest.json` `{"cmd":"node index.js"}` (or `extension.<name>.cmd`) | Spawns with that command instead of the python default. |
+
 ---
 
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
