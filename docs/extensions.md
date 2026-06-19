@@ -50,15 +50,35 @@ stdout, it corrupts the frame). Requests carry `id`; fire-and-forget host→ext 
 Each extension is a directory `<configDir>/ext/<name>/`. The default entry point is `<name>.py` (run
 with `python3`, cwd = that dir, so `import stoandl_ext` finds its sibling). `extensions.enabled` in
 `stoandl.conf` is the run-list; the `stoandl ext` commands edit it. **No sandbox, no capability config**
-— an extension runs as you, like any script. Optional overrides: `extension.<name>.cmd` in `stoandl.conf`
-(any language), or a `manifest.json` in the dir (`{ "name":…, "cmd":…, "config":{…} }`) so an
-archive-installed extension is self-contained. The usual way to add one:
+— an extension runs as you, like any script.
+
+**Per-extension settings live in the extension's own dir, not `stoandl.conf`.** A `config` file at
+`<configDir>/ext/<name>/config` (`key = value`, `#` comments, leading `~`/`%h` expand to home, no
+`extension.<name>.` prefix — it's already scoped) holds that extension's homeserver/tokens/options. It's
+**preserved across reinstalls** (`stoandl ext install` won't clobber it). So `stoandl.conf` stays at just
+`extensions.enabled`. Settings resolve as: a `manifest.json`'s `config` (author defaults, for a
+self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfig":true }`) **<** the `config`
+file (the user's place) **<** an optional `extension.<name>.<key>` in `stoandl.conf` (a back-compat
+override). The launch command (`cmd`, for non-Python extensions) may come from any of those layers too.
+On install, the status line points at where to configure it (the path of the extension's `config`, and
+the `config.example` to copy).
+
+**`requiresConfig`** (manifest): an extension that can't run until configured (e.g. Matrix needs a
+homeserver) declares `"requiresConfig": true`. If it's started without any user settings (no `config`
+file and no `extension.<name>.*`), the daemon **does not spawn it** — it logs a warning and posts a
+"needs setup" *desktop* notification (which stoandl's passive monitor bridges to the watch — so it's not
+pushed directly to the watch), and `install`/`enable`/`restart`
+return a clear "not started — needs configuration" status instead of a fake failure. Configure it, then
+`stoandl ext restart <name>`. (Extensions whose settings are all optional, like find-my-phone's `sound`,
+omit the flag and start normally.) The usual way to add one:
 
 ```
 stoandl ext install findphone.tar.gz   # extract to ext/findphone/, sideload a bundled .pbw,
                                         # enable (append to extensions.enabled) + hotplug-start
 stoandl ext list | enable <n> | disable <n> | restart <n> | uninstall <n>
-# uninstall also removes a bundled watchapp from the watch (reads the .pbw's UUID → removeApp)
+# uninstall also removes a bundled watchapp from the watch (reads the .pbw's UUID → removeApp), and if
+# the extension has a `config`, prompts to keep it (default yes; reinstall restores it) — or pass
+# --keep-config / --delete-config to skip the prompt.
 ```
 
 `ExtensionManager` spawns each enabled child and does the **`initialize` handshake first** (host→ext
@@ -288,8 +308,18 @@ reconnect without re-push (only if the §"deferred" re-push proves lossy on hard
   (extract → sideload bundled `.pbw` → enable → start) + `list`/`enable`/`disable`/`restart`/`uninstall`,
   all **without a daemon restart**. Dropped the `allow` capability gate and the `confine` knob (no
   sandbox → they bought nothing); default entry `ext/<name>/<name>.py`; optional `manifest.json`.
-- **Phase 5 — Further polish (TODO).** A real reply extension (Matrix/SMS); per-extension rate limit;
-  JSON-Schema + Rust/Go helpers; voice `TranscriptionProvider`; cross-extension UUID arbitration.
+- **Phase 5 — Further polish (partly done).**
+  - ✅ **A real reply extension — Matrix** (`examples/extensions/matrix/`): a Go child using
+    [mautrix-go](https://github.com/mautrix/go) + the pure-Go **goolm** crypto backend, built
+    `CGO_ENABLED=0 -tags goolm` into a fully static, **musl-clean** binary (no libc/libolm). Logs in as
+    a second device, decrypts E2EE rooms via a recovery-key bootstrap (4S → self-sign device → restore
+    megolm backup), surfaces messages (filtered by the account's **push rules**) as notifications, and
+    sends canned replies back through the account. Receive is a long-poll `/sync` behind a pluggable
+    `WakeSource` so a UnifiedPush wake can drop in later. _TBT on hardware — see TESTING.md §5.27._
+  - ✅ **Go helper** — `examples/extensions/stoandl_ext.go` (the Go counterpart of `stoandl_ext.py`).
+  - **TODO:** per-extension rate limit; JSON-Schema + a Rust helper; voice `TranscriptionProvider`
+    (canned replies need nothing, but wrist dictation is a no-op until one is wired);
+    cross-extension UUID arbitration.
 
 ## Action routing, dismiss, and the firmware reality
 

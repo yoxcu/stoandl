@@ -34,8 +34,8 @@ private val log = KotlinLogging.logger {}
  *    and flash it. The source is chosen by the watch's generation ([isCoreDevice]): Core devices pull
  *    from the PebbleOS GitHub releases ([GithubFirmwareSource], gated by `firmware.github`), classic /
  *    Rebble devices from cohorts.rebble.io ([CohortsFirmwareSource], gated by `firmware.cohorts`).
- *    Both are opt-in egress. [maybeNotify] additionally pushes a watch notification with an "Update"
- *    button when newer firmware appears.
+ *    Both are opt-in egress. [maybeNotify] alerts when newer firmware appears — a watch notification AND
+ *    a (non-bridged) host desktop notification, each with an "Update" button.
  *
  * libpebble3's [CommonConnectedDevice] (normal *or* recovery) does the real work — PutBytes transfer,
  * the FIRMWARE_START/COMPLETE handshake, and safety checks (board match, CRC, slot). The flash runs
@@ -47,10 +47,12 @@ class FirmwareControl(
     private val scope: CoroutineScope,
     private val config: StoandlConfig,
     /**
-     * Optional hook to mirror the "firmware available" alert as a host *desktop* notification, so it
-     * reaches the laptop and not only the watch. Args: summary, body, the action-button label, and the
-     * callback to run when that button is tapped. Null when no session bus / notifier is wired (e.g. a
-     * truly headless host) — the watch notification is still sent regardless.
+     * Hook to post the "firmware available" alert as a host *desktop* notification (with an Update
+     * button), in addition to the direct watch notification. It's tagged with the `stoandl-desktop` app
+     * name so the passive monitor doesn't bridge it to the watch — so the alert shows once on each
+     * surface, each with its own working button. Args: summary, body, the action-button label, and the
+     * callback to run when tapped. Null when no session bus is wired (truly headless) — then only the
+     * watch notification is sent.
      */
     private val notifyDesktop: ((summary: String, body: String, actionLabel: String, onAction: () -> Unit) -> Unit)? = null,
 ) {
@@ -161,8 +163,9 @@ class FirmwareControl(
 
     /**
      * Check the matching source (at most once per [minIntervalMs]) and, if newer firmware is available
-     * than we last told the user about, push a watch notification with an "Update" action button. Safe
-     * to call on every connect; the throttle keeps it to roughly once a day.
+     * than we last told the user about, post a watch notification AND a (non-bridged) desktop
+     * notification, each with an "Update" action button. Safe to call on every connect; the throttle
+     * keeps it to roughly once a day.
      */
     suspend fun maybeNotify(minIntervalMs: Long) {
         if (!config.firmwareNotify) return
@@ -241,7 +244,13 @@ class FirmwareControl(
     private fun needsUpdate(candidate: String, running: FirmwareVersion): Boolean =
         running.isRecovery || parseSemver(candidate) == null || isNewer(candidate, running)
 
-    /** Push a "firmware available" notification to the watch with an Update button that flashes it. */
+    /**
+     * Alert that newer firmware is available, with an "Update" action that flashes it. Posted on BOTH
+     * surfaces, each with a working button, without double-notifying the watch:
+     *  - a **direct watch** notification (Update button → flash, via a per-item action handler);
+     *  - a **host desktop** notification ([notifyDesktop]) tagged with the `stoandl-desktop` app name, so
+     *    stoandl's passive monitor does NOT bridge it to the watch (the watch already has the direct one).
+     */
     private suspend fun sendUpdateNotification(info: CheckResult.Update) {
         val lp = libPebbleRef.get() ?: return
         val notif = buildTimelineNotification(
@@ -273,8 +282,8 @@ class FirmwareControl(
         lp.sendNotification(notif, handlers)
         log.info { "Sent firmware-update notification to watch: ${info.current} → ${info.latest}" }
 
-        // Also surface it on the host desktop (the laptop), with an Update button that flashes exactly
-        // the same way the watch's button does — tapping it runs update() like the watch action above.
+        // Also a host desktop notification with the same Update button — tagged so it is NOT bridged to
+        // the watch (the watch already has the direct notification above), so it shows once on each.
         notifyDesktop?.invoke(
             "Firmware update available",
             "${info.latest} is available — you're on ${info.current}. " +

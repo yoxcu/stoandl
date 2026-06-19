@@ -32,8 +32,10 @@ import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.rebble.libpebblecommon.calls.SystemCallLog
+import de.yoxcu.stoandl.dbus.STOANDL_DESKTOP_ONLY_APP
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
+import de.yoxcu.stoandl.dbus.sendDesktopNotification
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -355,7 +357,8 @@ class PebbleIntegration(
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
         firmwareControl = FirmwareControl(libPebbleRef, scope, config, notifyDesktop = { summary, body, label, onAction ->
-            sendActionableNotification(summary, body, label, onInvoke = onAction)
+            // STOANDL_DESKTOP_ONLY_APP → not bridged to the watch (the watch gets a direct notif too).
+            sendActionableNotification(summary, body, label, appName = STOANDL_DESKTOP_ONLY_APP, onInvoke = onAction)
         })
         languageControl = LanguageControl(libPebbleRef, config)
         screenshotControl = ScreenshotControl(libPebbleRef)
@@ -935,19 +938,20 @@ class PebbleIntegration(
         body: String,
         actionLabel: String,
         replacesId: UInt32 = UInt32(0),
+        appName: String = "stoandl",
         onInvoke: () -> Unit,
     ): UInt32 {
-        val conn = notifConn ?: run { sendDesktopNotification(summary, body); return UInt32(0) }
+        val conn = notifConn ?: run { sendDesktopNotification(summary, body, appName); return UInt32(0) }
         return try {
             val id = conn.getRemoteObject(
                 "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
                 FreedesktopNotifications::class.java,
-            ).Notify("stoandl", replacesId, "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
+            ).Notify(appName, replacesId, "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
             notificationActions[id] = onInvoke
             id
         } catch (e: Exception) {
             log.warn { "sendActionableNotification failed: ${e.message}" }
-            sendDesktopNotification(summary, body)
+            sendDesktopNotification(summary, body, appName)
             UInt32(0)
         }
     }
@@ -1678,24 +1682,6 @@ private fun disconnectBluezDevice(devicePath: String) {
     }
 }
 
-/** Posts a desktop notification on the session bus (best-effort). */
-private fun sendDesktopNotification(summary: String, body: String) {
-    try {
-        val conn = openSessionBus()
-        try {
-            conn.getRemoteObject(
-                "org.freedesktop.Notifications",
-                "/org/freedesktop/Notifications",
-                FreedesktopNotifications::class.java,
-            ).Notify("stoandl", UInt32(0), "phone", summary, body, emptyList(), emptyMap(), 15_000)
-        } finally {
-            conn.disconnect()
-        }
-    } catch (e: Exception) {
-        log.warn { "sendDesktopNotification failed: ${e.message}" }
-    }
-}
-
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
@@ -1923,7 +1909,7 @@ private class StoandlControlImpl(
 
     override fun ExtList(): List<String> = extensionManager.list()
     override fun ExtInstall(path: String): String = extensionManager.install(path)
-    override fun ExtUninstall(name: String): String = extensionManager.uninstall(name)
+    override fun ExtUninstall(name: String, keepConfig: Boolean): String = extensionManager.uninstall(name, keepConfig)
     override fun ExtEnable(name: String): String = extensionManager.enable(name)
     override fun ExtDisable(name: String): String = extensionManager.disable(name)
     override fun ExtRestart(name: String): String = extensionManager.restart(name)

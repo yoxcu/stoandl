@@ -228,8 +228,10 @@ interface StoandlControl : DBusInterface {
      *  Status-prefixed return. */
     fun ExtInstall(path: String): String
 
-    /** Stop [name], remove it from `extensions.enabled`, and delete its files. Status-prefixed. */
-    fun ExtUninstall(name: String): String
+    /** Stop [name], remove it from `extensions.enabled`, and delete its files. If [keepConfig] is true
+     *  and the extension has a `config` file, that file is kept (so a later reinstall restores its
+     *  settings); everything else is removed. The CLI prompts for this. Status-prefixed. */
+    fun ExtUninstall(name: String, keepConfig: Boolean): String
 
     /** Enable [name] (add to `extensions.enabled`) and hotplug-start it. Status-prefixed. */
     fun ExtEnable(name: String): String

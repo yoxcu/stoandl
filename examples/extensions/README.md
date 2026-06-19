@@ -23,6 +23,13 @@ extension dir (`{ "cmd": "node index.js", "config": { … } }`) for self-contain
   `on_action`/`on_reply`/`on_dismiss`/`on_watch_connected` callbacks, and the watchapp verbs
   `register_app`/`send_app_message`/`launch_app`/`install_pbw` + `on_app_message`). Ship a copy in your
   extension dir.
+- **`stoandl_ext.go`** — the same helper for Go (`package main`): copy it next to your extension and
+  drive it from your own service loop. Used by `matrix/`.
+- **`matrix/`** — a git submodule ([yoxcu/stoandl-matrix](https://github.com/yoxcu/stoandl-matrix)): a
+  **Matrix** extension (Go) — messages on the wrist + canned replies, decrypting E2EE rooms. Logs in as a
+  second device of your account; builds to a static, musl-clean binary (`mautrix-go` + pure-Go `goolm`).
+  Notify-only reply extension, no watchapp. Has its own README + `package.sh`. After cloning stoandl, run
+  `git submodule update --init` to populate it.
 - **`findphone/`** — a git submodule ([yoxcu/findphone](https://github.com/yoxcu/findphone)): the
   *Find My Phone* watchapp + its companion, a complete, forkable boilerplate. UP rings this computer,
   DOWN stops it. Has its own README, build, and `package.sh`. After cloning stoandl, run

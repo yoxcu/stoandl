@@ -1001,14 +1001,23 @@ private fun ctlExt(rest: List<String>) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 })
             }
-            "uninstall", "remove", "enable", "disable", "restart" -> {
+            "uninstall", "remove" -> {
+                val name = rest.getOrNull(1)?.takeIf { !it.startsWith("-") }
+                if (name.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl ext uninstall <name> [--keep-config|--delete-config]"); System.exit(1); return
+                }
+                val keepConfig = resolveKeepConfig(name, rest)
+                val resp = try { control.ExtUninstall(name, keepConfig) }
+                    catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+                handleStatusResponse(resp)
+            }
+            "enable", "disable", "restart" -> {
                 val name = rest.getOrNull(1)
                 if (name.isNullOrBlank()) {
                     System.err.println("Usage: stoandl ext $sub <name>"); System.exit(1); return
                 }
                 val resp = try {
                     when (sub) {
-                        "uninstall", "remove" -> control.ExtUninstall(name)
                         "enable" -> control.ExtEnable(name)
                         "disable" -> control.ExtDisable(name)
                         else -> control.ExtRestart(name)
@@ -1017,11 +1026,28 @@ private fun ctlExt(rest: List<String>) {
                 handleStatusResponse(resp)
             }
             else -> {
-                System.err.println("Usage: stoandl ext <list|install <archive>|uninstall <name>|enable <name>|disable <name>|restart <name>>")
+                System.err.println("Usage: stoandl ext <list|install <archive>|uninstall <name> [--keep-config|--delete-config]|enable <name>|disable <name>|restart <name>>")
                 System.exit(1)
             }
         }
     }
+}
+
+/**
+ * On uninstall, decide whether to keep the extension's `config` file. `--keep-config`/`--delete-config`
+ * (`--purge`) skip the prompt; otherwise, only if the extension actually has a `config`, prompt with a
+ * default of Yes (so reinstalling restores its settings). No config, or no answer → keep (the daemon
+ * only keeps it if it exists, so the flag is harmless then).
+ */
+private fun resolveKeepConfig(name: String, rest: List<String>): Boolean {
+    if (rest.any { it == "--delete-config" || it == "--purge" }) return false
+    if (rest.any { it == "--keep-config" }) return true
+    val cfg = File(File(File(configDir(), "ext"), name), "config")
+    if (!cfg.isFile) return true
+    print("Keep $name's config (${cfg.path})? It'll be restored if you reinstall. [Y/n]: ")
+    System.out.flush()
+    val ans = readlnOrNull()?.trim()?.lowercase()
+    return ans != "n" && ans != "no"
 }
 
 /** Value following [flag] in [args], or null if the flag is absent or has no following token. */

@@ -92,10 +92,14 @@ private class InterceptingReader(
                         else      -> return msg
                     }
                     val now = System.currentTimeMillis()
-                    val dedupeKey = "${p.appName}|${p.summary}"
-                    val prev = lastSeen.put(dedupeKey, now)
-                    if (prev == null || now - prev >= 200L) {
-                        emit(IncomingNotification(id, p.appName, p.summary, p.body))
+                    // Our own "desktop-only" alerts carry a matching direct watch notification, so don't
+                    // bridge them (otherwise the watch would show the alert twice).
+                    if (p.appName != STOANDL_DESKTOP_ONLY_APP) {
+                        val dedupeKey = "${p.appName}|${p.summary}"
+                        val prev = lastSeen.put(dedupeKey, now)
+                        if (prev == null || now - prev >= 200L) {
+                            emit(IncomingNotification(id, p.appName, p.summary, p.body))
+                        }
                     }
                 }
             }

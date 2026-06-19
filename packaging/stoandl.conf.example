@@ -257,11 +257,22 @@ dnd.sync = off
 # `extensions.enabled` is the run-list (the `ext` commands edit it for you). You can also set it by hand:
 # extensions.enabled = findphone, matrix
 #
-# Optional per-extension overrides (most extensions need none):
-#   extension.<name>.cmd   = <argv>          # override the default `python3 <name>.py` (any language)
-#   extension.<name>.<key> = <value>         # passed to the extension in its initialize handshake
-# (a self-contained extension can instead carry these in a manifest.json inside its dir/archive.)
+# Per-extension settings live in the extension's OWN folder, NOT here — in a `config` file at
+# ~/.config/stoandl/ext/<name>/config (a `key = value` file, `#` comments, no `extension.<name>.`
+# prefix). It's the place for an extension's homeserver/tokens/options; it survives reinstalls and
+# keeps this file to just `extensions.enabled`. (Precedence: an extension's manifest.json defaults <
+# its `config` file < an optional `extension.<name>.<key>` override here, for back-compat. `cmd` to
+# override the launch command can go in `config` or here.)
 #
 # Example — Find My Phone (rings this computer from the watch; a watchapp companion):
 #     (cd examples/extensions/findphone && ./package.sh)   # builds findphone.tar.gz (Pebble SDK needed)
 #     stoandl ext install examples/extensions/findphone/findphone.tar.gz
+#
+# Example — Matrix (messages on the wrist + canned replies; logs in as a second device of your account,
+# decrypts E2EE rooms). Build + install the static (musl-clean) binary, then edit its OWN config file:
+#     (cd examples/extensions/matrix && ./package.sh)      # builds matrix-<arch>.tar.gz (Go toolchain)
+#     stoandl ext install examples/extensions/matrix/matrix-arm64.tar.gz
+#     cd ~/.config/stoandl/ext/matrix && cp config.example config && $EDITOR config
+# (set homeserver/user_id/password_file/recovery_key_file; enable Secure Backup in NeoChat first), then:
+#     stoandl ext restart matrix  &&  stoandl notif mute neochat   # dedup NeoChat's bridged copy
+# See examples/extensions/matrix/README.md.

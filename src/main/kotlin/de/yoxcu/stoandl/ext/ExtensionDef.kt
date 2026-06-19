@@ -19,58 +19,100 @@ data class ExtensionDef(
     val command: List<String>,
     val config: Map<String, String>,
     val workingDir: File,
+    /** Declared in `manifest.json` (`"requiresConfig": true`): the extension can't run until configured. */
+    val requiresConfig: Boolean = false,
+    /** Whether the user actually supplied any settings (a non-empty `config` file or `extension.<name>.*`
+     *  in stoandl.conf) — i.e. excluding the manifest's own author defaults. */
+    val userConfigured: Boolean = false,
 )
 
 /**
- * Resolve an extension by name from `<extDir>/<name>/`. The spawn command, in priority order:
- *  1. `cmd` from stoandl.conf ([conf]) — for anything special;
- *  2. `cmd` in `<dir>/manifest.json` — for self-contained (archive-installed) extensions;
- *  3. `python3 <name>.py` if that file exists.
- * Returns null (warned) if the directory is missing or no entry point can be found. [conf] settings
- * overlay the manifest's `config` (conf wins).
+ * Resolve an extension by name from `<extDir>/<name>/`.
+ *
+ * Settings come from three layers, each overriding the previous: the archive's `manifest.json` `config`
+ * (author defaults) < the per-extension **`<extDir>/<name>/config`** file (the user's place — a simple
+ * `key = value` file co-located with the extension, no `extension.<name>.` prefix) < any leftover
+ * `extension.<name>.<key>` in stoandl.conf ([conf], a back-compat override). stoandl.conf should normally
+ * carry only `extensions.enabled`. The spawn command, in priority order: `cmd` from stoandl.conf, the
+ * `config` file, `manifest.json`, then `python3 <name>.py`.
+ *
+ * Returns null (warned) if the directory is missing and no `cmd` resolves, or no entry point is found.
  */
 fun resolveExtension(name: String, extDir: File, conf: Map<String, String>): ExtensionDef? {
     val dir = File(extDir, name)
-    val confCmd = conf["cmd"]?.trim()?.takeIf { it.isNotEmpty() }
-    val confConfig = conf.filterKeys { it != "cmd" }
+    val fileConf = if (dir.isDirectory) readConfigFile(dir) else emptyMap()
+    val manifest = if (dir.isDirectory) readManifest(dir) else null
 
-    // An explicit stoandl.conf `cmd` works regardless of the dir layout (back-compat for a flat/custom
-    // setup); cwd is the ext dir when it exists, else the ext base dir.
-    if (confCmd != null) {
-        val wd = if (dir.isDirectory) dir else extDir
-        return ExtensionDef(name, confCmd.split(Regex("\\s+")), confConfig, wd)
-    }
+    // `cmd` precedence: stoandl.conf > ext/<name>/config > manifest.json (then the python default below).
+    val cmd = (conf["cmd"] ?: fileConf["cmd"] ?: manifest?.cmd)?.trim()?.takeIf { it.isNotEmpty() }
 
-    // Otherwise the convention is a per-extension directory `<extDir>/<name>/`.
-    if (!dir.isDirectory) {
-        log.warn { "Extension '$name' enabled but no directory at ${dir.path} (and no extension.$name.cmd)" }
-        return null
-    }
-    val manifest = readManifest(dir)
-    val command = when {
-        manifest?.cmd?.isNotBlank() == true -> manifest.cmd.trim().split(Regex("\\s+"))
-        File(dir, "$name.py").isFile -> listOf("python3", "$name.py")
-        else -> {
-            log.warn { "Extension '$name': no manifest.json cmd and no $name.py in ${dir.path}" }
-            return null
-        }
-    }
+    // Child config = manifest defaults < config file < stoandl.conf override, with `cmd` (meta) stripped.
     val config = LinkedHashMap<String, String>()
     manifest?.config?.let { config.putAll(it) }
-    config.putAll(confConfig)  // stoandl.conf overrides the manifest
-    return ExtensionDef(name, command, config, dir)
+    config.putAll(fileConf)
+    config.putAll(conf)
+    config.remove("cmd")
+
+    val requiresConfig = manifest?.requiresConfig == true
+    // "Configured" = the user supplied settings via the config file or stoandl.conf (manifest defaults
+    // don't count — a required extension still needs the user's own values).
+    val userConfigured = fileConf.isNotEmpty() || conf.keys.any { it != "cmd" }
+
+    // An explicit `cmd` (from any layer) works regardless of layout; cwd is the ext dir if it exists.
+    if (cmd != null) {
+        return ExtensionDef(name, cmd.split(Regex("\\s+")), config, if (dir.isDirectory) dir else extDir, requiresConfig, userConfigured)
+    }
+    if (!dir.isDirectory) {
+        log.warn { "Extension '$name' enabled but no directory at ${dir.path} (and no cmd configured)" }
+        return null
+    }
+    if (File(dir, "$name.py").isFile) {
+        return ExtensionDef(name, listOf("python3", "$name.py"), config, dir, requiresConfig, userConfigured)
+    }
+    log.warn { "Extension '$name': no cmd (stoandl.conf / config / manifest.json) and no $name.py in ${dir.path}" }
+    return null
 }
 
-private class Manifest(val name: String?, val cmd: String?, val config: Map<String, String>)
+/** Read the per-extension `<dir>/config` file: `key = value` lines, `#` comments, leading `~`/`%h` in
+ *  values expand to home (matching stoandl.conf). No `extension.<name>.` prefix — it's already scoped. */
+private fun readConfigFile(dir: File): Map<String, String> {
+    val f = File(dir, "config")
+    if (!f.isFile) return emptyMap()
+    val out = LinkedHashMap<String, String>()
+    try {
+        f.readLines().forEach { raw ->
+            val line = raw.substringBefore('#').trim()
+            val idx = line.indexOf('=')
+            if (idx > 0) out[line.substring(0, idx).trim()] = expandHome(line.substring(idx + 1).trim())
+        }
+    } catch (e: Exception) {
+        log.warn { "Couldn't read ${f.path}: ${e.message}" }
+    }
+    return out
+}
 
-/** Optional `<dir>/manifest.json`: `{ "name": …, "cmd": …, "config": { … } }`. All fields optional. */
+private fun expandHome(v: String): String {
+    val home = System.getProperty("user.home")
+    return when {
+        v == "~" || v == "%h" -> home
+        v.startsWith("~/") -> home + v.substring(1)
+        v.startsWith("%h/") -> home + v.substring(2)
+        else -> v
+    }
+}
+
+private class Manifest(val name: String?, val cmd: String?, val config: Map<String, String>, val requiresConfig: Boolean)
+
+/** Optional `<dir>/manifest.json`: `{ "name": …, "cmd": …, "config": {…}, "requiresConfig": true }`.
+ *  All fields optional. `requiresConfig` lets an extension declare it can't run until the user configures it. */
 private fun readManifest(dir: File): Manifest? {
     val f = File(dir, "manifest.json")
     if (!f.isFile) return null
     return try {
         val obj = LenientJson.parseToJsonElement(f.readText()).jsonObject
         val config = obj["config"]?.jsonObject?.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" } ?: emptyMap()
-        Manifest(obj["name"]?.jsonPrimitive?.contentOrNull, obj["cmd"]?.jsonPrimitive?.contentOrNull, config)
+        val requiresConfig = (obj["requiresConfig"]?.jsonPrimitive?.contentOrNull).toBoolean()
+        Manifest(obj["name"]?.jsonPrimitive?.contentOrNull, obj["cmd"]?.jsonPrimitive?.contentOrNull, config, requiresConfig)
     } catch (e: Exception) {
         log.warn { "Ignoring bad manifest.json in ${dir.path}: ${e.message}" }
         null

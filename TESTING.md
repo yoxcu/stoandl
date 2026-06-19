@@ -599,8 +599,9 @@ A bundle for the *wrong* board is the safe way to exercise the safety-check path
 | 5.116 | GitHub update | `stoandl firmware update` when an update is available | CLI prints `Updating <board>: <cur> → <latest> (…)`, then `Downloading …`, then the progress bar to `Done — watch rebooting…`. Watch boots the new version. |
 | 5.117 | GitHub update (up to date) | `stoandl firmware update` when already current | CLI prints `… is current (latest …)`; nothing is flashed. |
 | 5.118 | Interrupted transfer | start a flash, then walk the watch out of range mid-transfer | CLI eventually reports a failure (or times out at 10 min); the watch falls back to recovery/its prior firmware rather than bricking. Re-running the flash in range recovers. |
-| 5.119 | Update notification on connect | with `firmware.github = true` and an update available, connect the watch | Within a few seconds the **watch** shows a notification titled **Firmware update** ("<new> is available (you're on <cur>)…") with **Update** and **Dismiss** buttons. Log: `Sent firmware-update notification to watch: <cur> → <new>`. |
-| 5.11a | Update button flashes | on test 5.119's notification, press **Update** | Watch shows an "Updating…" result; the daemon downloads + flashes (same progress as 5.116, just driven from the watch). Log: `Watch-triggered firmware update: ok:…`. |
+| 5.119 | Update notification on connect | with `firmware.github = true` and an update available, connect the watch | Within a few seconds the **watch** shows **Firmware update** (Update / Dismiss buttons) **and** a **desktop** notification **Firmware update available** (with an Update button) appears on the phone/laptop — **exactly one on each surface** (the desktop one is tagged `stoandl-desktop` so the passive monitor doesn't bridge it → no double on the watch). Log: `Sent firmware-update notification to watch: <cur> → <new>`. |
+| 5.11a | Update button flashes (either surface) | press **Update** on the watch notification **or** on the desktop one | The daemon downloads + flashes (same progress as 5.116). Log: `Watch-triggered firmware update: ok:…` (watch) or `Desktop-triggered firmware update: ok:…` (desktop). |
+| 5.11d | No double on the watch | observe the watch when 5.119 fires | The firmware alert appears **once** on the watch (the desktop copy is not bridged), not twice. |
 | 5.11b | No re-nag | disconnect/reconnect within a day (same available version) | The notification is **not** re-sent (throttled to once/day; only a *newer* version re-notifies). |
 | 5.11c | Notify off | set `firmware.notify = false`, restart, connect with an update available | No watch notification; `firmware check`/`update` on the CLI still work. Log at startup: `Firmware update notifications off …`. |
 
@@ -1164,6 +1165,50 @@ the archive with `examples/extensions/findphone/package.sh`.
 | 5.26s | Survives restart | after install, restart the daemon | `findphone` auto-starts (it's in `extensions.enabled`); no re-install needed. |
 | 5.26t | Default entry / no config | install an extension whose dir has only `<name>.py` + `stoandl_ext.py` (no `allow`, no `cmd`) | It runs via the default `python3 <name>.py`. The only config is its presence in `extensions.enabled`. |
 | 5.26u | Custom cmd / manifest | an extension with `manifest.json` `{"cmd":"node index.js"}` (or `extension.<name>.cmd`) | Spawns with that command instead of the python default. |
+
+### 5.27 — Matrix extension (reply + E2EE)  ⚠️ UNVERIFIED (built & smoke-tested, not run on a real account/watch)
+
+The `examples/extensions/matrix/` extension (Go, `mautrix-go` + pure-Go `goolm`) surfaces Matrix
+messages on the watch and sends canned replies through the user's own account. It logs in as a **second
+device**, decrypts E2EE rooms via a **recovery-key bootstrap** (4S open → self-sign device → restore
+megolm key backup), filters with the account's **push rules**, and receives via a long-poll `/sync`
+behind a pluggable `WakeSource` (UnifiedPush deferred). No fork/protocol change — it rides the existing
+`notify`/`onReply`/`onDismiss`/`closeNotification` + `replace_id` + `appName`-mute plumbing.
+
+**Already verified in the sandbox (not hardware):** `CGO_ENABLED=0 -tags goolm` builds a fully **static**
+amd64 **and** arm64 binary (`readelf -d` → *no dynamic section*; `ldd` → *not a dynamic executable*);
+`go vet` clean; the JSON-RPC handshake emits exactly the manifest on stdout (no frame corruption) and a
+clear config error on stderr; and pure-Go `modernc.org/sqlite` runs both mautrix schema migrations
+(`go test -tags goolm`).
+
+**Prerequisite:** Go ≥ 1.25 to run `package.sh`; a Matrix account + homeserver; **Secure Backup enabled
+in NeoChat** + its recovery key (for E2EE); a connected watch. Config lives in the extension's own
+`~/.config/stoandl/ext/matrix/config` file (copy `config.example`); `stoandl.conf` only needs
+`extensions.enabled = matrix`.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.27a | Build + install | `cd examples/extensions/matrix && ./package.sh`; `stoandl ext install matrix-<arch>.tar.gz` (no config yet) | `ok:Installed 'matrix' (not started — needs configuration); settings: cp …/ext/matrix/config.example …/ext/matrix/config, edit it, then: stoandl ext restart matrix` (manifest `requiresConfig:true` → daemon doesn't spawn it). `~/.config/stoandl/ext/matrix/` has `stoandl-matrix` + `manifest.json` + `config.example`; `stoandl.conf` gained only `extensions.enabled = matrix`. **A "matrix needs setup" desktop notification is posted** (and bridged to the watch by the passive monitor — not pushed directly). Log: `[matrix] requires configuration but none found — not starting`. The installed `stoandl-matrix` is **executable** (`ls -l …/ext/matrix/stoandl-matrix` → `-rwx…`) — so after configuring (5.27b) it spawns with no `Exec failed, error: 13 (Permission denied)`. |
+| 5.27b | Login (2nd device) | `cd ~/.config/stoandl/ext/matrix && cp config.example config`; set `homeserver`/`user_id`/`password_file` (recommended) in `config`; `stoandl ext restart matrix` | Log: `[matrix] logged in` then `Matrix extension ready (notify=pushrules)`. A new device named **stoandl (Pebble)** appears in NeoChat's device list. |
+| 5.27c | E2EE bootstrap | with `recovery_key_file` set | Log: `cross-signing bootstrap complete — device is self-signed` and (first run) `restored megolm key backup (history decryptable)`. In NeoChat the new device shows **verified**. |
+| 5.27d | Incoming encrypted DM | have someone DM you (or DM yourself from another device) | Watch shows a notification: title = sender, body = decrypted text (image/file → `📷`/`📎`). No "failed to decrypt" in the log once keys settle. |
+| 5.27e | Push-rule filter | post a normal line in a large/muted room, then **@-mention** you there | The plain line does **not** buzz the watch; the @-mention **does** (`notify=pushrules` matches what NeoChat would notify on). `notify=all` buzzes for everything; `mentions` for DMs + mentions only. |
+| 5.27f | Canned reply round-trip | open the live notification on the watch → **Select → Reply** → pick a canned line | The watch shows **"Sent"** immediately; the message appears in the room **from your account** as an `m.in_reply_to` reply; log: `reply sent`. |
+| 5.27g | Reply failure surfaced | (force by killing network mid-reply, if feasible) | A follow-up **"⚠ Reply failed"** notification arrives (the optimistic "Sent" can't be retracted). |
+| 5.27h | Dismiss → read | dismiss the notification on the watch | The room is marked read on your account (it clears in NeoChat too); `mark_read_on_dismiss=true`. |
+| 5.27i | Read-elsewhere clears wrist | open/read the message in NeoChat | The notification clears off the watch (extension sends `closeNotification` on seeing your own read receipt). |
+| 5.27j | Dedup with NeoChat | `stoandl notif mute neochat` (exact app name from `stoandl notif styles`) | Only the `Matrix` (reply-capable) notification buzzes; NeoChat's bridged copy is muted on the watch (its desktop notification is untouched). |
+| 5.27k | Restart persistence | restart the daemon | No **new** device appears in NeoChat (the `device_id` + crypto store under `~/.config/stoandl/matrix-ext/` persist); encrypted rooms still decrypt without re-bootstrapping. |
+| 5.27l | musl / phone | run the **arm64** binary on the postmarketOS/Plasma-Mobile phone | Starts and operates with no libc/libolm (static); pure-Go SQLite store created under `matrix-ext/`. (The one piece only confirmable on the actual musl target.) |
+| 5.27m | Config survives reinstall | with `ext/matrix/config` set, rebuild + `stoandl ext install matrix-<arch>.tar.gz` again | The `config` file is **preserved** (not wiped by the reinstall); the extension comes back up with the same settings. (`config.example` is refreshed from the archive.) |
+| 5.27o | Required-config gate is graceful | install matrix with no config, then `stoandl ext list` and check the log | `matrix` shows `installed enabled stopped` — **no crash loop, no quarantine** (the daemon never spawned it); the only log line is the "requires configuration" warning. After 5.27b (config + restart) it shows `running`. |
+| 5.27n | Uninstall keeps config (prompt) | `stoandl ext uninstall matrix` → answer **Y** (or just Enter) at "Keep matrix's config? [Y/n]" | Status `…; kept its config (…/ext/matrix/config)`; the dir keeps only `config` (binary/manifest gone); reinstalling restores settings. Answering **n** (or `--delete-config`) removes the whole dir; `--keep-config` keeps it without prompting. (An extension with no `config`, e.g. findphone, isn't prompted — see 5.26r.) |
+
+**Known caveats to expect (not bugs):** replies are **canned-only** (no watch keyboard; `allow_voice` is
+a no-op until stoandl wires a real `TranscriptionProvider`). On startup the **first `/sync` is skipped**
+(it's pre-existing history); live messages and messages that arrived while the daemon was down both come
+through on subsequent syncs. goolm is officially *experimental* — watch the log for decrypt failures; the
+recovery key lets you re-bootstrap (delete `matrix-ext/` and restart) if the crypto store ever corrupts.
 
 ---
 

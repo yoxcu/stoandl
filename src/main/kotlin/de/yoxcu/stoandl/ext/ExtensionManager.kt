@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.ext
 
+import de.yoxcu.stoandl.dbus.sendDesktopNotification
 import de.yoxcu.stoandl.pebble.NotifAction
 import de.yoxcu.stoandl.pebble.NotifOwner
 import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
@@ -99,13 +100,34 @@ class ExtensionManager(
 
     // ---- lifecycle (hotplug) --------------------------------------------------------------------
 
-    private fun startProcess(name: String): Boolean {
-        if (running.containsKey(name)) return true
-        val def = resolveExtension(name, extDir, extConfig[name] ?: emptyMap()) ?: return false
+    private enum class StartResult { STARTED, NEEDS_CONFIG, NO_ENTRYPOINT }
+
+    private fun startProcess(name: String): StartResult {
+        if (running.containsKey(name)) return StartResult.STARTED
+        val def = resolveExtension(name, extDir, extConfig[name] ?: emptyMap()) ?: return StartResult.NO_ENTRYPOINT
+        // A manifest that declares requiresConfig can't run until the user supplies settings — don't
+        // spawn a doomed child; notify + bail gracefully so it's clear what to do.
+        if (def.requiresConfig && !def.userConfigured) {
+            notifyNeedsConfig(name, File(def.workingDir, "config"))
+            return StartResult.NEEDS_CONFIG
+        }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope)
         running[name] = proc
         proc.launch()
-        return true
+        return StartResult.STARTED
+    }
+
+    /** Required-but-unconfigured extension: log it, and post a *desktop* notification (on the phone/
+     *  laptop). stoandl's passive monitor bridges that to the watch automatically — so we don't push a
+     *  direct watch notification, which would show up twice. */
+    private fun notifyNeedsConfig(name: String, configFile: File) {
+        log.warn { "[$name] requires configuration but none found — not starting. Edit ${configFile.path} (copy config.example), then: stoandl ext restart $name" }
+        scope.launch(Dispatchers.IO) {
+            sendDesktopNotification(
+                "$name needs setup",
+                "Configure it on the host (${configFile.path}), then: stoandl ext restart $name",
+            )
+        }
     }
 
     private fun stopProcess(name: String): Boolean = running.remove(name)?.let { it.shutdown(); true } ?: false
@@ -156,28 +178,59 @@ class ExtensionManager(
 
             stopProcess(name)
             val dest = File(extDir, name)
+            // Preserve the user's per-extension `config` across a reinstall (the archive shouldn't carry
+            // one; if it does, the archive's wins).
+            val savedConfig = File(dest, "config").takeIf { it.isFile }?.readText()
             dest.deleteRecursively()
             dest.parentFile?.mkdirs()
             if (!root.copyRecursively(dest, overwrite = true)) return "error:Failed to install files for '$name'"
+            if (savedConfig != null && !File(dest, "config").isFile) File(dest, "config").writeText(savedConfig)
+            // Kotlin's copyRecursively drops the executable bit, so a native entry point (e.g. a Go binary
+            // launched via `cmd: ./stoandl-matrix`) would land non-executable → exec fails with errno 13.
+            // Re-apply +x for anything that was executable in the extracted archive.
+            root.walkTopDown().forEach { src ->
+                if (src.isFile && src.canExecute()) File(dest, src.relativeTo(root).path).setExecutable(true)
+            }
 
             val pbwMsg = sideloadBundledPbw(dest)
             setEnabled(name, true)
-            val started = startProcess(name)
-            return if (started) "ok:Installed '$name'$pbwMsg" else "error:Installed '$name' but couldn't start it (no entry point?)$pbwMsg"
+            val result = startProcess(name)
+            // Point the user at where this extension is configured (its own dir, not stoandl.conf).
+            val configFile = File(dest, "config")
+            val exampleFile = File(dest, "config.example")
+            val configMsg = when {
+                configFile.isFile -> "; settings: ${configFile.path}"
+                exampleFile.isFile ->
+                    "; settings: cp ${exampleFile.path} ${configFile.path}, edit it, then: stoandl ext restart $name"
+                else -> ""
+            }
+            return when (result) {
+                StartResult.STARTED -> "ok:Installed '$name'$pbwMsg$configMsg"
+                StartResult.NEEDS_CONFIG -> "ok:Installed '$name' (not started — needs configuration)$pbwMsg$configMsg"
+                StartResult.NO_ENTRYPOINT -> "error:Installed '$name' but couldn't start it (no entry point?)$pbwMsg$configMsg"
+            }
         } finally {
             tmp.deleteRecursively()
         }
     }
 
-    fun uninstall(name: String): String {
+    fun uninstall(name: String, keepConfig: Boolean): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
         setEnabled(n, false)
         val dir = File(extDir, n)
         val existed = dir.isDirectory
         val watchMsg = if (existed) removeBundledWatchapp(dir) else ""
-        dir.deleteRecursively()
-        return if (existed) "ok:Uninstalled '$n'$watchMsg" else "ok:'$n' disabled (no files were installed)"
+        // Optionally keep the user's `config` (so a later reinstall restores its settings); the install
+        // path already preserves an existing config across an overwrite.
+        val keptConfig = existed && keepConfig && File(dir, "config").isFile
+        if (keptConfig) {
+            dir.listFiles()?.forEach { if (it.name != "config") it.deleteRecursively() }
+        } else {
+            dir.deleteRecursively()
+        }
+        val tail = watchMsg + if (keptConfig) "; kept its config (${File(dir, "config").path})" else ""
+        return if (existed) "ok:Uninstalled '$n'$tail" else "ok:'$n' disabled (no files were installed)"
     }
 
     /** If the extension bundled a `.pbw`, remove that watchapp from the watch's locker too (read its
@@ -200,7 +253,11 @@ class ExtensionManager(
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!File(extDir, n).isDirectory) return "error:'$n' is not installed (no ${extDir.path}/$n)"
         setEnabled(n, true)
-        return if (startProcess(n)) "ok:Enabled '$n'" else "error:Enabled '$n' but couldn't start it (no entry point?)"
+        return when (startProcess(n)) {
+            StartResult.STARTED -> "ok:Enabled '$n'"
+            StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration; edit ${File(File(extDir, n), "config").path}, then: stoandl ext restart $n)"
+            StartResult.NO_ENTRYPOINT -> "error:Enabled '$n' but couldn't start it (no entry point?)"
+        }
     }
 
     fun disable(name: String): String {
@@ -213,7 +270,11 @@ class ExtensionManager(
     fun restart(name: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
-        return if (startProcess(n)) "ok:Restarted '$n'" else "error:Couldn't start '$n'"
+        return when (startProcess(n)) {
+            StartResult.STARTED -> "ok:Restarted '$n'"
+            StartResult.NEEDS_CONFIG -> "ok:'$n' not started — needs configuration (edit ${File(File(extDir, n), "config").path}, then re-run this)"
+            StartResult.NO_ENTRYPOINT -> "error:Couldn't start '$n'"
+        }
     }
 
     // ---- helpers --------------------------------------------------------------------------------
