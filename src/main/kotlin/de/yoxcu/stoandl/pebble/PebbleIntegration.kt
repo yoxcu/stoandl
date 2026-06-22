@@ -1868,6 +1868,14 @@ private class StoandlControlImpl(
         return "ok:Requested health sync from ${dev.displayName()}"
     }
 
+    override fun HeartRate(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        // Read-only DB lookup (the latest non-zero HR sample), so it works whether or not a watch is
+        // currently connected — the samples persist after the connect-time health.sync ingests them.
+        val hr = runBlocking { lp.getLatestHeartRateReading() } ?: return "none:"
+        return "ok:${hr.bpm}\t${hr.timestampEpochSec}"
+    }
+
     override fun WatchInfoText(): String = logsControl.watchInfoText()
 
     override fun FactoryReset(): String {

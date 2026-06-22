@@ -115,6 +115,12 @@ interface StoandlControl : DBusInterface {
      *  `ok:<msg>` once the request is fired (data streams back asynchronously), or `notready:<msg>`. */
     fun SyncHealth(): String
 
+    /** The latest stored heart-rate reading — the most recent non-zero HR sample in the health DB, which
+     *  fills from the watch on connect via `health.sync`. Status-prefixed: `ok:<bpm>\t<epochSec>`
+     *  (epochSec = when the reading was taken), `none:` (no HR sample stored yet), or `notready:<msg>`.
+     *  Not a live GATT stream — freshness follows the synced samples. */
+    fun HeartRate(): String
+
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or
      *  `error:`/`notready:`. */

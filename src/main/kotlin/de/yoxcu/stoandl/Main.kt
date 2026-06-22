@@ -115,7 +115,7 @@ private fun printUsage() {
     println("Sync")
     row("weather", "push weather to the watch now")
     row("calendar", "list sync enable disable dump")
-    row("health", "[days] sync activities dump")
+    row("health", "[days] hr sync activities dump")
     row("datalog", "list dump tail")
     println("Maintenance")
     row("firmware", "sideload check update status")
@@ -444,10 +444,12 @@ private fun healthDir(): File = File(configDir(), "health")
 
 /** Dispatch `stoandl health ...`. A bare day count (default 7) prints the daily summary; `activities`
  *  lists workout sessions; `dump` prints raw NDJSON. All three read the exported files directly (no
- *  daemon needed, like `datalog`). `sync` talks to the daemon to pull fresh data from the watch. */
+ *  daemon needed, like `datalog`). `hr` and `sync` talk to the daemon — `hr` shows the latest stored
+ *  heart-rate reading, `sync` pulls fresh data from the watch. */
 private fun ctlHealth(rest: List<String>) {
     when (val sub = rest.firstOrNull()?.lowercase()) {
         null -> healthSummary(7)
+        "hr" -> healthHr()
         "sync" -> healthSync()
         "activities" -> healthActivities(rest.getOrNull(1)?.toIntOrNull()?.takeIf { it > 0 } ?: 7)
         "dump" -> {
@@ -464,7 +466,7 @@ private fun ctlHealth(rest: List<String>) {
             val days = sub.toIntOrNull()
             if (days != null && days > 0) healthSummary(days)
             else {
-                System.err.println("Usage: stoandl health [days | sync | activities [days] | dump [daily|activities]]")
+                System.err.println("Usage: stoandl health [days | hr | sync | activities [days] | dump [daily|activities]]")
                 System.exit(1)
             }
         }
@@ -548,6 +550,33 @@ private fun healthSync() {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         handleStatusResponse(resp)
+    }
+}
+
+private fun healthHr() = withControl { control ->
+    val resp = try { control.HeartRate() } catch (e: Exception) {
+        System.err.println("Error: ${e.message}"); System.exit(1); return
+    }
+    val (kind, body) = splitStatus(resp)
+    when (kind) {
+        "ok" -> {
+            val f = body.split('\t')
+            val bpm = f.getOrElse(0) { "?" }
+            val ageSec = f.getOrNull(1)?.toLongOrNull()?.let { (System.currentTimeMillis() / 1000) - it }
+            val age = when {
+                ageSec == null || ageSec < 0 -> ""
+                ageSec < 90 -> " (just now)"
+                ageSec < 3600 -> " (${ageSec / 60} min ago)"
+                ageSec < 86400 -> " (${ageSec / 3600}h ago)"
+                else -> " (${ageSec / 86400}d ago)"
+            }
+            println("Heart rate: $bpm bpm$age")
+        }
+        "none" -> {
+            println("No heart rate reading yet.")
+            println("HR fills from the watch on connect (health.sync); run 'stoandl health sync' with the watch connected to pull now.")
+        }
+        else -> handleStatusResponse(resp)
     }
 }
 
