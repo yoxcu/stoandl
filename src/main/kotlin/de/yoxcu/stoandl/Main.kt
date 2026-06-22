@@ -590,13 +590,27 @@ private fun humanSize(bytes: Long): String = when {
  *  Shared by the `pair` and `repair` commands (both open the same pairing window). */
 private fun pollPairStatus(control: StoandlControl) {
     var lastPendingMsg = ""
+    var lastConfirmCode = ""
     val startMs = System.currentTimeMillis()
     while (true) {
         Thread.sleep(1_500)
         val status = try { control.PairStatus() } catch (e: Exception) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
-        if (status.startsWith("pending:")) {
+        if (status.startsWith("confirm:")) {
+            // Numeric comparison: show the code and let the user accept/decline (it must match the
+            // code shown on the watch). One prompt per code; the daemon declines on its own timeout.
+            val code = status.removePrefix("confirm:")
+            if (code != lastConfirmCode) {
+                lastConfirmCode = code
+                print("Pairing code: $code — does it match the code on the watch? Accept? [y/N] ")
+                System.out.flush()
+                val accept = readlnOrNull()?.trim()?.lowercase() in setOf("y", "yes")
+                try { control.ConfirmPairing(accept) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                }
+            }
+        } else if (status.startsWith("pending:")) {
             // The daemon surfaces the numeric-comparison code (for the GUI to display so the user can
             // verify it matches the watch). The CLI auto-accepts and the actual confirmation is on the
             // watch, so don't echo a code the CLI can't act on — drop the digits, keep the instruction.

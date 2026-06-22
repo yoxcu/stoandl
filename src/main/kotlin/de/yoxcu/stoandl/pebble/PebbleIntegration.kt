@@ -127,6 +127,7 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import de.yoxcu.stoandl.calendar.CalDavSource
 import de.yoxcu.stoandl.calendar.CalendarSource
@@ -144,6 +145,9 @@ import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
+// How long the phone-side numeric-comparison confirmation waits for the user (ConfirmPairing) before
+// declining. BlueZ agent calls are user-interactive, so it tolerates this human-scale wait.
+private const val PAIRING_CONFIRM_TIMEOUT_MS = 60_000L
 
 /** Allows pairing with unbonded watches only while the window is open. */
 private class PairingGate {
@@ -227,8 +231,17 @@ class PebbleIntegration(
     // e.g. Time 2) can complete without a desktop UI — the user just confirms the code on the watch.
     private val pairingAgent = BluezPairingAgent()
     private val pairingGate = PairingGate()
-    // "pending:" while pairing is in progress; "ok:…" / "error:…" / "timeout:…" when done.
+    // "pending:" while pairing is in progress; "confirm:<code>" while awaiting the user's numeric-
+    // comparison decision; "ok:…" / "error:…" / "timeout:…" when done.
     private val pairingState = AtomicReference<String>("")
+    // Numeric-comparison confirmation: the BlueZ agent parks here until ConfirmPairing answers.
+    private val pairingConfirmation = PairingConfirmation()
+    // True only for a client-initiated (Pair/Repair) window: require an explicit ConfirmPairing before
+    // bonding. The notification re-pair path leaves it false (auto-accept — the user already consented).
+    // Shared (mutable) with StoandlControlImpl, which flips it around the monitored window.
+    private val requireConfirm = AtomicBoolean(false)
+    // The in-flight monitored pairing's result, so a decline/timeout resolves PairStatus immediately.
+    private val pairingResult = AtomicReference<CompletableDeferred<String>?>(null)
     // Bond-state cache keyed by identifier.asString — avoids repeated BlueZ D-Bus round-trips.
     private val bondCache = ConcurrentHashMap<String, Boolean>()
     // Reflects org.bluez.Adapter1.Powered — set by watchBluetoothPowerState().
@@ -241,12 +254,16 @@ class PebbleIntegration(
     private val notificationActions = ConcurrentHashMap<UInt32, () -> Unit>()
 
     fun init() {
-        // Register the pairing agent before any connection so MITM pairing has an answerer. Surface the
-        // numeric-comparison code it sees via PairStatus (only during our pairing window) so the GUI/CLI
-        // can show it for the user to verify against the watch's code before confirming on the watch.
-        pairingAgent.register { code ->
-            if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
-        }
+        // Register the pairing agent before any connection so MITM pairing has an answerer.
+        //  - onConfirm: numeric-comparison decision (see onPairingConfirm) — block for the user on a
+        //    client-initiated window, auto-accept otherwise.
+        //  - onPairingCode: display-only passkey path — just surface the code.
+        pairingAgent.register(
+            onPairingCode = { code ->
+                if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
+            },
+            onConfirm = ::onPairingConfirm,
+        )
 
         // reversedPPoG=false → the phone acts as the BLE peripheral. lanDevConnection=true → the
         // developer connection (started on demand) uses the LAN WebSocket server on port 9000 rather
@@ -890,6 +907,23 @@ class PebbleIntegration(
         }
     }
 
+    /** BlueZ numeric-comparison callback (runs on the agent's dispatch thread). On a client-initiated
+     *  pairing window (Pair/Repair) we surface the code as `confirm:<code>` and block until the user
+     *  accepts/declines via [StoandlControl.ConfirmPairing] (or the timeout declines); otherwise
+     *  (notification re-pair / external pairing) we auto-accept and just surface the code for display. */
+    private fun onPairingConfirm(code: String): Boolean {
+        if (!(pairingGate.isOpen() && requireConfirm.get())) {
+            if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
+            return true
+        }
+        pairingState.set("confirm:$code")
+        return when (pairingConfirmation.awaitDecision(code, PAIRING_CONFIRM_TIMEOUT_MS)) {
+            PairingConfirmation.Decision.ACCEPT -> { pairingState.set("pending:Completing pairing…"); true }
+            PairingConfirmation.Decision.DECLINE -> { pairingResult.get()?.complete("error:Pairing declined"); false }
+            PairingConfirmation.Decision.TIMEOUT -> { pairingResult.get()?.complete("timeout:Pairing confirmation timed out"); false }
+        }
+    }
+
     /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and
      *  open the pairing window — used by the broken-bond notification's Re-pair button. Multi-watch safe. */
     private fun repairByName(name: String) {
@@ -1252,7 +1286,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, bondCache, config) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, config) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1716,6 +1750,11 @@ private class StoandlControlImpl(
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
+    private val pairingConfirmation: PairingConfirmation,
+    // Shared with the outer module's agent callback (onPairingConfirm): the monitor sets these around a
+    // client-initiated window; the agent reads them to decide whether to block for ConfirmPairing.
+    private val requireConfirm: AtomicBoolean,
+    private val pairingResult: AtomicReference<CompletableDeferred<String>?>,
     private val bondCache: ConcurrentHashMap<String, Boolean>,
     // The daemon config, loaded once at startup — read by GetSyncStatus/GetConfig (the GUI's
     // Settings/Sync screens) to report which features are enabled. Never mutated here.
@@ -2354,8 +2393,11 @@ private class StoandlControlImpl(
             .toSet()
         pairingGate.open()
         pairingState.set("pending:")
+        // Client-initiated pairing → require an explicit ConfirmPairing before bonding (see onPairingConfirm).
+        requireConfirm.set(true)
         scope.launch {
             val result = CompletableDeferred<String>()
+            pairingResult.set(result)
             // Fast path: detect full connection via StateFlow collection.
             val connectedJob = launch {
                 lp.watches.first { devices -> devices.any { it is ConnectedPebbleDevice } }
@@ -2389,6 +2431,9 @@ private class StoandlControlImpl(
             connectedJob.cancel()
             bondedJob.cancel()
             timeoutJob.cancel()
+            requireConfirm.set(false)
+            pairingResult.compareAndSet(result, null)
+            pairingConfirmation.decide(false)  // unblock any still-parked agent (no-op if none)
             pairingState.set(newState)
             pairingGate.close()
             log.info { "Pairing result: $newState" }
@@ -2397,6 +2442,10 @@ private class StoandlControlImpl(
 
     override fun PairStatus(): String =
         pairingState.get().ifEmpty { "error:No pairing in progress" }
+
+    override fun ConfirmPairing(accept: Boolean): String =
+        if (pairingConfirmation.decide(accept)) "ok:${if (accept) "accepted" else "declined"}"
+        else "error:No pairing confirmation pending"
 
     override fun Unpair(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"

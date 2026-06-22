@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 61 |
+| **Methods** | 62 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -95,7 +95,8 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
 | `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
-| `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `ok:` / `error:` / `timeout:`. | (polled by `watch pair` and `watch repair`) |
+| `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. | (polled by `watch pair`/`watch repair`; the CLI prompts y/N on `confirm:`) |
+| `ConfirmPairing` | `(b) → s` | Accept/decline the `confirm:<code>` numeric comparison (verify it matches the watch first). `ok:accepted`/`ok:declined`, or `error:No pairing confirmation pending`. Gates client-initiated `Pair`/`Repair` only; the notification re-pair path auto-accepts. | (CLI y/N prompt during `watch pair`/`repair`) |
 | `Repair` | `(s) → s` | Forget one known watch (bond + Trusted intent) and reopen the pairing window; multi-watch-safe. Poll `PairStatus`. | `watch repair <name>` |
 | `Unpair` | `(s) → s` | Forget watch(es): empty = blanket (all), name = single (exact-then-substring). libpebble `forget()` + BlueZ `RemoveDevice`. | `watch unpair [name]` |
 | `FindWatch` | `() → b` | Ring the watch continuously (a "Find My Watch" call screen) until a button is pressed. `false` = not ready. | `watch find` |
@@ -283,7 +284,7 @@ states:
 
 | Operation | Start method | Polled method | Cadence | Timeout | Terminal states |
 |---|---|---|---|---|---|
-| **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues |
+| **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues; `confirm:<code>` → answer with `ConfirmPairing(b)` (≤60 s or it declines) |
 | **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure |
 | **Language install** | `InstallLanguage(query)` / `SideloadLanguage(path)` | `LanguageStatus()` | 0.6 s | 180 s | `done:` = success; `failed:` = failure; post-activity `notready:` = disconnected |
 

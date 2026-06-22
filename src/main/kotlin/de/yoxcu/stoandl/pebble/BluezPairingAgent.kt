@@ -5,6 +5,7 @@ import org.freedesktop.dbus.DBusPath
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
+import org.freedesktop.dbus.exceptions.DBusExecutionException
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.types.UInt16
 import org.freedesktop.dbus.types.UInt32
@@ -44,18 +45,23 @@ interface BluezAgent1 : DBusInterface {
  * registered as the system default agent (so it serves `Device1.Pair()` calls made on any
  * connection) and auto-accepts; the user only needs to confirm the matching code on the watch.
  *
- * The auto-accept on the phone side is safe because the numeric-comparison code is *also* shown on the
- * watch and confirmed there — that is the actual MITM gate. We report the code via [register]'s
- * `onPairingCode` callback so the daemon can surface it (in `PairStatus`) for the user to verify it
- * matches the watch before confirming there.
+ * Confirmation (Numeric Comparison) is routed through [register]'s `onConfirm` callback: it returns
+ * true to accept (the method returns) or false to decline (we throw, which BlueZ treats as a rejected
+ * pairing). The callback may block to wait for a user decision. When `onConfirm` is null we auto-accept.
+ * The display-only methods report their code via `onPairingCode` so the daemon can surface it.
  */
 class BluezPairingAgent {
     private val log = KotlinLogging.logger {}
     private var conn: DBusConnection? = null
     @Volatile private var onPairingCode: ((String) -> Unit)? = null
+    @Volatile private var onConfirm: ((String) -> Boolean)? = null
 
-    fun register(onPairingCode: ((String) -> Unit)? = null) {
+    fun register(
+        onPairingCode: ((String) -> Unit)? = null,
+        onConfirm: ((String) -> Boolean)? = null,
+    ) {
         this.onPairingCode = onPairingCode
+        this.onConfirm = onConfirm
         try {
             val c = DBusConnectionBuilder.forSystemBus().withShared(false).build()
             conn = c
@@ -100,10 +106,20 @@ class BluezPairingAgent {
         // Returning normally = accept. Throwing a DBus error = reject. We auto-accept everything.
 
         override fun RequestConfirmation(device: DBusPath, passkey: UInt32) {
-            // Numeric Comparison (DisplayYesNo). Confirm the matching number on the watch.
+            // Numeric Comparison (DisplayYesNo). onConfirm decides (and may block for a user answer);
+            // returning normally accepts, throwing declines (BlueZ aborts the pairing).
             val code = "%06d".format(passkey.toLong())
-            log.info { "RequestConfirmation($device) code=$code — auto-accepting; confirm the matching code on the watch" }
-            onPairingCode?.invoke(code)
+            val confirm = onConfirm
+            if (confirm == null) {
+                log.info { "RequestConfirmation($device) code=$code — auto-accepting (no confirmer wired)" }
+                return
+            }
+            log.info { "RequestConfirmation($device) code=$code — deciding" }
+            if (!confirm(code)) {
+                log.info { "RequestConfirmation($device) code=$code — declined" }
+                throw DBusExecutionException("Pairing declined")
+            }
+            log.info { "RequestConfirmation($device) code=$code — accepted" }
         }
 
         override fun RequestAuthorization(device: DBusPath) {

@@ -86,6 +86,13 @@ interface StoandlControl : DBusInterface {
      *  Returns `error:No pairing in progress` if [Pair] was never called. */
     fun PairStatus(): String
 
+    /** Answer the numeric-comparison confirmation that [PairStatus] is surfacing as `confirm:<code>`:
+     *  [accept] true to bond, false to reject. The phone-side confirmation gates client-initiated
+     *  pairing ([Pair]/[Repair]); the user verifies the code matches the watch first. Returns
+     *  `ok:accepted`/`ok:declined`, or `error:No pairing confirmation pending` (none outstanding, or it
+     *  already timed out). */
+    fun ConfirmPairing(accept: Boolean): String
+
     /** Forget paired watch(es) on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
      *  RemoveDevice (clears the bond). [watch] empty = unpair ALL (blanket); otherwise a name substring
      *  selects a SINGLE watch (exact-then-unique-substring, like [Repair]). Use on the host you've moved
