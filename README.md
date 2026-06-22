@@ -93,7 +93,10 @@ ControllerMode = le
 ```
 
 Then `sudo systemctl restart bluetooth`. Note: this disables Bluetooth Classic for the whole adapter,
-so a single adapter can serve either an LE-only BLE watch **or** a classic-era watch — not both at once.
+so an LE-only adapter can serve a BLE watch **or** a classic-era watch — not both at once. This trade-off
+only matters for BLE-native watches on **pre-4.12** firmware; on **v4.12.0+** leave the adapter in its
+default dual-mode and a single adapter serves both (the advertising bug that made LE-only necessary is
+fixed, so you never enter this mode).
 
 ## Pairing
 
