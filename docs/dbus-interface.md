@@ -19,7 +19,8 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show exactly the 70 methods below and **no** signals or properties.
+> A live introspection should show the 70 methods below **plus 3 signals** (`WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`) and no properties.
 
 ## Service summary
 
@@ -30,7 +31,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
 | **Methods** | 70 |
-| **Signals** | **0** |
+| **Signals** | **3** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
 
@@ -39,14 +40,30 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### No signals, no properties — everything is request/response
+### Three signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` is a **pure method interface**. It declares no D-Bus signals and no
-D-Bus properties, so the daemon never *pushes* anything: a client learns about a watch connecting,
-a battery change, a finished firmware flash, or a locker change only by **calling a method again**.
-Long-running operations are surfaced as *polled status strings*, not signals (see
-[Long-running operations](#long-running-operations)). This is the single biggest constraint for a
-reactive GUI and drives most of the [gap analysis](#gui-gap-analysis).
+`de.yoxcu.stoandl.Control` now emits **three D-Bus signals** as a reactive layer **on top of** the
+poll methods — they do not replace them:
+
+| Signal | D-Bus sig | Meaning | Client reaction |
+|---|---|---|---|
+| `WatchesChanged` | *(none)* | a known watch's set / connection-state / battery / transport changed | re-call `ListWatches` |
+| `FirmwareProgress` | `sis` | firmware-flash `phase` + `percent` (0–100 while `inprogress`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
+| `LockerChanged` | *(none)* | the locker (installed apps/faces) or the active watchface changed — incl. from the watch or another client | re-call `ListApps` |
+
+The two pokes carry no payload; `FirmwareProgress` is the one typed signal (it carries the live %, so
+a poke would defeat the smooth bar). **The methods stay the source of truth** — a signal says
+*something changed*, the client re-reads the authoritative method. Because the daemon is **not**
+D-Bus-activated (above), a client that starts late or after a daemon restart can **miss** a signal, so
+clients also (a) re-sync by calling the method once when the bus name appears and (b) keep a slow
+fallback poll. Long-running ops still also expose *polled status strings*
+([Long-running operations](#long-running-operations)) for the CLI, which does not subscribe.
+
+Daemon side: the signals are nested `DBusSignal` subclasses on `StoandlControl`
+([`StoandlControl.kt`](../src/main/kotlin/de/yoxcu/stoandl/dbus/StoandlControl.kt)), emitted with
+`serviceConn.sendMessage(...)` from collectors in `PebbleIntegration.startSignalEmitters()` (watch
+state ← `libPebble.watches`; firmware ← `FirmwareControl.statusFlow()`'s inner progress flow; locker ←
+`getAllLockerUuids()` + `activeWatchface`).
 
 The only other object stoandl exports on any bus is an internal **BlueZ pairing agent**
 (`org.bluez.Agent1` at `/io/stoandl/agent`, on the **system** bus, from
@@ -56,16 +73,17 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 70 methods:
+Only four types appear across the 70 methods (the `FirmwareProgress` signal adds a fifth, `i`):
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
 | `String` | `s` | string |
 | `Boolean` | `b` | boolean |
+| `Int` | `i` | signed 32-bit int (only the `FirmwareProgress` signal's `percent`) |
 | `List<String>` | `as` | array of strings (one per record; fields tab-separated) |
 | `Unit` / no return | *(empty)* | no out-arg (only `WebviewClose`) |
 
-There are no numeric, struct, dict, variant, or object-path types on the control interface.
+There are no struct, dict, variant, or object-path types on the control interface.
 
 ### Status-string convention
 
@@ -341,8 +359,10 @@ is down — and a reminder that **backup/restore are not daemon capabilities**:
 
 A planned Kirigami GUI has five screens. For each, this lists the existing control members that
 satisfy it and the **gaps** — data or actions it needs that the daemon does not expose over D-Bus.
-The recurring theme: **there are no signals or properties**, so every "live update" need is a gap,
-and several values the daemon already computes are simply dropped from a return or never surfaced.
+The recurring theme *was* **no signals or properties**, so every "live update" need was a gap — now
+partly closed: the daemon emits `WatchesChanged`/`FirmwareProgress`/`LockerChanged` (above), so the
+watch, firmware-progress and locker screens update reactively (with polling kept as the fallback).
+Remaining gaps are values the daemon already computes but drops from a return or never surfaces.
 
 A `feasibility` note marks each gap as **wiring-only** (the daemon/libpebble3 already computes it —
 just expose it), **needs bookkeeping** (a small new field/timestamp), or **design work** (lifecycle
@@ -356,10 +376,13 @@ or egress concerns).
 > restart, via the `config/ConfigStore.kt` reload + re-reconcile), `GetSyncStatus` (now **live** runtime
 > state) + `SetSyncEnabled` (runtime per-service on/off, full start *and* stop), and the notification
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
-> `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`. Still open: the
-> **signals** (`WatchStateChanged`, `FirmwareProgress`/`LanguageProgress`,
-> `LockerChanged`/`ExtensionStateChanged`), per-service `lastSync` timestamps, and the
-> byte-returning/remote variants.
+> `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
+>
+> **Reactive signals landed** (the "Three signals augment polling" section above): `WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged` — so the Watch, firmware-progress and Apps screens update without
+> polling (polling kept as the fallback). Still open: `LanguageProgress` / `ExtensionStateChanged`
+> (the same wiring for the language-install and extension surfaces), per-service `lastSync` timestamps,
+> and the byte-returning/remote variants.
 
 ### Screen 1 — Watch
 

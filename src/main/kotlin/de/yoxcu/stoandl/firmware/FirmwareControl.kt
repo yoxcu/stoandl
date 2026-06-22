@@ -17,6 +17,12 @@ import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.io.files.Path
 import java.io.File
@@ -119,16 +125,46 @@ class FirmwareControl(
      */
     fun status(): String {
         val dev = device() ?: return "notready:No watch connected"
-        return when (val st = dev.firmwareUpdateState) {
-            is FirmwareUpdateStatus.NotInProgress.Idle ->
-                st.lastFailure?.let { "failed:${it.message ?: it::class.simpleName ?: "firmware update failed"}" }
-                    ?: preparing?.let { "downloading:$it" }
-                    ?: "idle:"
-            is FirmwareUpdateStatus.NotInProgress.ErrorStarting -> "failed:${st.error}"
-            is FirmwareUpdateStatus.WaitingToStart -> "waiting:"
-            is FirmwareUpdateStatus.InProgress -> "inprogress:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
-            is FirmwareUpdateStatus.WaitingForReboot -> "reboot:"
-        }
+        return statusString(dev.firmwareUpdateState)
+    }
+
+    /** Map a [FirmwareUpdateStatus] to the status-prefixed string (shared by [status] and [statusFlow]).
+     *  For `InProgress` it samples the current percentage; [statusFlow] re-emits live as that ticks. */
+    private fun statusString(st: FirmwareUpdateStatus): String = when (st) {
+        is FirmwareUpdateStatus.NotInProgress.Idle ->
+            st.lastFailure?.let { "failed:${it.message ?: it::class.simpleName ?: "firmware update failed"}" }
+                ?: preparing?.let { "downloading:$it" }
+                ?: "idle:"
+        is FirmwareUpdateStatus.NotInProgress.ErrorStarting -> "failed:${st.error}"
+        is FirmwareUpdateStatus.WaitingToStart -> "waiting:"
+        is FirmwareUpdateStatus.InProgress -> "inprogress:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
+        is FirmwareUpdateStatus.WaitingForReboot -> "reboot:"
+    }
+
+    /**
+     * Reactive [status]: the same status-prefixed strings, but as a Flow that emits on every change —
+     * phase transitions AND each in-progress percentage tick. The percentage lives in a nested
+     * `InProgress.progress: StateFlow<Float>` that the outer device/watches flow does NOT re-surface, so
+     * we [flatMapLatest] into it while flashing. Drives the `FirmwareProgress` D-Bus signal. Emits
+     * `notready:` when no watch is connected (and follows connect/disconnect via `watches`).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun statusFlow(): Flow<String> {
+        val lp = libPebbleRef.get() ?: return flowOf("notready:")
+        return lp.watches
+            // CommonConnectedDevice (not ConnectedPebbleDevice) so this matches status()/device() and
+            // also covers a watch connected in recovery (PRF) — the un-brick flash must report progress.
+            .map { devs -> devs.filterIsInstance<CommonConnectedDevice>().firstOrNull() }
+            .distinctUntilChanged { a, b -> a === b }
+            .flatMapLatest { dev ->
+                when (val st = dev?.firmwareUpdateState) {
+                    null -> flowOf("notready:")
+                    is FirmwareUpdateStatus.InProgress ->
+                        st.progress.map { "inprogress:${(it * 100).toInt().coerceIn(0, 100)}" }
+                    else -> flowOf(statusString(st))
+                }
+            }
+            .distinctUntilChanged()
     }
 
     /**

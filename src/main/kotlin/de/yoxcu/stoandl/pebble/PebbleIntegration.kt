@@ -99,6 +99,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
@@ -416,6 +417,7 @@ class PebbleIntegration(
         startNotificationActionListener()
         startChurnDetector()
         registerControlService()
+        startSignalEmitters()
         startCallMonitor()
         applyWeather()
         startWatchPrefsSync()
@@ -1434,6 +1436,64 @@ class PebbleIntegration(
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
         }
+    }
+
+    /**
+     * Emit the reactive D-Bus signals (WatchesChanged / FirmwareProgress / LockerChanged) as a layer ON
+     * TOP of the poll methods — clients still re-fetch via the matching method (the source of truth) and
+     * keep a slow fallback poll, since the daemon isn't D-Bus-activated and a late client can miss a
+     * signal. Collectors run on the daemon [scope]; started after [registerControlService] so the object
+     * is exported. Emits are best-effort. The watch/locker pokes `drop(1)` the initial state (the client
+     * fetches once on connect, so the first emission would be a redundant poke); FirmwareProgress doesn't
+     * drop — a fresh subscriber wants the current phase (and clients ignore `idle`/`notready`).
+     */
+    private fun startSignalEmitters() {
+        fun emit(signal: DBusSignal) {
+            runCatching { serviceConn.sendMessage(signal) }
+                .onFailure { log.debug { "D-Bus signal emit failed: ${it.message}" } }
+        }
+
+        // WatchesChanged: poke when the watch list's name/state/battery/transport signature changes
+        // (mirrors the fields ListWatches returns, so any GUI-visible change re-fetches).
+        libPebble.watches
+            .map { devices ->
+                devices.joinToString("\n") { d ->
+                    val state = when (d) {
+                        is ConnectedPebbleDevice -> "connected"
+                        is ConnectingPebbleDevice -> "connecting"
+                        else -> "disconnected"
+                    }
+                    val battery = (d as? ConnectedPebbleDevice)?.batteryLevel?.toString() ?: ""
+                    val transport = (d as? ConnectedPebbleDevice)?.let { if (it.usingBtClassic) "classic" else "ble" } ?: ""
+                    "${d.displayName()}\t$state\t$battery\t$transport"
+                }
+            }
+            .distinctUntilChanged()
+            .drop(1)
+            .onEach { emit(StoandlControl.WatchesChanged(STOANDL_OBJECT_PATH)) }
+            .launchIn(scope)
+
+        // FirmwareProgress: phase + percent (-1 unless inprogress) + detail, parsed from the single-sourced
+        // statusFlow string (which is already distinctUntilChanged and follows the % ticks live).
+        firmwareControl.statusFlow()
+            .onEach { s ->
+                val idx = s.indexOf(':')
+                val phase = if (idx >= 0) s.substring(0, idx) else s
+                val rest = if (idx >= 0) s.substring(idx + 1) else ""
+                val percent = if (phase == "inprogress") (rest.toIntOrNull() ?: -1) else -1
+                val detail = if (phase == "inprogress") "" else rest
+                emit(StoandlControl.FirmwareProgress(STOANDL_OBJECT_PATH, phase, percent, detail))
+            }
+            .launchIn(scope)
+
+        // LockerChanged: poke when apps/faces are added/removed or the active watchface changes.
+        combine(libPebble.getAllLockerUuids(), libPebble.activeWatchface) { uuids, active ->
+            "${uuids.sortedBy { it.toString() }.joinToString(",")}|${active?.properties?.id}"
+        }
+            .distinctUntilChanged()
+            .drop(1)
+            .onEach { emit(StoandlControl.LockerChanged(STOANDL_OBJECT_PATH)) }
+            .launchIn(scope)
     }
 
     private fun startAutoConnect() {

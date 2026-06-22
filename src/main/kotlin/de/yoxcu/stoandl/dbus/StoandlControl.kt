@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.dbus
 
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.interfaces.DBusInterface
+import org.freedesktop.dbus.messages.DBusSignal
 
 const val STOANDL_BUS_NAME = "de.yoxcu.stoandl"
 const val STOANDL_OBJECT_PATH = "/de/yoxcu/stoandl"
@@ -358,4 +359,27 @@ interface StoandlControl : DBusInterface {
      *  subsystem re-reconciled, so it **takes effect live** (no restart). `notfound:` for an unknown key,
      *  `error:` for an invalid value or a write failure. */
     fun SetConfig(key: String, value: String): String
+
+    // --- Signals -----------------------------------------------------------------------------------
+    // The daemon EMITS these (the first place it does — it otherwise only consumes signals). They are a
+    // reactive layer ON TOP OF the poll methods, not a replacement: the daemon is not D-Bus-activated, so
+    // a late/reconnecting client can miss a signal — clients re-sync via the matching method on connect
+    // and keep a slow fallback poll. A signal is a nested DBusSignal subclass (dbus-java derives the
+    // member name from the class and the interface from this @DBusInterfaceName); the daemon emits it via
+    // `serviceConn.sendMessage(StoandlControl.X(STOANDL_OBJECT_PATH, …))`.
+
+    /** Poke emitted when the set / connection-state / battery / transport of known watches changes.
+     *  Carries no payload — the client re-calls [ListWatches] (the source of truth). */
+    class WatchesChanged(path: String) : DBusSignal(path)
+
+    /** Firmware-flash progress. [phase] is the status kind (`downloading`/`waiting`/`inprogress`/
+     *  `reboot`/`failed`/`idle`/`notready` — same vocabulary as [FirmwareStatus]); [percent] is 0–100
+     *  while `inprogress`, else `-1`; [detail] is the asset name / failure reason (empty while inprogress).
+     *  Emitted on every phase change and every percentage tick. */
+    class FirmwareProgress(path: String, val phase: String, val percent: Int, val detail: String) :
+        DBusSignal(path, phase, percent, detail)
+
+    /** Poke emitted when the locker (installed apps/faces) or the active watchface changes — including
+     *  changes made on the watch or by another client. Carries no payload — the client re-calls [ListApps]. */
+    class LockerChanged(path: String) : DBusSignal(path)
 }
