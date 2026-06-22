@@ -90,3 +90,18 @@ systemctl --user enable --now stoandl
 ```
 
 The service unit sets `DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so it finds the user session bus without a graphical login.
+
+## GUI / D-Bus contract
+
+The daemon's public control surface — for the CLI and any future GUI (e.g. a Kirigami front-end) —
+is the single D-Bus interface `de.yoxcu.stoandl.Control` (session bus, name `de.yoxcu.stoandl`,
+path `/de/yoxcu/stoandl`), defined in `dbus/StoandlControl.kt` and implemented by
+`StoandlControlImpl` in `PebbleIntegration.kt`. It is **methods only — zero signals, zero
+properties** — so clients poll; long-running ops (pair, firmware flash, language install) report
+progress via polled status strings (`PairStatus`/`FirmwareStatus`/`LanguageStatus`). `backup`,
+`restore` and `support` are **CLI-local** (no D-Bus method).
+
+See [docs/dbus-interface.md](docs/dbus-interface.md) for the full method catalog (D-Bus signatures,
+CLI mapping, tab-separated record layouts, status-string conventions) **and** the GUI gap analysis
+per planned screen (Watch, Apps & Faces, Plugins, Sync, System) — i.e. the signals/fields/methods
+to add for a reactive GUI. Keep that doc in sync when you change the interface.

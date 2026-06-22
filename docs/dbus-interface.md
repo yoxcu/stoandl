@@ -1,0 +1,404 @@
+# D-Bus interface
+
+The stoandl daemon exposes a single control interface on the **session bus**. The `stoandl` CLI
+(`stoandl-ctl` → the fat JAR in `ctl` mode) is just a client of it; a GUI would be another. This
+document is the contract between the daemon and any out-of-process front-end.
+
+> **Source of truth.** This was extracted from the Kotlin source — the interface declaration in
+> [`StoandlControl.kt`](../src/main/kotlin/de/yoxcu/stoandl/dbus/StoandlControl.kt), its
+> implementation `StoandlControlImpl` in
+> [`PebbleIntegration.kt`](../src/main/kotlin/de/yoxcu/stoandl/pebble/PebbleIntegration.kt) (exported
+> at `PebbleIntegration.kt:1244`, impl from `:1685`), and the CLI dispatch in
+> [`Main.kt`](../src/main/kotlin/de/yoxcu/stoandl/Main.kt). The live daemon was **not running** when
+> this was written (no BLE radio / systemd in the build sandbox), so it was not introspected. To
+> reconcile against a live daemon:
+>
+> ```sh
+> busctl --user list | grep -i stoandl                       # find the name
+> busctl --user introspect de.yoxcu.stoandl /de/yoxcu/stoandl # the control object
+> gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
+> ```
+>
+> A live introspection should show exactly the 51 methods below and **no** signals or properties.
+
+## Service summary
+
+| | |
+|---|---|
+| **Bus** | session bus |
+| **Bus name** | `de.yoxcu.stoandl` |
+| **Object path** | `/de/yoxcu/stoandl` |
+| **Interface** | `de.yoxcu.stoandl.Control` |
+| **Methods** | 51 |
+| **Signals** | **0** |
+| **Properties** | **0** |
+| **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
+
+The session connection is `DBusConnectionBuilder.forSessionBus().withShared(false).build()`
+(`util/DbusConnections.kt`). The systemd unit sets
+`Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
+session bus with no graphical login.
+
+### No signals, no properties — everything is request/response
+
+`de.yoxcu.stoandl.Control` is a **pure method interface**. It declares no D-Bus signals and no
+D-Bus properties, so the daemon never *pushes* anything: a client learns about a watch connecting,
+a battery change, a finished firmware flash, or a locker change only by **calling a method again**.
+Long-running operations are surfaced as *polled status strings*, not signals (see
+[Long-running operations](#long-running-operations)). This is the single biggest constraint for a
+reactive GUI and drives most of the [gap analysis](#gui-gap-analysis).
+
+The only other object stoandl exports on any bus is an internal **BlueZ pairing agent**
+(`org.bluez.Agent1` at `/io/stoandl/agent`, on the **system** bus, from
+[`BluezPairingAgent.kt`](../src/main/kotlin/de/yoxcu/stoandl/pebble/BluezPairingAgent.kt)). It is
+registered with `org.bluez.AgentManager1` for headless auto-confirm pairing and is **not** part of
+the public control API — callers never invoke it; BlueZ does.
+
+### Type signatures
+
+Only four types appear across the 51 methods:
+
+| Kotlin | D-Bus sig | Plain language |
+|---|---|---|
+| `String` | `s` | string |
+| `Boolean` | `b` | boolean |
+| `List<String>` | `as` | array of strings (one per record; fields tab-separated) |
+| `Unit` / no return | *(empty)* | no out-arg (only `WebviewClose`) |
+
+There are no numeric, struct, dict, variant, or object-path types on the control interface.
+
+### Status-string convention
+
+Most methods return a single `String` shaped as **`kind:message`** — a status token, a colon, then
+a human/payload tail. The CLI splits on the first `:` (`splitStatus`/`handleStatusResponse` in
+`Main.kt`). Common kinds: `ok`, `error`, `notready` (libPebble not up / no watch), `notfound`,
+`ambiguous`, plus method-specific ones (`pending`, `timeout`, `disabled`, `idle`, `inprogress`,
+`reboot`, `failed`, `done`, `uptodate`, `noasset`, `busy`, `none`, `unknown`). When a payload has
+multiple fields they are **tab-separated** in the tail (e.g. `ok:<name>\t<level>`).
+
+## Methods
+
+In-args and out-args are given as D-Bus signatures; see the per-group notes for the field layout of
+tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method.
+
+### Daemon / meta
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `Version` | `() → s` | Daemon version (from `git describe` at build time). | `version` (soft — falls back to the CLI's embedded version if the daemon is down) |
+
+### Watch (`stoandl watch`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery`. | `watch list` (also bare `watch`) |
+| `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
+| `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
+| `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
+| `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `ok:` / `error:` / `timeout:`. | (polled by `watch pair` and `watch repair`) |
+| `Repair` | `(s) → s` | Forget one known watch (bond + Trusted intent) and reopen the pairing window; multi-watch-safe. Poll `PairStatus`. | `watch repair <name>` |
+| `Unpair` | `(s) → s` | Forget watch(es): empty = blanket (all), name = single (exact-then-substring). libpebble `forget()` + BlueZ `RemoveDevice`. | `watch unpair [name]` |
+| `FindWatch` | `() → b` | Ring the watch continuously (a "Find My Watch" call screen) until a button is pressed. `false` = not ready. | `watch find` |
+
+`ListWatches` record: `name \t state \t battery` — `state` ∈ `connected` | `connecting` |
+`disconnected`; `battery` is the 0–100 level for a connected watch, else empty. **Transport
+(BLE vs Classic) is not in the record** (see gaps).
+
+### Apps & watchfaces (`stoandl apps`, `stoandl config`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ListApps` | `() → as` | Locker contents (apps + faces), one record each (see below). | `apps list` |
+| `LaunchApp` | `(s) → s` | Launch app/face by UUID or name. `ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`. | `apps launch <name\|uuid>` |
+| `RemoveApp` | `(s) → s` | Uninstall app/face from the locker (system apps refused). | `apps remove <name\|uuid>` |
+| `SideloadApp` | `(s) → s` | Install a local `.pbw` (absolute daemon-side path). | `apps install <path.pbw>` (aliases `sideload`, `add`) |
+| `OpenConfig` | `(s) → s` | Config (Clay/PKJS) URL for a running app; empty string if none. The CLI proxies it over a local HTTP server. | `config [app]` |
+| `WebviewClose` | `(s) → ` *(void)* | Hand the saved settings JSON back to the running PKJS app after the config webview closes. | `config [app]` |
+
+`ListApps` record: `uuid \t type \t order \t flags \t title \t developer`, where `flags` is a
+comma-joined subset of **`{active, sideloaded, config, system}`** (`active` = current watchface,
+`config` = has a Clay/PKJS config page, `system` = built-in, `sideloaded` = installed from a
+`.pbw`). The per-app `sync` flag (synced-to-watch) exists in the underlying object but is **not**
+emitted (see gaps).
+
+### Watch settings (`stoandl settings`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ListWatchPrefs` | `() → as` | Watch advanced settings, one record each (see below). | `settings` / `settings list [filter]` |
+| `SetWatchPref` | `(s,s) → s` | Set setting `<id>` to `<value>` (parsed per the pref's type). | `settings set <id> <value>` |
+
+`ListWatchPrefs` record: `id \t type \t current \t default \t allowed \t flags \t name \t
+description` (`flags` carries `debug` for advanced settings).
+
+### Notifications (per-app) (`stoandl notif`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `NotifList` | `() → as` | Per-app notification store, one record each (see below). | `notif list` (also bare `notif`) |
+| `NotifSetMute` | `(s,s) → s` | Set mute for the app matching `<query>`; spec = `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`). | `notif mute <app> [spec]` / `notif unmute <app>` (sends `never`) |
+| `NotifSetMuteAll` | `(s) → s` | Apply a mute spec to every tracked app. | `notif mute-all [spec]` / `notif unmute-all` |
+| `NotifSetStyle` | `(s,s,s,s) → s` | Per-app styling `(query, color, icon, vibe)` applied host-side; per value, empty = unchanged, `default` = reset. | `notif style <app> [--color] [--icon] [--vibe]` |
+
+`NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds`
+(`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`). *(The interface
+KDoc lists only 3 fields; the implementation in `NotificationAppsControl.kt:34` emits all 6 —
+the KDoc is stale.)*
+
+### Sync — force-sync triggers (`stoandl weather`/`calendar`/`health`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `SyncWeather` | `() → s` | Fetch weather now and push to the watch. `error:` if weather isn't enabled. | `weather` |
+| `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
+| `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
+| `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
+| `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
+| `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
+
+There is **no** force-sync for music or notifications, and **no** master on/off for any sync
+service over D-Bus (services are enabled by config + daemon restart; see gaps).
+
+### Firmware (`stoandl firmware`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `CheckFirmware` | `() → s` | Check the matching source (GitHub for Core, cohorts.rebble.io for classic) for a newer build: `ok:<board>\t<current>\t<latest>\t<asset>\t<yes\|no>\t<source>`, or `noasset:`/`disabled:`/`notready:`/`error:`. | `firmware check` |
+| `UpdateFirmware` | `() → s` | Download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:`/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
+| `SideloadFirmware` | `(s) → s` | Flash a local `.pbz` (absolute daemon-side path), async. Poll `FirmwareStatus`. | `firmware sideload <file.pbz>` / `firmware <file.pbz>` |
+| `FirmwareStatus` | `() → s` | Flash state: `idle:` / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `failed:<reason>` / `notready:`. | `firmware status` (also polled during update/sideload) |
+
+### Language packs (`stoandl language`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ListLanguages` | `() → as` | Catalog packs for the watch's board, one record each (see below). | `language list` (also bare `language`; soft — falls back to the offline bundled catalog) |
+| `InstallLanguage` | `(s) → s` | Auto-pick (locale/name/id; blank = system locale), download and install. `ok:<displayName>` once started; `notfound:`/`disabled:`/`notready:`/`error:`. Poll `LanguageStatus`. | `language install <locale\|name\|id>` |
+| `SideloadLanguage` | `(s) → s` | Install a local `.pbl` (absolute daemon-side path), async. Poll `LanguageStatus`. | `language sideload <file.pbl>` (alias `add`) |
+| `LanguageStatus` | `() → s` | Install state: `idle:` / `downloading:<name>` / `installing:<percent>` / `done:<name>` / `failed:<reason>` / `notready:`. | `language status` (also polled during install/sideload) |
+
+`ListLanguages` record: `id \t isoLocal \t displayName \t installed(yes\|no) \t source(rebble\|github)`.
+
+### Diagnostics (`stoandl screenshot`/`logs`/`support`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `TakeScreenshot` | `(s) → s` | Capture the screen to a PNG at the absolute daemon-side path. `ok:<path>\t<width>\t<height>` / `notready:` / `error:`. Blocks ~seconds. | `screenshot [path]` |
+| `GatherLogs` | `(s) → s` | Dump watch firmware logs to a text file at the absolute path. `ok:<path>` / `notready:` / `error:`. Blocks ~seconds. | `logs [path]`; also `support` |
+| `GetCoreDump` | `(s) → s` | Fetch an existing coredump to the absolute path. `ok:<path>` / `none:` / `notready:` / `error:`. | `support --coredump` (no standalone verb) |
+| `WatchInfoText` | `() → s` | Watch metadata as a human-readable text block (model/fw/board/serial/language/battery/capabilities). `ok:<text>` / `notready:`. Returned **inline** (no file). | `support` (no standalone verb) |
+
+> `screenshot`/`logs`/`coredump` write to a **daemon-side filesystem path** and return that path —
+> fine for a co-located CLI, a problem for a remote/sandboxed GUI (see gaps). `WatchInfoText` is the
+> exception: it returns content inline.
+
+### Reset (`stoandl reset`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ResetIntoRecovery` | `() → s` | Reboot the watch into recovery (PRF) firmware. Fire-and-forget. | `reset recovery` / `reset prf` |
+| `FactoryReset` | `() → s` | Wipe the watch to out-of-box state and reboot. Fire-and-forget; **destructive** (CLI/GUI owns the confirmation). | `reset factory [--yes]` |
+
+Both are fire-and-forget: one RESET packet is sent, the link drops, and there is **no** completion
+ack — `ok:` means "queued", not "done".
+
+### Developer connection (`stoandl developer`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `StartDevConnection` | `() → s` | Start the LAN WebSocket server (port 9000) bridging the Pebble SDK/CloudPebble to the watch. `ok:9000` / `notready:` / `error:`. **Binds `0.0.0.0`, no auth.** | `developer start` |
+| `StopDevConnection` | `() → s` | Stop the developer server. | `developer stop` |
+| `DevConnectionStatus` | `() → s` | `ok:active` / `ok:inactive` / `notready:`. | `developer status` |
+
+### Extensions / plugins (`stoandl ext`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `ExtList` | `() → as` | Installed/enabled extensions: `name \t installed\|missing \t enabled\|disabled \t running\|stopped`. | `ext list` / `ext status` (also bare `ext`) |
+| `ExtInstall` | `(s) → s` | Install from an archive (`.tar.gz`/`.tgz`/`.tar`/`.zip`, absolute daemon-side path): extract, sideload bundled `.pbw`, enable, hotplug-start. | `ext install <archive>` |
+| `ExtUninstall` | `(s,b) → s` | Stop, drop from `extensions.enabled`, delete files; `keepConfig` retains the `config` file for a later reinstall. | `ext uninstall <name>` (aliases `remove`; `--keep-config`/`--delete-config`) |
+| `ExtEnable` | `(s) → s` | Add to `extensions.enabled` and hotplug-start. | `ext enable <name>` |
+| `ExtDisable` | `(s) → s` | Remove from `extensions.enabled` and stop (files kept). | `ext disable <name>` |
+| `ExtRestart` | `(s) → s` | Restart the extension's process. | `ext restart <name>` |
+
+### Debug (`stoandl fakecall`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `FakeCallRing` | `(s,s) → b` | Inject a synthetic incoming (ringing) call `(name, number)` so the watch shows the native call screen. `false` = not ready. | `fakecall ring [name] [number]` |
+| `FakeCallEnd` | `() → b` | Clear the current synthetic call. | `fakecall end` |
+
+## Tab-separated record formats (the `as` returns)
+
+| Method | Fields |
+|---|---|
+| `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) |
+| `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system) · `title` · `developer` |
+| `ListWatchPrefs` | `id` · `type` · `current` · `default` · `allowed` · `flags` · `name` · `description` |
+| `ListCalendars` | `id` · `name` · `enabled`/`disabled` |
+| `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
+| `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
+| `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` |
+
+## Long-running operations
+
+Three operations run asynchronously on the daemon and report progress via a **polled status
+string** — there is no progress signal. The CLI's poll loops document the cadence and terminal
+states:
+
+| Operation | Start method | Polled method | Cadence | Timeout | Terminal states |
+|---|---|---|---|---|---|
+| **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues |
+| **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure |
+| **Language install** | `InstallLanguage(query)` / `SideloadLanguage(path)` | `LanguageStatus()` | 0.6 s | 180 s | `done:` = success; `failed:` = failure; post-activity `notready:` = disconnected |
+
+For firmware/language, the start method returns `ok:` (kicked off) and the *snapshot* status is read
+repeatedly. A successful flash/install ends with the watch rebooting, so the link drops and the poll
+loop treats a `notready:` *after* it has seen activity as success. (Language install skips one stale
+sticky `done:`/`idle:`/`failed:` on the first poll — it can be the previous install's terminal value
+before the new kickoff propagates.)
+
+## CLI subcommands that bypass the daemon
+
+Not every `stoandl` subcommand talks to D-Bus. These read local files or generate output entirely
+in-process (no daemon needed), which is relevant to a GUI deciding what it can do while the daemon
+is down — and a reminder that **backup/restore are not daemon capabilities**:
+
+- `backup [out]` / `restore <in> [--force]` — **pure CLI-local `tar` over `~/.config/stoandl`**. They
+  only probe `org.freedesktop.DBus.NameHasOwner` to *warn* (backup) or *refuse* (restore) when the
+  daemon is up; they never call `de.yoxcu.stoandl.Control`. **There is no `Backup`/`Restore` method.**
+- `support [out.tar.gz]` — CLI-local assembly: calls `WatchInfoText`/`GatherLogs`/`GetCoreDump` for
+  the watch pieces, then reads `/tmp/stoandl*.log` and `stoandl.conf` (with secret redaction) off the
+  host and tars it. **There is no `SupportBundle` method.**
+- `calendar dump <file.ics|url>` — parses + expands recurrence in-process.
+- `datalog list|dump|tail` — reads `~/.config/stoandl/datalog/**/*.ndjson` directly.
+- `health` / `health [days]` / `health activities` / `health dump` — read
+  `~/.config/stoandl/health/*.ndjson` directly (`health sync` and `health hr` call the daemon).
+- `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums + vibe presets.
+- `version` and `language list` use a *soft* connection: they call the daemon if reachable and
+  degrade to embedded/offline output otherwise.
+
+---
+
+## GUI gap analysis
+
+A planned Kirigami GUI has five screens. For each, this lists the existing control members that
+satisfy it and the **gaps** — data or actions it needs that the daemon does not expose over D-Bus.
+The recurring theme: **there are no signals or properties**, so every "live update" need is a gap,
+and several values the daemon already computes are simply dropped from a return or never surfaced.
+
+A `feasibility` note marks each gap as **wiring-only** (the daemon/libpebble3 already computes it —
+just expose it), **needs bookkeeping** (a small new field/timestamp), or **design work** (lifecycle
+or egress concerns).
+
+### Screen 1 — Watch
+
+*Active watch, battery, transport, known-watch list, pair/connect/repair/unpair.*
+
+**Satisfied by:** `ListWatches` (identity + state + battery snapshot), `Battery` (active watch
+level), `Connect`, `Pair`+`PairStatus`, `Repair`, `Unpair`, `WatchInfoText` (free-text details panel).
+
+| Gap | Kind | Today | Proposed hook | Feasibility |
+|---|---|---|---|---|
+| Watch connect/disconnect/state-change push | signal | none — must re-poll `ListWatches` | `WatchStateChanged(s name, s state, i battery)` (or a zero-arg `WatchesChanged()` poke) | **wiring-only** — libpebble3 `LibPebble.watches: StateFlow` + `Watches.connectionEvents: Flow` already exist |
+| Live battery updates | signal | none — `Battery`/`ListWatches` are one-shot | `BatteryChanged(s name, i level)`, or fold into the state signal | **wiring-only** — each battery change re-emits the `watches` StateFlow; diff it |
+| Transport per watch (BLE vs Classic badge) | data | **dropped** from the `ListWatches` record | append `transport`(ble/classic) to the `ListWatches` row | **wiring-only** — the daemon already pattern-matches `PebbleBtClassicIdentifier` vs `PebbleBleIdentifier` (`ActiveDevice.usingBtClassic`) |
+| Richer per-watch identity (model, fw, serial, color, last-connected) | data | only the unstructured `WatchInfoText`, connected watch only | extend `ListWatches` row or add `WatchDetails(s) → s` | **wiring-only** — all fields live on `KnownPebbleDevice` |
+| Bluetooth adapter power / scanning state | property/signal | not exposed (checked internally) | `BluetoothStatus() → s` + `BluetoothStateChanged` | **wiring-only** — libpebble3 `Scanning.bluetoothEnabled`/`isScanningBle/Classic` StateFlows |
+| Pair progress as push (vs `PairStatus` polling) | signal | poll only | `PairStatusChanged(s status)` on each internal `pairingState` change | **wiring-only** — `pairingState` already maintained |
+| Rename / nickname a known watch | action | none | `SetWatchNickname(s watch, s nickname) → s` | **wiring-only** — `KnownPebbleDevice.setNickname()` exists |
+| Battery charging state | data | not available | *(none — not feasible)* | **unavailable** — BLE Battery Service (0x180F) is level-only; not a wiring gap |
+
+### Screen 2 — Apps & Faces
+
+*Locker list with active/system/sideloaded/config flags, launch/install/remove, Clay config.*
+
+**Satisfied by:** `ListApps` (list + **all four flags** `active|system|sideloaded|config` are
+present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` + `WebviewClose` (Clay round-trip).
+
+| Gap | Kind | Today | Proposed hook | Feasibility |
+|---|---|---|---|---|
+| Locker-changed push (install/remove/reorder) | signal | none — `ListApps` is a one-shot `getLocker(...).first()`, dropping the live stream | `LockerChanged()` poke | **wiring-only** — `getLocker()` returns a live `Flow`; keep the collector |
+| Active-watchface-changed push | signal | none — computed per call | `ActiveWatchfaceChanged(s uuid)` or fold into `LockerChanged` | **wiring-only** — `LockerApi.activeWatchface: StateFlow` |
+| Config session available/unavailable push | signal | none — must call `OpenConfig` speculatively | `CompanionSessionsChanged()` | **wiring-only** — `currentCompanionAppSessions: StateFlow`, already read |
+| `synced`-to-watch flag per app | data | the `sync` field is read but **not** added to flags | add `synced` to the `ListApps` flags set | **wiring-only** — `NormalApp.sync` already in the iterated object |
+| Icon / version / category / capabilities for richer rows | data | dropped from the row | extend `ListApps` row or `AppDetails(s) → s` | **partly wiring-only** — version/category/caps are fields; an *icon URL* is a store URL (web), real bitmap pixels would need a binary method |
+| Reorder apps (drag-to-reorder) | action | `order` is shown but read-only | `SetAppOrder(s uuid, i order) → s` (+ `RestoreSystemAppOrder`) | **wiring-only** — libpebble3 `setAppOrder()`/`restoreSystemAppOrder()` exist |
+| Install from cloud locker / store (not just a local `.pbw`) | action | only `SideloadApp(path)` | `AddAppFromLocker(s uuid) → s` | **design work** — plumbing exists (`addAppToLocker`/`fetchLocker`) but stoandl is local-only/no-egress; needs a store fetch + egress opt-in |
+
+### Screen 3 — Plugins
+
+*Extensions: list, enable/disable/restart/install/uninstall, running state.*
+
+**Satisfied by:** `ExtList` (list + installed + enabled + running flags, one shot), `ExtInstall`,
+`ExtUninstall` (with the `keepConfig` bool → a GUI checkbox), `ExtEnable`, `ExtDisable`, `ExtRestart`.
+
+| Gap | Kind | Today | Proposed hook | Feasibility |
+|---|---|---|---|---|
+| Live running-state updates (crash/quarantine/restart/needs-config) | signal | none — re-poll `ExtList` only | `ExtensionStateChanged(s name, s state)` | **wiring-only** — `ExtensionProcess` already observes every transition (`ready`, exit, quarantine) internally |
+| Richer run-state than `running\|stopped` (quarantined, needs-config, restarting) | data | collapsed to `running.containsKey()` | 5th `ExtList` field `runState`, or `ExtStatus(s) → s` | **needs bookkeeping** — facts exist (`StartResult.NEEDS_CONFIG`, quarantine after `MAX_FAST_FAILURES`) but aren't recorded into a queryable field |
+| Per-extension config (declares `requiresConfig`? `userConfigured`? path? read/write settings) | data + action | not exposed (only a desktop notification tells the user to edit the file) | `ExtConfigGet(s) → s` / `ExtConfigSet(s,s,s) → s` | **wiring-only to read** (manifest + `readConfigFile()` already parsed); write is new |
+| Install from bytes/upload (not a daemon-side path) | action | `ExtInstall` takes a daemon-resolved path | optional `ExtInstallBytes(s name, ay data) → s` | **wiring-only** but low priority for a co-located GUI |
+
+### Screen 4 — Sync
+
+*Per-service on/off + force-sync for notifications, weather, calendar, music/MPRIS, health.*
+
+**Satisfied by:** `SyncWeather`, `SyncCalendar`, `SyncHealth` (force-sync for three of five services);
+`ListCalendars` + `SetCalendarEnabled` (per-*calendar* toggle, not a service master switch);
+`NotifList` (per-app `lastNotified` timestamps — the only "last activity" data anywhere).
+
+| Gap | Kind | Today | Proposed hook | Feasibility |
+|---|---|---|---|---|
+| **Per-service master ON/OFF at runtime** (notifications, weather, calendar, music, health, dnd) | action | **does not exist** — enable/disable is config-file-only, read once at startup; changing it needs a daemon **restart** | `SetSyncEnabled(s service, b enabled) → s` — must rewrite `stoandl.conf` **and** start/stop the live service | **mixed** — config-rewrite is feasible (the `extensions.enabled` atomic rewrite is the template) and ref-held services (weather/calendar/health/dnd) can stop/start; **Koin-bound `single<>` services (music, calendar `SystemCalendar`) have no teardown path** → real runtime music on/off is design work |
+| Per-service **enabled** read (initialize the toggles) | property | not exposed; only inferable by probing (`SyncWeather` → `error:…not enabled`) | `GetSyncStatus() → as` (`service\tenabled\tavailable\tlastSync`) | **wiring-only** — flags exist in the loaded `StoandlConfig` |
+| Per-service **last-sync** timestamp (+ result/error) | data | mostly **not even tracked** (4 of 5 services store no timestamp) | add `lastSync`/`lastResult` to the `GetSyncStatus` row | **needs bookkeeping** — sync moments are observable but no timestamp is stored |
+| Force-sync for **music** and **notifications** | action | **no `SyncMusic`/`SyncNotifications`** (both are continuous push by design) | `SyncMusic() → s` (re-enumerate MPRIS + re-push) / `SyncNotifications() → s`, or omit from the screen | **wiring-only if wanted** — `MprisMusicControl` has `enumerateExisting()`/`recompute()`; arguably unnecessary |
+| Music/MPRIS state for the screen (active player, playing?) | data | not exposed (state stays internal to the watch bridge) | include music in `GetSyncStatus`, or `MusicStatus() → s` | **wiring-only** — `MprisMusicControl._playbackState: StateFlow` already carries it |
+| DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | not exposed at all (config-only) | fold into `SetSyncEnabled`/`GetSyncStatus`, or `Get/SetDndSyncMode` | **wiring-only to read** (mode in `StoandlConfig`, live bool in `DndSync.synced`); runtime mode change needs a DndSync restart |
+
+### Screen 5 — System
+
+*Firmware check/update/flash + progress, language list/install, backup/restore, screenshot, logs,
+support bundle, reset recovery/factory.*
+
+**Satisfied by:** firmware `CheckFirmware`/`UpdateFirmware`/`SideloadFirmware`/`FirmwareStatus`;
+language `ListLanguages`/`InstallLanguage`/`SideloadLanguage`/`LanguageStatus`; `TakeScreenshot`;
+`GatherLogs`/`GetCoreDump`/`WatchInfoText`; `ResetIntoRecovery`/`FactoryReset`.
+
+| Gap | Kind | Today | Proposed hook | Feasibility |
+|---|---|---|---|---|
+| Live firmware-flash progress push | signal | `FirmwareStatus` polling only | `FirmwareProgress(s phase, i percent, s detail)` | **wiring-only** — libpebble3 `FirmwareUpdater.firmwareUpdateState: StateFlow` with nested `InProgress.progress: StateFlow<Float>` |
+| Distinguish flash-failure cause (download vs board-mismatch vs CRC) | data | collapsed to `failed:<reason>`; an `update` download failure is logged only and silently drops back to `idle:` | carry an error code in `FirmwareProgress.detail`; set state on download failure | **needs bookkeeping** — typed causes exist (`ErrorStarting`/`Idle(lastFailure)`) but the download failure is swallowed in `FirmwareControl.startFlash` |
+| Live language-install progress push | signal | `LanguageStatus` polling only | `LanguageProgress(s phase, i percent, s detail)` | **wiring-only** — `LanguagePackInstaller.state: StateFlow` with `Installing.progress: StateFlow<Float>` |
+| **Backup / Restore over D-Bus** | action | **not on D-Bus at all** — CLI-local `tar`; backup warns and restore refuses while the daemon runs | `BackupTo(s path) → s` (daemon snapshots its own config + checkpoints the DB) and a coordinated `RestoreFrom(s path)` (+ restart) or `PrepareForRestore()`; at minimum `ConfigDir() → s` | **design work** — data is daemon-owned (right place to snapshot consistently), but the DB-lock/restart coordination is real work; a remote GUI also needs a byte transfer |
+| Screenshot bytes to a remote/sandboxed GUI | data | **file-path coupling** — writes a daemon-side PNG, returns the path | `TakeScreenshotBytes() → (i,i,ay)` | **wiring-only** — `ScreenshotControl` already has the encoded PNG bytes before writing |
+| Watch-log / coredump content to a remote GUI | data | file-path coupling (same as screenshot) | `GatherLogsText() → s` (logs are text) + `GetCoreDumpBytes() → ay` | **wiring-only** — content already in hand daemon-side |
+| One-call support bundle | action | **not a D-Bus method** — CLI-local orchestration + redaction | `SupportBundle(b includeCoredump) → s` (and a bytes variant) | **wiring-only** — all inputs are daemon-side; consolidates CLI assembly + keeps redaction authoritative |
+| Reset completion / watch reboot confirmation | signal | fire-and-forget; `ok:` = "queued" | the general `WatchStateChanged` signal (Screen 1) covers the post-reset drop/reconnect | **wiring-only** — connection state is already a Flow |
+
+### Cross-cutting: the hooks worth adding first
+
+Most screens want the **same handful** of new members. In rough priority:
+
+1. **A connection/state signal** — `WatchStateChanged(s name, s state, i battery)` (or a
+   `WatchesChanged()` poke). Serves the Watch screen's live list/battery, the post-reset reboot
+   confirmation, and is the canonical "stop polling `ListWatches`" fix. *Wiring-only.*
+2. **Progress signals** — `FirmwareProgress` and `LanguageProgress`. Replace the poll loops; both
+   back onto existing libpebble3 `StateFlow<Float>` progress. *Wiring-only.*
+3. **`LockerChanged()`** + **`ExtensionStateChanged`** — live Apps & Faces and Plugins screens.
+   *Wiring-only* (the live flows are already there; the daemon currently `.first()`-drops the locker
+   one).
+4. **Add dropped fields to existing records** — `transport` on `ListWatches`; `synced` on
+   `ListApps`. *Wiring-only, one line each.*
+5. **`GetSyncStatus()`** + **`SetSyncEnabled()`** — the Sync screen's toggles and last-sync labels.
+   Reading enabled is wiring-only; runtime start/stop of Koin-bound music/calendar is design work;
+   last-sync timestamps need small bookkeeping.
+6. **Byte-returning variants** — `TakeScreenshotBytes`, `GatherLogsText`, `GetCoreDumpBytes`,
+   `SupportBundle`, and `BackupTo`/`RestoreFrom` — needed only if the GUI is ever **not co-located**
+   with the daemon (different user, sandbox, or host). A same-host Kirigami GUI can use the existing
+   path-returning methods.
+
+Adopting these is idiomatically cleanest as `org.freedesktop.DBus.Properties` on the control object
+(watches list, sync status, progress) so standard `PropertiesChanged` fires — but plain custom
+signals work and match the dbus-java machinery the daemon already uses for inbound BlueZ signals.
