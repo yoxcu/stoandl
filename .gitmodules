@@ -8,3 +8,6 @@
 [submodule "examples/extensions/matrix"]
 	path = examples/extensions/matrix
 	url = https://github.com/yoxcu/stoandl-matrix.git
+[submodule "gui"]
+	path = gui
+	url = https://github.com/yoxcu/stoandl-gui.git
