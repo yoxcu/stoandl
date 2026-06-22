@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show exactly the 64 methods below and **no** signals or properties.
+> A live introspection should show exactly the 65 methods below and **no** signals or properties.
 
 ## Service summary
 
@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 64 |
+| **Methods** | 65 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -56,7 +56,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 64 methods:
+Only four types appear across the 65 methods:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -91,6 +91,7 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
+| `BluetoothStatus` | `() → s` | Whether host Bluetooth is on/usable: `ok:on` / `ok:off`. Tracked from libpebble3's adapter state **and** `org.bluez.GattManager1` presence (so it catches rfkill/airplane-mode, which leave `Powered=true`). The daemon already detects and logs every transition; this method just exposes the state for polling. | *(GUI)* |
 | `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery`. | `watch list` (also bare `watch`) |
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |

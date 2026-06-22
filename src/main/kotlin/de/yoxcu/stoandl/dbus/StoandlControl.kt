@@ -112,6 +112,12 @@ interface StoandlControl : DBusInterface {
      *  Status-prefixed return. */
     fun Connect(watch: String): String
 
+    /** Whether the host's Bluetooth is on and usable for the watch link. The daemon tracks this from
+     *  libpebble3's adapter state AND the presence of `org.bluez.GattManager1` (so it also catches
+     *  rfkill / airplane-mode, which leave `Powered=true`). Returns `ok:on` or `ok:off`; the GUI polls it
+     *  to show a "Bluetooth is off" state instead of an empty no-watch screen. */
+    fun BluetoothStatus(): String
+
     /** List known watches, one per entry, tab-separated `name\tstate\tbattery\ttransport` (state:
      *  connected / connecting / disconnected; battery is the 0–100 level for a connected watch, else
      *  empty; transport is `ble`/`classic` for a connected watch, else empty). Empty list if none

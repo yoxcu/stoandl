@@ -1769,6 +1769,8 @@ private class StoandlControlImpl(
 
     override fun Version(): String = de.yoxcu.stoandl.BuildInfo.version
 
+    override fun BluetoothStatus(): String = if (btOn()) "ok:on" else "ok:off"
+
     override fun ListWatchPrefs(): List<String> =
         watchPrefsControlRef.get()?.list() ?: emptyList()
 
