@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show exactly the 66 methods below and **no** signals or properties.
+> A live introspection should show exactly the 70 methods below and **no** signals or properties.
 
 ## Service summary
 
@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 66 |
+| **Methods** | 70 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -56,7 +56,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 66 methods:
+Only four types appear across the 70 methods:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -140,7 +140,7 @@ a `.pbw`, `synced` = present on the watch — system apps are always synced).
 `ListWatchPrefs` record: `id \t type \t current \t default \t allowed \t flags \t name \t
 description` (`flags` carries `debug` for advanced settings).
 
-### Notifications (per-app) (`stoandl notif`)
+### Notifications (per-app + filters) (`stoandl notif`)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
@@ -148,16 +148,26 @@ description` (`flags` carries `debug` for advanced settings).
 | `NotifSetMute` | `(s,s) → s` | Set mute for the app matching `<query>`; spec = `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`). | `notif mute <app> [spec]` / `notif unmute <app>` (sends `never`) |
 | `NotifSetMuteAll` | `(s) → s` | Apply a mute spec to every tracked app. | `notif mute-all [spec]` / `notif unmute-all` |
 | `NotifSetStyle` | `(s,s,s,s) → s` | Per-app styling `(query, color, icon, vibe)` applied host-side; per value, empty = unchanged, `default` = reset. | `notif style <app> [--color] [--icon] [--vibe]` |
+| `NotifListFilters` | `() → as` | Global notification filters, one record each: `pattern\taction` (`action` ∈ `allow`/`block`). | `notif filter list` |
+| `NotifAddFilter` | `(s,s) → s` | Add a global filter `(pattern, action)`. `pattern` is a Java regex (inline flags like `(?i)` work), matched against appName + title + body; `action` `allow`/`block` (anything not `allow` ⇒ `block`). `ok:added <action> filter` / `error:empty pattern` / `error:invalid regex …`. Applied **live** (no restart). | `notif filter add <regex> [allow\|block]` |
+| `NotifRemoveFilter` | `(s) → s` | Remove a global filter by exact `pattern`. `ok:filter removed` / `notfound:`. Live. | `notif filter remove <regex>` |
 
 `NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds`
 (`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`). *(The interface
 KDoc lists only 3 fields; the implementation in `NotificationAppsControl.kt:34` emits all 6 —
 the KDoc is stale.)*
 
-### Sync — force-sync triggers (`stoandl weather`/`calendar`/`health`)
+**Notification filters** are a host-side **global** allow/block list enforced in `WatchNotifier.push()`
+(the single send choke point). `allow` is a whitelist that **bypasses** the block filters, the master
+forwarding switch (`notification.forward`), *and* per-app mute; `block` drops the notification. Filters
+are stored in a dedicated file `<configDir>/notification-filters` (one `action⇥pattern` line each) and
+are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immediately, no restart.
+
+### Sync — service on/off + force-sync triggers (`stoandl sync`/`weather`/`calendar`/`health`)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
+| `SetSyncEnabled` | `(s,b) → s` | Turn a sync service on/off at **runtime** (no daemon restart). `service` ∈ {notifications, weather, calendar, music, health, dnd}. Persists the backing config key **and** starts/stops the live service. `dnd` maps the boolean to its 4-way mode (`true` → `both`, `false` → `off`; the direction is still set via `SetConfig dnd.sync`). `ok:<service> enabled\|disabled` / `notfound:` (unknown service) / `error:`. | `sync enable <service>` / `sync disable <service>` |
 | `SyncWeather` | `() → s` | Fetch weather now and push to the watch. `error:` if weather isn't enabled. | `weather` |
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
@@ -166,7 +176,7 @@ the KDoc is stale.)*
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
 | `GetHealthSummary` | `() → s` | Today's health summary (19 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
 | `GetHealthSeries` | `(s) → as` | Health chart series: `steps`/`sleep` (7 `label\tvalue` rows, last 7 days) or `heart` (24 `hour\tbpm` rows today; `[]` when HR unavailable). | *(GUI)* |
-| `GetSyncStatus` | `() → as` | Per-feature status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. | *(GUI)* |
+| `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
 
 `GetHealthSummary` record (after `ok:`, 19 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
 activeMin \t stepWeekAvg \t stepTrendPct \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t
@@ -175,9 +185,10 @@ hrAvailable(yes\|no) \t lastSync`. (`stepGoal` is a fixed default — no watch-s
 is always 0 — REM isn't modelled; `sleepLightMin` = total − deep; trends are week-over-week %.)
 
 There is **no** force-sync for music or notifications. `GetSyncStatus` exposes the per-service
-enabled/available **read**; there is still **no** runtime master on/off (`SetSyncEnabled` — services
-are enabled by config + daemon restart; see gaps). `lastSync` is a v1 placeholder
-(`live`/`enabled`/`never`), not a tracked timestamp.
+enabled/available **read** and `SetSyncEnabled` is the runtime master on/off — services start/stop
+**live**, with no daemon restart (the config key is persisted *and* the live service is started or
+stopped). `lastSync` is a state label (`live`/`off`/`no source`, plus the dnd mode when dnd is on),
+not yet a tracked timestamp.
 
 ### Firmware (`stoandl firmware`)
 
@@ -250,14 +261,17 @@ ack — `ok:` means "queued", not "done".
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `GetConfigSchema` | `() → as` | Schema for the curated GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc` (type ∈ {toggle, combo}; options is a CSV for combos). | *(GUI)* |
-| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Re-read from `stoandl.conf` (not the startup snapshot) so a value just written by `SetConfig` is reflected. | *(GUI)* |
-| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token> (restart stoandl to apply)`, `notfound:` (unknown key), or `error:` (bad value / IO). Config is read once at startup, so it **takes effect on the next restart**. | *(GUI)* |
+| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Read from the **live** config store (reloaded on every `SetConfig`/`SetSyncEnabled` write), so a value just written is reflected. | *(GUI)* |
+| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token>`, `notfound:` (unknown key), or `error:` (bad value / IO). Applied **live**: the write persists to `stoandl.conf`, reloads the config store, and re-reconciles the affected subsystem — **no daemon restart**. | *(GUI)* |
 
 The curated key set lives in `config/ConfigSchema.kt` (a small, hand-maintained subset, not the full
 config surface). `SetConfig` shares the atomic `key = value` writer + lock (`util/ConfFile.kt`) with the
-extension-config writers. Note: it persists the value but the running daemon keeps using the
-startup config until restarted (no live reload); for the few master switches that also appear in
-`GetSyncStatus` (music, health, dnd), the runtime on/off is `SetSyncEnabled` (separate concern).
+extension-config writers. The running daemon holds the config in a live store (`config/ConfigStore.kt`,
+an `AtomicReference`); every `SetConfig`/`SetSyncEnabled` write persists to `stoandl.conf`, reloads the
+store, and re-reconciles the affected subsystem, so changes take effect **without a restart**. (A
+**hand-edit** of `stoandl.conf` is *not* picked up live — it still needs a daemon restart.) The
+per-service runtime master on/off (notifications, weather, calendar, music, health, dnd) is
+`SetSyncEnabled`, which also persists its backing key.
 
 ### Debug (`stoandl fakecall`)
 
@@ -276,6 +290,7 @@ startup config until restarted (no live reload); for the few master switches tha
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
+| `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
 | `GetHealthSeries` | `label`/`hour` · `value` (empty value = no data for that point) |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
@@ -333,13 +348,18 @@ A `feasibility` note marks each gap as **wiring-only** (the daemon/libpebble3 al
 just expose it), **needs bookkeeping** (a small new field/timestamp), or **design work** (lifecycle
 or egress concerns).
 
-> **Batch A landed (data-path gaps below now resolved):** `transport` on `ListWatches`, `synced` on
-> `ListApps`, `WatchDetails`, `SetWatchNickname`, `GetHealthSummary`/`GetHealthSeries` (Health screen),
-> `GetSyncStatus` (read), `GetConfig`/`GetConfigSchema` (Settings read), `ExtConfigSchema`/`ExtGetConfig`/
-> `ExtSetConfig` + `config`/`description` on `ExtList` (extension config), and the `changelogUrl` on
-> `CheckFirmware`. Still open (later batches): the **signals** (`WatchStateChanged`, `FirmwareProgress`/
-> `LanguageProgress`, `LockerChanged`/`ExtensionStateChanged`), `SetSyncEnabled` runtime on/off,
-> `SetConfig` write, per-service `lastSync` timestamps, and the byte-returning/remote variants.
+> **Batches A–D landed (data-path + write-path + lifecycle gaps below now resolved):** `transport` on
+> `ListWatches`, `synced` on `ListApps`, `WatchDetails`, `SetWatchNickname`,
+> `GetHealthSummary`/`GetHealthSeries` (Health screen), `ExtConfigSchema`/`ExtGetConfig`/`ExtSetConfig`
+> + `config`/`description` on `ExtList` (extension config), the `changelogUrl` on `CheckFirmware`, and
+> the full Settings/Sync write path: `GetConfig`/`GetConfigSchema` + `SetConfig` (all **live** — no
+> restart, via the `config/ConfigStore.kt` reload + re-reconcile), `GetSyncStatus` (now **live** runtime
+> state) + `SetSyncEnabled` (runtime per-service on/off, full start *and* stop), and the notification
+> filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
+> `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`. Still open: the
+> **signals** (`WatchStateChanged`, `FirmwareProgress`/`LanguageProgress`,
+> `LockerChanged`/`ExtensionStateChanged`), per-service `lastSync` timestamps, and the
+> byte-returning/remote variants.
 
 ### Screen 1 — Watch
 
@@ -392,20 +412,25 @@ present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` + `WebviewClose`
 
 ### Screen 4 — Sync
 
-*Per-service on/off + force-sync for notifications, weather, calendar, music/MPRIS, health.*
+*Per-service on/off + force-sync for notifications, weather, calendar, music/MPRIS, health, plus global
+notification filters.*
 
-**Satisfied by:** `SyncWeather`, `SyncCalendar`, `SyncHealth` (force-sync for three of five services);
-`ListCalendars` + `SetCalendarEnabled` (per-*calendar* toggle, not a service master switch);
-`NotifList` (per-app `lastNotified` timestamps — the only "last activity" data anywhere).
+**Satisfied by:** `GetSyncStatus` (live per-service enabled/available/lastSync) + `SetSyncEnabled`
+(**runtime** per-service master on/off — full start *and* stop, no restart) for all six services;
+`SyncWeather`, `SyncCalendar`, `SyncHealth` (force-sync for three of them);
+`ListCalendars` + `SetCalendarEnabled` (per-*calendar* toggle); the notification filters
+`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter` (a global allow/block list, live);
+`NotifList` (per-app `lastNotified` timestamps).
 
 | Gap | Kind | Today | Proposed hook | Feasibility |
 |---|---|---|---|---|
-| **Per-service master ON/OFF at runtime** (notifications, weather, calendar, music, health, dnd) | action | **does not exist** — enable/disable is config-file-only, read once at startup; changing it needs a daemon **restart** | `SetSyncEnabled(s service, b enabled) → s` — must rewrite `stoandl.conf` **and** start/stop the live service | **mixed** — config-rewrite is feasible (the `extensions.enabled` atomic rewrite is the template) and ref-held services (weather/calendar/health/dnd) can stop/start; **Koin-bound `single<>` services (music, calendar `SystemCalendar`) have no teardown path** → real runtime music on/off is design work |
-| Per-service **enabled** read (initialize the toggles) | property | not exposed; only inferable by probing (`SyncWeather` → `error:…not enabled`) | `GetSyncStatus() → as` (`service\tenabled\tavailable\tlastSync`) | **wiring-only** — flags exist in the loaded `StoandlConfig` |
-| Per-service **last-sync** timestamp (+ result/error) | data | mostly **not even tracked** (4 of 5 services store no timestamp) | add `lastSync`/`lastResult` to the `GetSyncStatus` row | **needs bookkeeping** — sync moments are observable but no timestamp is stored |
+| **Per-service master ON/OFF at runtime** (notifications, weather, calendar, music, health, dnd) | action | **DONE** — `SetSyncEnabled(s service, b enabled) → s` persists the backing config key **and** starts/stops the live service, no restart. Built on the live `config/ConfigStore.kt` (reload + re-reconcile) + a per-service start/stop lifecycle for all six. | — | **implemented (live)** |
+| Per-service **enabled** read (initialize the toggles) | property | **DONE** — `GetSyncStatus() → as` (`service\tenabled\tavailable\tlastSync`), now reflecting **live** runtime state. | — | **implemented** |
+| Per-service **last-sync** timestamp (+ result/error) | data | partial — `GetSyncStatus.lastSync` is a state label (`live`/`off`/`no source`, dnd mode when on), not a timestamp | add a real `lastSync`/`lastResult` timestamp to the row | **needs bookkeeping** — sync moments are observable but no timestamp is stored yet |
+| Quiet-hours (scheduled mute window) | action | **dropped — superseded by `dnd.sync`** (which mirrors desktop DND ↔ the watch's native Quiet Time); a separate host-side time-window subsystem would be redundant | *(none — dropped)* | **not pursued** |
 | Force-sync for **music** and **notifications** | action | **no `SyncMusic`/`SyncNotifications`** (both are continuous push by design) | `SyncMusic() → s` (re-enumerate MPRIS + re-push) / `SyncNotifications() → s`, or omit from the screen | **wiring-only if wanted** — `MprisMusicControl` has `enumerateExisting()`/`recompute()`; arguably unnecessary |
 | Music/MPRIS state for the screen (active player, playing?) | data | not exposed (state stays internal to the watch bridge) | include music in `GetSyncStatus`, or `MusicStatus() → s` | **wiring-only** — `MprisMusicControl._playbackState: StateFlow` already carries it |
-| DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | not exposed at all (config-only) | fold into `SetSyncEnabled`/`GetSyncStatus`, or `Get/SetDndSyncMode` | **wiring-only to read** (mode in `StoandlConfig`, live bool in `DndSync.synced`); runtime mode change needs a DndSync restart |
+| DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | live on/off via `SetSyncEnabled("dnd", …)` (true → `both`, false → `off`); the **direction** mode is set via `SetConfig dnd.sync` and read via `GetSyncStatus` (mode string in `lastSync`) | *(covered)* | **implemented (live)** |
 
 ### Screen 5 — System
 
@@ -441,9 +466,10 @@ Most screens want the **same handful** of new members. In rough priority:
    one).
 4. **Add dropped fields to existing records** — `transport` on `ListWatches`; `synced` on
    `ListApps`. *Wiring-only, one line each.*
-5. **`GetSyncStatus()`** + **`SetSyncEnabled()`** — the Sync screen's toggles and last-sync labels.
-   Reading enabled is wiring-only; runtime start/stop of Koin-bound music/calendar is design work;
-   last-sync timestamps need small bookkeeping.
+5. **`GetSyncStatus()`** + **`SetSyncEnabled()`** — **done** (Batch D): the Sync screen's toggles are
+   live (full runtime start *and* stop for all six services, on a live `ConfigStore` + per-service
+   lifecycle), and `GetSyncStatus` reflects live state. Only the real per-service `lastSync`
+   *timestamp* (vs the current state label) remains small bookkeeping.
 6. **Byte-returning variants** — `TakeScreenshotBytes`, `GatherLogsText`, `GetCoreDumpBytes`,
    `SupportBundle`, and `BackupTo`/`RestoreFrom` — needed only if the GUI is ever **not co-located**
    with the daemon (different user, sandbox, or host). A same-host Kirigami GUI can use the existing

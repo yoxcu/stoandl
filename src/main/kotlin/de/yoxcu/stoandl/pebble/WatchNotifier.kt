@@ -2,7 +2,9 @@
 
 package de.yoxcu.stoandl.pebble
 
+import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
+import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.util.openSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
@@ -102,10 +104,15 @@ class NotifRouteTable {
 class WatchNotifier(
     private val libPebbleRef: java.util.concurrent.atomic.AtomicReference<LibPebble?>,
     private val routeTable: NotifRouteTable,
-    // Per-app mute/style store (null when notification.per_app is off). Lazy-add + host-side mute.
+    // Per-app mute/style store. Always built now (so per_app can be toggled live); whether it's
+    // consulted is gated per-push on the live `notification.per_app`. Null only in tests.
     private val notifAppDao: NotificationAppRealDao?,
     private val defaultMute: MuteState,
     private val timelineNotifDao: TimelineNotificationRealDao,
+    // Live config (master forwarding switch + per_app gate, read per-push) and the global allow/block
+    // filter list — both checked at the top of [push] so every source (desktop + extensions) obeys them.
+    private val configStore: ConfigStore,
+    private val filters: NotificationFilters,
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -116,9 +123,24 @@ class WatchNotifier(
      * (named… , reply, Mute, Dismiss) is mirrored into the [NotifRoute] so action ids line up.
      */
     suspend fun push(req: NotifRequest, ownerId: String, ownerToken: String?): Uuid? {
+        val cfg = configStore.current()
+        // Global filters first: an `allow` match whitelists the notification (bypasses block filters, the
+        // master forwarding switch AND per-app mute); a `block` match drops it. Then the master switch.
+        val whitelisted = when (filters.decide(req.appName, req.title, req.body)) {
+            NotificationFilters.Decision.BLOCK -> {
+                log.info { "Notification from ${req.appName} dropped by a block filter" }
+                return null
+            }
+            NotificationFilters.Decision.ALLOW -> true
+            NotificationFilters.Decision.NONE -> false
+        }
+        if (!whitelisted && !cfg.notificationForward) {
+            log.info { "Notification forwarding paused (notification.forward=false) — dropped from ${req.appName}" }
+            return null
+        }
         val dao = notifAppDao
         var app: NotificationAppItem? = null
-        if (dao != null && req.appName.isNotBlank()) {
+        if (cfg.notificationPerApp && dao != null && req.appName.isNotBlank()) {
             val now = Clock.System.now()
             val existing = dao.getEntry(req.appName)
             val entry = if (existing == null) {
@@ -135,7 +157,7 @@ class WatchNotifier(
                 dao.insertOrReplace(existing.copy(lastNotified = now.asMillisecond()))
                 existing
             }
-            if (isMutedNow(entry, now)) {
+            if (!whitelisted && isMutedNow(entry, now)) {
                 log.info { "Muted notification from ${req.appName} (${entry.muteState.name.lowercase()})" }
                 return null
             }

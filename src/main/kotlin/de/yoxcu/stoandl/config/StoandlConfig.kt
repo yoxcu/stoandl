@@ -10,7 +10,10 @@ private val log = KotlinLogging.logger {}
  * comment; list values are comma-separated). Lives at `$XDG_CONFIG_HOME/stoandl/stoandl.conf`
  * (default `~/.config/stoandl/stoandl.conf`). A missing/unreadable file yields defaults.
  *
- * Editing the file requires a daemon restart to take effect.
+ * The daemon holds the loaded config in a live [ConfigStore]: the `SetConfig`/`SetSyncEnabled` D-Bus
+ * methods (and `stoandl config`/`sync`) persist a change here, reload the store, then re-reconcile the
+ * affected subsystem — so GUI-exposed keys take effect without a restart. A hand-edit of this file
+ * still needs a restart (nothing watches it), as do a few startup-only structural keys.
  */
 data class StoandlConfig(
     /** Track every observed desktop app in a per-app store and enforce per-app mute state host-side
@@ -28,11 +31,21 @@ data class StoandlConfig(
      *  Kept as an opt-in for firmware that does surface it (the official Core phone app pushes the
      *  same records). BLE-only, no web egress. */
     val notificationSyncToWatch: Boolean,
+    /** Master switch for forwarding desktop/extension notifications to the watch. On by default;
+     *  flipped live by the GUI's "pause forwarding" toggle (`SetSyncEnabled("notifications", …)`).
+     *  When off, every notification is dropped host-side at the send choke point (per-app mute, filters
+     *  and styling are moot) — calls and firmware prompts use their own paths and are unaffected. */
+    val notificationForward: Boolean,
     /** Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the
      *  native call screen replaces them) and their title is used as a fallback caller name. */
     val dialerApps: List<String>,
     /** vCard files or directories scanned for caller-ID resolution. */
     val vcardPaths: List<String>,
+    /** Master switch for weather sync. On by default; flipped live by the Sync screen
+     *  (`SetSyncEnabled("weather", …)`). Weather only actually runs when this is on **and** a source is
+     *  configured ([weatherLocations]/[weatherGps]/[weatherLocationSource]) — turning it off stops the
+     *  sync while leaving the configured locations in place. */
+    val weatherEnabled: Boolean,
     /** Manually-configured locations to fetch weather for. Merged with any [weatherLocationSource]
      *  results. Empty (with no GPS and no source) disables weather sync. */
     val weatherLocations: List<WeatherLocation>,
@@ -75,6 +88,11 @@ data class StoandlConfig(
      *  Both must be set to take effect; only used when [musicVolume] is [MusicVolumeMode.SYSTEM]. */
     val musicVolumeUpCommand: String,
     val musicVolumeDownCommand: String,
+    /** Master switch for calendar sync. On by default; flipped live by the Sync screen
+     *  (`SetSyncEnabled("calendar", …)`). Calendar only actually syncs when this is on **and** a source
+     *  is configured ([calendarIcsPaths]/[calendarDiscover]/[calendarIcalUrls]/[calendarCalDav]) —
+     *  turning it off stops syncing and removes the watch's calendar pins until re-enabled. */
+    val calendarEnabled: Boolean,
     /** Local .ics files or directories to sync to the watch timeline (no egress). Any of these (or
      *  [calendarDiscover]/[calendarIcalUrls]/[calendarCalDav]) being non-empty enables calendar sync. */
     val calendarIcsPaths: List<String>,
@@ -193,8 +211,10 @@ data class StoandlConfig(
             notificationPerApp = true,
             notificationDefaultMute = "never",
             notificationSyncToWatch = false,
+            notificationForward = true,
             dialerApps = DEFAULT_DIALER_APPS,
             vcardPaths = emptyList(),
+            weatherEnabled = true,
             weatherLocations = emptyList(),
             weatherLocationSource = WeatherLocationSource.MANUAL,
             weatherLocationCommand = "",
@@ -211,6 +231,7 @@ data class StoandlConfig(
             musicVolume = MusicVolumeMode.SYSTEM,
             musicVolumeUpCommand = "",
             musicVolumeDownCommand = "",
+            calendarEnabled = true,
             calendarIcsPaths = emptyList(),
             calendarDiscover = false,
             calendarIcalUrls = emptyList(),
@@ -271,8 +292,10 @@ data class StoandlConfig(
                 notificationPerApp = map["notification.per_app"]?.let { parseBool(it) } ?: true,
                 notificationDefaultMute = parseDefaultMute(map["notification.default_mute"]),
                 notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
+                notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
                 vcardPaths = list("contacts.vcard_paths").map(::expandTilde),
+                weatherEnabled = map["weather.enabled"]?.let { parseBool(it) } ?: true,
                 weatherLocations = parseWeatherLocations(list("weather.locations")),
                 weatherLocationSource = parseLocationSource(map["weather.location_source"]),
                 weatherLocationCommand = map["weather.location_command"]?.trim().orEmpty(),
@@ -297,6 +320,7 @@ data class StoandlConfig(
                 musicVolume = parseMusicVolume(map["music.volume"]),
                 musicVolumeUpCommand = map["music.volume_up_command"]?.trim().orEmpty(),
                 musicVolumeDownCommand = map["music.volume_down_command"]?.trim().orEmpty(),
+                calendarEnabled = map["calendar.enabled"]?.let { parseBool(it) } ?: true,
                 calendarIcsPaths = list("calendar.ics_paths").map(::expandTilde),
                 calendarDiscover = parseBool(map["calendar.discover"]),
                 calendarIcalUrls = list("calendar.ical_urls"),

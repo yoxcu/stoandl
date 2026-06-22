@@ -6,6 +6,9 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -28,7 +31,7 @@ private val log = KotlinLogging.logger {}
  */
 class DndSync(
     private val libPebble: LibPebble,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val mode: DndSyncMode,
     private val backend: HostDndBackend,
 ) {
@@ -36,6 +39,10 @@ class DndSync(
     private val toHost = mode == DndSyncMode.TO_HOST || mode == DndSyncMode.BOTH
     private val lock = Any()
     @Volatile private var synced: Boolean? = null
+    @Volatile private var active = true
+    // Own child scope for the watch→host collector, so [stop] can cancel it (and close the backend) as
+    // a unit when DND sync is turned off / its mode changes at runtime. Child of the parent job.
+    private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
 
     fun start() {
         val initial = backend.current()
@@ -58,9 +65,18 @@ class DndSync(
         }
     }
 
+    /** Stop mirroring: cancel the watch→host collector and release the host backend (kills its monitor
+     *  subprocess / drops its bus connection, which also stops the host→watch observer). Re-enabling
+     *  builds a fresh [DndSync] with a fresh backend. */
+    fun stop() {
+        active = false
+        scope.cancel()
+        backend.close()
+    }
+
     private fun onHostChange(dnd: Boolean) {
         synchronized(lock) {
-            if (dnd == synced) return  // our own echo, or no real change
+            if (!active || dnd == synced) return  // stopped, our own echo, or no real change
             synced = dnd
             log.info { "Host DND → $dnd; updating watch Quiet Time" }
             pushToWatch(dnd)
@@ -69,7 +85,7 @@ class DndSync(
 
     private fun onWatchChange(dnd: Boolean) {
         synchronized(lock) {
-            if (dnd == synced) return  // our own echo, or no real change
+            if (!active || dnd == synced) return  // stopped, our own echo, or no real change
             synced = dnd
             log.info { "Watch Quiet Time → $dnd; updating host DND" }
             backend.set(dnd)

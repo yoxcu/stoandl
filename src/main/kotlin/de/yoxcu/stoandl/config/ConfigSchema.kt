@@ -106,10 +106,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
 /**
  * Validate and persist a single GUI config key to [confFile]. Maps the GUI's value (a toggle's
  * `true`/`false` or a combo's option label) to the raw `stoandl.conf` token and upserts it atomically
- * (via [ConfFile], sharing the lock with the extension-config writers). The change is **persisted but
- * only takes effect on the next daemon start** — config is read once at startup, there's no live reload
- * — which the `ok:` message states. Returns a status-prefixed string: `ok:`, `notfound:` (unknown key),
- * or `error:` (bad value / IO).
+ * (via [ConfFile], sharing the lock with the extension-config writers). The **caller** (PebbleIntegration's
+ * `setConfigLive`) reloads the live [ConfigStore] and re-reconciles the affected subsystem after this
+ * returns `ok:`, so the change takes effect without a restart. Returns a status-prefixed string: `ok:`,
+ * `notfound:` (unknown key), or `error:` (bad value / IO).
  */
 fun applyGuiConfig(key: String, value: String, confFile: File): String {
     val field = GUI_CONFIG_FIELDS.firstOrNull { it.key == key }
@@ -119,7 +119,7 @@ fun applyGuiConfig(key: String, value: String, confFile: File): String {
             (if (field.type == "combo") " (expected one of ${field.options})" else "")
     return try {
         ConfFile.upsert(confFile, mapOf(key to token))
-        "ok:$key = $token (restart stoandl to apply)"
+        "ok:$key = $token"
     } catch (e: Exception) {
         "error:${e.message ?: "failed to write ${confFile.name}"}"
     }

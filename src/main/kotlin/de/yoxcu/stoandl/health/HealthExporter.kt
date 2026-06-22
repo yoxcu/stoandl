@@ -6,6 +6,9 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.health.OverlayType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
@@ -48,12 +51,15 @@ private val log = KotlinLogging.logger {}
  */
 class HealthExporter(
     private val libPebble: LibPebble,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val exportDays: Int,
     private val exportSamples: Boolean,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val baseDir: File = defaultDir(),
 ) {
+    // Own child scope so [stop] can cancel the update collector + projection loop as a unit when
+    // health export is turned off at runtime. Child of the parent job (daemon shutdown still cancels it).
+    private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
     // Conflated: a sync emits healthDataUpdated many times; we only need to know "something changed".
     private val requests = Channel<Unit>(Channel.CONFLATED)
 
@@ -78,6 +84,12 @@ class HealthExporter(
 
     /** Re-project now (used by the `health sync` D-Bus call after requesting fresh data). */
     suspend fun exportNow() = runExport()
+
+    /** Stop exporting (cancel the update collector + projection loop). Already-written NDJSON stays;
+     *  re-enabling builds a fresh exporter that re-projects from the DB. */
+    fun stop() {
+        scope.cancel()
+    }
 
     private suspend fun runExport() =
         runCatching { export() }.onFailure { log.warn(it) { "health export failed" } }

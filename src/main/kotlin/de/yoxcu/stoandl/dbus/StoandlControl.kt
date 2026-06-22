@@ -257,6 +257,21 @@ interface StoandlControl : DBusInterface {
      *  value: empty = leave unchanged; `default` = reset. Status-prefixed return. */
     fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
 
+    /** List the global notification filters (a host-side allow/block list applied at the send choke
+     *  point, independent of per-app mute). Each entry is tab-separated `pattern \t action` where action
+     *  is `allow` or `block`. An `allow` filter is a whitelist (bypasses block filters, the master
+     *  forwarding switch and per-app mute); a `block` filter drops matching notifications. */
+    fun NotifListFilters(): List<String>
+
+    /** Add (or replace, by exact [pattern]) a notification filter. [pattern] is a Java regex (inline
+     *  flags like `(?i)` work), matched against the notification's app name, title and body. [action] is
+     *  `allow` or `block` (anything else is treated as `block`). Status-prefixed return (`ok:`/`error:`
+     *  for an empty/uncompilable pattern). Takes effect immediately (live). */
+    fun NotifAddFilter(pattern: String, action: String): String
+
+    /** Remove every filter with this exact [pattern]. Status-prefixed return (`ok:`/`notfound:`). */
+    fun NotifRemoveFilter(pattern: String): String
+
     /** Start the developer connection: a LAN WebSocket server (port 9000) that bridges the Pebble SDK
      *  (`pebble install --phone <ip>`) / CloudPebble to the connected watch over BLE for installing and
      *  live-debugging apps. The server binds all interfaces with no auth, so it's started on demand.
@@ -319,13 +334,19 @@ interface StoandlControl : DBusInterface {
 
     /** Per-feature sync/bridge status for the GUI Settings/Sync screen: one tab-separated
      *  `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health,
-     *  dnd}. `enabled` reflects the loaded config; `available` is whether the feature can run here;
-     *  `lastSync` is a placeholder (`enabled`/`never`) until per-service sync timestamps are tracked. */
+     *  dnd}, reflecting live runtime state. `available` is false for weather/calendar when no source is
+     *  configured (the toggle is then greyed); `lastSync` is `live`/`off`/`no source` (and the dnd mode). */
     fun GetSyncStatus(): List<String>
 
+    /** Turn a sync service on/off at runtime: [service] is one of {notifications, weather, calendar,
+     *  music, health, dnd}. Persists the backing key and **starts/stops the live service** (no restart) —
+     *  the dnd boolean maps to its mode (true→both, false→off; the direction stays editable in Settings).
+     *  Status-prefixed return (`ok:<service> enabled|disabled`, `notfound:` for an unknown service). */
+    fun SetSyncEnabled(service: String, enabled: Boolean): String
+
     /** Current values of the curated daemon-config keys the GUI Settings screen shows — one
-     *  tab-separated `key\tvalue` each (see [GetConfigSchema] for the matching type/label/options).
-     *  A read-only snapshot of the in-memory config. */
+     *  tab-separated `key\tvalue` each (see [GetConfigSchema] for the matching type/label/options),
+     *  read off the live (reloaded-on-write) config store. */
     fun GetConfig(): List<String>
 
     /** Schema for the curated daemon-config keys: one tab-separated `key\ttype\tlabel\toptions\tdesc`
@@ -333,8 +354,8 @@ interface StoandlControl : DBusInterface {
     fun GetConfigSchema(): List<String>
 
     /** Set one curated daemon-config [key] to [value] (a toggle's `true`/`false` or a combo's option
-     *  label, per [GetConfigSchema]), persisted to `stoandl.conf`. Because config is read once at startup,
-     *  the change **takes effect on the next daemon restart** — the `ok:` tail says so. `notfound:` for an
-     *  unknown key, `error:` for an invalid value or a write failure. */
+     *  label, per [GetConfigSchema]), persisted to `stoandl.conf`. The change is reloaded and the affected
+     *  subsystem re-reconciled, so it **takes effect live** (no restart). `notfound:` for an unknown key,
+     *  `error:` for an invalid value or a write failure. */
     fun SetConfig(key: String, value: String): String
 }

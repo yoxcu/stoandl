@@ -17,6 +17,11 @@ notification.default_mute = never
 # (Settings->Notifications is global-only), so the synced records surface nowhere — mute is
 # enforced host-side regardless. Opt-in for firmware that does surface it. BLE-only, no web egress.
 notification.sync_to_watch = false
+# Master switch for forwarding desktop/extension notifications to the watch. On by default; the GUI's
+# "pause forwarding" toggle (and `stoandl sync disable notifications`) flips this live. When off, every
+# notification is dropped host-side (calls and firmware prompts use their own paths and still get through).
+# `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
+notification.forward = true
 
 # Telephony/dialer apps. Their notifications are suppressed from the watch (the native call
 # screen replaces them), and their notification title is used as a fallback caller name when
@@ -34,6 +39,10 @@ contacts.vcard_paths = ~/.local/share/kpeoplevcard
 # Leave empty to disable. The first location is shown most prominently on the watch.
 # Example: weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278
 weather.locations =
+# Master switch for weather sync. On by default; the Sync screen (`stoandl sync enable/disable weather`)
+# flips it live. Weather only runs when this is on AND a source is configured below — turning it off
+# stops the sync but keeps your locations.
+weather.enabled = true
 
 # Optionally import extra locations from your desktop instead of typing coordinates. No DE shares its
 # weather data, but the chosen place is readable:
@@ -88,6 +97,11 @@ weather.pins = true
 # Calendar → watch timeline. Syncs upcoming events (yesterday … +7 days) as native calendar pins.
 # Disabled until you set at least one source below. Local .ics and discovery make no web requests;
 # ical_urls and caldav are opt-in egress.
+#
+# Master switch for calendar sync. On by default; the Sync screen (`stoandl sync enable/disable
+# calendar`) flips it live. Calendar only syncs when this is on AND a source is configured below —
+# turning it off removes the watch's calendar pins until re-enabled.
+calendar.enabled = true
 #
 # Local .ics files or directories (scanned for *.ics). `~` expands to your home. The DE-agnostic path:
 #   - Plasma Mobile (Calindori) keeps calendars as plain .ics under ~/.local/share/calindori

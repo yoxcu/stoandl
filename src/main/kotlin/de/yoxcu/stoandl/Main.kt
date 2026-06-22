@@ -34,7 +34,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "backup", "restore", "config", "fakecall")
+private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "fakecall")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -108,11 +108,12 @@ private fun printUsage() {
     row("", "battery find")
     row("apps", "list launch install remove")
     row("settings", "list · set <id> <value>")
-    row("notif", "list mute unmute style styles")
+    row("notif", "list mute unmute style filter")
     row("ext", "list install enable disable")
     row("", "restart uninstall")
     row("config", "[app]   PKJS config page")
     println("Sync")
+    row("sync", "list · enable/disable <service>")
     row("weather", "push weather to the watch now")
     row("calendar", "list sync enable disable dump")
     row("health", "[days] hr sync activities dump")
@@ -327,6 +328,7 @@ private fun ctl(args: Array<String>) {
         "support" -> ctlSupport(args.drop(1))
         "reset" -> ctlReset(args.drop(1))
         "developer" -> ctlDeveloper(args.drop(1))
+        "sync" -> ctlSync(args.drop(1))
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -843,8 +845,90 @@ private fun ctlNotif(rest: List<String>) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 })
             }
+            // Global allow/block notification filters (regex on app/title/body). `allow` is a whitelist
+            // that bypasses block filters, the forwarding switch and per-app mute; `block` drops a match.
+            "filter", "filters" -> {
+                when (val fsub = rest.getOrNull(1)?.lowercase() ?: "list") {
+                    "list" -> {
+                        val rows = try { control.NotifListFilters() } catch (e: Exception) {
+                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                        }
+                        if (rows.isEmpty()) {
+                            println("No notification filters.")
+                        } else {
+                            println("  %-6s %s".format("ACTION", "PATTERN"))
+                            rows.forEach { entry ->
+                                val f = entry.split('\t') // pattern \t action
+                                println("  %-6s %s".format(f.getOrElse(1) { "" }, f.getOrElse(0) { entry }))
+                            }
+                        }
+                    }
+                    "add" -> {
+                        val pattern = rest.getOrNull(2)
+                        val action = rest.getOrNull(3)?.lowercase() ?: "block"
+                        if (pattern.isNullOrBlank()) {
+                            System.err.println("Usage: stoandl notif filter add <regex> [allow|block]"); System.exit(1); return
+                        }
+                        if (action != "allow" && action != "block") {
+                            System.err.println("Action must be 'allow' or 'block'"); System.exit(1); return
+                        }
+                        handleStatusResponse(try { control.NotifAddFilter(pattern, action) } catch (e: Exception) {
+                            System.err.println("Error: ${e.message}"); System.exit(1); return
+                        })
+                    }
+                    "remove", "rm", "del" -> {
+                        val pattern = rest.drop(2).joinToString(" ")
+                        if (pattern.isBlank()) {
+                            System.err.println("Usage: stoandl notif filter remove <regex>"); System.exit(1); return
+                        }
+                        handleStatusResponse(try { control.NotifRemoveFilter(pattern) } catch (e: Exception) {
+                            System.err.println("Error: ${e.message}"); System.exit(1); return
+                        })
+                    }
+                    else -> {
+                        System.err.println("Usage: stoandl notif filter <list | add <regex> [allow|block] | remove <regex>>")
+                        System.exit(1)
+                    }
+                }
+            }
             else -> {
-                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]>")
+                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]|filter <list|add|remove>>")
+                System.exit(1)
+            }
+        }
+    }
+}
+
+// ---- sync group (list / enable / disable a sync service) ---------------------------------------
+
+private fun ctlSync(rest: List<String>) {
+    val sub = rest.firstOrNull() ?: "list"
+    withControl { control ->
+        when (sub) {
+            "list", "status" -> {
+                val rows = try { control.GetSyncStatus() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                println("  %-14s %-9s %-12s %s".format("SERVICE", "STATE", "AVAILABLE", "LAST SYNC"))
+                rows.forEach { entry ->
+                    val f = entry.split('\t') // service \t enabled|disabled \t available|unavailable \t lastSync
+                    println("  %-14s %-9s %-12s %s".format(
+                        f.getOrElse(0) { "" }, f.getOrElse(1) { "" }, f.getOrElse(2) { "" }, f.getOrElse(3) { "" }))
+                }
+                println("\nToggle one with:  stoandl sync enable|disable <service>")
+            }
+            "enable", "disable" -> {
+                val service = rest.getOrNull(1)
+                if (service.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl sync $sub <service>  (notifications weather calendar music health dnd)")
+                    System.exit(1); return
+                }
+                handleStatusResponse(try { control.SetSyncEnabled(service, sub == "enable") } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            else -> {
+                System.err.println("Usage: stoandl sync <list | enable <service> | disable <service>>  (notifications weather calendar music health dnd)")
                 System.exit(1)
             }
         }

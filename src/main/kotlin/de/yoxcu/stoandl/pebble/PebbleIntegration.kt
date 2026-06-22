@@ -6,13 +6,15 @@ import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.dbus.MprisMusicControl
-import de.yoxcu.stoandl.dbus.SystemVolume
 import de.yoxcu.stoandl.dbus.TimedateTimeChanged
 import de.yoxcu.stoandl.calls.MissedCallLog
+import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.GUI_CONFIG_FIELDS
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.notification.NotificationFilters
+import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
 import de.yoxcu.stoandl.dnd.DndSync
@@ -27,9 +29,8 @@ import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.health.HealthExporter
 import de.yoxcu.stoandl.weather.DeLocationSource
-import de.yoxcu.stoandl.location.DisabledGeolocation
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
-import de.yoxcu.stoandl.location.GeoClueSystemGeolocation
+import de.yoxcu.stoandl.location.LiveGeolocation
 import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
@@ -92,6 +93,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -224,7 +226,17 @@ class PebbleIntegration(
     // The extension supervisor (companion apps). Constructed in init() before the control service so
     // the `stoandl ext` D-Bus methods can drive it; started after libPebble is up.
     private lateinit var extensionManager: ExtensionManager
-    private val config = StoandlConfig.load()
+    // Live config: a holder reloaded on every SetConfig/SetSyncEnabled write. `config` is a getter over
+    // it, so existing `config.x` reads (and the new apply*/reconcile paths) see the current value rather
+    // than a frozen startup snapshot — that's what makes settings apply without a restart.
+    private val configStore = ConfigStore()
+    private val config: StoandlConfig get() = configStore.current()
+    // Global allow/block notification filters (own file under configDir; live-mutable via D-Bus).
+    private val notificationFilters = NotificationFilters(File(StoandlConfig.configDir(), "notification-filters"))
+    // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
+    private var mprisMusicControl: MprisMusicControl? = null
+    // The health on-connect-request collector (when health.sync is on), held so applyHealth can cancel it.
+    private var healthRequestJob: Job? = null
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
     private val missedCallLog = MissedCallLog()
@@ -289,13 +301,15 @@ class PebbleIntegration(
         // both the desktop bridge and every extension push through `watchNotifier`, and every watch-side
         // action routes back through `watchActionRouter` via the shared `routeTable`. The desktop owner
         // holds the watch-item → D-Bus-id map so a wrist dismiss can CloseNotification the original.
-        val notifDao = if (config.notificationPerApp) koin.get<NotificationAppRealDao>() else null
+        // Always built now — `notification.per_app` is toggled live (consulted per-push in WatchNotifier),
+        // so the store must always exist; it's just not consulted while per_app is off.
+        val notifDao = koin.get<NotificationAppRealDao>()
         val timelineNotifDao = koin.get<TimelineNotificationRealDao>()
         // In-memory route table: the firmware only offers the action menu on the live notification (not
         // from history), so a route never needs to outlive the daemon.
         val routeTable = NotifRouteTable()
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
-        val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao)
+        val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao, configStore, notificationFilters)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
@@ -355,18 +369,14 @@ class PebbleIntegration(
             single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
             // Back MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
             single<SystemCallLog> { missedCallLog }
-            // Replace the no-op JVM SystemMusicControl with the MPRIS bridge (unless disabled), so the
-            // watch's Music app shows now-playing and its buttons drive the desktop player. Volume buttons
-            // drive the system/master output (config.musicVolume == SYSTEM, the default) via an auto-
-            // detected backend, else the active player's own MPRIS volume.
-            if (config.musicControl) single<SystemMusicControl> {
-                val systemVol = if (config.musicVolume == StoandlConfig.MusicVolumeMode.SYSTEM) {
-                    SystemVolume.resolve(config.musicVolumeUpCommand, config.musicVolumeDownCommand)
-                } else null
-                MprisMusicControl(scope, systemVol)
-            }
+            // Replace the no-op JVM SystemMusicControl with the MPRIS bridge so the watch's Music app
+            // shows now-playing and its buttons drive the desktop player. Bound once (Koin caches it) and
+            // gated live on music.enabled — it reads the config store per-event, so turning music control
+            // on/off (and switching the volume target) takes effect without a restart.
+            single<SystemMusicControl> { MprisMusicControl(scope, configStore).also { mprisMusicControl = it } }
             // Replace the no-op JVM SystemCalendar with the Linux reader (when sources are configured),
-            // so PhoneCalendarSyncer turns desktop calendar events into watch timeline pins.
+            // so PhoneCalendarSyncer turns desktop calendar events into watch timeline pins. The reader
+            // gates on calendar.enabled live (no events while off → pins removed; refresh on re-enable).
             calendarSync?.let { cs -> single<SystemCalendar> { cs } }
             // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
             // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
@@ -375,11 +385,10 @@ class PebbleIntegration(
             // (the default), bind DisabledGeolocation instead of leaving libpebble3's no-op so the
             // watchapp's error says it's disabled (opt-in), not the misleading "Not supported on Linux".
             single<SystemGeolocation> {
-                if (config.geolocation) {
-                    GeoClueSystemGeolocation(GeoClueLocationProvider(config.weatherGpsDesktopId))
-                } else {
-                    DisabledGeolocation
-                }
+                LiveGeolocation(
+                    enabled = { config.geolocation },
+                    provider = { GeoClueLocationProvider(config.weatherGpsDesktopId) },
+                )
             }
         }), allowOverride = true)
 
@@ -394,7 +403,8 @@ class PebbleIntegration(
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
         developerControl = DeveloperControl(libPebbleRef)
-        if (config.notificationPerApp) notificationAppsControl = NotificationAppsControl(koin.get())
+        // Always built (the per-app store always exists now); per_app only gates enforcement in push().
+        notificationAppsControl = NotificationAppsControl(koin.get())
         watchConnector = koin.get()
         watchBluetoothPowerState()
         libPebble.init()
@@ -407,9 +417,9 @@ class PebbleIntegration(
         startChurnDetector()
         registerControlService()
         startCallMonitor()
-        startWeatherSync()
+        applyWeather()
         startWatchPrefsSync()
-        startDndSync()
+        applyDnd()
         // User extensions (companion apps): host-side child processes that drive watch notifications
         // (and reply/actions / watchapp AppMessages) over stdio JSON-RPC. They push through the same
         // watchNotifier choke point as desktop notifications, so per-app mute/style applies to them too.
@@ -426,7 +436,7 @@ class PebbleIntegration(
         }
         // Health/activity: ask the watch for fresh data on connect (libpebble3 ingests it into the
         // shared DB; nothing requests it on its own), and project that DB to readable NDJSON files.
-        startHealthSync()
+        applyHealth()
         // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
         // injected (on the first watch connect); nothing to start here, just report the state.
         log.info {
@@ -1100,8 +1110,16 @@ class PebbleIntegration(
         }
     }
 
-    private fun startWeatherSync() {
+    /** (Re)start or stop weather sync against the current config — at boot and on SetSyncEnabled/SetConfig.
+     *  Idempotent: stops any running instance, then starts a fresh one when `weather.enabled` is on and a
+     *  source is configured. A weather.* config change re-runs this (rebuilds with the new units/pins/etc). */
+    private fun applyWeather() {
+        weatherSyncRef.getAndSet(null)?.stop()
         val hasSource = config.weatherLocationSource != WeatherLocationSource.MANUAL
+        if (!config.weatherEnabled) {
+            log.info { "Weather sync off (weather.enabled=false)" }
+            return
+        }
         if (config.weatherLocations.isEmpty() && !config.weatherGps && !hasSource) {
             log.info { "Weather sync disabled (no weather.locations, no source, weather.gps off)" }
             return
@@ -1118,7 +1136,7 @@ class PebbleIntegration(
             if (deSource != null) ({ deSource.locations() }) else null
         val ws = WeatherSync(
             libPebble = libPebble,
-            scope = scope,
+            parentScope = scope,
             locations = config.weatherLocations,
             units = config.weatherUnits,
             intervalMinutes = config.weatherIntervalMinutes,
@@ -1140,7 +1158,7 @@ class PebbleIntegration(
     }
 
     /** Assemble the Linux calendar reader from config, or null when nothing is configured (then the
-     *  no-op SystemCalendar binding stays and nothing syncs) — mirrors startWeatherSync's gate.
+     *  no-op SystemCalendar binding stays and nothing syncs) — mirrors applyWeather's gate.
      *  Local .ics/discovery are egress-free; iCal URLs and CalDAV are opt-in egress. */
     private fun buildCalendarSync(): LinuxSystemCalendar? {
         val sources = mutableListOf<CalendarSource>()
@@ -1166,17 +1184,17 @@ class PebbleIntegration(
             config.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
             if (config.calendarDiscover) addAll(calendarDiscoveryDirs())
         }.filterNotNull().distinct()
-        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs)
+        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs, isEnabled = { config.calendarEnabled })
     }
 
-    /** Run [action] on each fresh watch connect — the false→true edge of "any device connected". */
-    private fun onFreshConnect(action: suspend () -> Unit) {
+    /** Run [action] on each fresh watch connect — the false→true edge of "any device connected".
+     *  Returns the collector [Job] so callers that need to stop it at runtime (e.g. applyHealth) can. */
+    private fun onFreshConnect(action: suspend () -> Unit): Job =
         libPebble.watches
             .map { devices -> devices.any { it is ConnectedPebbleDevice } }
             .distinctUntilChanged()
             .onEach { connected -> if (connected) action() }
             .launchIn(scope)
-    }
 
     private fun startWatchPrefsSync() {
         // Always build the control (the `settings`/`set-setting` CLI works even with nothing in the config).
@@ -1200,7 +1218,12 @@ class PebbleIntegration(
      *  GNOME/KDE host backend is auto-detected. The actual sync (and its loop avoidance) lives in
      *  [DndSync]; setWatchPref persists, so a host→watch change applied while disconnected still syncs
      *  on the next connect. */
-    private fun startDndSync() {
+    /** (Re)start or stop DND ↔ Quiet Time mirroring against the current `dnd.sync` mode. Idempotent:
+     *  stops any running instance (cancelling its collector + closing the host backend), then starts a
+     *  fresh one for the new mode. Called at boot and on SetSyncEnabled("dnd")/SetConfig("dnd.sync"). */
+    private fun applyDnd() {
+        dndSync?.stop()
+        dndSync = null
         if (config.dndSync == StoandlConfig.DndSyncMode.OFF) {
             log.info { "DND ↔ Quiet Time sync disabled (dnd.sync=off)" }
             return
@@ -1229,19 +1252,21 @@ class PebbleIntegration(
      *  firmware.cohorts is on, plus firmware.notify (opt-in egress). The local `firmware <file.pbz>`
      *  sideload and the `firmware check`/`update` CLI commands work regardless of this. */
     private fun startFirmwareNotifier() {
-        if ((!config.firmwareGithub && !config.firmwareCohorts) || !config.firmwareNotify) {
-            log.info { "Firmware update notifications off (needs firmware.github or firmware.cohorts, plus firmware.notify=true)" }
-            return
-        }
         val dailyMs = 1.days.inWholeMilliseconds
-        log.info { "Firmware update notifications on (check on connect, at most once/day)" }
-        // Check on each fresh connect; maybeNotify() self-throttles to once per day.
-        onFreshConnect { scope.launch { firmwareControl.maybeNotify(dailyMs) } }
-        // And re-check daily while a watch stays connected.
+        // Always armed; whether it actually checks is gated live on (a source enabled) && firmware.notify,
+        // so toggling firmware.notify takes effect without a restart. maybeNotify() self-throttles to once/day.
+        fun shouldNotify() = (config.firmwareGithub || config.firmwareCohorts) && config.firmwareNotify
+        log.info {
+            if (shouldNotify()) "Firmware update notifications on (check on connect, at most once/day)"
+            else "Firmware update notifications off (needs firmware.github or firmware.cohorts, plus firmware.notify=true)"
+        }
+        // Check on each fresh connect…
+        onFreshConnect { if (shouldNotify()) scope.launch { firmwareControl.maybeNotify(dailyMs) } }
+        // …and re-check daily while a watch stays connected.
         scope.launch {
             while (true) {
                 delay(dailyMs)
-                if (libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
+                if (shouldNotify() && libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
                     firmwareControl.maybeNotify(dailyMs)
                 }
             }
@@ -1266,28 +1291,145 @@ class PebbleIntegration(
      * The data is ingested into the shared DB by libpebble3's HealthDataProcessor; when `health.export`
      * is on, [HealthExporter] projects it to NDJSON whenever new data lands.
      */
-    private fun startHealthSync() {
+    /** (Re)start or stop health export + the on-connect data request against the current config.
+     *  Idempotent: stops the running exporter and cancels the on-connect collector first, then rebuilds
+     *  per `health.export` / `health.sync`. Called at boot and on SetSyncEnabled("health")/SetConfig. */
+    private fun applyHealth() {
+        healthExporterRef.getAndSet(null)?.stop()
         if (config.healthExport) {
             HealthExporter(
                 libPebble = libPebble,
-                scope = scope,
+                parentScope = scope,
                 exportDays = config.healthExportDays,
                 exportSamples = config.healthExportSamples,
             ).also { healthExporterRef.set(it); it.start() }
         } else {
             log.info { "Health export disabled (health.export=false)" }
         }
+        healthRequestJob?.cancel()
+        healthRequestJob = null
         if (!config.healthSync) {
             log.info { "Health sync on connect disabled (health.sync=false)" }
             return
         }
         log.info { "Health sync on (request steps/sleep/HR/workouts from the watch on each connect)" }
-        onFreshConnect { libPebble.requestHealthData(fullSync = false) }
+        healthRequestJob = onFreshConnect { libPebble.requestHealthData(fullSync = false) }
+    }
+
+    /** Re-publish music now-playing after a music.* change (the bridge reads music.enabled/volume live;
+     *  this nudges it so a just-flipped enable/disable takes effect at once rather than at the next track). */
+    private fun applyMusic() {
+        mprisMusicControl?.onConfigChanged()
+        log.info {
+            if (config.musicControl) "Music control on (MPRIS → watch; volume: ${config.musicVolume.name.lowercase()})"
+            else "Music control off (music.enabled=false)"
+        }
+    }
+
+    /** Re-evaluate calendar sync after a calendar.* change: the reader gates on calendar.enabled live, so
+     *  requesting a refresh makes PhoneCalendarSyncer drop (disabled) or repopulate (enabled) the pins. */
+    private fun applyCalendar() {
+        val cal = calendarSyncRef.get()
+        if (cal == null) { log.info { "Calendar sync unavailable (no calendar source configured)" }; return }
+        cal.requestRefresh()
+        log.info { if (config.calendarEnabled) "Calendar sync on (refresh requested)" else "Calendar sync off (pins being removed)" }
+    }
+
+    /** Re-apply a sync service against the (just-reloaded) config — the live half of SetSyncEnabled/SetConfig. */
+    private fun reconcile(service: String) {
+        when (service) {
+            "weather" -> applyWeather()
+            "calendar" -> applyCalendar()
+            "music" -> applyMusic()
+            "health" -> applyHealth()
+            "dnd" -> applyDnd()
+            "notifications" -> log.info { "Notification forwarding ${if (config.notificationForward) "on" else "paused"}" }
+        }
+    }
+
+    /** Map a GUI config key to the sync subsystem that must be re-applied for it to take effect live, or
+     *  null when the value is read live by its consumer with nothing to restart (notification.per_app →
+     *  the push gate; geolocation.enabled → LiveGeolocation; firmware.notify → the notifier loop). */
+    private fun serviceForConfigKey(key: String): String? = when {
+        key.startsWith("weather.") -> "weather"
+        key.startsWith("music.") -> "music"
+        key.startsWith("health.") -> "health"
+        key == "dnd.sync" -> "dnd"
+        key.startsWith("calendar.") -> "calendar"
+        key == "notification.forward" -> "notifications"
+        else -> null
+    }
+
+    private fun buildSyncStatus(): List<String> {
+        val cfg = configStore.current()
+        fun row(service: String, available: Boolean, enabled: Boolean, lastSync: String) =
+            "$service\t${if (enabled) "enabled" else "disabled"}\t${if (available) "available" else "unavailable"}\t$lastSync"
+        val weatherAvail = cfg.weatherLocations.isNotEmpty() || cfg.weatherGps ||
+            cfg.weatherLocationSource != WeatherLocationSource.MANUAL
+        val weatherOn = cfg.weatherEnabled && weatherSyncRef.get() != null
+        val calAvail = calendarSyncRef.get() != null
+        val calOn = cfg.calendarEnabled && calAvail
+        // dnd reports its real running state (like weather/calendar): a non-off mode that failed to start
+        // (no GNOME/KDE host DND backend — e.g. a headless host) is reported unavailable/"no backend", not
+        // live, so the GUI doesn't show a toggle that isn't actually doing anything.
+        val dndConfigured = cfg.dndSync != StoandlConfig.DndSyncMode.OFF
+        val dndRunning = dndSync != null
+        return listOf(
+            row("notifications", available = true, enabled = cfg.notificationForward, lastSync = if (cfg.notificationForward) "live" else "off"),
+            row("weather", available = weatherAvail, enabled = weatherOn, lastSync = if (weatherOn) "live" else if (!weatherAvail) "no source" else "off"),
+            row("calendar", available = calAvail, enabled = calOn, lastSync = if (calOn) "live" else if (!calAvail) "no source" else "off"),
+            row("music", available = true, enabled = cfg.musicControl, lastSync = if (cfg.musicControl) "live" else "off"),
+            row("health", available = true, enabled = cfg.healthSync, lastSync = if (cfg.healthSync) "live" else "off"),
+            row("dnd", available = dndRunning || !dndConfigured, enabled = dndConfigured && dndRunning,
+                lastSync = if (dndRunning) cfg.dndSync.name.lowercase() else if (dndConfigured) "no backend" else "off"),
+        )
+    }
+
+    /** Persist + live-apply a Sync-screen toggle. The dnd boolean maps to its 4-way mode (true→both,
+     *  false→off; the precise direction stays editable in Settings). Returns the GUI status string. */
+    private fun setSyncEnabledLive(service: String, enabled: Boolean): String {
+        val (key, token) = when (service) {
+            "notifications" -> "notification.forward" to enabled.toString()
+            "weather" -> "weather.enabled" to enabled.toString()
+            "calendar" -> "calendar.enabled" to enabled.toString()
+            "music" -> "music.enabled" to enabled.toString()
+            "health" -> "health.sync" to enabled.toString()
+            "dnd" -> "dnd.sync" to if (enabled) "both" else "off"
+            else -> return "notfound:no sync service '$service'"
+        }
+        return try {
+            ConfFile.upsert(StoandlConfig.configFile(), mapOf(key to token))
+            configStore.reload()
+            reconcile(service)
+            "ok:$service ${if (enabled) "enabled" else "disabled"}"
+        } catch (e: Exception) {
+            log.warn(e) { "SetSyncEnabled($service=$enabled) failed" }
+            "error:${e.message ?: "failed to update $service"}"
+        }
+    }
+
+    /** Persist + live-apply a single GUI config key: validate+write (applyGuiConfig), reload the store,
+     *  then re-reconcile the affected subsystem so the change takes effect without a restart. */
+    private fun setConfigLive(key: String, value: String): String {
+        val result = applyGuiConfig(key, value, StoandlConfig.configFile())
+        if (!result.startsWith("ok:")) return result
+        configStore.reload()
+        serviceForConfigKey(key)?.let { reconcile(it) }
+        return result
+    }
+
+    /** The live actuation behind the GUI Sync/Settings screens, delegated to by [StoandlControlImpl]. */
+    private val syncControl = object : SyncControl {
+        override fun status(): List<String> = buildSyncStatus()
+        override fun setEnabled(service: String, enabled: Boolean): String = setSyncEnabledLive(service, enabled)
+        override fun getConfig(): List<String> =
+            GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(configStore.current())}" }
+        override fun setConfig(key: String, value: String): String = setConfigLive(key, value)
     }
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, config) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1732,6 +1874,23 @@ private fun disconnectBluezDevice(devicePath: String) {
 // so GetHealthSummary reports this fixed default.
 private const val DEFAULT_STEP_GOAL = 10000
 
+/**
+ * The live actuation surface behind the GUI's Sync + Settings screens, implemented by
+ * [PebbleIntegration] (which owns the service refs + the [ConfigStore]) and delegated to by
+ * [StoandlControlImpl]. Every method persists to `stoandl.conf`, reloads the store, and re-reconciles
+ * the affected subsystem, so changes take effect without a daemon restart.
+ */
+internal interface SyncControl {
+    /** GetSyncStatus rows: `service\tenabled|disabled\tavailable|unavailable\tlastSync`. */
+    fun status(): List<String>
+    /** Persist + live-apply a Sync-screen toggle for one of the six services. */
+    fun setEnabled(service: String, enabled: Boolean): String
+    /** GetConfig rows: `key\tvalue` over the current (live) config. */
+    fun getConfig(): List<String>
+    /** Persist + live-apply a single GUI config key. */
+    fun setConfig(key: String, value: String): String
+}
+
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
@@ -1757,9 +1916,11 @@ private class StoandlControlImpl(
     private val requireConfirm: AtomicBoolean,
     private val pairingResult: AtomicReference<CompletableDeferred<String>?>,
     private val bondCache: ConcurrentHashMap<String, Boolean>,
-    // The daemon config, loaded once at startup — read by GetSyncStatus/GetConfig (the GUI's
-    // Settings/Sync screens) to report which features are enabled. Never mutated here.
-    private val config: StoandlConfig,
+    // The live Sync/Settings actuation (GetSyncStatus/SetSyncEnabled/GetConfig/SetConfig delegate here),
+    // owned by PebbleIntegration which holds the service refs + the live config store.
+    private val syncControl: SyncControl,
+    // Global allow/block notification filters (NotifListFilters/AddFilter/RemoveFilter).
+    private val notificationFilters: NotificationFilters,
     // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -2632,39 +2793,32 @@ private class StoandlControlImpl(
         }
     }
 
-    override fun GetSyncStatus(): List<String> {
-        // enabled reflects the loaded config / live refs; available is whether the feature can run here
-        // (true for all in v1); lastSync is a placeholder (push-based services report "live") until
-        // per-service sync timestamps are tracked — see docs/gui-hooks-plan.md decision #4.
-        fun row(service: String, enabled: Boolean, live: Boolean): String {
-            val lastSync = when {
-                !enabled -> "never"
-                live -> "live"
-                else -> "enabled"
-            }
-            return "$service\t${if (enabled) "enabled" else "disabled"}\tavailable\t$lastSync"
-        }
-        return listOf(
-            row("notifications", enabled = true, live = true),
-            row("weather", enabled = weatherSyncRef.get() != null, live = false),
-            row("calendar", enabled = calendarSyncRef.get() != null, live = false),
-            row("music", enabled = config.musicControl, live = true),
-            row("health", enabled = config.healthSync, live = false),
-            row("dnd", enabled = config.dndSync != StoandlConfig.DndSyncMode.OFF, live = true),
-        )
-    }
+    // The six sync services' live runtime state (enabled/available/lastSync), assembled by
+    // PebbleIntegration from its service refs + the live config store — see SyncControl.
+    override fun GetSyncStatus(): List<String> = syncControl.status()
 
-    // Re-read from disk (not the startup snapshot in `config`) so a value just written by SetConfig is
-    // reflected — the running daemon still uses the old config until restarted, but the Settings screen
-    // shows the persisted (pending) value rather than reverting the user's change. Quiet load: no INFO.
-    override fun GetConfig(): List<String> =
-        StoandlConfig.load(logResult = false).let { cfg -> GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(cfg)}" } }
+    // Persist + live-apply a Sync-screen toggle (start/stop the service, no restart needed).
+    override fun SetSyncEnabled(service: String, enabled: Boolean): String =
+        syncControl.setEnabled(service, enabled)
+
+    // Read off the live config store (reloaded on every write) so a just-set value sticks.
+    override fun GetConfig(): List<String> = syncControl.getConfig()
 
     override fun GetConfigSchema(): List<String> =
         GUI_CONFIG_FIELDS.map { "${it.key}\t${it.type}\t${it.label}\t${it.options}\t${it.desc}" }
 
-    override fun SetConfig(key: String, value: String): String =
-        applyGuiConfig(key, value, StoandlConfig.configFile())
+    // Persist + live-apply (validate, write, reload, reconcile the affected subsystem).
+    override fun SetConfig(key: String, value: String): String = syncControl.setConfig(key, value)
+
+    // --- Notification filters (global allow/block list, enforced in WatchNotifier.push) -------------
+    override fun NotifListFilters(): List<String> =
+        notificationFilters.list().map { "${it.pattern}\t${it.action.name.lowercase()}" }
+
+    override fun NotifAddFilter(pattern: String, action: String): String =
+        notificationFilters.add(pattern, action)
+
+    override fun NotifRemoveFilter(pattern: String): String =
+        notificationFilters.remove(pattern)
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {

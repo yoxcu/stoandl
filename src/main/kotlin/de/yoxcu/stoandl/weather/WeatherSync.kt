@@ -20,8 +20,11 @@ import io.rebble.libpebblecommon.weather.WeatherType
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
@@ -62,7 +65,7 @@ private val WEATHER_RETRY_BACKOFF = listOf(30.seconds, 1.minutes, 5.minutes)
  */
 class WeatherSync(
     private val libPebble: LibPebble,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val locations: List<WeatherLocation>,
     private val units: WeatherUnits,
     private val intervalMinutes: Long,
@@ -80,6 +83,10 @@ class WeatherSync(
     // the original Core companion app. When false, any previously-emitted pins are removed.
     private val weatherPins: Boolean = true,
 ) {
+    // Own child scope so the whole sync (on-connect trigger, periodic loop, in-flight fetches) can be
+    // cancelled as a unit by [stop] when weather is turned off at runtime — without tearing the daemon
+    // scope. A child of the parent job, so daemon shutdown still cancels it.
+    private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
     private val pins = WeatherPins(libPebble)
     // Avoid re-issuing pin deletions every sync once they've been cleared while pins are disabled.
     @Volatile private var pinsCleared = false
@@ -136,6 +143,17 @@ class WeatherSync(
                 delay(wait)
             }
         }
+    }
+
+    /** Stop syncing and release everything this instance owns — cancel the scope (on-connect trigger,
+     *  periodic loop, in-flight fetches), close the HTTP client (its CIO engine has its own threads +
+     *  connection pool, independent of [scope]), and stop the GeoClue provider (its system-bus
+     *  connection). The watch keeps its last-pushed weather data; re-enabling builds a fresh [WeatherSync]
+     *  (with a fresh client + provider) that refreshes it. */
+    fun stop() {
+        scope.cancel()
+        client.close()
+        gps?.stop()
     }
 
     /**

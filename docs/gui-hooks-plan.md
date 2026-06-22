@@ -28,9 +28,11 @@ pass over the mock + the daemon code (one agent per screen), 2026-06-22.
 6. **The extension `url` config backend doesn't exist** (no embedded HTTP server anywhere in `src/`). Ship
    the **schema** backend only (native QML form); `ExtOpenConfig` returns `none:`/`error:` until/unless an
    HTTP server is justified.
-7. **Quiet-hours and Filters are new host-side subsystems**, not watch-synced. Cleanest actuation for both
-   is a drop-gate inside `WatchNotifier.push()` (the single send choke point), parallel to per-app mute —
-   no fork change, no `dnd.sync` collision.
+7. **Filters are a new host-side subsystem**, not watch-synced. Actuation is a drop-gate inside
+   `WatchNotifier.push()` (the single send choke point), parallel to per-app mute — no fork change.
+   **Quiet-hours was considered here too but dropped** as redundant with `dnd.sync` (which already
+   mirrors desktop DND ↔ the watch's native Quiet Time); a separate scheduled mute window would
+   duplicate it.
 
 **Effort tally:** 6 already exist (confirm only) · 7 wiring · 2 trivial · ~7 design (mostly the write-path
 + the two new subsystems). Nothing needs the fork.
@@ -68,10 +70,10 @@ flows are present and consumed as-is. `HeartRate()` (added this session) supplie
 | `ExtConfigSchema(s)` | no typed schema in the manifest (config is a flat `String` map) | Add a typed `configSchema:[{key,type,label,secret?,options?}]` to the manifest; its presence is also the `schema` config-kind signal. JSON in the status tail (the one place this contract uses JSON) |
 | `ExtOpenConfig(s)` | **no HTTP server exists** in stoandl | **Defer the `url` backend.** Implement the method but return `none:`/`error:`/`notfound:` only; ship the GUI on the schema form |
 | `GetConfigSchema()` | config not introspectable; would be a hand-authored 4th source of truth | **Curated subset** (the GUI-relevant scalar keys, like the mock's 5) kept adjacent to `StoandlConfig`; flag the sync risk. Full-surface or schema-as-source-of-truth = a later refactor |
-| `SetConfig(s,s)` | "apply" half blocked by load-once config (no live reload) | Extract a shared atomic `key=value` upsert (share `ExtensionManager`'s lock); return `ok:` with **"restart to take effect"** for non-live keys, best-effort live apply for the few that can |
-| `SetSyncEnabled(s,b)` | no teardown for Koin singles; ref-held services have no `stop()` | v1: conf-rewrite + **best-effort live *start*** for weather/dnd/health/calendar-refresh; music/calendar/notifications return `ok:` with restart-needed. True runtime-stop = refactor those off `single<>` into ref-held child-scoped services (separate task) |
-| `NotifGetQuietHours`/`SetQuietHours`/`SetQuietNow` | new host-side scheduled subsystem (watch has no time-window QT pref; `dnd.sync` is boolean-only) | Persist `from/to/enabled` (shared config writer) + a scheduler coroutine; **actuate via a drop-gate in `WatchNotifier.push()`** (no `dnd.sync` collision). `SetQuietNow` (transient 1h/morning override + timer) is nearly trivial; ship it first |
-| `NotifListFilters`/`AddFilter`/`RemoveFilter` | new host-side global filter subsystem | libpebble3's `NotificationRuleDao` is the wrong shape (per-app, block-only, Android-only enforcement). **stoandl-owned global allow/block list** + a regex gate in `WatchNotifier.push()`. No fork change, but real precedence design (allow vs block vs per-app-mute order) |
+| `SetConfig(s,s)` | "apply" half blocked by load-once config (no live reload) | **DONE (Batch D):** shared atomic `key=value` upsert (`util/ConfFile.kt`) + a live `config/ConfigStore.kt` (`AtomicReference`). Every write persists, reloads the store, and re-reconciles the affected subsystem → **applied live, no restart** (hand-edits of the file still need a restart) |
+| `SetSyncEnabled(s,b)` | no teardown for Koin singles; ref-held services have no `stop()` | **DONE (Batch D):** full runtime **start *and* stop** for all six services (notifications, weather, calendar, music, health, dnd) — not the "start-only v1" originally scoped. Persists the backing key via the shared writer + the live `ConfigStore`, then starts/stops the live service. `dnd` boolean → its mode (true→`both`, false→`off`) |
+| ~~`NotifGetQuietHours`/`SetQuietHours`/`SetQuietNow`~~ | ~~new host-side scheduled subsystem~~ | **DROPPED (Batch D):** redundant with `dnd.sync`, which already mirrors desktop DND ↔ the watch's native Quiet Time. A separate scheduled mute window would duplicate it, so these methods are **not implemented** |
+| `NotifListFilters`/`AddFilter`/`RemoveFilter` | new host-side global filter subsystem | **DONE (Batch D):** stoandl-owned **global allow/block list**, stored in `<configDir>/notification-filters`, enforced by a regex gate in `WatchNotifier.push()`. Precedence: `allow` is a whitelist that bypasses block filters, the master forwarding switch (`notification.forward`), and per-app mute; `block` drops. Live-mutable, no fork change |
 
 ---
 
@@ -82,9 +84,9 @@ flows are present and consumed as-is. `HeartRate()` (added this session) supplie
 3. **`sleepRemMin`** — REM is not modeled anywhere (only total + deep). → **Recommend: emit `0`, `sleepLightMin = total − deep`.**
 4. **`lastSync` (health + sync status)** — no stored sync-moment. → **Recommend: stamp a `@Volatile lastSync` on each sync; ship `GetSyncStatus.lastSync` as a placeholder ("enabled"/"never") in v1.**
 5. **`GetConfigSchema` scope** — → **Recommend: curated GUI-relevant subset**, kept next to `StoandlConfig`.
-6. **`SetConfig`/`SetSyncEnabled` apply semantics** — → **Recommend: conf-rewrite + "restart to take effect" for non-live keys; best-effort live *start* for weather/dnd/health.** (No service can be cleanly *stopped* at runtime today — honest limitation.)
+6. **`SetConfig`/`SetSyncEnabled` apply semantics** — → **RESOLVED (Batch D): applied live, no restart.** A live `config/ConfigStore.kt` (`AtomicReference`) is reloaded on every write and the affected subsystem re-reconciled; all six sync services gained a runtime start/stop lifecycle, so `SetSyncEnabled` does full start *and* stop (the earlier "start-only / restart-to-stop" limitation is gone). Hand-edits of `stoandl.conf` still need a restart.
 7. **Extension config backend** — → **Recommend: schema-only for v1; defer the `url`/HTTP-server backend.**
-8. **Quiet-hours actuator & Filters store** — → **Recommend: both as drop-gates in `WatchNotifier.push()`; filters in a stoandl-owned global store** (not the per-app, block-only libpebble3 DAO).
+8. **Quiet-hours actuator & Filters store** — → **RESOLVED (Batch D): quiet-hours dropped** (redundant with `dnd.sync`); **filters shipped** as a stoandl-owned global allow/block store (`<configDir>/notification-filters`) with a regex drop-gate in `WatchNotifier.push()` (not the per-app, block-only libpebble3 DAO).
 
 ## Suggested sequencing
 
@@ -98,8 +100,13 @@ flows are present and consumed as-is. `HeartRate()` (added this session) supplie
   `url`/HTTP backend stays deferred per decision #7) is now wired, so the extension-config surface is
   complete. The `configKindOf` helper in `ExtensionManager` is the single source of truth for the
   `schema`/`none` kind used by `ExtList`, `ExtConfigSchema`, and `ExtOpenConfig`.
-- **Batch C (config write):** shared atomic `key=value` writer → `SetConfig` (restart-needed semantics).
-- **Batch D (lifecycle/subsystems):** `SetSyncEnabled` (start-only v1), quiet-hours, filters.
+- **Batch C — DONE (config write):** shared atomic `key=value` writer (`util/ConfFile.kt`) → `SetConfig`
+  + `GetConfig` disk-reread. (Originally shipped with restart-needed semantics; Batch D then made it live.)
+- **Batch D — DONE (lifecycle/subsystems):** the live config store (`config/ConfigStore.kt`) so
+  `SetConfig`/`SetSyncEnabled` **apply without a daemon restart** (reload + re-reconcile); a full runtime
+  start/stop lifecycle for all six sync services, so `SetSyncEnabled` does real start *and* stop (not the
+  start-only v1 originally scoped); and the notification filters (a stoandl-owned global allow/block list
+  gated in `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
 
 Each batch is independently shippable; the GUI degrades gracefully on any not-yet-present method (it polls
 and tolerates `notready`/`error`).

@@ -40,6 +40,10 @@ class LinuxSystemCalendar(
     private val sources: List<CalendarSource>,
     private val intervalMinutes: Long,
     private val watchDirs: List<File>,
+    // Live master switch (`calendar.enabled`): when off, we expose no calendars/events so
+    // PhoneCalendarSyncer removes the watch's pins. [requestRefresh] re-evaluates it, so toggling it at
+    // runtime clears or repopulates pins without a restart. Default always-on for non-GUI callers.
+    private val isEnabled: () -> Boolean = { true },
 ) : SystemCalendar {
     @Volatile private var byPlatformId: Map<String, RawCalendar> = emptyMap()
     private val manualTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -51,6 +55,12 @@ class LinuxSystemCalendar(
     }
 
     override suspend fun getCalendars(): List<CalendarEntity> {
+        if (!isEnabled()) {
+            // Disabled at runtime: expose nothing so the syncer drops every calendar (and its pins).
+            byPlatformId = emptyMap()
+            log.info { "Calendar sync disabled (calendar.enabled=false) — no calendars exposed" }
+            return emptyList()
+        }
         val raws = sources.flatMap { src ->
             try {
                 src.calendars()
@@ -82,6 +92,7 @@ class LinuxSystemCalendar(
         startDate: Instant,
         endDate: Instant,
     ): List<CalendarEvent> {
+        if (!isEnabled()) return emptyList()
         val rc = byPlatformId[calendar.platformId]
             ?: run { getCalendars(); byPlatformId[calendar.platformId] }
             ?: return emptyList()
