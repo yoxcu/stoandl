@@ -34,10 +34,27 @@ class AppIconExtractor(
     private val pbwCacheDir = File(configDir, "pbw-cache")
     private val iconDir = File(configDir, "icons")
 
-    // Prefer colour platforms (richer icon), then mono, first variant actually present in the .pbw.
-    private val platformPreference = listOf(
+    init {
+        // Bust the icon cache when the extraction format changes (e.g. the upscale below) so stale
+        // low-res PNGs from an older build get regenerated instead of served forever.
+        val marker = File(iconDir, ".fmt")
+        if (!marker.isFile || marker.readText().trim() != CACHE_VERSION) {
+            iconDir.deleteRecursively()
+            iconDir.mkdirs()
+            runCatching { marker.writeText(CACHE_VERSION) }
+        }
+    }
+
+    // PNG menu icons (colour faces ship these) — search colour platforms first.
+    private val colourOrder = listOf(
         WatchType.BASALT, WatchType.CHALK, WatchType.EMERY,
         WatchType.DIORITE, WatchType.APLITE, WatchType.FLINT, WatchType.GABBRO,
+    )
+    // Monochrome GBitmap icons (e.g. app glyphs like hooky): prefer the 1-bit B&W variants — hard edges
+    // that stay crisp when enlarged, vs basalt's anti-aliased palette whose grey edge becomes a soft halo.
+    private val monoOrder = listOf(
+        WatchType.APLITE, WatchType.DIORITE, WatchType.BASALT,
+        WatchType.CHALK, WatchType.EMERY, WatchType.FLINT, WatchType.GABBRO,
     )
 
     /**
@@ -96,26 +113,52 @@ class AppIconExtractor(
         }
         val resourceId = idx + 1
 
-        // Pick the first preferred platform whose resources pbpack is present in the .pbw.
-        for (watchType in platformPreference) {
-            val pbpack = app.getResourcesFor(watchType)?.buffered()?.use { it.readByteArray() } ?: continue
-            val res = Pbpack.resource(pbpack, resourceId) ?: continue
-            val png = resourceToPng(res) ?: continue
-            log.debug { "${pbwFile.name}: menu icon from ${watchType.codename} (res id $resourceId)" }
-            return png
+        fun resourceBytes(watchType: WatchType): ByteArray? {
+            val pbpack = app.getResourcesFor(watchType)?.buffered()?.use { it.readByteArray() } ?: return null
+            return Pbpack.resource(pbpack, resourceId)
+        }
+
+        // 1) A PNG menu icon — colour faces ship these; pass it through unchanged (colour-platform order).
+        for (watchType in colourOrder) {
+            val res = resourceBytes(watchType) ?: continue
+            if (isPng(res)) {
+                log.debug { "${pbwFile.name}: PNG menu icon from ${watchType.codename}" }
+                return res
+            }
+        }
+        // 2) Otherwise a GBitmap (typically a monochrome glyph): decode the crispest 1-bit variant. No
+        //    upscaling — the GUI renders it at native pixels so the hard edges stay sharp.
+        for (watchType in monoOrder) {
+            val res = resourceBytes(watchType) ?: continue
+            val bmp = GBitmap.decode(res) ?: continue
+            log.debug { "${pbwFile.name}: GBitmap menu icon from ${watchType.codename} (1-bit pref)" }
+            return PngEncoder.encodeRgba(flattenOnWhite(bmp.argb), bmp.width, bmp.height)
         }
         log.debug { "${pbwFile.name}: menuIcon resource $resourceId not found/decodable on any platform" }
         return null
     }
 
-    /** A menu-icon resource is either a PNG (pass through) or a GBitmap (decode → RGBA PNG). */
-    private fun resourceToPng(res: ByteArray): ByteArray? {
-        if (res.size >= 8 && res[0].toInt() and 0xFF == 0x89 &&
-            res[1].toInt() == 0x50 && res[2].toInt() == 0x4E && res[3].toInt() == 0x47
-        ) {
-            return res // already a .png
+    private fun isPng(b: ByteArray) =
+        b.size >= 8 && (b[0].toInt() and 0xFF) == 0x89 && b[1].toInt() == 0x50 &&
+            b[2].toInt() == 0x4E && b[3].toInt() == 0x47
+
+    /** Composite a (possibly transparent) RGBA buffer over opaque white in place, so a black-on-transparent
+     *  1-bit glyph reads as black-on-white — the negative space is true white, not the GUI card colour. */
+    private fun flattenOnWhite(argb: IntArray): IntArray {
+        for (i in argb.indices) {
+            val c = argb[i]
+            val a = (c ushr 24) and 0xFF
+            if (a == 0xFF) continue
+            val r = ((c ushr 16 and 0xFF) * a + 0xFF * (0xFF - a)) / 0xFF
+            val g = ((c ushr 8 and 0xFF) * a + 0xFF * (0xFF - a)) / 0xFF
+            val b = ((c and 0xFF) * a + 0xFF * (0xFF - a)) / 0xFF
+            argb[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
-        val bmp = GBitmap.decode(res) ?: return null
-        return PngEncoder.encodeRgba(bmp.argb, bmp.width, bmp.height)
+        return argb
+    }
+
+    companion object {
+        // Bump to invalidate the on-disk icon cache when the output format changes.
+        private const val CACHE_VERSION = "4"
     }
 }
