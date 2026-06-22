@@ -82,6 +82,7 @@ import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.metadata.supportsHrm
+import io.rebble.libpebblecommon.services.DailySleep
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.time.TimeChanged
 import io.rebble.libpebblecommon.voice.TranscriptionProvider
@@ -1976,6 +1977,10 @@ private fun disconnectBluezDevice(devicePath: String) {
 // so GetHealthSummary reports this fixed default.
 private const val DEFAULT_STEP_GOAL = 10000
 
+// How far back GetHealthSummary/GetHealthSeries walk to find the most recent night with sleep data. The
+// watch retains ~30 days; 45 covers a stretch of not wearing/syncing it without unbounded DB scans.
+private const val SLEEP_LOOKBACK_DAYS = 45
+
 /**
  * The live actuation surface behind the GUI's Sync + Settings screens, implemented by
  * [PebbleIntegration] (which owns the service refs + the [ConfigStore]) and delegated to by
@@ -2186,12 +2191,18 @@ private class StoandlControlImpl(
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
         val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
+        // Full sync: ask the watch to replay ALL stored history, not just data newer than our latest
+        // timestamp. Incremental (the on-connect path) keys off healthDao.getLatestTimestamp(), so once
+        // today's step/HR minute samples land, the watermark sits at "now" and incremental never reaches
+        // back to last night's sleep overlays we missed (e.g. recorded while paired to another phone).
+        // An explicit "sync" is the user asking to backfill, so request everything; the processor upserts.
         // Fire-and-forget: the watch streams data back asynchronously (ingested into the DB by
         // libpebble3), which fires healthDataUpdated → the exporter re-projects. Re-project once now too
         // so any data already in the DB is written even if this sync turns up nothing new.
-        lp.requestHealthData(fullSync = false)
+        log.info { "Full health sync requested from ${dev.displayName()} (replay all watch-retained history)" }
+        lp.requestHealthData(fullSync = true)
         healthExporterRef.get()?.let { exporter -> scope.launch { exporter.exportNow() } }
-        return "ok:Requested health sync from ${dev.displayName()}"
+        return "ok:Requested full health sync from ${dev.displayName()}"
     }
 
     override fun HeartRate(): String {
@@ -2217,12 +2228,19 @@ private class StoandlControlImpl(
             val kcal = ((move?.activeGramCalories ?: 0L) / 1000L).toInt()
             val activeMin = (move?.activeMinutes ?: 0L).toInt()
 
-            // Last night's sleep — seconds → minutes; light = total − deep; REM isn't modelled (→ 0).
-            val sleep = lp.getDailySleepSession(dayStart)
+            // The most recent night with a sleep session (not necessarily last night — the watch may
+            // have been syncing to another phone, so the freshest data we hold can be older). seconds →
+            // minutes; light = total − deep (Pebble doesn't model REM). bedtime/wakeup are epoch seconds
+            // (0 = no session; the GUI derives "last night" vs an older date from them); typical = 30-day avg.
+            val recentSleep = latestSleep(lp, zone, today)
+            val sleepDayStart = recentSleep?.first
+            val sleep = recentSleep?.second
             val sleepTotalMin = ((sleep?.totalSleep ?: 0L) / 60L).toInt()
             val sleepDeepMin = ((sleep?.deepSleep ?: 0L) / 60L).toInt()
             val sleepLightMin = (sleepTotalMin - sleepDeepMin).coerceAtLeast(0)
-            val sleepRemMin = 0
+            val sleepBedtime = sleep?.firstStart ?: 0L
+            val sleepWakeup = sleep?.lastEnd ?: 0L
+            val sleepTypicalMin = (lp.getTypicalSleepSeconds() / 60L).toInt()
 
             // Weekly averages (days/nights with data only) + week-over-week trend.
             val stepWeekAvg = avgSteps(lp, today.minusDays(6), today)
@@ -2230,8 +2248,9 @@ private class StoandlControlImpl(
             val sleepAvgMin = avgSleepMin(lp, weekDayStarts(today, zone, 0))
             val sleepTrendPct = trendPct(sleepAvgMin, avgSleepMin(lp, weekDayStarts(today, zone, 7)))
 
-            // Heart rate.
-            val restingHr = lp.getRestingHeartRate(dayStart) ?: 0
+            // Heart rate. Resting HR is derived from the sleep session, so key it to the same night we
+            // reported above (not today, which may have no sleep) — otherwise it always reads 0.
+            val restingHr = (sleepDayStart?.let { lp.getRestingHeartRate(it) }) ?: 0
             val currentHr = lp.getLatestHeartRateReading()?.bpm ?: 0
             val dayHr = lp.getHealthDataForRange(dayStart, dayEnd).map { it.heartRate }.filter { it > 0 }
             val hrMin = dayHr.minOrNull() ?: 0
@@ -2243,7 +2262,7 @@ private class StoandlControlImpl(
             "ok:" + listOf(
                 steps, DEFAULT_STEP_GOAL, distanceKm, kcal, activeMin,
                 stepWeekAvg, stepTrendPct,
-                sleepTotalMin, sleepDeepMin, sleepLightMin, sleepRemMin,
+                sleepTotalMin, sleepDeepMin, sleepLightMin, sleepBedtime, sleepWakeup, sleepTypicalMin,
                 sleepAvgMin, sleepTrendPct,
                 restingHr, currentHr, hrMin, hrMax, hrAvailable,
                 lastSync,
@@ -2267,10 +2286,26 @@ private class StoandlControlImpl(
                     ).associateBy { it.day }
                     week.map { d -> "${label(d)}\t${byDay[d.toString()]?.steps ?: ""}" }
                 }
-                "sleep" -> week.map { d ->
-                    val mins = lp.getDailySleepSession(d.atStartOfDay(zone).toEpochSecond())
-                        ?.totalSleep?.let { (it / 60L).toInt() }
-                    "${label(d)}\t${mins ?: ""}"
+                "sleep" -> {
+                    // The most recent night's sleep timeline as fractions of an 18 h window (6 PM → noon
+                    // of that night), matching the Core app's daily sleep chart. One row per interval:
+                    //   startFraction \t widthFraction \t isDeep(0|1)
+                    // Light intervals first, deep last, so the GUI draws deep on top of light. Anchored to
+                    // the same night as GetHealthSummary (latestSleep), which may not be last night.
+                    val recent = latestSleep(lp, zone, today)
+                    val dayStart = recent?.first ?: today.atStartOfDay(zone).toEpochSecond()
+                    val sleep = recent?.second
+                    val windowStart = dayStart - 6 * 3600L
+                    val windowSpan = 18 * 3600.0  // 6 PM → noon
+                    fun seg(start: Long, end: Long, deep: Boolean): String? {
+                        val sf = ((start - windowStart) / windowSpan).coerceIn(0.0, 1.0)
+                        val ef = ((end - windowStart) / windowSpan).coerceIn(0.0, 1.0)
+                        if (ef <= sf) return null
+                        return String.format(Locale.ROOT, "%.4f\t%.4f\t%d", sf, ef - sf, if (deep) 1 else 0)
+                    }
+                    val intervals = sleep?.intervals ?: emptyList()
+                    (intervals.filter { !it.isDeep }.mapNotNull { seg(it.start, it.end, false) } +
+                        intervals.filter { it.isDeep }.mapNotNull { seg(it.start, it.end, true) })
                 }
                 "heart" -> {
                     val dayStart = today.atStartOfDay(zone).toEpochSecond()
@@ -2298,6 +2333,19 @@ private class StoandlControlImpl(
      *  7 = the prior 7) — for weekly sleep aggregation, which has no per-day-aggregate API. */
     private fun weekDayStarts(today: LocalDate, zone: ZoneId, offsetDays: Int): List<Long> =
         (offsetDays until offsetDays + 7).map { today.minusDays(it.toLong()).atStartOfDay(zone).toEpochSecond() }
+
+    /** The most recent night that has a sleep session, walking back from [today] up to [SLEEP_LOOKBACK_DAYS]
+     *  days. Returns (dayStartEpochSec, session) or null if none in range. Shared by [GetHealthSummary] and
+     *  [GetHealthSeries] so the summary and the timeline always describe the same night. Stops at the first
+     *  hit (usually today/last night), so it's one DB query in the common case. */
+    private suspend fun latestSleep(lp: LibPebble, zone: ZoneId, today: LocalDate): Pair<Long, DailySleep>? {
+        for (i in 0..SLEEP_LOOKBACK_DAYS) {
+            val dayStart = today.minusDays(i.toLong()).atStartOfDay(zone).toEpochSecond()
+            val session = lp.getDailySleepSession(dayStart)
+            if (session != null) return dayStart to session
+        }
+        return null
+    }
 
     /** Average of per-day step totals over [from]..[to] inclusive, counting only days that have data. */
     private suspend fun avgSteps(lp: LibPebble, from: LocalDate, to: LocalDate): Int {

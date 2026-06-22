@@ -66,8 +66,15 @@
     <logger name="net.fortuna.ical4j" level="WARN"/>
     <logger name="WatchManager" level="WARN"/>
     <logger name="AppOrderManager" level="WARN"/>
-    <logger name="HealthDataProcessor" level="WARN"/>
-    <logger name="Health" level="WARN"/>
+    <!-- Health pipeline — follows STOANDL_LOG (quiet at INFO; all the useful lines are DEBUG). At DEBUG:
+         HealthDataProcessor logs each datalog frame ("handleSendDataItems …", "Parsed N step/overlay
+         records", "Received sleep tag data"); HealthService logs the sync request + watermark
+         ("Requesting incremental health data sync (last <N>s)"); SleepSessionGrouper logs "Found N sleep
+         entries …" — the decisive signals for diagnosing empty steps/sleep/HR. -->
+    <logger name="HealthDataProcessor" level="${logLevel}"/>
+    <logger name="HealthService" level="${logLevel}"/>
+    <logger name="SleepSessionGrouper" level="${logLevel}"/>
+    <logger name="Health" level="${logLevel}"/>
     <logger name="ConnectivityWatcher" level="WARN"/>
     <!-- Follows STOANDL_LOG: at DEBUG it logs each watch insert ("insert: Weather …") and, crucially,
          "handleInsert: value is null: Weather …" when a record is dropped for a missing watch

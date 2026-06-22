@@ -198,15 +198,22 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
-| `GetHealthSummary` | `() → s` | Today's health summary (19 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
-| `GetHealthSeries` | `(s) → as` | Health chart series: `steps`/`sleep` (7 `label\tvalue` rows, last 7 days) or `heart` (24 `hour\tbpm` rows today; `[]` when HR unavailable). | *(GUI)* |
+| `GetHealthSummary` | `() → s` | Today's health summary (21 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
+| `GetHealthSeries` | `(s) → as` | Health chart series: `steps` (7 `label\tvalue` rows, last 7 days), `sleep` (last night's light/deep timeline, `startFraction\twidthFraction\tisDeep` rows; `[]` when no session), or `heart` (24 `hour\tbpm` rows today; `[]` when HR unavailable). | *(GUI)* |
 | `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
 
-`GetHealthSummary` record (after `ok:`, 19 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
+`GetHealthSummary` record (after `ok:`, 21 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
 activeMin \t stepWeekAvg \t stepTrendPct \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t
-sleepRemMin \t sleepAvgMin \t sleepTrendPct \t restingHr \t currentHr \t hrMin \t hrMax \t
-hrAvailable(yes\|no) \t lastSync`. (`stepGoal` is a fixed default — no watch-synced goal; `sleepRemMin`
-is always 0 — REM isn't modelled; `sleepLightMin` = total − deep; trends are week-over-week %.)
+sleepBedtime \t sleepWakeup \t sleepTypicalMin \t sleepAvgMin \t sleepTrendPct \t restingHr \t
+currentHr \t hrMin \t hrMax \t hrAvailable(yes\|no) \t lastSync`. (`stepGoal` is a fixed default — no
+watch-synced goal; Pebble models only light/deep, so REM is dropped and `sleepLightMin` = total −
+deep; `sleepBedtime`/`sleepWakeup` are epoch seconds of last night's first-asleep / last-awake, `0`
+when there's no session; `sleepTypicalMin` is the 30-day average; trends are week-over-week %.)
+
+`GetHealthSeries("sleep")` rows: `startFraction \t widthFraction \t isDeep(0\|1)` — one per sleep
+interval, as fractions of an 18 h window (6 PM yesterday → noon today). Light intervals come first,
+deep last, so a client drawing them in order paints deep on top of light; awake gaps are uncovered
+space. (Steps/heart rows keep the `label \t value` shape.)
 
 There is **no** force-sync for music or notifications. `GetSyncStatus` exposes the per-service
 enabled/available **read** and `SetSyncEnabled` is the runtime master on/off — services start/stop
@@ -316,7 +323,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
-| `GetHealthSeries` | `label`/`hour` · `value` (empty value = no data for that point) |
+| `GetHealthSeries` | steps/heart: `label`/`hour` · `value` (empty value = no data) · sleep: `startFraction` · `widthFraction` · `isDeep`(0/1) |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
 | `GetConfig` | `key` · `value` |
 | `GetConfigSchema` | `key` · `type`(toggle/combo) · `label` · `options`(CSV) · `desc` |

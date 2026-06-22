@@ -160,18 +160,24 @@ interface StoandlControl : DBusInterface {
     fun HeartRate(): String
 
     /** Today's health summary for the GUI Health screen, computed from the synced health DB (works
-     *  whether or not a watch is currently connected). Returns `ok:` + 19 tab-separated fields:
+     *  whether or not a watch is currently connected). Returns `ok:` + 21 tab-separated fields:
      *  `stepsToday, stepGoal, distanceKm, kcal, activeMin, stepWeekAvg, stepTrendPct, sleepTotalMin,
-     *  sleepDeepMin, sleepLightMin, sleepRemMin, sleepAvgMin, sleepTrendPct, restingHr, currentHr,
-     *  hrMin, hrMax, hrAvailable(yes|no), lastSync`, or `notready:` if libPebble isn't ready. (REM
-     *  isn't modelled → `sleepRemMin`=0; there's no step-goal source → a fixed default; trends are
-     *  week-over-week %.) */
+     *  sleepDeepMin, sleepLightMin, sleepBedtime, sleepWakeup, sleepTypicalMin, sleepAvgMin,
+     *  sleepTrendPct, restingHr, currentHr, hrMin, hrMax, hrAvailable(yes|no), lastSync`, or
+     *  `notready:` if libPebble isn't ready. (Pebble doesn't model REM, so only light/deep are
+     *  reported — light = total − deep; `sleepBedtime`/`sleepWakeup` are epoch seconds of last
+     *  night's first-asleep / last-awake, 0 = no session; `sleepTypicalMin` = 30-day average; there's
+     *  no step-goal source → a fixed default; trends are week-over-week %.) */
     fun GetHealthSummary(): String
 
-    /** A health time-series for the GUI Health charts. [metric] is `steps`/`sleep` (7 rows
-     *  `weekdayLabel\tvalue`, the last 7 days oldest-first; empty value = no data that day) or `heart`
-     *  (24 rows `hour\tbpm`, today by hour; empty value = no reading that hour). `heart` returns an
-     *  empty list when the watch has no heart-rate capability/data. Unknown metric → empty list. */
+    /** A health time-series for the GUI Health charts. [metric] is one of:
+     *  - `steps` → 7 rows `weekdayLabel\tsteps`, the last 7 days oldest-first (empty value = no data).
+     *  - `sleep` → last night's sleep timeline, one row per interval `startFraction\twidthFraction\tisDeep`
+     *    (0|1), as fractions of an 18 h window (6 PM yesterday → noon today); light intervals first,
+     *    deep last (draw deep over light). Empty list when there's no session.
+     *  - `heart` → 24 rows `hour\tbpm`, today by hour (empty value = no reading that hour); empty list
+     *    when the watch has no heart-rate capability/data.
+     *  Unknown metric → empty list. */
     fun GetHealthSeries(metric: String): List<String>
 
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
