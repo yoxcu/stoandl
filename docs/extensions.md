@@ -63,6 +63,25 @@ override). The launch command (`cmd`, for non-Python extensions) may come from a
 On install, the status line points at where to configure it (the path of the extension's `config`, and
 the `config.example` to copy).
 
+**GUI-facing manifest fields (optional).** A `"description"` (a one-line summary) shows in a front-end's
+plugin list, and a `"configSchema"` lets a GUI render a **native settings form** for the extension
+instead of pointing the user at the `config` file. It's a JSON array of typed fields:
+
+```jsonc
+"configSchema": [
+  {"key":"homeserver", "type":"string", "label":"Homeserver URL"},
+  {"key":"password",   "type":"string", "label":"Password",  "secret":true},
+  {"key":"notify",     "type":"enum",   "label":"Notify on",  "options":["pushrules","mentions","all"]}
+]
+```
+
+Field `type` is `string` (+`"secret":true` to mask it), `bool`, `int`, or `enum` (+`options`). A GUI
+reads the current values (the `config` file), shows the form, and writes changes back — **merged**, so
+unsent secrets aren't clobbered, then restarts the extension. Without a `configSchema` a front-end just
+reports "no settings" (the alternative `url` backend — a hosted config page — isn't implemented in
+stoandl, which has no embedded HTTP server). These fields are purely for front-ends; the daemon and the
+stdio protocol ignore them.
+
 **`requiresConfig`** (manifest): an extension that can't run until configured (e.g. Matrix needs a
 homeserver) declares `"requiresConfig": true`. If it's started without any user settings (no `config`
 file and no `extension.<name>.*`), the daemon **does not spawn it** — it logs a warning and posts a

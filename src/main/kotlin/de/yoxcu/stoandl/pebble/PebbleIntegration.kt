@@ -2122,6 +2122,7 @@ private class StoandlControlImpl(
     override fun ExtSetConfig(name: String, payloadJson: String): String =
         extensionManager.setConfig(name, payloadJson)
     override fun ExtConfigSchema(name: String): String = extensionManager.configSchema(name)
+    override fun ExtOpenConfig(name: String): String = extensionManager.openConfig(name)
 
     override fun ListApps(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()

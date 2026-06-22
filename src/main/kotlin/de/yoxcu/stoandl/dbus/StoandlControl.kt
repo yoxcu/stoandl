@@ -304,6 +304,13 @@ interface StoandlControl : DBusInterface {
      *  (no schema declared), or `notfound:`. */
     fun ExtConfigSchema(name: String): String
 
+    /** The config entry point for extension [name] when it ships the **`url` config backend** — a hosted
+     *  settings page the GUI opens in a browser. stoandl has no embedded HTTP server, so the `url` backend
+     *  isn't implemented and this never returns a URL today: `error:<msg>` when the extension declares a
+     *  `configSchema` (the GUI renders that as a native form via [ExtConfigSchema] instead), `none:` when
+     *  it has no config, or `notfound:`. Kept for contract parity; wire it up if a URL backend is added. */
+    fun ExtOpenConfig(name: String): String
+
     /** Per-feature sync/bridge status for the GUI Settings/Sync screen: one tab-separated
      *  `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health,
      *  dnd}. `enabled` reflects the loaded config; `available` is whether the feature can run here;

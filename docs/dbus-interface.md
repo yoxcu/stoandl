@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show exactly the 51 methods below and **no** signals or properties.
+> A live introspection should show exactly the 64 methods below and **no** signals or properties.
 
 ## Service summary
 
@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 62 |
+| **Methods** | 64 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -56,7 +56,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 51 methods:
+Only four types appear across the 64 methods:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -240,6 +240,7 @@ ack — `ok:` means "queued", not "done".
 | `ExtDisable` | `(s) → s` | Remove from `extensions.enabled` and stop (files kept). | `ext disable <name>` |
 | `ExtRestart` | `(s) → s` | Restart the extension's process. | `ext restart <name>` |
 | `ExtConfigSchema` | `(s) → s` | The extension's typed config schema (manifest `configSchema`) as a JSON array: `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`, or `notfound:`. | *(GUI)* |
+| `ExtOpenConfig` | `(s) → s` | The `url` config backend (a hosted settings page the GUI opens in a browser). Not implemented — stoandl has no embedded HTTP server — so it never returns a URL: `error:` for a schema-backed extension (use `ExtConfigSchema`), `none:`, or `notfound:`. Present for contract parity. | *(GUI)* |
 | `ExtGetConfig` | `(s) → s` | The extension's current settings (its `config` file) as a JSON object of string values: `ok:<json>` (or `ok:{}`), or `notfound:`. | *(GUI)* |
 | `ExtSetConfig` | `(s,s) → s` | Merge a JSON object of key→value into the extension's `config` file (atomic, comment- and unchanged-key-preserving), then restart it if running. `ok:`/`notfound:`/`error:`. | *(GUI)* |
 

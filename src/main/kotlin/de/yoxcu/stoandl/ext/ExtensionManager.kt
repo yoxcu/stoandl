@@ -151,7 +151,7 @@ class ExtensionManager(
             val meta = readExtManifestMeta(File(extDir, n))
             // config-kind: `schema` when the manifest declares a configSchema, else `none` (the `url`
             // backend isn't implemented — no embedded HTTP server). Description is a single line.
-            val configKind = if (!meta.configSchemaJson.isNullOrBlank() && meta.configSchemaJson != "[]") "schema" else "none"
+            val configKind = configKindOf(meta.configSchemaJson)
             listOf(
                 n,
                 if (n in installed) "installed" else "missing",
@@ -169,7 +169,19 @@ class ExtensionManager(
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!isKnown(n)) return "notfound:'$name' is not installed"
         val json = readExtManifestMeta(File(extDir, n)).configSchemaJson
-        return if (json.isNullOrBlank() || json == "[]") "none:" else "ok:$json"
+        return if (configKindOf(json) == "schema") "ok:$json" else "none:"
+    }
+
+    /** The config entry point for the GUI when an extension declares a `url` config backend (a hosted
+     *  settings page opened in a browser). stoandl has no embedded HTTP server, so the `url` backend
+     *  isn't implemented and this never returns a URL: `error:` when the extension is schema-backed (the
+     *  GUI renders the native form from [configSchema] instead), `none:` when it has no config, or
+     *  `notfound:`. */
+    fun openConfig(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        if (!isKnown(n)) return "notfound:'$name' is not installed"
+        val json = readExtManifestMeta(File(extDir, n)).configSchemaJson
+        return if (configKindOf(json) == "schema") "error:'$n' uses a native config form" else "none:"
     }
 
     /** Extract an archive (.tar.gz/.tgz/.tar/.zip) into `<extDir>/<name>/`, sideload a bundled `.pbw`,
@@ -328,6 +340,13 @@ class ExtensionManager(
     }
 
     // ---- helpers --------------------------------------------------------------------------------
+
+    /** The GUI config-kind for an extension, derived from its manifest `configSchema`: `schema` when a
+     *  non-empty schema is declared (the GUI renders a native form), else `none`. The `url` backend
+     *  (an externally hosted config page) isn't implemented — stoandl has no embedded HTTP server — so it
+     *  never appears here. Single source of truth for [list], [configSchema] and [openConfig]. */
+    private fun configKindOf(configSchemaJson: String?): String =
+        if (!configSchemaJson.isNullOrBlank() && configSchemaJson != "[]") "schema" else "none"
 
     /** A known extension = an installed dir or an enabled name (the same set [list] reports). */
     private fun isKnown(name: String): Boolean =

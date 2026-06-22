@@ -88,12 +88,16 @@ flows are present and consumed as-is. `HeartRate()` (added this session) supplie
 
 ## Suggested sequencing
 
-- **Batch A (Phase 1, no decisions but #1–#4):** transport field, `WatchDetails`, `SetWatchNickname`,
+- **Batch A — DONE (Phase 1, no decisions but #1–#4):** transport field, `WatchDetails`, `SetWatchNickname`,
   `changelogUrl`, `ListApps.synced`, `GetHealthSummary`/`GetHealthSeries`, `ExtGetConfig`/`ExtSetConfig`.
   Thread the config ref in; add `GetSyncStatus`/`GetConfig` (placeholder `lastSync`). → unblocks Watch,
-  Health, most of Settings-read, and ext config save.
-- **Batch B (manifest + schema):** extend `manifest.json` (`description`, `configSchema`/config-kind) →
-  `ExtList` fields + `ExtConfigSchema`; `ExtOpenConfig` stub.
+  Health, most of Settings-read, and ext config save. **Pulled most of Batch B forward** (`ExtList`
+  `config`+`description`, `ExtConfigSchema`, manifest `description`/`configSchema` parsing).
+- **Batch B — DONE (manifest + schema):** the manifest parsing + `ExtList` fields + `ExtConfigSchema`
+  landed in Batch A; the remaining `ExtOpenConfig` stub (returns `none:`/`error:`/`notfound:` only — the
+  `url`/HTTP backend stays deferred per decision #7) is now wired, so the extension-config surface is
+  complete. The `configKindOf` helper in `ExtensionManager` is the single source of truth for the
+  `schema`/`none` kind used by `ExtList`, `ExtConfigSchema`, and `ExtOpenConfig`.
 - **Batch C (config write):** shared atomic `key=value` writer → `SetConfig` (restart-needed semantics).
 - **Batch D (lifecycle/subsystems):** `SetSyncEnabled` (start-only v1), quiet-hours, filters.
 
