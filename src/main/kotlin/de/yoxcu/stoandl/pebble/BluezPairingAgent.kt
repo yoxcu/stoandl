@@ -43,12 +43,19 @@ interface BluezAgent1 : DBusInterface {
  * ("No reply within specified time") even though the watch shows its pairing popup. This agent is
  * registered as the system default agent (so it serves `Device1.Pair()` calls made on any
  * connection) and auto-accepts; the user only needs to confirm the matching code on the watch.
+ *
+ * The auto-accept on the phone side is safe because the numeric-comparison code is *also* shown on the
+ * watch and confirmed there — that is the actual MITM gate. We report the code via [register]'s
+ * `onPairingCode` callback so the daemon can surface it (in `PairStatus`) for the user to verify it
+ * matches the watch before confirming there.
  */
 class BluezPairingAgent {
     private val log = KotlinLogging.logger {}
     private var conn: DBusConnection? = null
+    @Volatile private var onPairingCode: ((String) -> Unit)? = null
 
-    fun register() {
+    fun register(onPairingCode: ((String) -> Unit)? = null) {
+        this.onPairingCode = onPairingCode
         try {
             val c = DBusConnectionBuilder.forSystemBus().withShared(false).build()
             conn = c
@@ -94,7 +101,9 @@ class BluezPairingAgent {
 
         override fun RequestConfirmation(device: DBusPath, passkey: UInt32) {
             // Numeric Comparison (DisplayYesNo). Confirm the matching number on the watch.
-            log.info { "RequestConfirmation($device) code=${"%06d".format(passkey.toLong())} — auto-accepting; confirm the matching code on the watch" }
+            val code = "%06d".format(passkey.toLong())
+            log.info { "RequestConfirmation($device) code=$code — auto-accepting; confirm the matching code on the watch" }
+            onPairingCode?.invoke(code)
         }
 
         override fun RequestAuthorization(device: DBusPath) {
@@ -106,7 +115,9 @@ class BluezPairingAgent {
         }
 
         override fun DisplayPasskey(device: DBusPath, passkey: UInt32, entered: UInt16) {
-            log.info { "DisplayPasskey($device) code=${"%06d".format(passkey.toLong())} entered=$entered — enter this on the watch" }
+            val code = "%06d".format(passkey.toLong())
+            log.info { "DisplayPasskey($device) code=$code entered=$entered — enter this on the watch" }
+            onPairingCode?.invoke(code)
         }
 
         override fun DisplayPinCode(device: DBusPath, pincode: String) {

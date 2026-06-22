@@ -9,6 +9,7 @@ import de.yoxcu.stoandl.dbus.MprisMusicControl
 import de.yoxcu.stoandl.dbus.SystemVolume
 import de.yoxcu.stoandl.dbus.TimedateTimeChanged
 import de.yoxcu.stoandl.calls.MissedCallLog
+import de.yoxcu.stoandl.config.GUI_CONFIG_FIELDS
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.debug.DebugControl
@@ -77,11 +78,17 @@ import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
+import io.rebble.libpebblecommon.metadata.supportsHrm
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.time.TimeChanged
 import io.rebble.libpebblecommon.voice.TranscriptionProvider
 import io.rebble.libpebblecommon.voice.TranscriptionResult
 import io.rebble.libpebblecommon.voice.VoiceEncoderInfo
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.TextStyle
+import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -234,8 +241,12 @@ class PebbleIntegration(
     private val notificationActions = ConcurrentHashMap<UInt32, () -> Unit>()
 
     fun init() {
-        // Register the pairing agent before any connection so MITM pairing has an answerer.
-        pairingAgent.register()
+        // Register the pairing agent before any connection so MITM pairing has an answerer. Surface the
+        // numeric-comparison code it sees via PairStatus (only during our pairing window) so the GUI/CLI
+        // can show it for the user to verify against the watch's code before confirming on the watch.
+        pairingAgent.register { code ->
+            if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
+        }
 
         // reversedPPoG=false → the phone acts as the BLE peripheral. lanDevConnection=true → the
         // developer connection (started on demand) uses the LAN WebSocket server on port 9000 rather
@@ -1241,7 +1252,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, bondCache) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, bondCache, config) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1682,6 +1693,10 @@ private fun disconnectBluezDevice(devicePath: String) {
     }
 }
 
+// No step-goal is synced from the watch (libpebble3 has no such API); the GUI Health screen needs one,
+// so GetHealthSummary reports this fixed default.
+private const val DEFAULT_STEP_GOAL = 10000
+
 private class StoandlControlImpl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val weatherSyncRef: AtomicReference<WeatherSync?>,
@@ -1702,6 +1717,9 @@ private class StoandlControlImpl(
     private val pairingGate: PairingGate,
     private val pairingState: AtomicReference<String>,
     private val bondCache: ConcurrentHashMap<String, Boolean>,
+    // The daemon config, loaded once at startup — read by GetSyncStatus/GetConfig (the GUI's
+    // Settings/Sync screens) to report which features are enabled. Never mutated here.
+    private val config: StoandlConfig,
     // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -1876,6 +1894,146 @@ private class StoandlControlImpl(
         return "ok:${hr.bpm}\t${hr.timestampEpochSec}"
     }
 
+    override fun GetHealthSummary(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        return runBlocking {
+            val zone = ZoneId.systemDefault()
+            val today = LocalDate.now(zone)
+            val dayStart = today.atStartOfDay(zone).toEpochSecond()
+            val dayEnd = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
+
+            // Today's movement (libpebble3 stores cm + gram-calories; convert as the Core app does).
+            val move = lp.getTotalHealthData(dayStart, dayEnd)
+            val steps = (move?.steps ?: 0L).toInt()
+            val distanceKm = String.format(Locale.ROOT, "%.1f", (move?.distanceCm ?: 0L) / 100.0 / 1000.0)
+            val kcal = ((move?.activeGramCalories ?: 0L) / 1000L).toInt()
+            val activeMin = (move?.activeMinutes ?: 0L).toInt()
+
+            // Last night's sleep — seconds → minutes; light = total − deep; REM isn't modelled (→ 0).
+            val sleep = lp.getDailySleepSession(dayStart)
+            val sleepTotalMin = ((sleep?.totalSleep ?: 0L) / 60L).toInt()
+            val sleepDeepMin = ((sleep?.deepSleep ?: 0L) / 60L).toInt()
+            val sleepLightMin = (sleepTotalMin - sleepDeepMin).coerceAtLeast(0)
+            val sleepRemMin = 0
+
+            // Weekly averages (days/nights with data only) + week-over-week trend.
+            val stepWeekAvg = avgSteps(lp, today.minusDays(6), today)
+            val stepTrendPct = trendPct(stepWeekAvg, avgSteps(lp, today.minusDays(13), today.minusDays(7)))
+            val sleepAvgMin = avgSleepMin(lp, weekDayStarts(today, zone, 0))
+            val sleepTrendPct = trendPct(sleepAvgMin, avgSleepMin(lp, weekDayStarts(today, zone, 7)))
+
+            // Heart rate.
+            val restingHr = lp.getRestingHeartRate(dayStart) ?: 0
+            val currentHr = lp.getLatestHeartRateReading()?.bpm ?: 0
+            val dayHr = lp.getHealthDataForRange(dayStart, dayEnd).map { it.heartRate }.filter { it > 0 }
+            val hrMin = dayHr.minOrNull() ?: 0
+            val hrMax = dayHr.maxOrNull() ?: 0
+            val hrAvailable = if (hrIsAvailable(lp, dayStart, dayEnd)) "yes" else "no"
+
+            val lastSync = relAge(lp.getLatestTimestamp() ?: 0L)
+
+            "ok:" + listOf(
+                steps, DEFAULT_STEP_GOAL, distanceKm, kcal, activeMin,
+                stepWeekAvg, stepTrendPct,
+                sleepTotalMin, sleepDeepMin, sleepLightMin, sleepRemMin,
+                sleepAvgMin, sleepTrendPct,
+                restingHr, currentHr, hrMin, hrMax, hrAvailable,
+                lastSync,
+            ).joinToString("\t")
+        }
+    }
+
+    override fun GetHealthSeries(metric: String): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        // The last 7 calendar days, oldest first (matches the GUI's weekday-labelled bars).
+        val week = (6 downTo 0).map { today.minusDays(it.toLong()) }
+        fun label(d: LocalDate) = d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+        return runBlocking {
+            when (metric) {
+                "steps" -> {
+                    val byDay = lp.getDailyAggregates(
+                        week.first().atStartOfDay(zone).toEpochSecond(),
+                        today.plusDays(1).atStartOfDay(zone).toEpochSecond(),
+                    ).associateBy { it.day }
+                    week.map { d -> "${label(d)}\t${byDay[d.toString()]?.steps ?: ""}" }
+                }
+                "sleep" -> week.map { d ->
+                    val mins = lp.getDailySleepSession(d.atStartOfDay(zone).toEpochSecond())
+                        ?.totalSleep?.let { (it / 60L).toInt() }
+                    "${label(d)}\t${mins ?: ""}"
+                }
+                "heart" -> {
+                    val dayStart = today.atStartOfDay(zone).toEpochSecond()
+                    val dayEnd = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
+                    if (!hrIsAvailable(lp, dayStart, dayEnd)) {
+                        emptyList()
+                    } else {
+                        val buckets = Array(24) { mutableListOf<Int>() }
+                        lp.getHealthDataForRange(dayStart, dayEnd).forEach { e ->
+                            if (e.heartRate > 0) {
+                                // coerce so a 25-hour DST day's last bucket doesn't drop samples.
+                                val h = ((e.timestamp - dayStart) / 3600L).toInt().coerceIn(0, 23)
+                                buckets[h].add(e.heartRate)
+                            }
+                        }
+                        (0..23).map { h -> "$h\t${buckets[h].let { if (it.isEmpty()) "" else it.average().roundToInt() }}" }
+                    }
+                }
+                else -> emptyList()
+            }
+        }
+    }
+
+    /** Day-start epochs for a 7-day window ending [offsetDays] days before today (0 = the last 7 days,
+     *  7 = the prior 7) — for weekly sleep aggregation, which has no per-day-aggregate API. */
+    private fun weekDayStarts(today: LocalDate, zone: ZoneId, offsetDays: Int): List<Long> =
+        (offsetDays until offsetDays + 7).map { today.minusDays(it.toLong()).atStartOfDay(zone).toEpochSecond() }
+
+    /** Average of per-day step totals over [from]..[to] inclusive, counting only days that have data. */
+    private suspend fun avgSteps(lp: LibPebble, from: LocalDate, to: LocalDate): Int {
+        val zone = ZoneId.systemDefault()
+        val vals = lp.getDailyAggregates(
+            from.atStartOfDay(zone).toEpochSecond(),
+            to.plusDays(1).atStartOfDay(zone).toEpochSecond(),
+        ).mapNotNull { it.steps }.filter { it > 0L }
+        return if (vals.isEmpty()) 0 else (vals.sum() / vals.size).toInt()
+    }
+
+    /** Average nightly sleep (minutes) over the given day-start epochs, counting only nights with sleep. */
+    private suspend fun avgSleepMin(lp: LibPebble, dayStarts: List<Long>): Int {
+        val mins = dayStarts.mapNotNull { lp.getDailySleepSession(it)?.totalSleep?.takeIf { s -> s > 0L } }
+            .map { (it / 60L).toInt() }
+        return if (mins.isEmpty()) 0 else mins.sum() / mins.size
+    }
+
+    /** Week-over-week percentage change; 0 when there's no prior baseline. */
+    private fun trendPct(current: Int, prior: Int): Int =
+        if (prior > 0) ((current - prior) * 100) / prior else 0
+
+    /** Whether to surface heart-rate UI: the connected watch has an HRM, or there's stored HR data.
+     *  Shared by [GetHealthSummary] and [GetHealthSeries] so the summary flag and the series never disagree. */
+    private suspend fun hrIsAvailable(lp: LibPebble, dayStart: Long, dayEnd: Long): Boolean {
+        val color = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.color
+        if (color != null && color.supportsHrm()) return true
+        return lp.getAverageHeartRate(dayStart, dayEnd) != null || lp.getLatestHeartRateReading() != null
+    }
+
+    /** A short relative age for an epoch-second timestamp ("just now"/"5 min ago"/"3h ago"/"yesterday"/
+     *  "4d ago"); "never" for a missing/zero one. */
+    private fun relAge(epochSec: Long): String {
+        if (epochSec <= 0L) return "never"
+        val d = System.currentTimeMillis() / 1000 - epochSec
+        return when {
+            d < 60 -> "just now"
+            d < 3600 -> "${d / 60} min ago"
+            d < 86_400 -> "${d / 3600}h ago"
+            d < 172_800 -> "yesterday"
+            else -> "${d / 86_400}d ago"
+        }
+    }
+
     override fun WatchInfoText(): String = logsControl.watchInfoText()
 
     override fun FactoryReset(): String {
@@ -1921,6 +2079,10 @@ private class StoandlControlImpl(
     override fun ExtEnable(name: String): String = extensionManager.enable(name)
     override fun ExtDisable(name: String): String = extensionManager.disable(name)
     override fun ExtRestart(name: String): String = extensionManager.restart(name)
+    override fun ExtGetConfig(name: String): String = extensionManager.getConfig(name)
+    override fun ExtSetConfig(name: String, payloadJson: String): String =
+        extensionManager.setConfig(name, payloadJson)
+    override fun ExtConfigSchema(name: String): String = extensionManager.configSchema(name)
 
     override fun ListApps(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
@@ -1933,8 +2095,13 @@ private class StoandlControlImpl(
                     is LockerWrapper.NormalApp -> {
                         if (w.sideloaded) add("sideloaded")
                         if (w.configurable) add("config")
+                        if (w.sync) add("synced")
                     }
-                    is LockerWrapper.SystemApp -> add("system")
+                    // System apps are always on the watch — treat them as synced (they carry no sync flag).
+                    is LockerWrapper.SystemApp -> {
+                        add("system")
+                        add("synced")
+                    }
                 }
             }.joinToString(",")
             listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName)
@@ -2363,9 +2530,82 @@ private class StoandlControlImpl(
             }
             // batteryLevel is only meaningful (and reachable) on a live connection.
             val battery = (d as? ConnectedPebbleDevice)?.batteryLevel?.toString() ?: ""
-            "${d.displayName()}\t$state\t$battery"
+            // Transport (ble|classic) is only known for a live connection (ActiveDevice.usingBtClassic);
+            // empty for connecting/disconnected — matches the GUI contract.
+            val transport = (d as? ConnectedPebbleDevice)?.let { if (it.usingBtClassic) "classic" else "ble" } ?: ""
+            "${d.displayName()}\t$state\t$battery\t$transport"
         }
     }
+
+    override fun WatchDetails(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+            ?: return "notready:No watch connected"
+        val info = dev.watchInfo
+        // "code" has no libpebble3 source — use the BLE advert-name suffix ("Pebble … B349" → "B349"),
+        // the per-watch token the daemon already keys on; empty when the name has no suffix.
+        val code = dev.name.substringAfterLast(' ', "")
+        val transport = if (dev.usingBtClassic) "Bluetooth Classic" else "Bluetooth LE"
+        return "ok:" + listOf(
+            dev.displayName(),
+            code,
+            info.color.uiDescription,
+            info.platform.watchType.name,
+            transport,
+            info.runningFwVersion.stringVersion,
+            info.serial,
+            dev.batteryLevel?.toString() ?: "",
+            relAge(dev.lastConnected.epochSeconds),
+        ).joinToString("\t")
+    }
+
+    override fun SetWatchNickname(query: String, nickname: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        if (known.isEmpty()) return "notfound:No known watches — use 'stoandl pair' to add one"
+        val match = when (val m = matchOneWatch(known, query)) {
+            is WatchMatch.One -> m.device
+            is WatchMatch.Error -> return m.message.replaceFirst("error:", "notfound:")
+        }
+        val nick = nickname.trim()
+        if (nick.isEmpty()) return "error:Nickname must not be empty"
+        return try {
+            log.info { "Renaming ${match.displayName()} → $nick" }
+            match.setNickname(nick)
+            "ok:Renamed to $nick"
+        } catch (e: Exception) {
+            log.warn(e) { "SetWatchNickname failed" }
+            "error:${e.message ?: "rename failed"}"
+        }
+    }
+
+    override fun GetSyncStatus(): List<String> {
+        // enabled reflects the loaded config / live refs; available is whether the feature can run here
+        // (true for all in v1); lastSync is a placeholder (push-based services report "live") until
+        // per-service sync timestamps are tracked — see docs/gui-hooks-plan.md decision #4.
+        fun row(service: String, enabled: Boolean, live: Boolean): String {
+            val lastSync = when {
+                !enabled -> "never"
+                live -> "live"
+                else -> "enabled"
+            }
+            return "$service\t${if (enabled) "enabled" else "disabled"}\tavailable\t$lastSync"
+        }
+        return listOf(
+            row("notifications", enabled = true, live = true),
+            row("weather", enabled = weatherSyncRef.get() != null, live = false),
+            row("calendar", enabled = calendarSyncRef.get() != null, live = false),
+            row("music", enabled = config.musicControl, live = true),
+            row("health", enabled = config.healthSync, live = false),
+            row("dnd", enabled = config.dndSync != StoandlConfig.DndSyncMode.OFF, live = true),
+        )
+    }
+
+    override fun GetConfig(): List<String> =
+        GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(config)}" }
+
+    override fun GetConfigSchema(): List<String> =
+        GUI_CONFIG_FIELDS.map { "${it.key}\t${it.type}\t${it.label}\t${it.options}\t${it.desc}" }
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {

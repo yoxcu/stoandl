@@ -597,7 +597,11 @@ private fun pollPairStatus(control: StoandlControl) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         if (status.startsWith("pending:")) {
+            // The daemon surfaces the numeric-comparison code (for the GUI to display so the user can
+            // verify it matches the watch). The CLI auto-accepts and the actual confirmation is on the
+            // watch, so don't echo a code the CLI can't act on — drop the digits, keep the instruction.
             val msg = status.removePrefix("pending:")
+                .replace(Regex("""Confirm code \d+ on the watch"""), "Confirm the pairing code on the watch")
             if (msg.isNotEmpty() && msg != lastPendingMsg) { println(msg); lastPendingMsg = msg }
         } else {
             handleStatusResponse(status); return
@@ -684,12 +688,14 @@ private fun printFirmwareCheck(resp: String) {
             val asset = f.getOrElse(3) { "?" }
             val newer = f.getOrElse(4) { "no" }
             val source = f.getOrElse(5) { "" }
+            val changelog = f.getOrElse(6) { "" }
             println("Watch board:      $board")
             println("Running:          $current")
             println("Latest available: $latest")
             if (source.isNotEmpty()) println("Source:           $source")
             if (newer == "yes") println("→ Update available ($asset). Run: stoandl firmware update")
             else println("→ Up to date.")
+            if (changelog.isNotEmpty()) println("What's new:        $changelog")
         }
         "noasset" -> {
             val f = body.split('\t')
@@ -858,8 +864,12 @@ private fun watchList() = withControl { control ->
             watches.forEach { entry ->
                 val parts = entry.split('\t')
                 val battery = parts.getOrElse(2) { "" }
-                val batteryStr = if (battery.isNotBlank()) "  ${battery}%" else ""
-                println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, batteryStr))
+                val transport = parts.getOrElse(3) { "" }
+                val tail = buildString {
+                    if (battery.isNotBlank()) append("  ${battery}%")
+                    if (transport.isNotBlank()) append("  $transport")
+                }
+                println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, tail))
             }
         }
     } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }

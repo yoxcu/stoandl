@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.ext
 
 import de.yoxcu.stoandl.util.LenientJson
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -101,10 +102,20 @@ private fun expandHome(v: String): String {
     }
 }
 
-private class Manifest(val name: String?, val cmd: String?, val config: Map<String, String>, val requiresConfig: Boolean)
+private class Manifest(
+    val name: String?,
+    val cmd: String?,
+    val config: Map<String, String>,
+    val requiresConfig: Boolean,
+    val description: String,
+    /** The raw `configSchema` JSON array (a typed form descriptor), or null if not declared. */
+    val configSchemaJson: String?,
+)
 
-/** Optional `<dir>/manifest.json`: `{ "name": …, "cmd": …, "config": {…}, "requiresConfig": true }`.
- *  All fields optional. `requiresConfig` lets an extension declare it can't run until the user configures it. */
+/** Optional `<dir>/manifest.json`: `{ "name": …, "cmd": …, "config": {…}, "requiresConfig": true,
+ *  "description": "…", "configSchema": [{key,type,label,secret?,options?}] }`. All fields optional.
+ *  `requiresConfig` lets an extension declare it can't run until configured; `configSchema` (when present)
+ *  declares a typed config form the GUI renders natively (its presence is the `schema` config-kind). */
 private fun readManifest(dir: File): Manifest? {
     val f = File(dir, "manifest.json")
     if (!f.isFile) return null
@@ -112,7 +123,11 @@ private fun readManifest(dir: File): Manifest? {
         val obj = LenientJson.parseToJsonElement(f.readText()).jsonObject
         val config = obj["config"]?.jsonObject?.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" } ?: emptyMap()
         val requiresConfig = (obj["requiresConfig"]?.jsonPrimitive?.contentOrNull).toBoolean()
-        Manifest(obj["name"]?.jsonPrimitive?.contentOrNull, obj["cmd"]?.jsonPrimitive?.contentOrNull, config, requiresConfig)
+        val description = obj["description"]?.jsonPrimitive?.contentOrNull ?: ""
+        // Keep the array verbatim — the GUI parses the JSON itself (ExtConfigSchema returns it as-is).
+        val configSchemaJson = (obj["configSchema"] as? JsonArray)?.toString()
+        Manifest(obj["name"]?.jsonPrimitive?.contentOrNull, obj["cmd"]?.jsonPrimitive?.contentOrNull,
+            config, requiresConfig, description, configSchemaJson)
     } catch (e: Exception) {
         log.warn { "Ignoring bad manifest.json in ${dir.path}: ${e.message}" }
         null
@@ -121,3 +136,13 @@ private fun readManifest(dir: File): Manifest? {
 
 /** The `name` declared in an extracted archive's `manifest.json`, if any (used to name the install dir). */
 fun manifestName(dir: File): String? = readManifest(dir)?.name
+
+/** GUI-surfaced manifest fields for an installed extension: a human [description] and the typed
+ *  [configSchemaJson] (a JSON array of `{key,type,label,secret?,options?}`; null when no schema is
+ *  declared). Both empty/null when there's no (readable) manifest. */
+data class ExtManifestMeta(val description: String, val configSchemaJson: String?)
+
+fun readExtManifestMeta(dir: File): ExtManifestMeta {
+    val m = if (dir.isDirectory) readManifest(dir) else null
+    return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson)
+}

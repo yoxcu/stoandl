@@ -133,17 +133,18 @@ class FirmwareControl(
 
     /**
      * Check the matching source for the latest firmware for the connected watch's board.
-     * Returns `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>` (yes = newer than
-     * running), `noasset:<board>\t<current>\t<source>` when the source ships nothing for this board,
-     * or `disabled:`/`notready:`/`error:`.
+     * Returns `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>\t<changelogUrl>` (yes =
+     * newer than running; the 7th field is the PebbleOS changelog page for the GUI's "What's new" link
+     * and is the same on both `ok:` branches), `noasset:<board>\t<current>\t<source>` when the source
+     * ships nothing for this board, or `disabled:`/`notready:`/`error:`.
      */
     suspend fun check(): String = when (val r = doCheck()) {
         is CheckResult.Disabled -> "disabled:${r.hint}"
         CheckResult.NoWatch -> "notready:No watch connected"
         is CheckResult.Error -> "error:${r.message}"
         is CheckResult.NoAsset -> "noasset:${r.board}\t${r.current}\t${r.source}"
-        is CheckResult.UpToDate -> "ok:${r.board}\t${r.current}\t${r.latest}\t-\tno\t${r.source}"
-        is CheckResult.Update -> "ok:${r.board}\t${r.current}\t${r.latest}\t${r.bundle.name}\tyes\t${r.source}"
+        is CheckResult.UpToDate -> "ok:${r.board}\t${r.current}\t${r.latest}\t-\tno\t${r.source}\t$CHANGELOG_URL"
+        is CheckResult.Update -> "ok:${r.board}\t${r.current}\t${r.latest}\t${r.bundle.name}\tyes\t${r.source}\t$CHANGELOG_URL"
     }
 
     /**
@@ -319,5 +320,10 @@ class FirmwareControl(
 
     companion object {
         private val SEMVER = Regex("""v?(\d+)\.(\d+)(?:\.(\d+))?""")
+
+        /** The human-readable PebbleOS changelog page, appended to [check]'s `ok:` records as the
+         *  "What's new" link for the GUI's firmware banner. There is no per-release URL source, so this
+         *  is a single constant (matches `docs/pebbleos-changelog-review.md`). */
+        const val CHANGELOG_URL = "https://ndocs.repebble.com/PebbleOS-Changelog-25efbb55ea84801da04bfcf73c9346e1"
     }
 }

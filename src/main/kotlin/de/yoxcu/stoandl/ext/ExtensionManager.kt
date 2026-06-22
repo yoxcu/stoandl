@@ -148,13 +148,28 @@ class ExtensionManager(
             ?.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("__") }
             ?.map { it.name }?.toSet() ?: emptySet()
         return (installed + enabled).sorted().map { n ->
+            val meta = readExtManifestMeta(File(extDir, n))
+            // config-kind: `schema` when the manifest declares a configSchema, else `none` (the `url`
+            // backend isn't implemented — no embedded HTTP server). Description is a single line.
+            val configKind = if (!meta.configSchemaJson.isNullOrBlank() && meta.configSchemaJson != "[]") "schema" else "none"
             listOf(
                 n,
                 if (n in installed) "installed" else "missing",
                 if (n in enabled) "enabled" else "disabled",
                 if (running.containsKey(n)) "running" else "stopped",
+                configKind,
+                meta.description.replace('\t', ' ').replace('\n', ' '),
             ).joinToString("\t")
         }
+    }
+
+    /** The extension's typed config schema (its manifest `configSchema`) as a JSON array, for the GUI's
+     *  native config form. `ok:<json-array>`, `none:` (no schema declared), or `notfound:`. */
+    fun configSchema(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        if (!isKnown(n)) return "notfound:'$name' is not installed"
+        val json = readExtManifestMeta(File(extDir, n)).configSchemaJson
+        return if (json.isNullOrBlank() || json == "[]") "none:" else "ok:$json"
     }
 
     /** Extract an archive (.tar.gz/.tgz/.tar/.zip) into `<extDir>/<name>/`, sideload a bundled `.pbw`,
@@ -277,7 +292,88 @@ class ExtensionManager(
         }
     }
 
+    /** The extension's current settings (its `<extDir>/<name>/config` file) as a JSON object of string
+     *  values, for the GUI's native config form. `ok:<json>` (or `ok:{}` if it has no config yet) or
+     *  `notfound:`. */
+    fun getConfig(name: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        if (!isKnown(n)) return "notfound:'$name' is not installed"
+        val values = readRawConfig(File(File(extDir, n), "config"))
+        val json = buildJsonObject { values.forEach { (k, v) -> put(k, v) } }
+        return "ok:" + LenientJson.encodeToString(JsonObject.serializer(), json)
+    }
+
+    /** Merge [payload] (a JSON object of key→value) into the extension's `config` file — an atomic write
+     *  that preserves comments and unchanged keys (so unsent secrets aren't clobbered) — then restart it
+     *  if running so the change takes effect. `ok:`/`notfound:`/`error:`. */
+    fun setConfig(name: String, payload: String): String {
+        val n = sanitize(name) ?: return "error:Invalid name"
+        if (!isKnown(n)) return "notfound:'$name' is not installed"
+        val obj = try {
+            LenientJson.parseToJsonElement(payload).jsonObject
+        } catch (e: Exception) {
+            return "error:Invalid JSON payload: ${e.message}"
+        }
+        val updates = obj.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" }
+        if (updates.isEmpty()) return "ok:No changes for '$n'"
+        return try {
+            writeConfigUpdates(File(extDir, n), updates)
+            // Apply immediately if it's running (config is read in the initialize handshake); no-op if stopped.
+            if (running.containsKey(n)) { stopProcess(n); startProcess(n) }
+            "ok:Saved settings for '$n'"
+        } catch (e: Exception) {
+            log.warn(e) { "setConfig($n) failed" }
+            "error:${e.message ?: "failed to save settings"}"
+        }
+    }
+
     // ---- helpers --------------------------------------------------------------------------------
+
+    /** A known extension = an installed dir or an enabled name (the same set [list] reports). */
+    private fun isKnown(name: String): Boolean =
+        File(extDir, name).isDirectory || name in currentEnabled()
+
+    /** Raw `key = value` pairs from a config file (no `~`/`%h` expansion — we round-trip the user's exact
+     *  values, unlike the spawn-time read which expands them). */
+    private fun readRawConfig(file: File): Map<String, String> {
+        if (!file.isFile) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        file.readLines().forEach { raw ->
+            val line = raw.substringBefore('#').trim()
+            val idx = line.indexOf('=')
+            if (idx > 0) out[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+        }
+        return out
+    }
+
+    /** Upsert [updates] into `<dir>/config`: rewrite each matched key in place (preserving its inline
+     *  comment), append new keys, and replace the file atomically (temp + ATOMIC_MOVE, like [setEnabled]).
+     *  Untouched keys, comments and blank lines are preserved. */
+    private fun writeConfigUpdates(dir: File, updates: Map<String, String>) = synchronized(confLock) {
+        val file = File(dir, "config")
+        val lines = if (file.isFile) file.readLines().toMutableList() else mutableListOf()
+        val remaining = LinkedHashMap(updates)
+        for (i in lines.indices) {
+            val code = lines[i].substringBefore('#')
+            val idx = code.indexOf('=')
+            if (idx <= 0) continue
+            val key = code.substring(0, idx).trim()
+            if (key in remaining) {
+                val comment = lines[i].indexOf('#').takeIf { it >= 0 }?.let { "  " + lines[i].substring(it) } ?: ""
+                lines[i] = "$key = ${remaining.remove(key)}$comment"
+            }
+        }
+        remaining.forEach { (k, v) -> lines.add("$k = $v") }
+        dir.mkdirs()
+        val tmp = File(dir, "config.tmp")
+        tmp.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
+        val src = tmp.toPath(); val dst = file.toPath()
+        try {
+            java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: Exception) {
+            java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
 
     private fun sanitize(name: String): String? =
         name.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }

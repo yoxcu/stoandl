@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 51 |
+| **Methods** | 61 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -99,10 +99,18 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `Repair` | `(s) → s` | Forget one known watch (bond + Trusted intent) and reopen the pairing window; multi-watch-safe. Poll `PairStatus`. | `watch repair <name>` |
 | `Unpair` | `(s) → s` | Forget watch(es): empty = blanket (all), name = single (exact-then-substring). libpebble `forget()` + BlueZ `RemoveDevice`. | `watch unpair [name]` |
 | `FindWatch` | `() → b` | Ring the watch continuously (a "Find My Watch" call screen) until a button is pressed. `false` = not ready. | `watch find` |
+| `WatchDetails` | `() → s` | Structured details for the connected watch: `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync`, or `notready:`. | *(GUI; no standalone verb — see `support`/`watch list`)* |
+| `SetWatchNickname` | `(s,s) → s` | Rename a known watch `(query, nickname)` (exact-then-unique-substring; nickname non-empty). `ok:`/`notfound:`/`error:`/`notready:`. | *(GUI; no verb yet)* |
 
-`ListWatches` record: `name \t state \t battery` — `state` ∈ `connected` | `connecting` |
-`disconnected`; `battery` is the 0–100 level for a connected watch, else empty. **Transport
-(BLE vs Classic) is not in the record** (see gaps).
+`ListWatches` record: `name \t state \t battery \t transport` — `state` ∈ `connected` | `connecting` |
+`disconnected`; `battery` is the 0–100 level for a connected watch, else empty; `transport` is
+`ble`/`classic` for a connected watch, else empty.
+
+`WatchDetails` record (after `ok:`): `name \t code \t model \t platform \t transport \t firmware \t
+serial \t battery \t lastSync`. `code` is the BLE-advert-name suffix (may be empty); `model` is the
+full `WatchColor.uiDescription` (e.g. "Pebble Time Steel - Black"); `platform` is the watch-type name
+(e.g. `BASALT`); `transport` is the human label "Bluetooth LE"/"Bluetooth Classic"; `lastSync` is a
+relative age of the last connection.
 
 ### Apps & watchfaces (`stoandl apps`, `stoandl config`)
 
@@ -116,10 +124,9 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `WebviewClose` | `(s) → ` *(void)* | Hand the saved settings JSON back to the running PKJS app after the config webview closes. | `config [app]` |
 
 `ListApps` record: `uuid \t type \t order \t flags \t title \t developer`, where `flags` is a
-comma-joined subset of **`{active, sideloaded, config, system}`** (`active` = current watchface,
-`config` = has a Clay/PKJS config page, `system` = built-in, `sideloaded` = installed from a
-`.pbw`). The per-app `sync` flag (synced-to-watch) exists in the underlying object but is **not**
-emitted (see gaps).
+comma-joined subset of **`{active, sideloaded, config, system, synced}`** (`active` = current
+watchface, `config` = has a Clay/PKJS config page, `system` = built-in, `sideloaded` = installed from
+a `.pbw`, `synced` = present on the watch — system apps are always synced).
 
 ### Watch settings (`stoandl settings`)
 
@@ -155,15 +162,26 @@ the KDoc is stale.)*
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
+| `GetHealthSummary` | `() → s` | Today's health summary (19 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
+| `GetHealthSeries` | `(s) → as` | Health chart series: `steps`/`sleep` (7 `label\tvalue` rows, last 7 days) or `heart` (24 `hour\tbpm` rows today; `[]` when HR unavailable). | *(GUI)* |
+| `GetSyncStatus` | `() → as` | Per-feature status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. | *(GUI)* |
 
-There is **no** force-sync for music or notifications, and **no** master on/off for any sync
-service over D-Bus (services are enabled by config + daemon restart; see gaps).
+`GetHealthSummary` record (after `ok:`, 19 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
+activeMin \t stepWeekAvg \t stepTrendPct \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t
+sleepRemMin \t sleepAvgMin \t sleepTrendPct \t restingHr \t currentHr \t hrMin \t hrMax \t
+hrAvailable(yes\|no) \t lastSync`. (`stepGoal` is a fixed default — no watch-synced goal; `sleepRemMin`
+is always 0 — REM isn't modelled; `sleepLightMin` = total − deep; trends are week-over-week %.)
+
+There is **no** force-sync for music or notifications. `GetSyncStatus` exposes the per-service
+enabled/available **read**; there is still **no** runtime master on/off (`SetSyncEnabled` — services
+are enabled by config + daemon restart; see gaps). `lastSync` is a v1 placeholder
+(`live`/`enabled`/`never`), not a tracked timestamp.
 
 ### Firmware (`stoandl firmware`)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `CheckFirmware` | `() → s` | Check the matching source (GitHub for Core, cohorts.rebble.io for classic) for a newer build: `ok:<board>\t<current>\t<latest>\t<asset>\t<yes\|no>\t<source>`, or `noasset:`/`disabled:`/`notready:`/`error:`. | `firmware check` |
+| `CheckFirmware` | `() → s` | Check the matching source (GitHub for Core, cohorts.rebble.io for classic) for a newer build: `ok:<board>\t<current>\t<latest>\t<asset>\t<yes\|no>\t<source>\t<changelogUrl>` (the 7th field, the PebbleOS changelog page, is a constant present on both `ok:` branches), or `noasset:`/`disabled:`/`notready:`/`error:`. | `firmware check` |
 | `UpdateFirmware` | `() → s` | Download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:`/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
 | `SideloadFirmware` | `(s) → s` | Flash a local `.pbz` (absolute daemon-side path), async. Poll `FirmwareStatus`. | `firmware sideload <file.pbz>` / `firmware <file.pbz>` |
 | `FirmwareStatus` | `() → s` | Flash state: `idle:` / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `failed:<reason>` / `notready:`. | `firmware status` (also polled during update/sideload) |
@@ -214,12 +232,25 @@ ack — `ok:` means "queued", not "done".
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `ExtList` | `() → as` | Installed/enabled extensions: `name \t installed\|missing \t enabled\|disabled \t running\|stopped`. | `ext list` / `ext status` (also bare `ext`) |
+| `ExtList` | `() → as` | Installed/enabled extensions: `name \t installed\|missing \t enabled\|disabled \t running\|stopped \t config \t description` (config ∈ {none, schema} — `schema` = the manifest declares a `configSchema`; `url` backend not implemented). | `ext list` / `ext status` (also bare `ext`) |
 | `ExtInstall` | `(s) → s` | Install from an archive (`.tar.gz`/`.tgz`/`.tar`/`.zip`, absolute daemon-side path): extract, sideload bundled `.pbw`, enable, hotplug-start. | `ext install <archive>` |
 | `ExtUninstall` | `(s,b) → s` | Stop, drop from `extensions.enabled`, delete files; `keepConfig` retains the `config` file for a later reinstall. | `ext uninstall <name>` (aliases `remove`; `--keep-config`/`--delete-config`) |
 | `ExtEnable` | `(s) → s` | Add to `extensions.enabled` and hotplug-start. | `ext enable <name>` |
 | `ExtDisable` | `(s) → s` | Remove from `extensions.enabled` and stop (files kept). | `ext disable <name>` |
 | `ExtRestart` | `(s) → s` | Restart the extension's process. | `ext restart <name>` |
+| `ExtConfigSchema` | `(s) → s` | The extension's typed config schema (manifest `configSchema`) as a JSON array: `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`, or `notfound:`. | *(GUI)* |
+| `ExtGetConfig` | `(s) → s` | The extension's current settings (its `config` file) as a JSON object of string values: `ok:<json>` (or `ok:{}`), or `notfound:`. | *(GUI)* |
+| `ExtSetConfig` | `(s,s) → s` | Merge a JSON object of key→value into the extension's `config` file (atomic, comment- and unchanged-key-preserving), then restart it if running. `ok:`/`notfound:`/`error:`. | *(GUI)* |
+
+### Daemon config (`stoandl.conf` over D-Bus)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `GetConfigSchema` | `() → as` | Schema for the curated GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc` (type ∈ {toggle, combo}; options is a CSV for combos). | *(GUI)* |
+| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Read-only snapshot of the in-memory config. | *(GUI)* |
+
+The curated key set lives in `config/ConfigSchema.kt` (a small, hand-maintained subset, not the full
+config surface). The matching write path (`SetConfig`) is a later batch.
 
 ### Debug (`stoandl fakecall`)
 
@@ -232,13 +263,17 @@ ack — `ok:` means "queued", not "done".
 
 | Method | Fields |
 |---|---|
-| `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) |
-| `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system) · `title` · `developer` |
+| `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) · `transport`(ble/classic or empty) |
+| `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system,synced) · `title` · `developer` |
 | `ListWatchPrefs` | `id` · `type` · `current` · `default` · `allowed` · `flags` · `name` · `description` |
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
-| `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` |
+| `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
+| `GetHealthSeries` | `label`/`hour` · `value` (empty value = no data for that point) |
+| `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
+| `GetConfig` | `key` · `value` |
+| `GetConfigSchema` | `key` · `type`(toggle/combo) · `label` · `options`(CSV) · `desc` |
 
 ## Long-running operations
 
@@ -290,6 +325,14 @@ and several values the daemon already computes are simply dropped from a return 
 A `feasibility` note marks each gap as **wiring-only** (the daemon/libpebble3 already computes it —
 just expose it), **needs bookkeeping** (a small new field/timestamp), or **design work** (lifecycle
 or egress concerns).
+
+> **Batch A landed (data-path gaps below now resolved):** `transport` on `ListWatches`, `synced` on
+> `ListApps`, `WatchDetails`, `SetWatchNickname`, `GetHealthSummary`/`GetHealthSeries` (Health screen),
+> `GetSyncStatus` (read), `GetConfig`/`GetConfigSchema` (Settings read), `ExtConfigSchema`/`ExtGetConfig`/
+> `ExtSetConfig` + `config`/`description` on `ExtList` (extension config), and the `changelogUrl` on
+> `CheckFirmware`. Still open (later batches): the **signals** (`WatchStateChanged`, `FirmwareProgress`/
+> `LanguageProgress`, `LockerChanged`/`ExtensionStateChanged`), `SetSyncEnabled` runtime on/off,
+> `SetConfig` write, per-service `lastSync` timestamps, and the byte-returning/remote variants.
 
 ### Screen 1 — Watch
 

@@ -18,8 +18,8 @@ interface StoandlControl : DBusInterface {
 
     /** List the apps in the watch locker. Each entry is a tab-separated record:
      *  `uuid \t type \t order \t flags \t title \t developer`, where flags is a comma-joined
-     *  subset of {active, sideloaded, config, system}. Returns an empty list if libPebble
-     *  is not ready. */
+     *  subset of {active, sideloaded, config, system, synced} (`synced` = present on the watch;
+     *  system apps are always synced). Returns an empty list if libPebble is not ready. */
     fun ListApps(): List<String>
 
     /** Launch the app/watchface matching [query] (UUID or case-insensitive name). Returns a
@@ -79,8 +79,11 @@ interface StoandlControl : DBusInterface {
      *  `ok:` immediately; poll [PairStatus] for the outcome. */
     fun Pair(): String
 
-    /** Return the current pairing status: `pending:`, `ok:<msg>`, `error:<msg>`, or
-     *  `timeout:<msg>`. Returns `error:No pairing in progress` if [Pair] was never called. */
+    /** Return the current pairing status: `pending:<msg>`, `ok:<msg>`, `error:<msg>`, or
+     *  `timeout:<msg>`. While pairing, once BlueZ requests numeric-comparison confirmation the message
+     *  becomes `pending:Confirm code <NNNNNN> on the watch` — show it so the user can verify it matches
+     *  the code on the watch (the phone auto-accepts; the watch-side confirmation is the MITM gate).
+     *  Returns `error:No pairing in progress` if [Pair] was never called. */
     fun PairStatus(): String
 
     /** Forget paired watch(es) on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
@@ -102,14 +105,27 @@ interface StoandlControl : DBusInterface {
      *  Status-prefixed return. */
     fun Connect(watch: String): String
 
-    /** List known watches, one per entry, tab-separated `name\tstate\tbattery` (state: connected /
-     *  connecting / disconnected; battery is the 0–100 level for a connected watch, else empty).
-     *  Empty list if none are known. */
+    /** List known watches, one per entry, tab-separated `name\tstate\tbattery\ttransport` (state:
+     *  connected / connecting / disconnected; battery is the 0–100 level for a connected watch, else
+     *  empty; transport is `ble`/`classic` for a connected watch, else empty). Empty list if none
+     *  are known. */
     fun ListWatches(): List<String>
 
     /** The connected watch's battery level. Status-prefixed: `ok:<name>\t<level>` (0–100),
      *  `unknown:<name>` (connected but no reading yet), or `notready:<msg>` (no watch). */
     fun Battery(): String
+
+    /** Structured details for the connected watch (the GUI's watch-details dialog). Returns
+     *  `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync` — transport is
+     *  the human label `Bluetooth LE`/`Bluetooth Classic`; code is the BLE-name suffix (empty if none);
+     *  battery is the 0–100 level (empty if unknown); lastSync is a relative "x ago" of the last
+     *  connection. `notready:` when no watch is connected. */
+    fun WatchDetails(): String
+
+    /** Rename a known watch. [query] selects it (exact-then-unique-substring of its display name, like
+     *  [Connect]/[Repair]); [nickname] is the new name (must be non-empty) and takes precedence in the
+     *  watch's display name immediately. Status-prefixed (`ok:`/`notfound:`/`error:`/`notready:`). */
+    fun SetWatchNickname(query: String, nickname: String): String
 
     /** Request a fresh health/activity sync from the connected watch and re-project the export. Returns
      *  `ok:<msg>` once the request is fired (data streams back asynchronously), or `notready:<msg>`. */
@@ -120,6 +136,21 @@ interface StoandlControl : DBusInterface {
      *  (epochSec = when the reading was taken), `none:` (no HR sample stored yet), or `notready:<msg>`.
      *  Not a live GATT stream — freshness follows the synced samples. */
     fun HeartRate(): String
+
+    /** Today's health summary for the GUI Health screen, computed from the synced health DB (works
+     *  whether or not a watch is currently connected). Returns `ok:` + 19 tab-separated fields:
+     *  `stepsToday, stepGoal, distanceKm, kcal, activeMin, stepWeekAvg, stepTrendPct, sleepTotalMin,
+     *  sleepDeepMin, sleepLightMin, sleepRemMin, sleepAvgMin, sleepTrendPct, restingHr, currentHr,
+     *  hrMin, hrMax, hrAvailable(yes|no), lastSync`, or `notready:` if libPebble isn't ready. (REM
+     *  isn't modelled → `sleepRemMin`=0; there's no step-goal source → a fixed default; trends are
+     *  week-over-week %.) */
+    fun GetHealthSummary(): String
+
+    /** A health time-series for the GUI Health charts. [metric] is `steps`/`sleep` (7 rows
+     *  `weekdayLabel\tvalue`, the last 7 days oldest-first; empty value = no data that day) or `heart`
+     *  (24 rows `hour\tbpm`, today by hour; empty value = no reading that hour). `heart` returns an
+     *  empty list when the watch has no heart-rate capability/data. Unknown metric → empty list. */
+    fun GetHealthSeries(metric: String): List<String>
 
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or
@@ -133,9 +164,10 @@ interface StoandlControl : DBusInterface {
 
     /** Check the source matching the watch's generation (GitHub for Core devices, cohorts.rebble.io
      *  for classic) for firmware matching its board. Returns
-     *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>`,
-     *  `noasset:<board>\t<current>\t<source>`, or `disabled:`/`notready:`/`error:`. Requires the
-     *  matching source enabled — `firmware.github` or `firmware.cohorts` (opt-in egress). */
+     *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>\t<changelogUrl>` (the 7th field
+     *  is the PebbleOS changelog page, for a GUI "What's new" link — a constant, present on both `ok:`
+     *  branches), `noasset:<board>\t<current>\t<source>`, or `disabled:`/`notready:`/`error:`. Requires
+     *  the matching source enabled — `firmware.github` or `firmware.cohorts` (opt-in egress). */
     fun CheckFirmware(): String
 
     /** Check the matching source and, if newer firmware is available for the watch's board, download
@@ -226,7 +258,9 @@ interface StoandlControl : DBusInterface {
     fun DevConnectionStatus(): String
 
     /** Installed/enabled extensions, one tab-separated row each: `name \t installed|missing \t
-     *  enabled|disabled \t running|stopped`. */
+     *  enabled|disabled \t running|stopped \t config \t description`, where config ∈ {none, schema}
+     *  (`schema` = the manifest declares a `configSchema`; the `url` backend isn't implemented) and
+     *  description is the manifest's one-line summary (empty if none). */
     fun ExtList(): List<String>
 
     /** Install an extension from an archive (.tar.gz/.tgz/.tar/.zip) into `<configDir>/ext/<name>/`:
@@ -247,4 +281,34 @@ interface StoandlControl : DBusInterface {
 
     /** Restart [name]'s process. Status-prefixed. */
     fun ExtRestart(name: String): String
+
+    /** The current settings of extension [name] as a JSON object of string values, read from its
+     *  `<configDir>/ext/<name>/config` file (for the GUI's native config form). Returns `ok:<json>`,
+     *  `ok:{}` when it has no config yet, or `notfound:`. */
+    fun ExtGetConfig(name: String): String
+
+    /** Merge [payloadJson] (a JSON object of key→value) into extension [name]'s `config` file — an
+     *  atomic write that preserves comments and unchanged keys (so unsent secrets aren't clobbered) —
+     *  then restart it if running. Status-prefixed (`ok:`/`notfound:`/`error:`). */
+    fun ExtSetConfig(name: String, payloadJson: String): String
+
+    /** The typed config schema of extension [name] (its manifest `configSchema`) as a JSON array, for
+     *  the GUI's native config form. `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`
+     *  (no schema declared), or `notfound:`. */
+    fun ExtConfigSchema(name: String): String
+
+    /** Per-feature sync/bridge status for the GUI Settings/Sync screen: one tab-separated
+     *  `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health,
+     *  dnd}. `enabled` reflects the loaded config; `available` is whether the feature can run here;
+     *  `lastSync` is a placeholder (`enabled`/`never`) until per-service sync timestamps are tracked. */
+    fun GetSyncStatus(): List<String>
+
+    /** Current values of the curated daemon-config keys the GUI Settings screen shows — one
+     *  tab-separated `key\tvalue` each (see [GetConfigSchema] for the matching type/label/options).
+     *  A read-only snapshot of the in-memory config. */
+    fun GetConfig(): List<String>
+
+    /** Schema for the curated daemon-config keys: one tab-separated `key\ttype\tlabel\toptions\tdesc`
+     *  each (type `toggle`|`combo`; `options` is a CSV for combos). Paired with [GetConfig]. */
+    fun GetConfigSchema(): List<String>
 }
