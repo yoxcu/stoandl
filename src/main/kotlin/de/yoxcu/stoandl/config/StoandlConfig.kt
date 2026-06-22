@@ -248,9 +248,9 @@ data class StoandlConfig(
 
         fun configFile(): File = File(configDir(), "stoandl.conf")
 
-        fun load(file: File = configFile()): StoandlConfig {
+        fun load(file: File = configFile(), logResult: Boolean = true): StoandlConfig {
             if (!file.isFile) {
-                log.info { "No config file at ${file.path}; using defaults" }
+                if (logResult) log.info { "No config file at ${file.path}; using defaults" }
                 return defaults()
             }
             val map = HashMap<String, String>()
@@ -324,7 +324,7 @@ data class StoandlConfig(
                 extensionsEnabled = parseList(map["extensions.enabled"]),
                 extensionConfig = parseExtensionConfig(map),
             )
-            log.info {
+            if (logResult) log.info {
                 "Config loaded from ${file.path}: " +
                     "perApp=${cfg.notificationPerApp}, defaultMute=${cfg.notificationDefaultMute}, " +
                     "syncToWatch=${cfg.notificationSyncToWatch}, " +

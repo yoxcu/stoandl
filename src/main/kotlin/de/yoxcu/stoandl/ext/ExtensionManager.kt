@@ -9,6 +9,7 @@ import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
 import de.yoxcu.stoandl.pebble.NotifRequest
 import de.yoxcu.stoandl.pebble.ReplySpec
 import de.yoxcu.stoandl.pebble.WatchNotifier
+import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.runCommand
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -71,7 +72,6 @@ class ExtensionManager(
     private val scope: CoroutineScope,
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
-    private val confLock = Any()
 
     fun start() {
         if (enabledAtStart.isEmpty()) {
@@ -365,34 +365,10 @@ class ExtensionManager(
         return out
     }
 
-    /** Upsert [updates] into `<dir>/config`: rewrite each matched key in place (preserving its inline
-     *  comment), append new keys, and replace the file atomically (temp + ATOMIC_MOVE, like [setEnabled]).
-     *  Untouched keys, comments and blank lines are preserved. */
-    private fun writeConfigUpdates(dir: File, updates: Map<String, String>) = synchronized(confLock) {
-        val file = File(dir, "config")
-        val lines = if (file.isFile) file.readLines().toMutableList() else mutableListOf()
-        val remaining = LinkedHashMap(updates)
-        for (i in lines.indices) {
-            val code = lines[i].substringBefore('#')
-            val idx = code.indexOf('=')
-            if (idx <= 0) continue
-            val key = code.substring(0, idx).trim()
-            if (key in remaining) {
-                val comment = lines[i].indexOf('#').takeIf { it >= 0 }?.let { "  " + lines[i].substring(it) } ?: ""
-                lines[i] = "$key = ${remaining.remove(key)}$comment"
-            }
-        }
-        remaining.forEach { (k, v) -> lines.add("$k = $v") }
-        dir.mkdirs()
-        val tmp = File(dir, "config.tmp")
-        tmp.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
-        val src = tmp.toPath(); val dst = file.toPath()
-        try {
-            java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-        } catch (e: Exception) {
-            java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-        }
-    }
+    /** Upsert [updates] into `<dir>/config` (atomic, comment- and unchanged-key-preserving). Shares the
+     *  writer + lock with [setEnabled] and `SetConfig` so concurrent config writes can't corrupt a file. */
+    private fun writeConfigUpdates(dir: File, updates: Map<String, String>) =
+        ConfFile.upsert(File(dir, "config"), updates)
 
     private fun sanitize(name: String): String? =
         name.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }
@@ -437,35 +413,14 @@ class ExtensionManager(
         return confFile.readLines().firstOrNull { isEnabledLine(it) }?.let { namesIn(it) } ?: emptyList()
     }
 
-    /** Add/remove [name] from the `extensions.enabled` line in stoandl.conf, rewriting only that line
-     *  (its inline comment is preserved) and replacing the file atomically (temp + rename). */
-    private fun setEnabled(name: String, enabled: Boolean) = synchronized(confLock) {
-        val lines = if (confFile.isFile) confFile.readLines().toMutableList() else mutableListOf()
-        val idx = lines.indexOfFirst { isEnabledLine(it) }
-        val names = LinkedHashSet<String>()
-        var comment = ""
-        if (idx >= 0) {
-            namesIn(lines[idx]).forEach { names.add(it) }
-            lines[idx].indexOf('#').takeIf { it >= 0 }?.let { comment = "  " + lines[idx].substring(it) }
-        }
+    /** Add/remove [name] from the `extensions.enabled` line in stoandl.conf. Read-modify-write under the
+     *  shared [ConfFile] lock (so it can't race `SetConfig`/`ExtSetConfig`); the upsert rewrites just that
+     *  line in place (preserving its inline comment) or appends it. */
+    private fun setEnabled(name: String, enabled: Boolean) = ConfFile.withLock {
+        val names = LinkedHashSet(currentEnabled())
         if (enabled) names.add(name) else names.remove(name)
-        val newLine = "extensions.enabled = " + names.joinToString(", ") + comment
-        if (idx >= 0) {
-            lines[idx] = newLine
-        } else {
-            if (lines.isNotEmpty() && lines.last().isNotBlank()) lines.add("")
-            lines.add(newLine)
-        }
         try {
-            confFile.parentFile?.mkdirs()
-            val tmp = File(confFile.parentFile, confFile.name + ".tmp")
-            tmp.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")
-            val src = tmp.toPath(); val dst = confFile.toPath()
-            try {
-                java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-            } catch (e: Exception) {
-                java.nio.file.Files.move(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            }
+            ConfFile.upsert(confFile, mapOf(ENABLED_KEY to names.joinToString(", ")))
         } catch (e: Exception) {
             log.warn { "Couldn't update extensions.enabled in ${confFile.path}: ${e.message}" }
         }

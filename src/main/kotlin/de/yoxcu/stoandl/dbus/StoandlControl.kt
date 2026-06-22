@@ -331,4 +331,10 @@ interface StoandlControl : DBusInterface {
     /** Schema for the curated daemon-config keys: one tab-separated `key\ttype\tlabel\toptions\tdesc`
      *  each (type `toggle`|`combo`; `options` is a CSV for combos). Paired with [GetConfig]. */
     fun GetConfigSchema(): List<String>
+
+    /** Set one curated daemon-config [key] to [value] (a toggle's `true`/`false` or a combo's option
+     *  label, per [GetConfigSchema]), persisted to `stoandl.conf`. Because config is read once at startup,
+     *  the change **takes effect on the next daemon restart** — the `ok:` tail says so. `notfound:` for an
+     *  unknown key, `error:` for an invalid value or a write failure. */
+    fun SetConfig(key: String, value: String): String
 }

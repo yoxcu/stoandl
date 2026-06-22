@@ -11,6 +11,7 @@ import de.yoxcu.stoandl.dbus.TimedateTimeChanged
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.config.GUI_CONFIG_FIELDS
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
@@ -2653,11 +2654,17 @@ private class StoandlControlImpl(
         )
     }
 
+    // Re-read from disk (not the startup snapshot in `config`) so a value just written by SetConfig is
+    // reflected — the running daemon still uses the old config until restarted, but the Settings screen
+    // shows the persisted (pending) value rather than reverting the user's change. Quiet load: no INFO.
     override fun GetConfig(): List<String> =
-        GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(config)}" }
+        StoandlConfig.load(logResult = false).let { cfg -> GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(cfg)}" } }
 
     override fun GetConfigSchema(): List<String> =
         GUI_CONFIG_FIELDS.map { "${it.key}\t${it.type}\t${it.label}\t${it.options}\t${it.desc}" }
+
+    override fun SetConfig(key: String, value: String): String =
+        applyGuiConfig(key, value, StoandlConfig.configFile())
 }
 
 private object NoOpTranscriptionProvider : TranscriptionProvider {

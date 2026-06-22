@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show exactly the 65 methods below and **no** signals or properties.
+> A live introspection should show exactly the 66 methods below and **no** signals or properties.
 
 ## Service summary
 
@@ -29,7 +29,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 65 |
+| **Methods** | 66 |
 | **Signals** | **0** |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -56,7 +56,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 65 methods:
+Only four types appear across the 66 methods:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -250,10 +250,14 @@ ack — `ok:` means "queued", not "done".
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `GetConfigSchema` | `() → as` | Schema for the curated GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc` (type ∈ {toggle, combo}; options is a CSV for combos). | *(GUI)* |
-| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Read-only snapshot of the in-memory config. | *(GUI)* |
+| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Re-read from `stoandl.conf` (not the startup snapshot) so a value just written by `SetConfig` is reflected. | *(GUI)* |
+| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token> (restart stoandl to apply)`, `notfound:` (unknown key), or `error:` (bad value / IO). Config is read once at startup, so it **takes effect on the next restart**. | *(GUI)* |
 
 The curated key set lives in `config/ConfigSchema.kt` (a small, hand-maintained subset, not the full
-config surface). The matching write path (`SetConfig`) is a later batch.
+config surface). `SetConfig` shares the atomic `key = value` writer + lock (`util/ConfFile.kt`) with the
+extension-config writers. Note: it persists the value but the running daemon keeps using the
+startup config until restarted (no live reload); for the few master switches that also appear in
+`GetSyncStatus` (music, health, dnd), the runtime on/off is `SetSyncEnabled` (separate concern).
 
 ### Debug (`stoandl fakecall`)
 
