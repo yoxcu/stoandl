@@ -391,6 +391,16 @@ interface StoandlControl : DBusInterface {
 
     /** Poke emitted when an extension's installed/enabled/running state changes — enable/disable/restart/
      *  install/uninstall (or a settings change that stops/starts it), incl. from the CLI or another
-     *  client. Re-call [ExtList]. (A finer-grained per-extension state, e.g. a crash, isn't surfaced.) */
+     *  client. Re-call [ExtList]. The coarse companion to [ExtensionStateChanged]. */
     class ExtensionsChanged(path: String) : DBusSignal(path)
+
+    /** Per-extension runtime state transition — the finer companion to [ExtensionsChanged] that surfaces
+     *  UNSOLICITED changes the poll can't catch: [state] is `ready` (handshake done / running), `exited`
+     *  (process ended unexpectedly, restarting after backoff), or `quarantined` (gave up after rapid
+     *  failures — won't restart until `ExtRestart`). Lets the GUI show a crashed/quarantined extension. */
+    // The property is `extensionName`, not `name`: a `val name` getter would clash with DBusSignal's
+    // inherited getName(). The wire args are positional (extensionName, state → `ss`), so the property
+    // name doesn't affect the signature.
+    class ExtensionStateChanged(path: String, val extensionName: String, val state: String) :
+        DBusSignal(path, extensionName, state)
 }

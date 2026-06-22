@@ -80,6 +80,12 @@ class ExtensionManager(
     @Volatile var onChanged: (() -> Unit)? = null
     private fun notifyChanged() = onChanged?.invoke()
 
+    /** Per-extension runtime state transition ((name, state) where state is "ready"/"exited"/
+     *  "quarantined") — set by PebbleIntegration to emit the `ExtensionStateChanged` signal. This is the
+     *  finer companion to [onChanged]: it surfaces UNSOLICITED changes (a crash, the restart-backoff loop,
+     *  quarantine) that the user-op poke can't, so the GUI reflects a crashed/quarantined extension live. */
+    @Volatile var onExtensionState: ((String, String) -> Unit)? = null
+
     fun start() {
         if (enabledAtStart.isEmpty()) {
             log.info { "No extensions enabled (set extensions.enabled or run `stoandl ext install`)" }
@@ -118,7 +124,8 @@ class ExtensionManager(
             notifyNeedsConfig(name, File(def.workingDir, "config"))
             return StartResult.NEEDS_CONFIG
         }
-        val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope)
+        val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
+            onState = { state -> onExtensionState?.invoke(name, state) })
         running[name] = proc
         proc.launch()
         return StartResult.STARTED
@@ -466,6 +473,11 @@ private class ExtensionProcess(
     owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
     parentScope: CoroutineScope,
+    // Runtime state transitions for the ExtensionStateChanged signal: "ready" (handshake done), "exited"
+    // (process ended unexpectedly, restarting after backoff), "quarantined" (gave up after rapid failures).
+    // A graceful shutdown() doesn't emit — these are gated on !shuttingDown, which closes the narrow race
+    // where the child exits at the same instant shutdown() lands (cancellation alone wouldn't suppress it).
+    private val onState: (String) -> Unit = {},
 ) {
     private val tag = def.name
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
@@ -473,6 +485,9 @@ private class ExtensionProcess(
     @Volatile private var writeChannel: Channel<String>? = null
     @Volatile private var proc: Process? = null
     @Volatile private var ready = false
+    // Set at the top of shutdown(); suppresses the unsolicited onState emits so a graceful stop is silent
+    // even if the child happens to exit / finish its handshake on the same tick the job is cancelled.
+    @Volatile private var shuttingDown = false
     private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }.also { owners.register(it) }
     private val registeredApps = ConcurrentHashMap.newKeySet<Uuid>()
 
@@ -484,6 +499,7 @@ private class ExtensionProcess(
     }
 
     fun shutdown() {
+        shuttingDown = true      // suppress the unsolicited onState emits — this stop is deliberate
         ready = false
         writeChannel = null      // stop new enqueues before tearing down
         val p = proc
@@ -515,8 +531,10 @@ private class ExtensionProcess(
                 fastFailures = if (uptime >= STABLE_UPTIME_MS) 0 else fastFailures + 1
                 if (fastFailures >= MAX_FAST_FAILURES) {
                     log.error { "[$tag] quarantined after $fastFailures rapid failures — fix it and `stoandl ext restart $tag`" }
+                    if (!shuttingDown) onState("quarantined")
                     return@launch
                 }
+                if (!shuttingDown) onState("exited")
                 val backoff = (BACKOFF_BASE_MS shl (fastFailures - 1).coerceAtLeast(0)).coerceAtMost(BACKOFF_MAX_MS)
                 log.info { "[$tag] exited (uptime ${uptime}ms); restarting in ${backoff}ms" }
                 delay(backoff)
@@ -603,6 +621,7 @@ private class ExtensionProcess(
         val manifest = obj["result"]?.jsonObject ?: return
         val caps = manifest["capabilities"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
         ready = true
+        if (!shuttingDown) onState("ready")
         log.info { "[$tag] initialized (name='${manifest.str("name") ?: tag}', capabilities=$caps)" }
     }
 

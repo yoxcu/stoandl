@@ -19,8 +19,9 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 70 methods below **plus 5 signals** (`WatchesChanged`,
-> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`) and no properties.
+> A live introspection should show the 70 methods below **plus 6 signals** (`WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`)
+> and no properties.
 
 ## Service summary
 
@@ -31,7 +32,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
 | **Methods** | 70 |
-| **Signals** | **5** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged` (reactive layer on top of the poll methods) |
+| **Signals** | **6** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
 
@@ -40,9 +41,9 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### Five signals augment polling; no properties
+### Six signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` now emits **five D-Bus signals** as a reactive layer **on top of** the
+`de.yoxcu.stoandl.Control` now emits **six D-Bus signals** as a reactive layer **on top of** the
 poll methods — they do not replace them:
 
 | Signal | D-Bus sig | Meaning | Client reaction |
@@ -52,9 +53,11 @@ poll methods — they do not replace them:
 | `LockerChanged` | *(none)* | the locker (installed apps/faces) or the active watchface changed — incl. from the watch or another client | re-call `ListApps` |
 | `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
+| `ExtensionStateChanged` | `ss` | per-extension runtime transition: `name` + `state` (`ready` / `exited` (restarting) / `quarantined`) — the unsolicited crash/quarantine the poke can't catch | show the live state (a `quarantined` ext otherwise polls as `running`) |
 
-The three pokes carry no payload; `FirmwareProgress`/`LanguageProgress` are the typed signals (they carry
-the live %, so a poke would defeat the smooth bar). **The methods stay the source of truth** — a signal says
+The pokes carry no payload; the typed signals are `FirmwareProgress`/`LanguageProgress` (the live %, which a
+poke would lose) and `ExtensionStateChanged` (the per-extension state a `quarantined` ext can't be polled
+for — its ExtList row still reads `running`). **The methods stay the source of truth** — a signal says
 *something changed*, the client re-reads the authoritative method. Because the daemon is **not**
 D-Bus-activated (above), a client that starts late or after a daemon restart can **miss** a signal, so
 clients also (a) re-sync by calling the method once when the bus name appears and (b) keep a slow
@@ -380,12 +383,12 @@ or egress concerns).
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
 > `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
 >
-> **Reactive signals landed** (the "Five signals augment polling" section above): `WatchesChanged`,
-> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged` — so the Watch,
-> firmware/language-progress, Apps and Plugins screens update without polling (polling kept as the
-> fallback), and **per-service `lastSync` is now a real relative age** for weather/calendar/health.
-> Still open: a finer-grained `ExtensionStateChanged(name, state)` (crash/quarantine — `ExtensionsChanged`
-> only fires on the user/CLI ops today), and the byte-returning/remote method variants.
+> **Reactive signals landed** (the "Six signals augment polling" section above): `WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged` —
+> so the Watch, firmware/language-progress, Apps and Plugins screens update without polling (polling kept
+> as the fallback), and **per-service `lastSync` is now a real relative age** for weather/calendar/health.
+> `ExtensionStateChanged` surfaces the unsolicited per-extension crash/quarantine that `ExtensionsChanged`
+> (user/CLI ops only) can't. Still open: only the byte-returning/remote method variants.
 
 ### Screen 1 — Watch
 
@@ -488,8 +491,8 @@ where noted):
 2. **Progress signals** — `FirmwareProgress` and `LanguageProgress`, both off the libpebble3 inner
    `StateFlow<Float>` progress. **Done.**
 3. **`LockerChanged()`** + extension live-state — shipped as `LockerChanged()` + `ExtensionsChanged()`
-   pokes (live Apps & Faces and Plugins). **Done** (a finer-grained `ExtensionStateChanged(name,state)`
-   for crash/quarantine is the only remaining bit — `ExtensionsChanged` fires on the user/CLI ops).
+   pokes plus the typed `ExtensionStateChanged(name, state)` (ready/exited/quarantined) for the
+   unsolicited crash/quarantine the poke can't catch (live Apps & Faces and Plugins). **Done.**
 4. **Add dropped fields to existing records** — `transport` on `ListWatches`; `synced` on
    `ListApps`. **Done** (Batch A).
 5. **`GetSyncStatus()`** + **`SetSyncEnabled()`** — **done** (Batch D): the Sync screen's toggles are

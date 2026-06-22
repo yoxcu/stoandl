@@ -1515,6 +1515,11 @@ class PebbleIntegration(
 
         // ExtensionsChanged: the manager pokes us on enable/disable/restart/install/uninstall (incl. CLI).
         extensionManager.onChanged = { emit(StoandlControl.ExtensionsChanged(STOANDL_OBJECT_PATH)) }
+        // ExtensionStateChanged: per-extension runtime transitions (ready/exited/quarantined) — the
+        // unsolicited crash/quarantine the poke can't catch.
+        extensionManager.onExtensionState = { name, state ->
+            emit(StoandlControl.ExtensionStateChanged(STOANDL_OBJECT_PATH, name, state))
+        }
     }
 
     private fun startAutoConnect() {
