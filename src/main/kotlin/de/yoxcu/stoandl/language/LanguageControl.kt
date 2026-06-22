@@ -6,6 +6,12 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.io.files.Path
 import java.io.File
 import java.util.Locale
@@ -119,16 +125,44 @@ class LanguageControl(
      */
     fun status(): String {
         val dev = device() ?: return "notready:No watch connected"
-        return when (val st = dev.languagePackInstallState) {
-            is LanguagePackInstallState.Idle -> when {
-                st.previousError != null -> "failed:${st.previousError}"
-                st.successfullyInstalledLanguage != null -> "done:${st.successfullyInstalledLanguage}"
-                else -> "idle:"
-            }
-            is LanguagePackInstallState.Downloading -> "downloading:${st.language}"
-            is LanguagePackInstallState.Installing ->
-                "installing:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
+        return statusString(dev.languagePackInstallState)
+    }
+
+    /** Map a [LanguagePackInstallState] to the status-prefixed string (shared by [status] and
+     *  [statusFlow]). For `Installing` it samples the current percentage; [statusFlow] re-emits live. */
+    private fun statusString(st: LanguagePackInstallState): String = when (st) {
+        is LanguagePackInstallState.Idle -> when {
+            st.previousError != null -> "failed:${st.previousError}"
+            st.successfullyInstalledLanguage != null -> "done:${st.successfullyInstalledLanguage}"
+            else -> "idle:"
         }
+        is LanguagePackInstallState.Downloading -> "downloading:${st.language}"
+        is LanguagePackInstallState.Installing ->
+            "installing:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
+    }
+
+    /**
+     * Reactive [status]: the same status-prefixed strings as a Flow that emits on every change — phase
+     * transitions AND each install percentage tick (the % is in a nested `Installing.progress:
+     * StateFlow<Float>` the outer flow doesn't re-surface, so we [flatMapLatest] into it). Drives the
+     * `LanguageProgress` D-Bus signal. Filters [ConnectedPebbleDevice] — like [device], a recovery-mode
+     * watch can't install a language pack — and emits `notready:` when none is connected.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun statusFlow(): Flow<String> {
+        val lp = libPebbleRef.get() ?: return flowOf("notready:")
+        return lp.watches
+            .map { devs -> devs.filterIsInstance<ConnectedPebbleDevice>().firstOrNull() }
+            .distinctUntilChanged { a, b -> a === b }
+            .flatMapLatest { dev ->
+                when (val st = dev?.languagePackInstallState) {
+                    null -> flowOf("notready:")
+                    is LanguagePackInstallState.Installing ->
+                        st.progress.map { "installing:${(it * 100).toInt().coerceIn(0, 100)}" }
+                    else -> flowOf(statusString(st))
+                }
+            }
+            .distinctUntilChanged()
     }
 
     /**

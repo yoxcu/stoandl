@@ -82,6 +82,8 @@ class WeatherSync(
     // When true (the default), also emit weather timeline pins for the primary location, replicating
     // the original Core companion app. When false, any previously-emitted pins are removed.
     private val weatherPins: Boolean = true,
+    // Invoked after a sync that populated at least one location — stamps the GetSyncStatus lastSync time.
+    private val onSynced: (() -> Unit)? = null,
 ) {
     // Own child scope so the whole sync (on-connect trigger, periodic loop, in-flight fetches) can be
     // cancelled as a unit by [stop] when weather is turned off at runtime — without tearing the daemon
@@ -214,6 +216,7 @@ class WeatherSync(
             pins.clear()
             pinsCleared = true
         }
+        if (populated > 0) onSynced?.invoke()
         populated
     }
 

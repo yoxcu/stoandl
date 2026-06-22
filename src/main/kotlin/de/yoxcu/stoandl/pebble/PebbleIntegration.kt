@@ -238,6 +238,10 @@ class PebbleIntegration(
     private var mprisMusicControl: MprisMusicControl? = null
     // The health on-connect-request collector (when health.sync is on), held so applyHealth can cancel it.
     private var healthRequestJob: Job? = null
+    // Last successful sync time (epoch seconds) per discrete-sync service (weather/calendar/health), for
+    // GetSyncStatus's lastSync column; continuous services (notif/music/dnd) report live/mode instead.
+    private val lastSyncAt = ConcurrentHashMap<String, Long>()
+    private fun stampSync(service: String) { lastSyncAt[service] = System.currentTimeMillis() / 1000 }
     private val contactResolver = ContactResolver(config.vcardPaths)
     private val dialerNameCache = DialerNameCache()
     private val missedCallLog = MissedCallLog()
@@ -1147,6 +1151,7 @@ class PebbleIntegration(
             reverseGeocodeEnabled = config.weatherReverseGeocode,
             extraLocations = extraLocations,
             weatherPins = config.weatherPins,
+            onSynced = { stampSync("weather") },
         )
         ws.start()
         weatherSyncRef.set(ws)
@@ -1186,7 +1191,8 @@ class PebbleIntegration(
             config.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
             if (config.calendarDiscover) addAll(calendarDiscoveryDirs())
         }.filterNotNull().distinct()
-        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs, isEnabled = { config.calendarEnabled })
+        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs,
+            isEnabled = { config.calendarEnabled }, onSync = { stampSync("calendar") })
     }
 
     /** Run [action] on each fresh watch connect — the false→true edge of "any device connected".
@@ -1366,6 +1372,9 @@ class PebbleIntegration(
         val cfg = configStore.current()
         fun row(service: String, available: Boolean, enabled: Boolean, lastSync: String) =
             "$service\t${if (enabled) "enabled" else "disabled"}\t${if (available) "available" else "unavailable"}\t$lastSync"
+        // Discrete syncers report a real relative age ("just now"/"5 min ago"/"never"); continuous ones
+        // (notifications/music/dnd) report live/mode since they don't sync on a schedule.
+        fun synced(service: String): String = relAge(lastSyncAt[service] ?: 0L)
         val weatherAvail = cfg.weatherLocations.isNotEmpty() || cfg.weatherGps ||
             cfg.weatherLocationSource != WeatherLocationSource.MANUAL
         val weatherOn = cfg.weatherEnabled && weatherSyncRef.get() != null
@@ -1378,10 +1387,10 @@ class PebbleIntegration(
         val dndRunning = dndSync != null
         return listOf(
             row("notifications", available = true, enabled = cfg.notificationForward, lastSync = if (cfg.notificationForward) "live" else "off"),
-            row("weather", available = weatherAvail, enabled = weatherOn, lastSync = if (weatherOn) "live" else if (!weatherAvail) "no source" else "off"),
-            row("calendar", available = calAvail, enabled = calOn, lastSync = if (calOn) "live" else if (!calAvail) "no source" else "off"),
+            row("weather", available = weatherAvail, enabled = weatherOn, lastSync = if (!weatherAvail) "no source" else if (weatherOn) synced("weather") else "off"),
+            row("calendar", available = calAvail, enabled = calOn, lastSync = if (!calAvail) "no source" else if (calOn) synced("calendar") else "off"),
             row("music", available = true, enabled = cfg.musicControl, lastSync = if (cfg.musicControl) "live" else "off"),
-            row("health", available = true, enabled = cfg.healthSync, lastSync = if (cfg.healthSync) "live" else "off"),
+            row("health", available = true, enabled = cfg.healthSync, lastSync = if (cfg.healthSync) synced("health") else "off"),
             row("dnd", available = dndRunning || !dndConfigured, enabled = dndConfigured && dndRunning,
                 lastSync = if (dndRunning) cfg.dndSync.name.lowercase() else if (dndConfigured) "no backend" else "off"),
         )
@@ -1473,17 +1482,21 @@ class PebbleIntegration(
             .onEach { emit(StoandlControl.WatchesChanged(STOANDL_OBJECT_PATH)) }
             .launchIn(scope)
 
-        // FirmwareProgress: phase + percent (-1 unless inprogress) + detail, parsed from the single-sourced
-        // statusFlow string (which is already distinctUntilChanged and follows the % ticks live).
+        // FirmwareProgress / LanguageProgress: phase + percent (-1 unless the in-progress phase) + detail,
+        // parsed from the single-sourced statusFlow string (already distinctUntilChanged, follows % ticks).
+        fun parse(s: String, progressPhase: String): Triple<String, Int, String> {
+            val idx = s.indexOf(':')
+            val phase = if (idx >= 0) s.substring(0, idx) else s
+            val rest = if (idx >= 0) s.substring(idx + 1) else ""
+            val percent = if (phase == progressPhase) (rest.toIntOrNull() ?: -1) else -1
+            val detail = if (phase == progressPhase) "" else rest
+            return Triple(phase, percent, detail)
+        }
         firmwareControl.statusFlow()
-            .onEach { s ->
-                val idx = s.indexOf(':')
-                val phase = if (idx >= 0) s.substring(0, idx) else s
-                val rest = if (idx >= 0) s.substring(idx + 1) else ""
-                val percent = if (phase == "inprogress") (rest.toIntOrNull() ?: -1) else -1
-                val detail = if (phase == "inprogress") "" else rest
-                emit(StoandlControl.FirmwareProgress(STOANDL_OBJECT_PATH, phase, percent, detail))
-            }
+            .onEach { val (p, pct, d) = parse(it, "inprogress"); emit(StoandlControl.FirmwareProgress(STOANDL_OBJECT_PATH, p, pct, d)) }
+            .launchIn(scope)
+        languageControl.statusFlow()
+            .onEach { val (p, pct, d) = parse(it, "installing"); emit(StoandlControl.LanguageProgress(STOANDL_OBJECT_PATH, p, pct, d)) }
             .launchIn(scope)
 
         // LockerChanged: poke when apps/faces are added/removed or the active watchface changes.
@@ -1494,6 +1507,14 @@ class PebbleIntegration(
             .drop(1)
             .onEach { emit(StoandlControl.LockerChanged(STOANDL_OBJECT_PATH)) }
             .launchIn(scope)
+
+        // health lastSync: stamp when fresh health data lands (drives GetSyncStatus's health age).
+        libPebble.healthDataUpdated
+            .onEach { stampSync("health") }
+            .launchIn(scope)
+
+        // ExtensionsChanged: the manager pokes us on enable/disable/restart/install/uninstall (incl. CLI).
+        extensionManager.onChanged = { emit(StoandlControl.ExtensionsChanged(STOANDL_OBJECT_PATH)) }
     }
 
     private fun startAutoConnect() {
@@ -1631,6 +1652,21 @@ private fun parseMuteState(s: String): MuteState = when (s.lowercase()) {
     "weekdays" -> MuteState.Weekdays
     "weekends" -> MuteState.Weekends
     else -> MuteState.Never
+}
+
+/** Format an epoch-seconds timestamp as a short relative age ("just now"/"5 min ago"/"2h ago"/
+ *  "yesterday"/"3d ago"); "never" for a non-positive (unset) timestamp. Used for the GUI's lastSync /
+ *  last-connected strings. */
+internal fun relAge(epochSec: Long): String {
+    if (epochSec <= 0L) return "never"
+    val d = System.currentTimeMillis() / 1000 - epochSec
+    return when {
+        d < 60 -> "just now"
+        d < 3600 -> "${d / 60} min ago"
+        d < 86_400 -> "${d / 3600}h ago"
+        d < 172_800 -> "yesterday"
+        else -> "${d / 86_400}d ago"
+    }
 }
 
 internal fun isMutedNow(item: NotificationAppItem, now: kotlin.time.Instant): Boolean {
@@ -2281,20 +2317,6 @@ private class StoandlControlImpl(
         val color = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.color
         if (color != null && color.supportsHrm()) return true
         return lp.getAverageHeartRate(dayStart, dayEnd) != null || lp.getLatestHeartRateReading() != null
-    }
-
-    /** A short relative age for an epoch-second timestamp ("just now"/"5 min ago"/"3h ago"/"yesterday"/
-     *  "4d ago"); "never" for a missing/zero one. */
-    private fun relAge(epochSec: Long): String {
-        if (epochSec <= 0L) return "never"
-        val d = System.currentTimeMillis() / 1000 - epochSec
-        return when {
-            d < 60 -> "just now"
-            d < 3600 -> "${d / 60} min ago"
-            d < 86_400 -> "${d / 3600}h ago"
-            d < 172_800 -> "yesterday"
-            else -> "${d / 86_400}d ago"
-        }
     }
 
     override fun WatchInfoText(): String = logsControl.watchInfoText()

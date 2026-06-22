@@ -44,6 +44,8 @@ class LinuxSystemCalendar(
     // PhoneCalendarSyncer removes the watch's pins. [requestRefresh] re-evaluates it, so toggling it at
     // runtime clears or repopulates pins without a restart. Default always-on for non-GUI callers.
     private val isEnabled: () -> Boolean = { true },
+    // Invoked when the syncer reads events (a sync happened) — stamps the GetSyncStatus lastSync time.
+    private val onSync: (() -> Unit)? = null,
 ) : SystemCalendar {
     @Volatile private var byPlatformId: Map<String, RawCalendar> = emptyMap()
     private val manualTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -97,6 +99,7 @@ class LinuxSystemCalendar(
             ?: run { getCalendars(); byPlatformId[calendar.platformId] }
             ?: return emptyList()
         val events = rc.fetchEvents(startDate, endDate) // already defensive: returns empty on failure
+        onSync?.invoke()
         log.info { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
         log.debug {
             "Calendar '${calendar.name}' events: " + events.sortedBy { it.startTime }.joinToString("; ") {

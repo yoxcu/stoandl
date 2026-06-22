@@ -73,6 +73,13 @@ class ExtensionManager(
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
 
+    /** Invoked after a state change the `ExtList` view reflects (enable/disable/restart/install/
+     *  uninstall) — set by PebbleIntegration to emit the `ExtensionsChanged` D-Bus signal so the GUI
+     *  re-fetches even when the change came from the CLI or another client. (Crash-driven changes aren't
+     *  covered — the GUI re-syncs on navigation/daemon-up.) */
+    @Volatile var onChanged: (() -> Unit)? = null
+    private fun notifyChanged() = onChanged?.invoke()
+
     fun start() {
         if (enabledAtStart.isEmpty()) {
             log.info { "No extensions enabled (set extensions.enabled or run `stoandl ext install`)" }
@@ -231,6 +238,7 @@ class ExtensionManager(
                     "; settings: cp ${exampleFile.path} ${configFile.path}, edit it, then: stoandl ext restart $name"
                 else -> ""
             }
+            notifyChanged()
             return when (result) {
                 StartResult.STARTED -> "ok:Installed '$name'$pbwMsg$configMsg"
                 StartResult.NEEDS_CONFIG -> "ok:Installed '$name' (not started — needs configuration)$pbwMsg$configMsg"
@@ -257,6 +265,7 @@ class ExtensionManager(
             dir.deleteRecursively()
         }
         val tail = watchMsg + if (keptConfig) "; kept its config (${File(dir, "config").path})" else ""
+        notifyChanged()
         return if (existed) "ok:Uninstalled '$n'$tail" else "ok:'$n' disabled (no files were installed)"
     }
 
@@ -280,28 +289,33 @@ class ExtensionManager(
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!File(extDir, n).isDirectory) return "error:'$n' is not installed (no ${extDir.path}/$n)"
         setEnabled(n, true)
-        return when (startProcess(n)) {
+        val result = when (startProcess(n)) {
             StartResult.STARTED -> "ok:Enabled '$n'"
             StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration; edit ${File(File(extDir, n), "config").path}, then: stoandl ext restart $n)"
             StartResult.NO_ENTRYPOINT -> "error:Enabled '$n' but couldn't start it (no entry point?)"
         }
+        notifyChanged()
+        return result
     }
 
     fun disable(name: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
         setEnabled(n, false)
+        notifyChanged()
         return "ok:Disabled '$n'"
     }
 
     fun restart(name: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
-        return when (startProcess(n)) {
+        val result = when (startProcess(n)) {
             StartResult.STARTED -> "ok:Restarted '$n'"
             StartResult.NEEDS_CONFIG -> "ok:'$n' not started — needs configuration (edit ${File(File(extDir, n), "config").path}, then re-run this)"
             StartResult.NO_ENTRYPOINT -> "error:Couldn't start '$n'"
         }
+        notifyChanged()
+        return result
     }
 
     /** The extension's current settings (its `<extDir>/<name>/config` file) as a JSON object of string
@@ -331,7 +345,13 @@ class ExtensionManager(
         return try {
             writeConfigUpdates(File(extDir, n), updates)
             // Apply immediately if it's running (config is read in the initialize handshake); no-op if stopped.
-            if (running.containsKey(n)) { stopProcess(n); startProcess(n) }
+            if (running.containsKey(n)) {
+                stopProcess(n)
+                startProcess(n)
+                // A failed restart (the new config removed the entry point / now needs config) flips it
+                // running→stopped — an ExtList change, so poke. The common running→running case doesn't.
+                if (!running.containsKey(n)) notifyChanged()
+            }
             "ok:Saved settings for '$n'"
         } catch (e: Exception) {
             log.warn(e) { "setConfig($n) failed" }

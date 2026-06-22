@@ -19,8 +19,8 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 70 methods below **plus 3 signals** (`WatchesChanged`,
-> `FirmwareProgress`, `LockerChanged`) and no properties.
+> A live introspection should show the 70 methods below **plus 5 signals** (`WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`) and no properties.
 
 ## Service summary
 
@@ -31,7 +31,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
 | **Methods** | 70 |
-| **Signals** | **3** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged` (reactive layer on top of the poll methods) |
+| **Signals** | **5** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
 
@@ -40,9 +40,9 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### Three signals augment polling; no properties
+### Five signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` now emits **three D-Bus signals** as a reactive layer **on top of** the
+`de.yoxcu.stoandl.Control` now emits **five D-Bus signals** as a reactive layer **on top of** the
 poll methods — they do not replace them:
 
 | Signal | D-Bus sig | Meaning | Client reaction |
@@ -50,9 +50,11 @@ poll methods — they do not replace them:
 | `WatchesChanged` | *(none)* | a known watch's set / connection-state / battery / transport changed | re-call `ListWatches` |
 | `FirmwareProgress` | `sis` | firmware-flash `phase` + `percent` (0–100 while `inprogress`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `LockerChanged` | *(none)* | the locker (installed apps/faces) or the active watchface changed — incl. from the watch or another client | re-call `ListApps` |
+| `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
+| `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
 
-The two pokes carry no payload; `FirmwareProgress` is the one typed signal (it carries the live %, so
-a poke would defeat the smooth bar). **The methods stay the source of truth** — a signal says
+The three pokes carry no payload; `FirmwareProgress`/`LanguageProgress` are the typed signals (they carry
+the live %, so a poke would defeat the smooth bar). **The methods stay the source of truth** — a signal says
 *something changed*, the client re-reads the authoritative method. Because the daemon is **not**
 D-Bus-activated (above), a client that starts late or after a daemon restart can **miss** a signal, so
 clients also (a) re-sync by calling the method once when the bus name appears and (b) keep a slow
@@ -378,11 +380,12 @@ or egress concerns).
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
 > `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
 >
-> **Reactive signals landed** (the "Three signals augment polling" section above): `WatchesChanged`,
-> `FirmwareProgress`, `LockerChanged` — so the Watch, firmware-progress and Apps screens update without
-> polling (polling kept as the fallback). Still open: `LanguageProgress` / `ExtensionStateChanged`
-> (the same wiring for the language-install and extension surfaces), per-service `lastSync` timestamps,
-> and the byte-returning/remote variants.
+> **Reactive signals landed** (the "Five signals augment polling" section above): `WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged` — so the Watch,
+> firmware/language-progress, Apps and Plugins screens update without polling (polling kept as the
+> fallback), and **per-service `lastSync` is now a real relative age** for weather/calendar/health.
+> Still open: a finer-grained `ExtensionStateChanged(name, state)` (crash/quarantine — `ExtensionsChanged`
+> only fires on the user/CLI ops today), and the byte-returning/remote method variants.
 
 ### Screen 1 — Watch
 
@@ -477,18 +480,18 @@ language `ListLanguages`/`InstallLanguage`/`SideloadLanguage`/`LanguageStatus`; 
 
 ### Cross-cutting: the hooks worth adding first
 
-Most screens want the **same handful** of new members. In rough priority:
+Most screens wanted the **same handful** of new members. In rough priority (all now **landed** except
+where noted):
 
-1. **A connection/state signal** — `WatchStateChanged(s name, s state, i battery)` (or a
-   `WatchesChanged()` poke). Serves the Watch screen's live list/battery, the post-reset reboot
-   confirmation, and is the canonical "stop polling `ListWatches`" fix. *Wiring-only.*
-2. **Progress signals** — `FirmwareProgress` and `LanguageProgress`. Replace the poll loops; both
-   back onto existing libpebble3 `StateFlow<Float>` progress. *Wiring-only.*
-3. **`LockerChanged()`** + **`ExtensionStateChanged`** — live Apps & Faces and Plugins screens.
-   *Wiring-only* (the live flows are already there; the daemon currently `.first()`-drops the locker
-   one).
+1. **A connection/state signal** — shipped as the `WatchesChanged()` poke (the Watch screen re-reads
+   `ListWatches`); the canonical "stop polling `ListWatches`" fix (poll relaxed to a 20 s safety-net). **Done.**
+2. **Progress signals** — `FirmwareProgress` and `LanguageProgress`, both off the libpebble3 inner
+   `StateFlow<Float>` progress. **Done.**
+3. **`LockerChanged()`** + extension live-state — shipped as `LockerChanged()` + `ExtensionsChanged()`
+   pokes (live Apps & Faces and Plugins). **Done** (a finer-grained `ExtensionStateChanged(name,state)`
+   for crash/quarantine is the only remaining bit — `ExtensionsChanged` fires on the user/CLI ops).
 4. **Add dropped fields to existing records** — `transport` on `ListWatches`; `synced` on
-   `ListApps`. *Wiring-only, one line each.*
+   `ListApps`. **Done** (Batch A).
 5. **`GetSyncStatus()`** + **`SetSyncEnabled()`** — **done** (Batch D): the Sync screen's toggles are
    live (full runtime start *and* stop for all six services, on a live `ConfigStore` + per-service
    lifecycle), and `GetSyncStatus` reflects live state. Only the real per-service `lastSync`

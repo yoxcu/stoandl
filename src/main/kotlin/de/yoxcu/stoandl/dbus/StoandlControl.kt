@@ -382,4 +382,15 @@ interface StoandlControl : DBusInterface {
     /** Poke emitted when the locker (installed apps/faces) or the active watchface changes — including
      *  changes made on the watch or by another client. Carries no payload — the client re-calls [ListApps]. */
     class LockerChanged(path: String) : DBusSignal(path)
+
+    /** Language-pack install progress (the [FirmwareProgress] twin for `language install`/`sideload`).
+     *  [phase] ∈ {downloading,installing,done,idle,failed,notready} (same vocabulary as [LanguageStatus]);
+     *  [percent] is 0–100 while `installing`, else `-1`; [detail] is the language name / failure reason. */
+    class LanguageProgress(path: String, val phase: String, val percent: Int, val detail: String) :
+        DBusSignal(path, phase, percent, detail)
+
+    /** Poke emitted when an extension's installed/enabled/running state changes — enable/disable/restart/
+     *  install/uninstall (or a settings change that stops/starts it), incl. from the CLI or another
+     *  client. Re-call [ExtList]. (A finer-grained per-extension state, e.g. a crash, isn't surfaced.) */
+    class ExtensionsChanged(path: String) : DBusSignal(path)
 }
