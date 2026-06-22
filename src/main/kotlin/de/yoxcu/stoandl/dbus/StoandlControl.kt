@@ -23,6 +23,14 @@ interface StoandlControl : DBusInterface {
      *  system apps are always synced). Returns an empty list if libPebble is not ready. */
     fun ListApps(): List<String>
 
+    /** The menu icon of the installed app/face with [uuid], extracted LOCALLY from its cached `.pbw`
+     *  (no network/appstore) and written as a PNG under `<configDir>/icons/<uuid>.png` (cached after
+     *  the first call). Returns `ok:<absolute png path>` on success, `none:` (no cached `.pbw`, no
+     *  declared menuIcon, or an undecodable resource), or `notready:` (libPebble not ready). The GUI
+     *  fetches this lazily per row rather than bloating [ListApps]. Icons are tiny (~25×25) and often
+     *  monochrome glyphs; a watchFACE's menu icon is a small glyph, not a face preview. */
+    fun GetAppIcon(uuid: String): String
+
     /** Launch the app/watchface matching [query] (UUID or case-insensitive name). Returns a
      *  status-prefixed string: `ok:<msg>`, `notfound:<msg>`, `ambiguous:<msg>`,
      *  `notready:<msg>` or `error:<msg>`. */

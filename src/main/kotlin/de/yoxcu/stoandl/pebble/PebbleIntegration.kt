@@ -24,6 +24,7 @@ import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
+import de.yoxcu.stoandl.icons.AppIconExtractor
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.datalog.DatalogStore
@@ -2027,6 +2028,9 @@ private class StoandlControlImpl(
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}
 
+    // Local menu-icon extraction from cached .pbw files (no LibPebble dependency — pure disk).
+    private val appIconExtractor = AppIconExtractor()
+
     override fun isRemote() = false
     override fun getObjectPath() = STOANDL_OBJECT_PATH
 
@@ -2397,6 +2401,19 @@ private class StoandlControlImpl(
             }.joinToString(",")
             listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName)
                 .joinToString("\t")
+        }
+    }
+
+    override fun GetAppIcon(uuid: String): String {
+        // libPebble readiness gates this only so a too-early GUI call reports notready rather than
+        // none (the icon cache itself is a pure disk read, independent of a connected watch).
+        libPebbleRef.get() ?: return "notready:libPebble not ready"
+        return try {
+            val path = appIconExtractor.iconPngPath(uuid.trim()) ?: return "none:"
+            "ok:$path"
+        } catch (e: Exception) {
+            log.warn(e) { "GetAppIcon($uuid) failed" }
+            "error:${e.message ?: "icon extraction failed"}"
         }
     }
 

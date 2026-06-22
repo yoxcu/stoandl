@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 70 methods below **plus 6 signals** (`WatchesChanged`,
+> A live introspection should show the 71 methods below **plus 6 signals** (`WatchesChanged`,
 > `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`)
 > and no properties.
 
@@ -31,7 +31,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 70 |
+| **Methods** | 71 |
 | **Signals** | **6** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -78,7 +78,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 70 methods (the `FirmwareProgress` signal adds a fifth, `i`):
+Only four types appear across the 71 methods (the `FirmwareProgress` signal adds a fifth, `i`):
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -142,6 +142,7 @@ relative age of the last connection.
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `ListApps` | `() → as` | Locker contents (apps + faces), one record each (see below). | `apps list` |
+| `GetAppIcon` | `(s) → s` | The menu icon of the installed app/face `<uuid>`, extracted **locally** from its cached `.pbw` (no network/appstore) and written as a PNG under `<configDir>/icons/<uuid>.png` (cached after first call). `ok:<abs png path>` / `none:` (no cached `.pbw`, no declared `menuIcon`, or undecodable) / `notready:` / `error:<msg>`. Fetched lazily per-row by the GUI (kept off `ListApps`). | *(GUI only)* |
 | `LaunchApp` | `(s) → s` | Launch app/face by UUID or name. `ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`. | `apps launch <name\|uuid>` |
 | `RemoveApp` | `(s) → s` | Uninstall app/face from the locker (system apps refused). | `apps remove <name\|uuid>` |
 | `SideloadApp` | `(s) → s` | Install a local `.pbw` (absolute daemon-side path). | `apps install <path.pbw>` (aliases `sideload`, `add`) |
@@ -421,7 +422,8 @@ present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` + `WebviewClose`
 | Active-watchface-changed push | signal | none — computed per call | `ActiveWatchfaceChanged(s uuid)` or fold into `LockerChanged` | **wiring-only** — `LockerApi.activeWatchface: StateFlow` |
 | Config session available/unavailable push | signal | none — must call `OpenConfig` speculatively | `CompanionSessionsChanged()` | **wiring-only** — `currentCompanionAppSessions: StateFlow`, already read |
 | `synced`-to-watch flag per app | data | the `sync` field is read but **not** added to flags | add `synced` to the `ListApps` flags set | **wiring-only** — `NormalApp.sync` already in the iterated object |
-| Icon / version / category / capabilities for richer rows | data | dropped from the row | extend `ListApps` row or `AppDetails(s) → s` | **partly wiring-only** — version/category/caps are fields; an *icon URL* is a store URL (web), real bitmap pixels would need a binary method |
+| Menu icon per app/face | data | ~~dropped from the row~~ **done** — `GetAppIcon(s)` (below) | `GetAppIcon(s) → s` returns a local PNG path | **done** — extracted LOCALLY from the cached `.pbw` (`app_resources.pbpack` → PNG passthrough or GBitmap decode, no AWT, no network); the GUI fetches it lazily per row |
+| Version / category / capabilities for richer rows | data | dropped from the row | extend `ListApps` row or `AppDetails(s) → s` | **wiring-only** — version/category/caps are already locker fields |
 | Reorder apps (drag-to-reorder) | action | `order` is shown but read-only | `SetAppOrder(s uuid, i order) → s` (+ `RestoreSystemAppOrder`) | **wiring-only** — libpebble3 `setAppOrder()`/`restoreSystemAppOrder()` exist |
 | Install from cloud locker / store (not just a local `.pbw`) | action | only `SideloadApp(path)` | `AddAppFromLocker(s uuid) → s` | **design work** — plumbing exists (`addAppToLocker`/`fetchLocker`) but stoandl is local-only/no-egress; needs a store fetch + egress opt-in |
 

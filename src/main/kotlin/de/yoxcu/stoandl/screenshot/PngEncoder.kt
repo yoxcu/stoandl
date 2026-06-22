@@ -55,6 +55,47 @@ object PngEncoder {
         return out.toByteArray()
     }
 
+    /**
+     * Encode [argb] (length must be [width] × [height], row-major `0xAARRGGBB`) as an 8-bit
+     * truecolour-with-alpha PNG (colour type 6). Used for decoded watchapp menu icons, which are
+     * often monochrome glyphs on a transparent background, so the alpha channel must survive.
+     */
+    fun encodeRgba(argb: IntArray, width: Int, height: Int): ByteArray {
+        require(argb.size == width * height) { "pixel array is ${argb.size}, expected ${width * height}" }
+
+        val out = ByteArrayOutputStream()
+        out.write(SIGNATURE)
+
+        // IHDR: width, height, bitDepth=8, colorType=6 (RGBA), compression=0, filter=0, interlace=0
+        val ihdr = ByteArrayOutputStream(13)
+        writeInt(ihdr, width)
+        writeInt(ihdr, height)
+        ihdr.write(8)
+        ihdr.write(6)
+        ihdr.write(0)
+        ihdr.write(0)
+        ihdr.write(0)
+        writeChunk(out, "IHDR", ihdr.toByteArray())
+
+        val raw = ByteArray(height * (1 + width * 4))
+        var p = 0
+        for (y in 0 until height) {
+            raw[p++] = 0 // filter type: none
+            val rowStart = y * width
+            for (x in 0 until width) {
+                val c = argb[rowStart + x]
+                raw[p++] = (c ushr 16).toByte() // R
+                raw[p++] = (c ushr 8).toByte()  // G
+                raw[p++] = c.toByte()           // B
+                raw[p++] = (c ushr 24).toByte() // A
+            }
+        }
+        writeChunk(out, "IDAT", zlib(raw))
+        writeChunk(out, "IEND", ByteArray(0))
+
+        return out.toByteArray()
+    }
+
     private fun zlib(data: ByteArray): ByteArray {
         val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
         deflater.setInput(data)
