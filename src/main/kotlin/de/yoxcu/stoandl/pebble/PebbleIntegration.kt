@@ -92,6 +92,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.TextStyle
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -2004,14 +2005,6 @@ private fun disconnectBluezDevice(devicePath: String) {
     }
 }
 
-// No step-goal is synced from the watch (libpebble3 has no such API); the GUI Health screen needs one,
-// so GetHealthSummary reports this fixed default.
-private const val DEFAULT_STEP_GOAL = 10000
-
-// How far back GetHealthSummary/GetHealthSeries walk to find the most recent night with sleep data. The
-// watch retains ~30 days; 45 covers a stretch of not wearing/syncing it without unbounded DB scans.
-private const val SLEEP_LOOKBACK_DAYS = 45
-
 /**
  * The live actuation surface behind the GUI's Sync + Settings screens, implemented by
  * [PebbleIntegration] (which owns the service refs + the [ConfigStore]) and delegated to by
@@ -2244,159 +2237,188 @@ private class StoandlControlImpl(
         return "ok:${hr.bpm}\t${hr.timestampEpochSec}"
     }
 
-    override fun GetHealthSummary(): String {
+    /** The calendar days + epoch bounds + bar labels for a (periodType, offset) selection.
+     *  `day`: one day (today − offset); `week`: 7 days ending today − offset·7; `month`: the calendar
+     *  month offset months back (current month = 1st → today, a past month = the whole month). */
+    private data class HealthWindow(
+        val start: Long, val end: Long, val days: List<LocalDate>, val labels: List<String>,
+    )
+
+    private fun healthWindow(periodType: String, offset: Int, today: LocalDate, zone: ZoneId): HealthWindow {
+        val off = offset.coerceAtLeast(0).toLong()
+        fun dayStart(d: LocalDate) = d.atStartOfDay(zone).toEpochSecond()
+        fun dow(d: LocalDate) = "${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)} ${d.dayOfMonth}"
+        return when (periodType) {
+            "week" -> {
+                val end = today.minusDays(off * 7)
+                val start = end.minusDays(6)
+                val days = (0L..6L).map { start.plusDays(it) }
+                HealthWindow(dayStart(start), dayStart(end.plusDays(1)), days, days.map { dow(it) })
+            }
+            "month" -> {
+                val anchor = today.minusMonths(off)
+                val start = anchor.withDayOfMonth(1)
+                val last = if (off == 0L) today else anchor.withDayOfMonth(anchor.lengthOfMonth())
+                val n = (last.toEpochDay() - start.toEpochDay()).toInt()
+                val days = (0..n).map { start.plusDays(it.toLong()) }
+                HealthWindow(dayStart(start), dayStart(last.plusDays(1)), days, days.map { "${it.dayOfMonth}" })
+            }
+            else -> {  // "day"
+                val d = today.minusDays(off)
+                HealthWindow(dayStart(d), dayStart(d.plusDays(1)), listOf(d), listOf(dow(d)))
+            }
+        }
+    }
+
+    /** A night's sleep timeline as `startFraction\twidthFraction\tisDeep` rows over an 18 h window
+     *  (6 PM → noon of that day); light intervals first, deep last (so the GUI draws deep over light). */
+    private fun sleepTimelineRows(dayStart: Long, sleep: DailySleep?): List<String> {
+        val windowStart = dayStart - 6 * 3600L
+        val windowSpan = 18 * 3600.0
+        fun seg(start: Long, end: Long, deep: Boolean): String? {
+            val sf = ((start - windowStart) / windowSpan).coerceIn(0.0, 1.0)
+            val ef = ((end - windowStart) / windowSpan).coerceIn(0.0, 1.0)
+            if (ef <= sf) return null
+            return String.format(Locale.ROOT, "%.4f\t%.4f\t%d", sf, ef - sf, if (deep) 1 else 0)
+        }
+        val intervals = sleep?.intervals ?: emptyList()
+        return intervals.filter { !it.isDeep }.mapNotNull { seg(it.start, it.end, false) } +
+            intervals.filter { it.isDeep }.mapNotNull { seg(it.start, it.end, true) }
+    }
+
+    override fun GetHealthSummary(periodType: String, offset: Int): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
         return runBlocking {
             val zone = ZoneId.systemDefault()
             val today = LocalDate.now(zone)
-            val dayStart = today.atStartOfDay(zone).toEpochSecond()
-            val dayEnd = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
+            val win = healthWindow(periodType, offset, today, zone)
+            val isDay = periodType != "week" && periodType != "month"
 
-            // Today's movement (libpebble3 stores cm + gram-calories; convert as the Core app does).
-            val move = lp.getTotalHealthData(dayStart, dayEnd)
-            val steps = (move?.steps ?: 0L).toInt()
-            val distanceKm = String.format(Locale.ROOT, "%.1f", (move?.distanceCm ?: 0L) / 100.0 / 1000.0)
-            val kcal = ((move?.activeGramCalories ?: 0L) / 1000L).toInt()
-            val activeMin = (move?.activeMinutes ?: 0L).toInt()
+            // Movement (libpebble3 stores cm + gram-calories; convert as the Core app does). For a
+            // multi-day period the distance/cal/active tiles show the per-day average (= the day's
+            // own total when `day`, since daysWithData = 1 then).
+            val move = lp.getTotalHealthData(win.start, win.end)
+            val daysWithData = lp.getDailyAggregates(win.start, win.end)
+                .count { (it.steps ?: 0L) > 0L }.coerceAtLeast(1)
+            val stepsTotal = (move?.steps ?: 0L).toInt()
+            val stepsAvgPerDay = stepsTotal / daysWithData
+            val distanceKm = String.format(Locale.ROOT, "%.1f",
+                (move?.distanceCm ?: 0L) / 100.0 / 1000.0 / daysWithData)
+            val kcal = ((move?.activeGramCalories ?: 0L) / 1000L / daysWithData).toInt()
+            val activeMin = ((move?.activeMinutes ?: 0L) / daysWithData).toInt()
+            // Typical daily steps = each day's weekday typical (getTypicalSteps is hourly → sum), averaged.
+            // getTypicalSteps depends only on the weekday (it scans ~49 days each call), so memoize per
+            // weekday — a month window has ≤7 distinct weekdays, not ~30 redundant DB scans.
+            val typByDow = HashMap<Int, Long>()
+            for (dow in win.days.map { it.dayOfWeek.ordinal }.distinct())
+                typByDow[dow] = lp.getTypicalSteps(dow).sum()
+            val typicals = win.days.mapNotNull { typByDow[it.dayOfWeek.ordinal]?.toInt()?.takeIf { t -> t > 0 } }
+            val stepsTypical = if (typicals.isEmpty()) 0 else typicals.sum() / typicals.size
 
-            // The most recent night with a sleep session (not necessarily last night — the watch may
-            // have been syncing to another phone, so the freshest data we hold can be older). seconds →
-            // minutes; light = total − deep (Pebble doesn't model REM). bedtime/wakeup are epoch seconds
-            // (0 = no session; the GUI derives "last night" vs an older date from them); typical = 30-day avg.
-            val recentSleep = latestSleep(lp, zone, today)
-            val sleepDayStart = recentSleep?.first
-            val sleep = recentSleep?.second
-            val sleepTotalMin = ((sleep?.totalSleep ?: 0L) / 60L).toInt()
-            val sleepDeepMin = ((sleep?.deepSleep ?: 0L) / 60L).toInt()
+            // Sleep per night across the window. For `day` we report that night; for a period the
+            // avg/night (light = total − deep; Pebble has no REM). bedtime/wakeup only for `day`.
+            val nights = win.days.mapNotNull { lp.getDailySleepSession(it.atStartOfDay(zone).toEpochSecond()) }
+                .filter { it.totalSleep > 0L }
+            val sleepTotalMin: Int; val sleepDeepMin: Int; val sleepBedtime: Long; val sleepWakeup: Long
+            if (isDay) {
+                val s = nights.firstOrNull()
+                sleepTotalMin = ((s?.totalSleep ?: 0L) / 60L).toInt()
+                sleepDeepMin = ((s?.deepSleep ?: 0L) / 60L).toInt()
+                sleepBedtime = s?.firstStart ?: 0L
+                sleepWakeup = s?.lastEnd ?: 0L
+            } else {
+                val n = nights.size.coerceAtLeast(1)
+                sleepTotalMin = (nights.sumOf { it.totalSleep } / 60L / n).toInt()
+                sleepDeepMin = (nights.sumOf { it.deepSleep } / 60L / n).toInt()
+                sleepBedtime = 0L; sleepWakeup = 0L
+            }
             val sleepLightMin = (sleepTotalMin - sleepDeepMin).coerceAtLeast(0)
-            val sleepBedtime = sleep?.firstStart ?: 0L
-            val sleepWakeup = sleep?.lastEnd ?: 0L
             val sleepTypicalMin = (lp.getTypicalSleepSeconds() / 60L).toInt()
 
-            // Weekly averages (days/nights with data only) + week-over-week trend.
-            val stepWeekAvg = avgSteps(lp, today.minusDays(6), today)
-            val stepTrendPct = trendPct(stepWeekAvg, avgSteps(lp, today.minusDays(13), today.minusDays(7)))
-            val sleepAvgMin = avgSleepMin(lp, weekDayStarts(today, zone, 0))
-            val sleepTrendPct = trendPct(sleepAvgMin, avgSleepMin(lp, weekDayStarts(today, zone, 7)))
-
-            // Heart rate. Resting HR is derived from the sleep session, so key it to the same night we
-            // reported above (not today, which may have no sleep) — otherwise it always reads 0.
-            val restingHr = (sleepDayStart?.let { lp.getRestingHeartRate(it) }) ?: 0
-            val currentHr = lp.getLatestHeartRateReading()?.bpm ?: 0
-            val dayHr = lp.getHealthDataForRange(dayStart, dayEnd).map { it.heartRate }.filter { it > 0 }
-            val hrMin = dayHr.minOrNull() ?: 0
-            val hrMax = dayHr.maxOrNull() ?: 0
-            val hrAvailable = if (hrIsAvailable(lp, dayStart, dayEnd)) "yes" else "no"
-
+            // Heart rate. avg over the window; for `day` also resting (sleep-derived), the live "now",
+            // and the day's min/max. For a period min/max/now are 0 (the GUI shows the avg only).
+            val hrAvg = lp.getAverageHeartRate(win.start, win.end)?.roundToInt() ?: 0
+            val hrResting: Int; val hrCurrent: Int; val hrMin: Int; val hrMax: Int
+            if (isDay) {
+                hrResting = lp.getRestingHeartRate(win.start) ?: 0
+                hrCurrent = lp.getLatestHeartRateReading()?.bpm ?: 0
+                val dayHr = lp.getHealthDataForRange(win.start, win.end).map { it.heartRate }.filter { it > 0 }
+                hrMin = dayHr.minOrNull() ?: 0
+                hrMax = dayHr.maxOrNull() ?: 0
+            } else {
+                hrResting = win.days.reversed()
+                    .firstNotNullOfOrNull { lp.getRestingHeartRate(it.atStartOfDay(zone).toEpochSecond()) } ?: 0
+                hrCurrent = 0; hrMin = 0; hrMax = 0
+            }
+            val hrAvailable = if (hrIsAvailable(lp, win.start, win.end)) "yes" else "no"
             val lastSync = relAge(lp.getLatestTimestamp() ?: 0L)
 
             "ok:" + listOf(
-                steps, DEFAULT_STEP_GOAL, distanceKm, kcal, activeMin,
-                stepWeekAvg, stepTrendPct,
-                sleepTotalMin, sleepDeepMin, sleepLightMin, sleepBedtime, sleepWakeup, sleepTypicalMin,
-                sleepAvgMin, sleepTrendPct,
-                restingHr, currentHr, hrMin, hrMax, hrAvailable,
-                lastSync,
+                stepsTotal, stepsAvgPerDay, stepsTypical, distanceKm, kcal, activeMin,
+                sleepTotalMin, sleepDeepMin, sleepLightMin, sleepTypicalMin, sleepBedtime, sleepWakeup,
+                hrAvg, hrResting, hrCurrent, hrMin, hrMax, hrAvailable, daysWithData, lastSync,
             ).joinToString("\t")
         }
     }
 
-    override fun GetHealthSeries(metric: String, dayOffset: Int): List<String> {
+    override fun GetHealthSeries(metric: String, periodType: String, offset: Int): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val offset = dayOffset.coerceAtLeast(0).toLong()   // 0 = today; only `heart` honours it
-        // The last 7 calendar days, oldest first (matches the GUI's weekday-labelled bars).
-        val week = (6 downTo 0).map { today.minusDays(it.toLong()) }
-        fun label(d: LocalDate) = d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+        val win = healthWindow(periodType, offset, today, zone)
+        val isDay = periodType != "week" && periodType != "month"
         return runBlocking {
             when (metric) {
-                "steps" -> {
-                    val byDay = lp.getDailyAggregates(
-                        week.first().atStartOfDay(zone).toEpochSecond(),
-                        today.plusDays(1).atStartOfDay(zone).toEpochSecond(),
-                    ).associateBy { it.day }
-                    week.map { d -> "${label(d)}\t${byDay[d.toString()]?.steps ?: ""}" }
-                }
-                "sleep" -> {
-                    // The most recent night's sleep timeline as fractions of an 18 h window (6 PM → noon
-                    // of that night), matching the Core app's daily sleep chart. One row per interval:
-                    //   startFraction \t widthFraction \t isDeep(0|1)
-                    // Light intervals first, deep last, so the GUI draws deep on top of light. Anchored to
-                    // the same night as GetHealthSummary (latestSleep), which may not be last night.
-                    val recent = latestSleep(lp, zone, today)
-                    val dayStart = recent?.first ?: today.atStartOfDay(zone).toEpochSecond()
-                    val sleep = recent?.second
-                    val windowStart = dayStart - 6 * 3600L
-                    val windowSpan = 18 * 3600.0  // 6 PM → noon
-                    fun seg(start: Long, end: Long, deep: Boolean): String? {
-                        val sf = ((start - windowStart) / windowSpan).coerceIn(0.0, 1.0)
-                        val ef = ((end - windowStart) / windowSpan).coerceIn(0.0, 1.0)
-                        if (ef <= sf) return null
-                        return String.format(Locale.ROOT, "%.4f\t%.4f\t%d", sf, ef - sf, if (deep) 1 else 0)
+                "steps" -> if (isDay) {
+                    // 24 hourly step buckets for the day, so the daily card shows an hourly bar graph.
+                    val buckets = IntArray(24)
+                    lp.getHealthDataForRange(win.start, win.end).forEach { e ->
+                        buckets[((e.timestamp - win.start) / 3600L).toInt().coerceIn(0, 23)] += e.steps
                     }
-                    val intervals = sleep?.intervals ?: emptyList()
-                    (intervals.filter { !it.isDeep }.mapNotNull { seg(it.start, it.end, false) } +
-                        intervals.filter { it.isDeep }.mapNotNull { seg(it.start, it.end, true) })
+                    (0..23).map { "$it\t${buckets[it]}" }
+                } else {
+                    // One bar per day: label \t steps \t typical(that weekday's typical daily total).
+                    val byDay = lp.getDailyAggregates(win.start, win.end).associateBy { it.day }
+                    val typByDow = HashMap<Int, Long>()   // memoize: typical depends only on the weekday
+                    for (dow in win.days.map { it.dayOfWeek.ordinal }.distinct())
+                        typByDow[dow] = lp.getTypicalSteps(dow).sum()
+                    win.days.mapIndexed { i, d ->
+                        val steps = byDay[d.toString()]?.steps
+                        val typ = typByDow[d.dayOfWeek.ordinal] ?: 0L
+                        "${win.labels[i]}\t${steps ?: ""}\t${if (typ > 0) typ else ""}"
+                    }
                 }
-                "heart" -> {
-                    // Minute-level samples for the day `today − dayOffset` (getHealthDataForRange is
-                    // minute-resolution): one row per recorded minute `minuteOfDay\tbpm`, in time order.
-                    // An empty list means that day has no heart-rate data (the GUI shows an empty state).
-                    val day = today.minusDays(offset)
-                    val dayStart = day.atStartOfDay(zone).toEpochSecond()
-                    val dayEnd = day.plusDays(1).atStartOfDay(zone).toEpochSecond()
-                    lp.getHealthDataForRange(dayStart, dayEnd)
+                "sleep" -> if (isDay) {
+                    sleepTimelineRows(win.start, lp.getDailySleepSession(win.start))
+                } else {
+                    // One bar per night: label \t totalMin \t deepMin.
+                    win.days.mapIndexed { i, d ->
+                        val s = lp.getDailySleepSession(d.atStartOfDay(zone).toEpochSecond())
+                        "${win.labels[i]}\t${((s?.totalSleep ?: 0L) / 60L).toInt()}\t${((s?.deepSleep ?: 0L) / 60L).toInt()}"
+                    }
+                }
+                "heart" -> if (isDay) {
+                    // Minute-level samples for the day (getHealthDataForRange is minute-resolution):
+                    // one row per recorded minute `minuteOfDay\tbpm`. Empty = no HR that day.
+                    lp.getHealthDataForRange(win.start, win.end)
                         .filter { it.heartRate > 0 }
                         .map { e ->
-                            // coerce so a 25-hour DST day's last minute doesn't overflow the index.
-                            val minute = ((e.timestamp - dayStart) / 60L).toInt().coerceIn(0, 1439)
+                            val minute = ((e.timestamp - win.start) / 60L).toInt().coerceIn(0, 1439)
                             "$minute\t${e.heartRate}"
                         }
+                } else {
+                    // One bar per day: label \t avgBpm (empty when no reading that day).
+                    win.days.mapIndexed { i, d ->
+                        val ds = d.atStartOfDay(zone).toEpochSecond()
+                        val de = d.plusDays(1).atStartOfDay(zone).toEpochSecond()
+                        val avg = lp.getAverageHeartRate(ds, de)?.roundToInt()
+                        "${win.labels[i]}\t${avg ?: ""}"
+                    }
                 }
                 else -> emptyList()
             }
         }
     }
-
-    /** Day-start epochs for a 7-day window ending [offsetDays] days before today (0 = the last 7 days,
-     *  7 = the prior 7) — for weekly sleep aggregation, which has no per-day-aggregate API. */
-    private fun weekDayStarts(today: LocalDate, zone: ZoneId, offsetDays: Int): List<Long> =
-        (offsetDays until offsetDays + 7).map { today.minusDays(it.toLong()).atStartOfDay(zone).toEpochSecond() }
-
-    /** The most recent night that has a sleep session, walking back from [today] up to [SLEEP_LOOKBACK_DAYS]
-     *  days. Returns (dayStartEpochSec, session) or null if none in range. Shared by [GetHealthSummary] and
-     *  [GetHealthSeries] so the summary and the timeline always describe the same night. Stops at the first
-     *  hit (usually today/last night), so it's one DB query in the common case. */
-    private suspend fun latestSleep(lp: LibPebble, zone: ZoneId, today: LocalDate): Pair<Long, DailySleep>? {
-        for (i in 0..SLEEP_LOOKBACK_DAYS) {
-            val dayStart = today.minusDays(i.toLong()).atStartOfDay(zone).toEpochSecond()
-            val session = lp.getDailySleepSession(dayStart)
-            if (session != null) return dayStart to session
-        }
-        return null
-    }
-
-    /** Average of per-day step totals over [from]..[to] inclusive, counting only days that have data. */
-    private suspend fun avgSteps(lp: LibPebble, from: LocalDate, to: LocalDate): Int {
-        val zone = ZoneId.systemDefault()
-        val vals = lp.getDailyAggregates(
-            from.atStartOfDay(zone).toEpochSecond(),
-            to.plusDays(1).atStartOfDay(zone).toEpochSecond(),
-        ).mapNotNull { it.steps }.filter { it > 0L }
-        return if (vals.isEmpty()) 0 else (vals.sum() / vals.size).toInt()
-    }
-
-    /** Average nightly sleep (minutes) over the given day-start epochs, counting only nights with sleep. */
-    private suspend fun avgSleepMin(lp: LibPebble, dayStarts: List<Long>): Int {
-        val mins = dayStarts.mapNotNull { lp.getDailySleepSession(it)?.totalSleep?.takeIf { s -> s > 0L } }
-            .map { (it / 60L).toInt() }
-        return if (mins.isEmpty()) 0 else mins.sum() / mins.size
-    }
-
-    /** Week-over-week percentage change; 0 when there's no prior baseline. */
-    private fun trendPct(current: Int, prior: Int): Int =
-        if (prior > 0) ((current - prior) * 100) / prior else 0
 
     /** Whether to surface heart-rate UI: the connected watch has an HRM, or there's stored HR data.
      *  Shared by [GetHealthSummary] and [GetHealthSeries] so the summary flag and the series never disagree. */

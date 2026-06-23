@@ -159,30 +159,33 @@ interface StoandlControl : DBusInterface {
      *  Not a live GATT stream — freshness follows the synced samples. */
     fun HeartRate(): String
 
-    /** Today's health summary for the GUI Health screen, computed from the synced health DB (works
-     *  whether or not a watch is currently connected). Returns `ok:` + 21 tab-separated fields:
-     *  `stepsToday, stepGoal, distanceKm, kcal, activeMin, stepWeekAvg, stepTrendPct, sleepTotalMin,
-     *  sleepDeepMin, sleepLightMin, sleepBedtime, sleepWakeup, sleepTypicalMin, sleepAvgMin,
-     *  sleepTrendPct, restingHr, currentHr, hrMin, hrMax, hrAvailable(yes|no), lastSync`, or
-     *  `notready:` if libPebble isn't ready. (Pebble doesn't model REM, so only light/deep are
-     *  reported — light = total − deep; `sleepBedtime`/`sleepWakeup` are epoch seconds of last
-     *  night's first-asleep / last-awake, 0 = no session; `sleepTypicalMin` = 30-day average; there's
-     *  no step-goal source → a fixed default; trends are week-over-week %.) */
-    fun GetHealthSummary(): String
+    /** Health summary for the GUI Health screen over a period, computed from the synced health DB
+     *  (works whether or not a watch is currently connected). [periodType] ∈ `day`|`week`|`month`;
+     *  [offset] = how many periods back (0 = current; clamped ≥ 0) — `day`: today − offset days;
+     *  `week`: the 7 days ending today − offset·7; `month`: the calendar month offset months back
+     *  (current month is 1st → today). Returns `ok:` + 20 tab-separated fields:
+     *  `stepsTotal, stepsAvgPerDay, stepsTypical, distanceKm, kcal, activeMin, sleepTotalMin,
+     *  sleepDeepMin, sleepLightMin, sleepTypicalMin, sleepBedtime, sleepWakeup, hrAvg,
+     *  hrResting, hrCurrent, hrMin, hrMax, hrAvailable(yes|no), daysWithData, lastSync`, or `notready:`.
+     *  For `day` the step/sleep/HR fields are that day's; for `week`/`month` they are per-day averages
+     *  (`stepsAvgPerDay`, `sleepTotalMin`/`Deep`/`Light` = avg per night) with `stepsTotal` the period
+     *  sum; `stepsTypical`/`sleepTypicalMin` are the typical *daily* figures; `sleepBedtime`/`Wakeup`
+     *  (epoch sec) and `hrCurrent` are populated only for `day` (0 otherwise — the GUI hides them).
+     *  Pebble doesn't model REM (light = total − deep). There is no step-goal (dropped). */
+    fun GetHealthSummary(periodType: String, offset: Int): String
 
-    /** A health time-series for the GUI Health charts. [metric] is one of:
-     *  - `steps` → 7 rows `weekdayLabel\tsteps`, the last 7 days oldest-first (empty value = no data).
-     *  - `sleep` → last night's sleep timeline, one row per interval `startFraction\twidthFraction\tisDeep`
-     *    (0|1), as fractions of an 18 h window (6 PM yesterday → noon today); light intervals first,
-     *    deep last (draw deep over light). Empty list when there's no session.
-     *  - `heart` → the **minute-level** heart-rate samples for the day `today − dayOffset`, one row per
-     *    recorded minute `minuteOfDay\tbpm` (`minuteOfDay` 0–1439, only minutes with a reading), ordered
-     *    by time; empty list when that day has no heart-rate data. (Far finer than an hourly average; the
-     *    GUI plots each sample at its true time and derives min/max/avg.)
-     *  [dayOffset] selects the day for `heart` (0 = today, 1 = yesterday, …; clamped to ≥ 0); it is
-     *  ignored by `steps` (always the last 7 days) and `sleep` (always the most recent night).
+    /** A health time-series for the GUI Health charts, for the period selected by [periodType]
+     *  (`day`|`week`|`month`) + [offset] (periods back, 0 = current; clamped ≥ 0; see [GetHealthSummary]
+     *  for the windows). [metric] is one of:
+     *  - `steps` → `day`: 24 rows `hour(0–23)\tsteps`, the hourly step buckets for the day; `week`/`month`:
+     *    one row per day `label\tsteps\ttypical` (typical = that weekday's typical daily total, empty if none).
+     *  - `sleep` → `day`: that night's timeline, one row per interval `startFraction\twidthFraction\tisDeep`
+     *    (0|1), fractions of an 18 h window (6 PM → noon); `week`/`month`: one row per night
+     *    `label\ttotalMin\tdeepMin`.
+     *  - `heart` → `day`: the **minute-level** samples `minuteOfDay\tbpm` (0–1439, only recorded minutes);
+     *    `week`/`month`: one row per day `label\tavgBpm` (empty avg = no reading that day).
      *  Unknown metric → empty list. */
-    fun GetHealthSeries(metric: String, dayOffset: Int): List<String>
+    fun GetHealthSeries(metric: String, periodType: String, offset: Int): List<String>
 
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or

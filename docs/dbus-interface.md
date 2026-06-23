@@ -206,17 +206,19 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
-| `GetHealthSummary` | `() → s` | Today's health summary (21 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
-| `GetHealthSeries` | `(s,i) → as` | Health chart series for `metric` (1st arg) on day `today − dayOffset` (2nd arg; `heart` only, `0` = today): `steps` (7 `label\tvalue` rows, last 7 days), `sleep` (last night's light/deep timeline, `startFraction\twidthFraction\tisDeep` rows; `[]` when no session), or `heart` (**minute-level** `minuteOfDay\tbpm` rows for the selected day, one per recorded minute; `[]` when that day has no HR data). | *(GUI)* |
+| `GetHealthSummary` | `(s,i) → s` | Health summary (20 tab fields; see below) for the period `periodType`(`day`\|`week`\|`month`) + `offset`(periods back, 0 = current) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
+| `GetHealthSeries` | `(s,s,i) → as` | Health chart series for `metric` over (`periodType`, `offset`): `steps` (`day`: 24 `hour\tsteps` hourly buckets; `week`/`month`: one `label\tsteps\ttypical` row per day), `sleep` (`day`: `startFraction\twidthFraction\tisDeep` timeline rows; `week`/`month`: one `label\ttotalMin\tdeepMin` row per night), `heart` (`day`: **minute-level** `minuteOfDay\tbpm` rows; `week`/`month`: one `label\tavgBpm` row per day). | *(GUI)* |
 | `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
 
-`GetHealthSummary` record (after `ok:`, 21 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
-activeMin \t stepWeekAvg \t stepTrendPct \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t
-sleepBedtime \t sleepWakeup \t sleepTypicalMin \t sleepAvgMin \t sleepTrendPct \t restingHr \t
-currentHr \t hrMin \t hrMax \t hrAvailable(yes\|no) \t lastSync`. (`stepGoal` is a fixed default — no
-watch-synced goal; Pebble models only light/deep, so REM is dropped and `sleepLightMin` = total −
-deep; `sleepBedtime`/`sleepWakeup` are epoch seconds of last night's first-asleep / last-awake, `0`
-when there's no session; `sleepTypicalMin` is the 30-day average; trends are week-over-week %.)
+`GetHealthSummary` record (after `ok:`, 20 fields): `stepsTotal \t stepsAvgPerDay \t stepsTypical \t
+distanceKm \t kcal \t activeMin \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t sleepTypicalMin \t
+sleepBedtime \t sleepWakeup \t hrAvg \t hrResting \t hrCurrent \t hrMin \t hrMax \t hrAvailable(yes\|no) \t
+daysWithData \t lastSync`. For `day` the step/sleep/HR fields are that day's; for `week`/`month` they're
+per-day averages (`stepsAvgPerDay`; `sleepTotalMin`/`Deep`/`Light` = avg per night) with `stepsTotal` the
+period sum. `stepsTypical`/`sleepTypicalMin` are the typical *daily* figures (`getTypicalSteps().sum()` /
+30-day avg). `sleepBedtime`/`sleepWakeup` (epoch sec) and `hrCurrent`/`hrMin`/`hrMax` are populated only
+for `day` (`0` otherwise — the GUI hides them). Pebble models only light/deep (REM dropped; light = total
+− deep). There is no step-goal (dropped).
 
 `GetHealthSeries("sleep")` rows: `startFraction \t widthFraction \t isDeep(0\|1)` — one per sleep
 interval, as fractions of an 18 h window (6 PM yesterday → noon today). Light intervals come first,
@@ -331,7 +333,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
-| `GetHealthSeries` | steps: `label` · `value`(empty = no data) · heart: `minuteOfDay`(0–1439) · `bpm` · sleep: `startFraction` · `widthFraction` · `isDeep`(0/1) |
+| `GetHealthSeries` | steps bars: `label` · `steps` · `typical` · sleep timeline (day): `startFraction` · `widthFraction` · `isDeep`(0/1) · sleep bars: `label` · `totalMin` · `deepMin` · heart (day): `minuteOfDay`(0–1439) · `bpm` · heart bars: `label` · `avgBpm` |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
 | `GetConfig` | `key` · `value` |
 | `GetConfigSchema` | `key` · `type`(toggle/combo) · `label` · `options`(CSV) · `desc` |
