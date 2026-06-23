@@ -162,7 +162,15 @@ a `.pbw`, `synced` = present on the watch — system apps are always synced).
 | `SetWatchPref` | `(s,s) → s` | Set setting `<id>` to `<value>` (parsed per the pref's type). | `settings set <id> <value>` |
 
 `ListWatchPrefs` record: `id \t type \t current \t default \t allowed \t flags \t name \t
-description` (`flags` carries `debug` for advanced settings).
+description` (`flags` carries `debug` for advanced settings). `type` ∈ **`bool`** (`current`/`allowed`
+= `true|false`), **`number`** (`current` is the value with its unit appended, e.g. `3000 ms`; `allowed`
+is `min..max[ unit]`), **`enum`** (`current` + `allowed` are **display names** like `Standard - Low`,
+not the Kotlin constant — round-trip-safe, `SetWatchPref` accepts either), **`quicklaunch`** (`current`
+is an app name / `off` / a raw uuid; `allowed` is the literal `off|<app name or uuid>` — pick the target
+by app name), and **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`).
+**The `allowed` option list is pipe-(`|`)-separated** for `enum`/`quicklaunch`/`color` (a display name
+can contain a comma), so split on `|`, not `,`. `SetWatchPref` parses the value per type and accepts an
+enum display-name-or-constant, a color preset-name-or-hex, and a quick-launch app-name-or-uuid-or-`off`.
 
 ### Notifications (per-app + filters) (`stoandl notif`)
 

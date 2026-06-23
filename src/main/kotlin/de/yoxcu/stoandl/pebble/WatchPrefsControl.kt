@@ -156,7 +156,10 @@ class WatchPrefsControl(
     private fun allowed(pref: WatchPref<*>): String = when (pref) {
         is BoolWatchPref -> "true|false"
         is NumberWatchPref -> "${pref.min}..${pref.max}" + pref.unitSuffix()
-        is EnumWatchPref -> pref.options.joinToString("|") { (it as Enum<*>).name }
+        // Human display names (e.g. "Standard - Low"), not the Kotlin constant ("StandardShortPulseLow"),
+        // for the CLI/GUI — round-trip-safe because [parseEnum] also accepts the display name and the
+        // names are unique within each pref's option list. Pipe-joined (a display name can contain ',').
+        is EnumWatchPref -> pref.options.joinToString("|") { it.displayName }
         is QuicklaunchWatchPref -> "off|<app name or uuid>"
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
     }
@@ -164,7 +167,7 @@ class WatchPrefsControl(
     private fun format(pref: WatchPref<*>, value: Any?): String = when (pref) {
         is BoolWatchPref -> (value as? Boolean)?.toString() ?: "?"
         is NumberWatchPref -> (value as? Long)?.let { "$it" + pref.unitSuffix() } ?: "?"
-        is EnumWatchPref -> (value as? WatchPrefEnum)?.let { (it as Enum<*>).name } ?: "?"
+        is EnumWatchPref -> (value as? WatchPrefEnum)?.displayName ?: "?"
         is QuicklaunchWatchPref -> (value as? QuickLaunchSetting)?.let {
             val u = it.uuid
             if (!it.enabled || u == null) "off" else (appName(u) ?: u.toString())
