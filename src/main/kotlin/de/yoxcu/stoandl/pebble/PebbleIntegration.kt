@@ -92,7 +92,6 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.TextStyle
 import java.util.Locale
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -2302,10 +2301,11 @@ private class StoandlControlImpl(
         }
     }
 
-    override fun GetHealthSeries(metric: String): List<String> {
+    override fun GetHealthSeries(metric: String, dayOffset: Int): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
+        val offset = dayOffset.coerceAtLeast(0).toLong()   // 0 = today; only `heart` honours it
         // The last 7 calendar days, oldest first (matches the GUI's weekday-labelled bars).
         val week = (6 downTo 0).map { today.minusDays(it.toLong()) }
         fun label(d: LocalDate) = d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
@@ -2340,21 +2340,19 @@ private class StoandlControlImpl(
                         intervals.filter { it.isDeep }.mapNotNull { seg(it.start, it.end, true) })
                 }
                 "heart" -> {
-                    val dayStart = today.atStartOfDay(zone).toEpochSecond()
-                    val dayEnd = today.plusDays(1).atStartOfDay(zone).toEpochSecond()
-                    if (!hrIsAvailable(lp, dayStart, dayEnd)) {
-                        emptyList()
-                    } else {
-                        val buckets = Array(24) { mutableListOf<Int>() }
-                        lp.getHealthDataForRange(dayStart, dayEnd).forEach { e ->
-                            if (e.heartRate > 0) {
-                                // coerce so a 25-hour DST day's last bucket doesn't drop samples.
-                                val h = ((e.timestamp - dayStart) / 3600L).toInt().coerceIn(0, 23)
-                                buckets[h].add(e.heartRate)
-                            }
+                    // Minute-level samples for the day `today − dayOffset` (getHealthDataForRange is
+                    // minute-resolution): one row per recorded minute `minuteOfDay\tbpm`, in time order.
+                    // An empty list means that day has no heart-rate data (the GUI shows an empty state).
+                    val day = today.minusDays(offset)
+                    val dayStart = day.atStartOfDay(zone).toEpochSecond()
+                    val dayEnd = day.plusDays(1).atStartOfDay(zone).toEpochSecond()
+                    lp.getHealthDataForRange(dayStart, dayEnd)
+                        .filter { it.heartRate > 0 }
+                        .map { e ->
+                            // coerce so a 25-hour DST day's last minute doesn't overflow the index.
+                            val minute = ((e.timestamp - dayStart) / 60L).toInt().coerceIn(0, 1439)
+                            "$minute\t${e.heartRate}"
                         }
-                        (0..23).map { h -> "$h\t${buckets[h].let { if (it.isEmpty()) "" else it.average().roundToInt() }}" }
-                    }
                 }
                 else -> emptyList()
             }

@@ -175,10 +175,14 @@ interface StoandlControl : DBusInterface {
      *  - `sleep` → last night's sleep timeline, one row per interval `startFraction\twidthFraction\tisDeep`
      *    (0|1), as fractions of an 18 h window (6 PM yesterday → noon today); light intervals first,
      *    deep last (draw deep over light). Empty list when there's no session.
-     *  - `heart` → 24 rows `hour\tbpm`, today by hour (empty value = no reading that hour); empty list
-     *    when the watch has no heart-rate capability/data.
+     *  - `heart` → the **minute-level** heart-rate samples for the day `today − dayOffset`, one row per
+     *    recorded minute `minuteOfDay\tbpm` (`minuteOfDay` 0–1439, only minutes with a reading), ordered
+     *    by time; empty list when that day has no heart-rate data. (Far finer than an hourly average; the
+     *    GUI plots each sample at its true time and derives min/max/avg.)
+     *  [dayOffset] selects the day for `heart` (0 = today, 1 = yesterday, …; clamped to ≥ 0); it is
+     *  ignored by `steps` (always the last 7 days) and `sleep` (always the most recent night).
      *  Unknown metric → empty list. */
-    fun GetHealthSeries(metric: String): List<String>
+    fun GetHealthSeries(metric: String, dayOffset: Int): List<String>
 
     /** Start flashing a local firmware bundle (`.pbz` at absolute [path]) onto the connected watch.
      *  The flash runs asynchronously; returns `ok:` once kicked off (poll [FirmwareStatus]), or

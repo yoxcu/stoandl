@@ -207,7 +207,7 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
 | `GetHealthSummary` | `() → s` | Today's health summary (21 tab fields; see below) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
-| `GetHealthSeries` | `(s) → as` | Health chart series: `steps` (7 `label\tvalue` rows, last 7 days), `sleep` (last night's light/deep timeline, `startFraction\twidthFraction\tisDeep` rows; `[]` when no session), or `heart` (24 `hour\tbpm` rows today; `[]` when HR unavailable). | *(GUI)* |
+| `GetHealthSeries` | `(s,i) → as` | Health chart series for `metric` (1st arg) on day `today − dayOffset` (2nd arg; `heart` only, `0` = today): `steps` (7 `label\tvalue` rows, last 7 days), `sleep` (last night's light/deep timeline, `startFraction\twidthFraction\tisDeep` rows; `[]` when no session), or `heart` (**minute-level** `minuteOfDay\tbpm` rows for the selected day, one per recorded minute; `[]` when that day has no HR data). | *(GUI)* |
 | `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
 
 `GetHealthSummary` record (after `ok:`, 21 fields): `stepsToday \t stepGoal \t distanceKm \t kcal \t
@@ -331,7 +331,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
-| `GetHealthSeries` | steps/heart: `label`/`hour` · `value` (empty value = no data) · sleep: `startFraction` · `widthFraction` · `isDeep`(0/1) |
+| `GetHealthSeries` | steps: `label` · `value`(empty = no data) · heart: `minuteOfDay`(0–1439) · `bpm` · sleep: `startFraction` · `widthFraction` · `isDeep`(0/1) |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
 | `GetConfig` | `key` · `value` |
 | `GetConfigSchema` | `key` · `type`(toggle/combo) · `label` · `options`(CSV) · `desc` |
