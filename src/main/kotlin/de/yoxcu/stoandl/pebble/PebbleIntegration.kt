@@ -181,6 +181,14 @@ private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto r
 
 // How often to check whether an external process's Bluetooth discovery is blocking reconnection.
 private val DISCOVERY_WARN_INTERVAL = 60.seconds
+// A watch that merely drifts out of range reconnects within a minute or two via BlueZ's kernel
+// accept-list passive scan — which is invisible to D-Bus and never sets Adapter1.Discovering, so it
+// is NOT what this monitor detects. Only a genuinely stuck reconnect — an external client holding an
+// ACTIVE discovery session that monopolises the single controller scanner — keeps the watch down
+// indefinitely. Require the (bonded watch disconnected + external discovery active) condition to
+// persist this long before alarming, so a benign out-of-range drop that merely coincides with a
+// brief external scan never fires a false "blocked by a Bluetooth scan" notification.
+private val DISCOVERY_WARN_GRACE = 5.minutes
 
 // Broken-bond / one-sided-bond churn: after the watch is unpaired ON THE WATCH, the host still holds
 // the bond (and Trusted), so BlueZ reconnects then immediately tears the link down with an
@@ -465,6 +473,14 @@ class PebbleIntegration(
         // Stop extension child processes first so they don't orphan when the JVM exits.
         if (::extensionManager.isInitialized) extensionManager.shutdownAll()
         log.info { "graceful BLE shutdown: disconnecting watches" }
+        // Release any discovery session we still hold (e.g. an open pairing-window scan) BEFORE we go.
+        // BlueZ frees a client's discovery when its D-Bus connection drops on process exit, but the
+        // scanner deliberately keeps a process-lifetime connection open, so an in-flight scan that was
+        // never cleanly stopped could leave Adapter1.Discovering=true held on that connection until the
+        // JVM fully exits — long enough to look like an external scanner is blocking reconnection.
+        // Stopping explicitly here is deterministic and closes that window.
+        if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+        if (libPebble.isScanningClassic.value) libPebble.stopClassicScan()
         runBlocking {
             // Drop the BLE link at the BlueZ level (watch sees us go down → re-advertises), but do NOT
             // use requestDisconnection(): it persists connectGoal=false, which makes the next launch
@@ -685,14 +701,22 @@ class PebbleIntegration(
     }
 
     /**
-     * Diagnostic: warn (once) when an *external* process is running Bluetooth discovery while a bonded
-     * watch is trying to reconnect. A discovery monopolizes the controller's single LE scanner, so
-     * BlueZ cannot issue our standing `Device1.Connect()` — the watch then can't reconnect even though
-     * everything on our side is correct. This is invisible without a btmon snoop and once cost a long
-     * debugging session; surfacing it turns a multi-hour mystery into a one-line hint. It cannot be
-     * *fixed* here (each client owns its own discovery session — we can't stop another process's scan),
-     * only reported. `Adapter1.Discovering` is true whenever ANY client (including us) holds discovery,
-     * so we only flag it when stoandl itself is NOT scanning.
+     * Diagnostic: warn (once) when an *external* process is holding a *sustained* Bluetooth discovery
+     * while a bonded watch is trying to reconnect. A continuously-held active discovery starves the
+     * controller's single scanner duty cycle, squeezing the passive accept-list windows BlueZ uses for
+     * our standing `Device1.Connect()` — so a nearby watch can't reconnect even though everything on our
+     * side is correct. This is invisible without a btmon snoop and once cost a long debugging session;
+     * surfacing it turns a multi-hour mystery into a one-line hint. It cannot be *fixed* here (each
+     * client owns its own discovery session — we can't stop another process's scan), only reported.
+     *
+     * `Adapter1.Discovering` is true whenever ANY client holds an *active* `StartDiscovery` session —
+     * NOT for our own standing reconnect: that runs as a kernel accept-list passive scan which never
+     * sets the property (BlueZ `discovering_callback()` returns early when no D-Bus discovery client is
+     * registered). So `Discovering=true` with no scan of ours genuinely means a third party is scanning.
+     * But its mere presence does NOT prove reconnection is blocked — a watch that just drifted out of
+     * range reconnects fine once back, regardless of a coincidental external scan. We therefore only
+     * alarm when the condition *persists* past [DISCOVERY_WARN_GRACE], the signature of a scan that is
+     * actually monopolising the scanner rather than a brief overlap with a normal out-of-range drop.
      */
     private fun startDiscoveryInterferenceWarning() {
         scope.launch(Dispatchers.IO) {
@@ -704,7 +728,9 @@ class PebbleIntegration(
             }
             val hciAdapter = Regex("/org/bluez/hci\\d+$")
             fun externalDiscoveryActive(): Boolean {
-                if (libPebble.isScanningBle.value) return false // our own scan, not interference
+                // Any of OUR OWN pairing-window scans (BLE or classic BR/EDR inquiry) sets Discovering
+                // too — exclude both so we never read our own scan as external interference.
+                if (libPebble.isScanningBle.value || libPebble.isScanningClassic.value) return false
                 return try {
                     val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
                     objMgr.GetManagedObjects().any { (path, ifaces) ->
@@ -714,16 +740,21 @@ class PebbleIntegration(
                 } catch (_: Exception) { false }
             }
 
+            // Warn only after the (disconnected + external discovery) condition holds for the grace
+            // window — a brief external scan overlapping a normal out-of-range drop never reaches it.
+            val ticksToWarn = (DISCOVERY_WARN_GRACE / DISCOVERY_WARN_INTERVAL).toInt().coerceAtLeast(1)
             var warned = false
+            var blockedTicks = 0
             try {
                 while (true) {
                     delay(DISCOVERY_WARN_INTERVAL)
                     val devices = libPebble.watches.value
-                    if (devices.any { it is ConnectedPebbleDevice }) { warned = false; continue }
+                    if (devices.any { it is ConnectedPebbleDevice }) { warned = false; blockedTicks = 0; continue }
                     val haveBonded = devices.filterIsInstance<KnownPebbleDevice>().any { it !is ConnectedPebbleDevice }
                     val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                     if (haveBonded && btOn && externalDiscoveryActive()) {
-                        if (!warned) {
+                        blockedTicks++
+                        if (!warned && blockedTicks >= ticksToWarn) {
                             warned = true
                             log.warn {
                                 "Another process is running Bluetooth discovery (Adapter1.Discovering=true " +
@@ -739,6 +770,7 @@ class PebbleIntegration(
                         }
                     } else {
                         warned = false
+                        blockedTicks = 0
                     }
                 }
             } finally {
