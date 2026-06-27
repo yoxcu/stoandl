@@ -178,8 +178,10 @@ data class StoandlConfig(
     /** A weather location: a display [name] shown on the watch and its [latitude]/[longitude]. */
     data class WeatherLocation(val name: String, val latitude: Double, val longitude: Double)
 
-    /** A CalDAV calendar collection URL plus its Basic-auth credentials. */
-    data class CalDavAccount(val url: String, val username: String, val password: String)
+    /** A configured CalDAV account: an opaque [id] (the stable source key, also the key its password
+     *  is stored under in the secret store), its account/collection [url] and Basic-auth [username].
+     *  The password is NOT in config — it lives in the system keyring (or the 0600 secrets file). */
+    data class CalDavAccount(val id: String, val url: String, val username: String)
 
     enum class WeatherUnits { METRIC, IMPERIAL }
 
@@ -395,16 +397,19 @@ data class StoandlConfig(
                 }
             }
 
-        /** Parse `url|username|password` CalDAV entries. Only the URL is required; missing user/pass
-         *  become empty (the password is never trimmed of inner content, only the field is split). */
+        /** Parse `id|url|username` CalDAV entries. The password is no longer in config — it lives in the
+         *  secret store keyed by the id (managed via the GUI / `stoandl calendar` CLI). Both id and url
+         *  are required; a legacy `url|user|password` entry (id missing) is dropped with a warning so it
+         *  can be re-added securely. */
         private fun parseCalDav(entries: List<String>): List<CalDavAccount> = entries.mapNotNull { entry ->
             val parts = entry.split('|')
-            val url = parts.getOrNull(0)?.trim().orEmpty()
-            if (url.isEmpty()) {
-                log.warn { "Ignoring malformed calendar.caldav entry (expected url|username|password)" }
+            val id = parts.getOrNull(0)?.trim().orEmpty()
+            val url = parts.getOrNull(1)?.trim().orEmpty()
+            if (id.isEmpty() || url.isEmpty()) {
+                log.warn { "Ignoring malformed calendar.caldav entry (expected id|url|username) — re-add it from the GUI" }
                 null
             } else {
-                CalDavAccount(url, parts.getOrElse(1) { "" }.trim(), parts.getOrElse(2) { "" }.trim())
+                CalDavAccount(id, url, parts.getOrElse(2) { "" }.trim())
             }
         }
 

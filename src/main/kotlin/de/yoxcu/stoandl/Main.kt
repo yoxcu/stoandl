@@ -115,7 +115,7 @@ private fun printUsage() {
     println("Sync")
     row("sync", "list · enable/disable <service>")
     row("weather", "push weather to the watch now")
-    row("calendar", "list sync enable disable dump")
+    row("calendar", "list sources sync enable disable add remove passwd dump")
     row("health", "[days] hr sync activities dump")
     row("datalog", "list dump tail")
     println("Maintenance")
@@ -269,8 +269,26 @@ private fun ctl(args: Array<String>) {
                         })
                     }
                 }
+                "sources", "accounts" -> withControl { control -> printCalendarSources(control) }
+                "add" -> ctlCalendarAdd(args.drop(2))
+                "remove", "rm", "delete" -> {
+                    val id = args.getOrNull(2)
+                    if (id.isNullOrBlank()) {
+                        System.err.println("Usage: stoandl calendar remove <id>   (id from `stoandl calendar sources`)")
+                        System.exit(1); return
+                    }
+                    withControl { control ->
+                        handleStatusResponse(try { control.RemoveCalendarSource(id) } catch (e: Exception) {
+                            System.err.println("Error: ${e.message}"); System.exit(1); return
+                        })
+                    }
+                }
+                "passwd", "password" -> ctlCalendarPasswd(args.drop(2))
                 else -> {
-                    System.err.println("Usage: stoandl calendar <list|sync|enable <id|name>|disable <id|name>|dump <file|url>>")
+                    System.err.println(
+                        "Usage: stoandl calendar <list|sources|sync|enable <id|name>|disable <id|name>|\n" +
+                            "                          add <caldav|ical|ics> <url|path> [username]|passwd <id>|remove <id>|dump <file|url>>",
+                    )
                     System.exit(1)
                 }
             }
@@ -349,6 +367,86 @@ private fun handleStatusResponse(resp: String) {
         System.err.println(message.ifEmpty { status })
         System.exit(1)
     }
+}
+
+/** Print the editable calendar sources (CalDAV accounts / iCal feeds / .ics paths) with their ids — the
+ *  handle for `calendar add|remove|passwd`. The password is never shown (write-only). */
+private fun printCalendarSources(control: StoandlControl) {
+    val rows = try { control.ListCalendarSources() } catch (e: Exception) {
+        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+    }
+    if (rows.isEmpty()) {
+        println("No calendar sources configured.")
+        println("Add one with:  stoandl calendar add <caldav|ical|ics> <url|path> [username]")
+        return
+    }
+    rows.forEach { row ->
+        val p = row.split('\t')
+        val id = p.getOrElse(0) { "" }; val type = p.getOrElse(1) { "" }; val url = p.getOrElse(2) { "" }
+        val user = p.getOrElse(3) { "" }; val label = p.getOrElse(4) { "" }
+        println("  %-7s %-24s %s".format(type, label, url) + if (user.isNotEmpty()) "  (user: $user)" else "")
+        println("          id: $id")
+    }
+    println("\nEdit credentials:  stoandl calendar passwd <id>   ·   remove:  stoandl calendar remove <id>")
+}
+
+/** `stoandl calendar add <caldav|ical|ics> <url|path> [username]` — prompts (no echo) for a CalDAV
+ *  password and routes it to the secret store; iCal/.ics take no credentials. */
+private fun ctlCalendarAdd(rest: List<String>) {
+    val type = rest.getOrNull(0)?.lowercase()
+    val target = rest.getOrNull(1)
+    if (type == null || target == null || type !in setOf("caldav", "ical", "ics")) {
+        System.err.println("Usage: stoandl calendar add <caldav|ical|ics> <url|path> [username]"); System.exit(1); return
+    }
+    val username = rest.getOrNull(2) ?: ""
+    val password = if (type == "caldav") promptPassword("CalDAV password (leave blank for none): ") else ""
+    withControl { control ->
+        val resp = try { control.AddCalendarSource(type, target, username, password) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (status, message) = splitStatus(resp)
+        if (status != "ok") { System.err.println(message.ifEmpty { status }); System.exit(1); return }
+        val parts = message.split('\t')
+        println("Added $type source (${parts.getOrElse(0) { "" }})" + secretNote(parts.getOrElse(1) { "none" }))
+        println("Syncing… run `stoandl calendar list` shortly to see its calendars.")
+    }
+}
+
+/** `stoandl calendar passwd <caldav:id>` — change a CalDAV account's password (keeping its URL/user). */
+private fun ctlCalendarPasswd(rest: List<String>) {
+    val id = rest.getOrNull(0)
+    if (id.isNullOrBlank() || !id.startsWith("caldav:")) {
+        System.err.println("Usage: stoandl calendar passwd <caldav:id>   (id from `stoandl calendar sources`)")
+        System.exit(1); return
+    }
+    val password = promptPassword("New CalDAV password: ")
+    if (password.isEmpty()) { System.err.println("No password entered; aborting."); System.exit(1); return }
+    withControl { control ->
+        val src = (try { control.ListCalendarSources() } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }).map { it.split('\t') }.firstOrNull { it.getOrNull(0) == id }
+        if (src == null) { System.err.println("No CalDAV account with id $id"); System.exit(1); return }
+        val resp = try {
+            control.UpdateCalendarSource(id, src.getOrElse(2) { "" }, src.getOrElse(3) { "" }, password)
+        } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+        val (status, message) = splitStatus(resp)
+        if (status != "ok") { System.err.println(message.ifEmpty { status }); System.exit(1); return }
+        println("Password updated for $id" + secretNote(message.split('\t').getOrElse(1) { "none" }))
+    }
+}
+
+private fun secretNote(backend: String): String = when (backend) {
+    "keyring" -> " — password saved to the system keyring."
+    "file" -> " — keyring unavailable; password saved to the local 0600 secrets file."
+    else -> "."
+}
+
+/** Read a secret from the terminal without echo (falls back to a plain line when there's no console,
+ *  e.g. a pipe). */
+private fun promptPassword(prompt: String): String {
+    val console = System.console()
+    return if (console != null) String(console.readPassword(prompt))
+    else { print(prompt); System.out.flush(); readLine().orEmpty() }
 }
 
 /** Offline debug aid: parse an .ics file or http(s) URL and print the events expanded into the
@@ -1593,7 +1691,12 @@ private fun doBackup(outPath: String?) {
         System.err.println("Note: daemon is running; for a guaranteed-consistent DB snapshot, stop it first.")
     }
     // Archive the directory by name relative to its parent so it restores as ~/.config/stoandl/.
-    val code = runProcess("tar", "czf", out.path, "-C", dir.parentFile.path, dir.name)
+    // Exclude the local secrets file: a backup tarball must never carry plaintext credentials (the
+    // keyring isn't backed up either, so CalDAV passwords are simply re-entered after a restore).
+    val code = runProcess(
+        "tar", "czf", out.path, "--exclude=${dir.name}/secrets", "--exclude=${dir.name}/secrets.tmp",
+        "-C", dir.parentFile.path, dir.name,
+    )
     if (code != 0) {
         System.err.println("Backup failed (tar exit $code)"); System.exit(1); return
     }
@@ -1893,12 +1996,9 @@ private fun sanitizeConfig(text: String): String {
         val key = code.substring(0, eq).trim()
         var value = code.substring(eq + 1)
         value = when (key) {
-            // calendar.caldav = url|user|password, url2|user2|password2, …  → redact the password field.
-            "calendar.caldav" -> value.split(',').joinToString(",") { entry ->
-                val parts = entry.split('|')
-                if (parts.size >= 3) (parts.take(2) + "***" + parts.drop(3)).joinToString("|")
-                else redactUrl(entry)
-            }
+            // calendar.caldav is now `id|url|username` (no password — that lives in the secret store, not
+            // this file), so there's nothing secret to redact beyond any secret query params in the URL.
+            "calendar.caldav" -> value.split(',').joinToString(",") { redactUrl(it) }
             else -> redactUrl(value)
         }
         code.substring(0, eq + 1) + value + comment

@@ -760,7 +760,7 @@ local — no network, no egress opt-in.
 | 5.163 | Support bundle (full) | with a watch connected, `stoandl support` | Prints a checklist (`watch logs: included`, `watch info`/via file, `daemon log: N file(s)`, `config: included …`), then `Wrote <cwd>/stoandl-support-<time>.tar.gz (<size>)`. Extract: contains `watch-logs.txt`, `watch-info.txt`, `daemon-logs/`, `stoandl.conf`, `version.txt`, `bundle-notes.txt`. |
 | 5.164 | Support bundle (no daemon) | stop the daemon, `stoandl support` | Still succeeds. `bundle-notes.txt` notes the watch pieces were omitted; the archive still has `daemon-logs/` (if any) + redacted `stoandl.conf` + `version.txt`. |
 | 5.165 | Coredump opt-in | `stoandl support --coredump` | If the watch has a coredump, `coredump.bin` is included and notes say `coredump: included`; otherwise `coredump: none on the watch`. Without the flag, no coredump is fetched. |
-| 5.166 | Config redaction | put a `calendar.caldav = https://dav.example/|me|s3cr3t` line in `stoandl.conf`, `stoandl support`, inspect the bundled `stoandl.conf` | The password field is `***` (`…|me|***`); URL userinfo and `?token=`/`?key=` params elsewhere are `***`; a header comment warns secrets were redacted. Non-secret keys are unchanged. |
+| 5.166 | Config redaction | put a URL with a secret param (e.g. `calendar.ical_urls = https://example.com/cal.ics?token=abc`) in `stoandl.conf`, `stoandl support`, inspect the bundled `stoandl.conf` | URL userinfo and `?token=`/`?key=` params are `***`; a header comment warns secrets were redacted. Non-secret keys are unchanged. (CalDAV passwords are no longer in config — they're in the keyring/secrets file, never in the bundle; see 5.28j.) |
 | 5.167 | Output path forms | `stoandl support /tmp/`, `stoandl support /tmp/b` , `stoandl support /tmp/b.tgz` | Directory → `stoandl-support-<time>.tar.gz` inside it; bare name → `b.tar.gz`; `.tgz`/`.tar.gz` honoured as-is. |
 
 ---
@@ -1209,6 +1209,40 @@ a no-op until stoandl wires a real `TranscriptionProvider`). On startup the **fi
 (it's pre-existing history); live messages and messages that arrived while the daemon was down both come
 through on subsequent syncs. goolm is officially *experimental* — watch the log for decrypt failures; the
 recovery key lets you re-bootstrap (delete `matrix-ext/` and restart) if the crypto store ever corrupts.
+
+---
+
+## 5.28 Calendar source management + secure CalDAV credential store  ⚠️ UNVERIFIED (needs a watch for pins; the keyring path needs a desktop session)
+
+CalDAV passwords no longer live in `stoandl.conf` (plaintext). Sources (CalDAV accounts / iCal feeds /
+local `.ics`) are now added/edited/removed at **runtime** (no restart) from the GUI **Settings →
+Calendars** or the `stoandl calendar` CLI; a CalDAV account's discovered calendars group under it. The
+password goes to the system keyring (`org.freedesktop.secrets`) when one is unlocked, else a 0600
+`secrets` file beside the config (excluded from backups). `calendar.caldav` is now `id|url|username`
+(password elsewhere) — **old `url|user|password` entries are dropped** (re-add them).
+
+**Prerequisites:** a CalDAV account (e.g. Nextcloud/Radicale) for the live test; a desktop session with
+an **unlocked** keyring (gnome-keyring or KWallet's `org.freedesktop.secrets`) to exercise the keyring
+path; the GUI built for the GUI rows. The daemon/CLI rows work headless (file fallback).
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.28a | Add CalDAV (keyring) | on a desktop with an unlocked keyring: `stoandl calendar add caldav https://dav.example.com/alice/ alice` → type the password at the no-echo prompt | `Added caldav source (caldav:<token>) — password saved to the system keyring.` `stoandl.conf` gains `calendar.caldav = <token>|https://dav.example.com/alice/|alice` with **no password**. `secret-tool lookup service stoandl ref caldav:<token>` returns the password. No `secrets` file is created (or it doesn't contain this ref). |
+| 5.28b | Add CalDAV (file fallback) | on the phone / a session with **no** keyring: same `calendar calendar add caldav …` | `… — keyring unavailable; password saved to the local 0600 secrets file.` `<configDir>/secrets` exists, mode `600` (`stat -c %a`), JSON `{ "caldav:<token>": "<base64>" }`. Log: `System keyring unavailable (…); storing secret caldav:<token> in the local 0600 file`. |
+| 5.28c | Live sync, no restart | after 5.28a/b (daemon already running) | Within ~30 s (or `stoandl calendar sync`) `stoandl calendar list` shows the account's calendars, each `id\tname\tenabled\taccountId` with `accountId = caldav:<token>`; pins appear on the watch timeline. **No daemon restart needed** (first source added live). |
+| 5.28d | Grouping in the GUI | open **Settings → Calendars** | The CalDAV account is a card header (label + `user · url`) with its discovered calendars as toggles **nested underneath**. iCal/.ics sources show as their own single-calendar cards. Per-calendar toggles enable/disable (and the watch pins follow). |
+| 5.28e | Edit keeps password | GUI: tap the account's ✎, change the username, leave **Password blank**, Save (or `stoandl calendar passwd <id>` then re-`list`) | `ok` (CLI/GUI toast shows `kept` when password blank). The URL/username change persists; calendars still sync (the stored password was **not** clobbered). A non-blank password replaces it (toast/CLI says keyring/file). |
+| 5.28f | Add iCal feed / .ics | `stoandl calendar add ical https://example.com/cal.ics` and `… add ics ~/cal.ics` (or via the GUI Add dialog) | Each appears as its own source (`ical:<url>` / `ics:<path>`); a single calendar nested under it; `calendar.ical_urls` / `calendar.ics_paths` updated. No credentials prompted. |
+| 5.28g | Remove drops secret + pins | `stoandl calendar remove caldav:<token>` (or GUI 🗑 → confirm) | `ok:removed`. The `calendar.caldav` entry is gone; the keyring item / file ref is deleted (`secret-tool lookup …` → not found); the account's calendars and their watch pins disappear within ~5 s. |
+| 5.28h | Auto-discover toggle | GUI Calendars page or General settings: flip **Auto-discover local calendars** | Discovered `.ics` calendars appear under a **Discovered & other** group; flipping it off removes them. (`calendar.discover` is the curated config key.) |
+| 5.28i | Backup excludes secrets | `stoandl backup /tmp/b.tar.gz`; `tar tzf /tmp/b.tar.gz \| grep secrets` | No `stoandl/secrets` entry in the tarball. After `stoandl restore`, CalDAV passwords are **gone** (re-add) — the keyring is never in a backup either, by design. |
+| 5.28j | Support bundle clean | with a CalDAV account configured: `stoandl support`, inspect bundled `stoandl.conf` | `calendar.caldav` shows `id|url|username` (no password to redact); URL `?token=`/userinfo still `***`. No `secrets` file in the bundle. |
+| 5.28k | Keyring-locked is graceful | lock the keyring (or stop gnome-keyring) while the daemon runs, then `stoandl calendar sync` | Calendar sync logs a keyring-lookup failure at DEBUG and the account simply fails auth (no crash, no hang); unlocking + re-sync resolves it. The daemon never blocks on an interactive unlock prompt. |
+| 5.28l | GUI updates without leaving the page | add a CalDAV account in the GUI and **stay on the Calendars page** | Within a few seconds (CalDAV discovery time) the account's calendars appear nested under it — **no need to navigate away and back**. Driven by the daemon `CalendarsChanged` signal (fires when the sync adds the calendars) with the page's settle-timer as fallback. Removing an account likewise drops its calendars (and clears any stale "Discovered" count) within a few seconds without leaving the page. *(Was the reported bug: the first reload raced the async sync, so it stuck at "no calendars yet" / a stale count until you re-entered the page.)* |
+
+> **Sandbox note:** the daemon compiles clean (`compileKotlin` green). The **GUI** (Qt6/Kirigami) and the
+> **live keyring** path can't be exercised in the build sandbox (no Qt runtime / no `org.freedesktop.secrets`),
+> so the keyring marshaling (raw dbus-java client) and the QML page are verified on hardware/desktop.
 
 ---
 

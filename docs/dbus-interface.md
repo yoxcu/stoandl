@@ -19,9 +19,9 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 71 methods below **plus 6 signals** (`WatchesChanged`,
-> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`)
-> and no properties.
+> A live introspection should show the 75 methods below **plus 7 signals** (`WatchesChanged`,
+> `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`,
+> `CalendarsChanged`) and no properties.
 
 ## Service summary
 
@@ -31,8 +31,8 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 71 |
-| **Signals** | **6** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged` (reactive layer on top of the poll methods) |
+| **Methods** | 75 |
+| **Signals** | **7** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `CalendarsChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
 
@@ -54,6 +54,7 @@ poll methods — they do not replace them:
 | `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
 | `ExtensionStateChanged` | `ss` | per-extension runtime transition: `name` + `state` (`ready` / `exited` (restarting) / `quarantined`) — the unsolicited crash/quarantine the poke can't catch | show the live state (a `quarantined` ext otherwise polls as `running`) |
+| `CalendarsChanged` | *(none)* | a calendar sync added/dropped calendars — after a source CRUD (the sync runs ~5 s later + CalDAV discovery) or a periodic re-read | re-call `ListCalendars` (+ `ListCalendarSources`); lets the GUI update when the data's ready, not race the async sync |
 
 The pokes carry no payload; the typed signals are `FirmwareProgress`/`LanguageProgress` (the live %, which a
 poke would lose) and `ExtensionStateChanged` (the per-extension state a `quarantined` ext can't be polled
@@ -205,8 +206,12 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
-| `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled`. | `calendar list` (also bare `calendar`) |
+| `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled \t accountId`. `accountId` is the owning source's id (see `ListCalendarSources`) so the GUI nests calendars under their account (`discover` for auto-discovered, empty if unknown). | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
+| `ListCalendarSources` | `() → as` | Editable calendar **sources** (vs the discovered calendars): `id \t type \t url \t username \t label`, `type` ∈ {caldav, ical, ics}, `id` self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). Password is **never** returned (write-only). | `calendar sources` |
+| `AddCalendarSource` | `(s,s,s,s) → s` | Add a source: `(type, url, username, password)`; username/password apply to CalDAV only (password → system keyring, else a 0600 file — never config). Persisted + synced live. `ok:<id>\t<backend>` (backend = keyring/file/none) / `error:`. | `calendar add <type> <url> [user]` |
+| `UpdateCalendarSource` | `(s,s,s,s) → s` | Edit a source by id: `(id, url, username, password)`. An **empty** password keeps the stored CalDAV one. `ok:<id>\t<backend\|kept\|none>` / `notfound:` / `error:`. | `calendar passwd <id>` |
+| `RemoveCalendarSource` | `(s) → s` | Remove a source by id (and its stored CalDAV password). `ok:removed` / `notfound:` / `error:`. | `calendar remove <id>` |
 | `GetHealthSummary` | `(s,i) → s` | Health summary (20 tab fields; see below) for the period `periodType`(`day`\|`week`\|`month`) + `offset`(periods back, 0 = current) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
 | `GetHealthSeries` | `(s,s,i) → as` | Health chart series for `metric` over (`periodType`, `offset`): `steps` (`day`: 24 `hour\tsteps` hourly buckets; `week`/`month`: one `label\tsteps\ttypical` row per day), `sleep` (`day`: `startFraction\twidthFraction\tisDeep` timeline rows; `week`/`month`: one `label\ttotalMin\tdeepMin` row per night), `heart` (`day`: **minute-level** `minuteOfDay\tbpm` rows; `week`/`month`: one `label\tavgBpm` row per day). | *(GUI)* |
 | `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
@@ -329,7 +334,8 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) · `transport`(ble/classic or empty) |
 | `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system,synced) · `title` · `developer` · `version` |
 | `ListWatchPrefs` | `id` · `type` · `current` · `default` · `allowed` · `flags` · `name` · `description` |
-| `ListCalendars` | `id` · `name` · `enabled`/`disabled` |
+| `ListCalendars` | `id` · `name` · `enabled`/`disabled` · `accountId`(owning source id, `discover`, or empty) |
+| `ListCalendarSources` | `id`(`caldav:`/`ical:`/`ics:`…) · `type`(caldav/ical/ics) · `url` · `username` · `label` — never the password |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |

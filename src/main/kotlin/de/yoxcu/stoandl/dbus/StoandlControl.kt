@@ -78,12 +78,40 @@ interface StoandlControl : DBusInterface {
      *  `ok:` once requested; `error:` if calendar sync is not enabled. */
     fun SyncCalendar(): String
 
-    /** List the synced calendars, one per entry, tab-separated `id \t name \t enabled|disabled`. */
+    /** List the synced calendars, one per entry, tab-separated
+     *  `id \t name \t enabled|disabled \t accountId`. `accountId` is the owning source's id (see
+     *  [ListCalendarSources]) so the GUI can group calendars under their CalDAV account / iCal feed /
+     *  .ics source; it's `discover` for auto-discovered local calendars and empty if unknown. */
     fun ListCalendars(): List<String>
 
     /** Enable or disable a calendar by numeric id or name substring. Status-prefixed return
      *  (`ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`). */
     fun SetCalendarEnabled(query: String, enabled: Boolean): String
+
+    /** List the editable calendar *sources* (the things you add/edit/remove, vs the discovered
+     *  calendars from [ListCalendars]). Each entry is tab-separated
+     *  `id \t type \t url \t username \t label`, where `type` ∈ {caldav, ical, ics} and `id` is
+     *  self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). The password is NEVER included
+     *  (write-only). A CalDAV account fans out to many calendars (grouped via the `accountId` column of
+     *  [ListCalendars]); an iCal feed / .ics path is a single calendar. Auto-discovery
+     *  (`calendar.discover`) is a toggle, not listed here. */
+    fun ListCalendarSources(): List<String>
+
+    /** Add a calendar source. [type] ∈ {caldav, ical, ics}; [url] is the account/feed URL or local
+     *  path; [username]/[password] apply to CalDAV only (password stored in the system keyring, else a
+     *  0600 file — never in config). Persisted and synced live (no restart). Returns
+     *  `ok:<id>\t<backend>` (backend = `keyring`/`file`/`none`) or `error:<msg>`. */
+    fun AddCalendarSource(type: String, url: String, username: String, password: String): String
+
+    /** Edit a calendar source by [id] (from [ListCalendarSources]). [url]/[username] replace the stored
+     *  values; an EMPTY [password] keeps the existing CalDAV password (the GUI leaves it blank unless
+     *  changing it), a non-empty one replaces it. Returns `ok:<id>\t<backend|kept|none>`, `notfound:`,
+     *  or `error:`. */
+    fun UpdateCalendarSource(id: String, url: String, username: String, password: String): String
+
+    /** Remove a calendar source by [id] (and its stored CalDAV password). Persisted and synced live.
+     *  Returns `ok:removed`, `notfound:`, or `error:`. */
+    fun RemoveCalendarSource(id: String): String
 
     /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
      *  `ok:` immediately; poll [PairStatus] for the outcome. */
@@ -405,6 +433,12 @@ interface StoandlControl : DBusInterface {
     /** Poke emitted when the locker (installed apps/faces) or the active watchface changes — including
      *  changes made on the watch or by another client. Carries no payload — the client re-calls [ListApps]. */
     class LockerChanged(path: String) : DBusSignal(path)
+
+    /** Poke emitted when a calendar sync adds or drops calendars — after a source is added/removed/edited
+     *  (the sync runs ~5 s later, plus CalDAV-discovery network time) or a periodic re-read changes the
+     *  set. Carries no payload — the client re-calls [ListCalendars] (and [ListCalendarSources]). Lets the
+     *  GUI update exactly when the new calendars are ready instead of racing the async sync. */
+    class CalendarsChanged(path: String) : DBusSignal(path)
 
     /** Language-pack install progress (the [FirmwareProgress] twin for `language install`/`sideload`).
      *  [phase] ∈ {downloading,installing,done,idle,failed,notready} (same vocabulary as [LanguageStatus]);

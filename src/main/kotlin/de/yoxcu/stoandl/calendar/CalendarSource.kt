@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.calendar
 
+import de.yoxcu.stoandl.secret.SecretStore
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -26,14 +27,34 @@ private val log = KotlinLogging.logger {}
  * One calendar the daemon can read, abstracted over where it lives (local .ics file, published iCal
  * URL, CalDAV collection). [platformId] is the stable unique key libpebble3 stores on its
  * CalendarEntity and bakes into each pin's backingId, so it must be deterministic (we use the file
- * path / URL). [fetchEvents] returns the events in a window, already expanded via [ICalParser]; it
- * must never throw (callers run it inside libpebble3's sync, which has no per-calendar guard).
+ * path / URL). [accountId] is the id of the editable *source* that produced this calendar (a CalDAV
+ * account fans out to many; an iCal feed / .ics file is its own one) so the GUI can group calendars
+ * under their account — see [SourceId]. [fetchEvents] returns the events in a window, already expanded
+ * via [ICalParser]; it must never throw (callers run it inside libpebble3's sync, which has no
+ * per-calendar guard).
  */
 class RawCalendar(
     val platformId: String,
     val name: String,
+    val accountId: String,
     val fetchEvents: suspend (start: Instant, end: Instant) -> List<CalendarEvent>,
 )
+
+/**
+ * Stable, self-describing ids for the editable calendar *sources* (as opposed to the discovered
+ * calendars). The GUI/CLI/D-Bus address a source by this id and each discovered calendar carries its
+ * owning source id as its [RawCalendar.accountId]. The `<type>:<value>` shape is parsed back by
+ * [CalendarSources.parseId]. A CalDAV account uses an opaque generated token (so its URL/username stay
+ * editable while the stored password keeps its key); iCal/.ics sources use their own URL/path.
+ */
+object SourceId {
+    /** All auto-discovered local .ics calendars share this synthetic source (toggled via
+     *  `calendar.discover`, not individually editable). */
+    const val DISCOVER = "discover"
+    fun caldav(token: String) = "caldav:$token"
+    fun ical(url: String) = "ical:$url"
+    fun ics(path: String) = "ics:$path"
+}
 
 /** A configured place to discover calendars. [calendars] enumerates them (cheap; the actual event
  *  read is deferred to each [RawCalendar.fetchEvents]). */
@@ -41,12 +62,13 @@ interface CalendarSource {
     suspend fun calendars(): List<RawCalendar>
 }
 
-/** Build a [RawCalendar] backed by a local .ics file, read fresh on each sync. */
-private fun icsFileCalendar(file: File): RawCalendar {
+/** Build a [RawCalendar] backed by a local .ics file, read fresh on each sync, attributed to [accountId]. */
+private fun icsFileCalendar(file: File, accountId: String): RawCalendar {
     val path = file.absoluteFile.normalize().path
     return RawCalendar(
         platformId = path,
         name = file.nameWithoutExtension,
+        accountId = accountId,
         fetchEvents = { start, end ->
             try {
                 val text = withContext(Dispatchers.IO) { file.readText() }
@@ -59,22 +81,23 @@ private fun icsFileCalendar(file: File): RawCalendar {
     )
 }
 
-/** Expand a list of files/directories into per-file calendars (directories scanned for `*.ics`). */
-private fun icsFilesToCalendars(paths: List<File>): List<RawCalendar> = paths.flatMap { f ->
-    when {
-        f.isDirectory -> f.listFiles { file -> file.isFile && file.extension.equals("ics", true) }
-            ?.sortedBy { it.name }?.map(::icsFileCalendar) ?: emptyList()
-        f.isFile -> listOf(icsFileCalendar(f))
-        else -> {
-            log.warn { "Calendar path does not exist: ${f.path}" }
-            emptyList()
-        }
+/** Expand one configured path (a file, or a directory scanned for `*.ics`) into calendars, all
+ *  attributed to [accountId] — so every .ics under a configured dir groups under that dir's source. */
+private fun icsPathToCalendars(path: File, accountId: String): List<RawCalendar> = when {
+    path.isDirectory -> path.listFiles { file -> file.isFile && file.extension.equals("ics", true) }
+        ?.sortedBy { it.name }?.map { icsFileCalendar(it, accountId) } ?: emptyList()
+    path.isFile -> listOf(icsFileCalendar(path, accountId))
+    else -> {
+        log.warn { "Calendar path does not exist: ${path.path}" }
+        emptyList()
     }
 }
 
-/** Local .ics files or directories explicitly listed in config (`calendar.ics_paths`). No egress. */
+/** Local .ics files or directories explicitly listed in config (`calendar.ics_paths`). No egress.
+ *  Each configured path is its own source (`ics:<path>`); a directory fans out to one calendar per file. */
 class IcsPathSource(private val paths: List<String>) : CalendarSource {
-    override suspend fun calendars(): List<RawCalendar> = icsFilesToCalendars(paths.map(::File))
+    override suspend fun calendars(): List<RawCalendar> =
+        paths.flatMap { p -> icsPathToCalendars(File(p), SourceId.ics(p)) }
 }
 
 /**
@@ -85,7 +108,7 @@ class IcsPathSource(private val paths: List<String>) : CalendarSource {
 class DiscoverySource : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> {
         val candidates = calendarDiscoveryDirs().filter { it.isDirectory }
-        val cals = icsFilesToCalendars(candidates)
+        val cals = candidates.flatMap { icsPathToCalendars(it, SourceId.DISCOVER) }
         log.info { "Calendar discovery scanned ${candidates.size} known dir(s), found ${cals.size} calendar(s)" }
         return cals
     }
@@ -111,6 +134,7 @@ class IcalUrlSource(private val urls: List<String>, private val client: HttpClie
         RawCalendar(
             platformId = url,
             name = urlLabel(url),
+            accountId = SourceId.ical(url),
             fetchEvents = { start, end ->
                 try {
                     val resp = client.request(url) { header(HttpHeaders.Accept, "text/calendar") }
@@ -137,24 +161,33 @@ class IcalUrlSource(private val urls: List<String>, private val client: HttpClie
  * (`calendar.caldav`). No Digest/OAuth. Use `stoandl calendar disable` to drop discovered calendars
  * you don't want.
  */
-class CalDavSource(private val entries: List<Entry>, private val client: HttpClient) : CalendarSource {
-    data class Entry(val url: String, val username: String, val password: String)
+class CalDavSource(
+    private val entries: List<Entry>,
+    private val client: HttpClient,
+    private val secretStore: SecretStore,
+) : CalendarSource {
+    /** A configured account: an opaque [id] (the source/secret key), its [url] and [username]. The
+     *  password is NOT held here — it's resolved per sync from [secretStore] under `caldav:<id>`. */
+    data class Entry(val id: String, val url: String, val username: String)
     private data class Collection(val url: String, val name: String)
 
     override suspend fun calendars(): List<RawCalendar> = entries.flatMap { e ->
+        val accountId = SourceId.caldav(e.id)
+        val password = withContext(Dispatchers.IO) { secretStore.get(accountId) } ?: ""
         val auth = e.username.takeIf { it.isNotBlank() }
-            ?.let { "Basic " + Base64.getEncoder().encodeToString("${e.username}:${e.password}".toByteArray()) }
+            ?.let { "Basic " + Base64.getEncoder().encodeToString("${e.username}:$password".toByteArray()) }
         val collections = discover(e.url, auth).ifEmpty {
             // Not discoverable (or already a leaf collection) — use the URL as a single calendar.
             listOf(Collection(e.url, urlLabel(e.url)))
         }
         log.info { "CalDAV ${e.url}: ${collections.size} calendar(s) [${collections.joinToString { it.name }}]" }
-        collections.map { col -> calendarFor(col, auth) }
+        collections.map { col -> calendarFor(col, auth, accountId) }
     }
 
-    private fun calendarFor(col: Collection, auth: String?): RawCalendar = RawCalendar(
+    private fun calendarFor(col: Collection, auth: String?, accountId: String): RawCalendar = RawCalendar(
         platformId = col.url,
         name = col.name,
+        accountId = accountId,
         fetchEvents = { start, end ->
             try {
                 val resp = client.request(col.url) {

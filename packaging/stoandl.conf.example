@@ -118,11 +118,17 @@ calendar.discover = false
 # Example: calendar.ical_urls = https://example.com/cal.ics
 calendar.ical_urls =
 
-# CalDAV, each url|username|password (Basic auth). Opt-in egress. Point at an ACCOUNT/principal URL to
-# auto-discover and sync ALL the user's calendars; or a single collection URL for just that one.
+# CalDAV accounts, each `id|url|username` (Basic auth). Opt-in egress. Point at an ACCOUNT/principal
+# URL to auto-discover and sync ALL the user's calendars; or a single collection URL for just that one.
 # (Use `stoandl calendar disable <id>` to drop discovered calendars you don't want.)
-# Credentials are stored here in plaintext — protect this file.
-# Example (account): calendar.caldav = https://dav.example.com/dav/alice@example.com/|alice|s3cret
+#
+# The PASSWORD is NOT stored here — it goes in the system keyring (org.freedesktop.secrets) when one is
+# available and unlocked, otherwise in a 0600 `secrets` file beside this one (excluded from backups). So
+# DON'T hand-edit this key; manage accounts from the GUI (Settings → Calendars) or the CLI, which mint
+# the id and store the password securely:
+#   stoandl calendar add caldav https://dav.example.com/dav/alice@example.com/ alice  # prompts for password
+#   stoandl calendar sources        # list accounts + their ids
+#   stoandl calendar passwd <id>    # change a stored password
 calendar.caldav =
 
 # Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).

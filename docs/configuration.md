@@ -39,7 +39,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
-| `calendar.caldav` | list | _(empty)_ | CalDAV calendars, each `url\|user\|password`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
+| `calendar.caldav` | list | _(empty)_ | CalDAV accounts, each `id\|url\|username` (the **password is not here** — it's in the keyring/secrets store). **Don't hand-edit** — manage via the GUI (Settings → Calendars) or `stoandl calendar add/passwd/remove`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `classic.discover` | bool | `false` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open. Off by default. |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
@@ -305,9 +305,11 @@ calendar.discover  = yes
 # Published iCal feed URL — opt-in egress:
 calendar.ical_urls = https://example.com/cal.ics
 
-# CalDAV — url|user|password, opt-in egress. An account/principal URL auto-discovers ALL the user's
-# calendars; a single collection URL syncs just that one:
-calendar.caldav    = https://dav.example.com/dav/alice@example.com/|alice|s3cret
+# CalDAV — managed by the GUI / `stoandl calendar add` (the password goes to the keyring, not here).
+# Persisted form is `id|url|username` (no password). An account/principal URL auto-discovers ALL the
+# user's calendars; a single collection URL syncs just that one. Add one with:
+#   stoandl calendar add caldav https://dav.example.com/dav/alice@example.com/ alice   # prompts for password
+calendar.caldav    =
 
 calendar.sync_interval = 30
 ```
@@ -341,8 +343,11 @@ There is no cross-desktop calendar API, so "reuse the DE's calendars" means diff
 Point `calendar.caldav` at an **account/principal URL** and stoandl auto-discovers every calendar
 (RFC 6764/4791: `current-user-principal` → `calendar-home-set` → `PROPFIND Depth:1`) and syncs them
 all — use `stoandl calendar disable` to drop any you don't want; a single **collection URL** syncs
-just that one. Auth is **Basic only** (no Digest/OAuth), and credentials sit in `stoandl.conf` in
-plaintext — protect the file (a Secret Service/libsecret backend is a possible follow-up). RSVP
+just that one. Auth is **Basic only** (no Digest/OAuth). The **password is never stored in
+`stoandl.conf`** — it goes in the system keyring (`org.freedesktop.secrets`) when one is unlocked,
+otherwise a 0600 `secrets` file beside the config (excluded from backups); manage accounts from the GUI
+(Settings → Calendars) or `stoandl calendar add/passwd/remove`, which mint the id and store the password
+securely. RSVP
 (accept/decline from the watch) isn't wired up yet. A single edited occurrence of a recurring event
 shows at its original time (detached overrides are skipped to avoid duplicates).
 

@@ -281,10 +281,18 @@ to Clay/PKJS config) live only on the watch and are not part of this backup.
 
 stoandl syncs upcoming calendar events to the watch's **timeline** as native pins — DE-agnostically
 from local `.ics` files (reusing e.g. Calindori on Plasma Mobile via `calendar.discover`), or from
-iCal feed URLs / CalDAV. It's off until you set a `calendar.*` source in the config.
+iCal feed URLs / CalDAV. It's off until you add a source. Manage sources from the GUI
+(**Settings → Calendars**, which groups a CalDAV account's calendars under it) or the CLI; changes
+apply live (no restart). **CalDAV passwords are never stored in `stoandl.conf`** — they go in the
+system keyring (`org.freedesktop.secrets`) when one is unlocked, otherwise a 0600 `secrets` file beside
+the config (excluded from backups).
 
 ```sh
 stoandl calendar list                 # synced calendars + enabled state
+stoandl calendar sources              # editable sources (CalDAV accounts / iCal feeds / .ics) + ids
+stoandl calendar add caldav https://dav.example.com/alice/ alice   # prompts (no echo) for the password
+stoandl calendar passwd <id>          # change a stored CalDAV password
+stoandl calendar remove <id>          # drop a source (and its stored password)
 stoandl calendar disable <id|name>    # stop syncing one calendar (enable to undo)
 stoandl calendar sync                 # force a re-read now
 stoandl calendar dump <file|url>      # parse + print events offline (no daemon/watch needed)

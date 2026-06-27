@@ -137,11 +137,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import de.yoxcu.stoandl.calendar.CalDavSource
 import de.yoxcu.stoandl.calendar.CalendarSource
+import de.yoxcu.stoandl.calendar.CalendarSources
 import de.yoxcu.stoandl.calendar.DiscoverySource
 import de.yoxcu.stoandl.calendar.IcalUrlSource
 import de.yoxcu.stoandl.calendar.IcsPathSource
 import de.yoxcu.stoandl.calendar.LinuxSystemCalendar
 import de.yoxcu.stoandl.calendar.calendarDiscoveryDirs
+import de.yoxcu.stoandl.secret.FileSecretStore
+import de.yoxcu.stoandl.secret.LayeredSecretStore
+import de.yoxcu.stoandl.secret.SecretServiceStore
+import de.yoxcu.stoandl.secret.SecretStore
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
@@ -244,6 +249,18 @@ class PebbleIntegration(
     private val config: StoandlConfig get() = configStore.current()
     // Global allow/block notification filters (own file under configDir; live-mutable via D-Bus).
     private val notificationFilters = NotificationFilters(File(StoandlConfig.configDir(), "notification-filters"))
+    // Secret store for CalDAV passwords: the system keyring (org.freedesktop.secrets) when it's unlocked,
+    // else a 0600 file under the config dir (kept OUT of backups). So a password never sits in
+    // stoandl.conf or a backup tarball. Used by the live calendar sources + the source-CRUD methods.
+    private val secretStore: SecretStore =
+        LayeredSecretStore(SecretServiceStore(), FileSecretStore(File(StoandlConfig.configDir(), "secrets")))
+    // One HTTP client for the network calendar sources (iCal feeds + CalDAV), built lazily the first
+    // time a network source exists and reused across live source rebuilds.
+    private val calendarHttpClient by lazy {
+        HttpClient(CIO) {
+            install(HttpTimeout) { requestTimeoutMillis = 30_000; connectTimeoutMillis = 15_000 }
+        }
+    }
     // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
     private var mprisMusicControl: MprisMusicControl? = null
     // The health on-connect-request collector (when health.sync is on), held so applyHealth can cancel it.
@@ -338,8 +355,9 @@ class PebbleIntegration(
             scope = scope,
         )
 
-        // Build the Linux calendar source from config (null if nothing is configured). libpebble3's
-        // PhoneCalendarSyncer reads it and handles all pin creation/diffing/deletion itself.
+        // The Linux calendar reader — always built (reads its sources live from config), so a source
+        // added later via the GUI/CLI syncs with no restart. libpebble3's PhoneCalendarSyncer reads it
+        // and handles all pin creation/diffing/deletion itself.
         val calendarSync = buildCalendarSync()
         calendarSyncRef.set(calendarSync)
 
@@ -389,10 +407,11 @@ class PebbleIntegration(
             // gated live on music.enabled — it reads the config store per-event, so turning music control
             // on/off (and switching the volume target) takes effect without a restart.
             single<SystemMusicControl> { MprisMusicControl(scope, configStore).also { mprisMusicControl = it } }
-            // Replace the no-op JVM SystemCalendar with the Linux reader (when sources are configured),
-            // so PhoneCalendarSyncer turns desktop calendar events into watch timeline pins. The reader
-            // gates on calendar.enabled live (no events while off → pins removed; refresh on re-enable).
-            calendarSync?.let { cs -> single<SystemCalendar> { cs } }
+            // Replace the no-op JVM SystemCalendar with the Linux reader (always bound; it reads its
+            // sources live), so PhoneCalendarSyncer turns desktop calendar events into watch timeline
+            // pins. The reader gates on calendar.enabled live (no events while off → pins removed; refresh
+            // on re-enable) and exposes nothing until a source is configured.
+            single<SystemCalendar> { calendarSync }
             // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
             // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
             // the GeoClue client is only created when a watchapp first asks for location. Reuses the
@@ -460,9 +479,9 @@ class PebbleIntegration(
             else "Music control disabled (music.enabled=false)"
         }
         log.info {
-            if (calendarSync != null)
+            if (currentCalendarSources().isNotEmpty())
                 "Calendar sync enabled (timeline pins; refresh every ${config.calendarSyncIntervalMinutes}m + on .ics change)"
-            else "Calendar sync disabled (set calendar.ics_paths / discover / ical_urls / caldav in stoandl.conf)"
+            else "Calendar sync ready (no source configured yet — add one in the GUI or `stoandl calendar add`)"
         }
 
         log.info { "libpebble3 initialized" }
@@ -1198,35 +1217,44 @@ class PebbleIntegration(
         }
     }
 
-    /** Assemble the Linux calendar reader from config, or null when nothing is configured (then the
-     *  no-op SystemCalendar binding stays and nothing syncs) — mirrors applyWeather's gate.
-     *  Local .ics/discovery are egress-free; iCal URLs and CalDAV are opt-in egress. */
-    private fun buildCalendarSync(): LinuxSystemCalendar? {
+    /** The live Linux calendar reader, ALWAYS constructed (even with no source yet) and bound as the
+     *  SystemCalendar — so adding the FIRST source via the GUI/CLI takes effect without a restart. Its
+     *  source list + watch dirs are read live from config on each enumeration. */
+    private fun buildCalendarSync(): LinuxSystemCalendar =
+        LinuxSystemCalendar(
+            sources = ::currentCalendarSources,
+            intervalMinutes = config.calendarSyncIntervalMinutes,
+            watchDirs = ::calendarWatchDirs,
+            isEnabled = { config.calendarEnabled },
+            onSync = { stampSync("calendar") },
+        )
+
+    /** Assemble the calendar sources from the CURRENT config (read live, so source CRUD takes effect on
+     *  the next refresh). Local .ics/discovery are egress-free; iCal URLs and CalDAV are opt-in egress.
+     *  CalDAV passwords are resolved per sync from [secretStore], never from config. */
+    private fun currentCalendarSources(): List<CalendarSource> {
+        val cfg = configStore.current()
         val sources = mutableListOf<CalendarSource>()
-        if (config.calendarIcsPaths.isNotEmpty()) sources += IcsPathSource(config.calendarIcsPaths)
-        if (config.calendarDiscover) sources += DiscoverySource()
-        val needsHttp = config.calendarIcalUrls.isNotEmpty() || config.calendarCalDav.isNotEmpty()
-        val httpClient = if (needsHttp) HttpClient(CIO) {
-            install(HttpTimeout) { requestTimeoutMillis = 30_000; connectTimeoutMillis = 15_000 }
-        } else null
-        if (config.calendarIcalUrls.isNotEmpty()) {
-            sources += IcalUrlSource(config.calendarIcalUrls, httpClient!!)
-        }
-        if (config.calendarCalDav.isNotEmpty()) {
+        if (cfg.calendarIcsPaths.isNotEmpty()) sources += IcsPathSource(cfg.calendarIcsPaths)
+        if (cfg.calendarDiscover) sources += DiscoverySource()
+        if (cfg.calendarIcalUrls.isNotEmpty()) sources += IcalUrlSource(cfg.calendarIcalUrls, calendarHttpClient)
+        if (cfg.calendarCalDav.isNotEmpty()) {
             sources += CalDavSource(
-                config.calendarCalDav.map { CalDavSource.Entry(it.url, it.username, it.password) },
-                httpClient!!,
+                cfg.calendarCalDav.map { CalDavSource.Entry(it.id, it.url, it.username) },
+                calendarHttpClient, secretStore,
             )
         }
-        if (sources.isEmpty()) return null
-        // Directories to watch for near-instant updates: each ics_paths dir, the parent dir of each
-        // ics_paths file, plus the discovery dirs. Network sources rely on the periodic ticker.
-        val watchDirs = buildList {
-            config.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
-            if (config.calendarDiscover) addAll(calendarDiscoveryDirs())
+        return sources
+    }
+
+    /** Directories file-watched for near-instant .ics updates: each ics_paths dir, the parent dir of each
+     *  ics_paths file, plus the discovery dirs (from the CURRENT config). Network sources use the ticker. */
+    private fun calendarWatchDirs(): List<File> {
+        val cfg = configStore.current()
+        return buildList {
+            cfg.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
+            if (cfg.calendarDiscover) addAll(calendarDiscoveryDirs())
         }.filterNotNull().distinct()
-        return LinuxSystemCalendar(sources, config.calendarSyncIntervalMinutes, watchDirs,
-            isEnabled = { config.calendarEnabled }, onSync = { stampSync("calendar") })
     }
 
     /** Run [action] on each fresh watch connect — the false→true edge of "any device connected".
@@ -1412,7 +1440,10 @@ class PebbleIntegration(
         val weatherAvail = cfg.weatherLocations.isNotEmpty() || cfg.weatherGps ||
             cfg.weatherLocationSource != WeatherLocationSource.MANUAL
         val weatherOn = cfg.weatherEnabled && weatherSyncRef.get() != null
-        val calAvail = calendarSyncRef.get() != null
+        // "Available" = at least one source is configured (mirrors weatherAvail). The reader is always
+        // bound now, so we can't infer availability from its presence.
+        val calAvail = cfg.calendarIcsPaths.isNotEmpty() || cfg.calendarDiscover ||
+            cfg.calendarIcalUrls.isNotEmpty() || cfg.calendarCalDav.isNotEmpty()
         val calOn = cfg.calendarEnabled && calAvail
         // dnd reports its real running state (like weather/calendar): a non-off mode that failed to start
         // (no GNOME/KDE host DND backend — e.g. a headless host) is reported unavailable/"no backend", not
@@ -1470,6 +1501,27 @@ class PebbleIntegration(
         override fun getConfig(): List<String> =
             GUI_CONFIG_FIELDS.map { "${it.key}\t${it.value(configStore.current())}" }
         override fun setConfig(key: String, value: String): String = setConfigLive(key, value)
+        override fun listCalendarSources(): List<String> = CalendarSources.list(configStore.current())
+        override fun addCalendarSource(type: String, url: String, username: String, password: String): String =
+            crudCalendarSource { CalendarSources.add(type, url, username, password, configStore, StoandlConfig.configFile(), secretStore) }
+        override fun updateCalendarSource(id: String, url: String, username: String, password: String): String =
+            crudCalendarSource { CalendarSources.update(id, url, username, password, configStore, StoandlConfig.configFile(), secretStore) }
+        override fun removeCalendarSource(id: String): String =
+            crudCalendarSource { CalendarSources.remove(id, configStore, StoandlConfig.configFile(), secretStore) }
+    }
+
+    /** Run a [CalendarSources] CRUD op (it persists + reloads the store under the conf lock) then live-
+     *  re-reconcile so the change reaches the watch with no restart: a successful write triggers a
+     *  refresh (new account's calendars appear / removed account's pins drop within ~5 s). */
+    private fun crudCalendarSource(op: () -> String): String {
+        val result = try {
+            op()
+        } catch (e: Exception) {
+            log.warn(e) { "Calendar source CRUD failed" }
+            "error:${e.message ?: "failed to update calendar sources"}"
+        }
+        if (result.startsWith("ok:")) applyCalendar()
+        return result
     }
 
     private fun registerControlService() {
@@ -1541,6 +1593,13 @@ class PebbleIntegration(
             .drop(1)
             .onEach { emit(StoandlControl.LockerChanged(STOANDL_OBJECT_PATH)) }
             .launchIn(scope)
+
+        // CalendarsChanged: poke when a sync adds/drops calendars (after a source CRUD, or a periodic
+        // re-read) so the GUI re-fetches exactly when the data is ready — not racing the async sync that
+        // follows a CRUD call. The reader emits only on a real set change, so no drop(1) is needed.
+        calendarSyncRef.get()?.calendarsChanged
+            ?.onEach { emit(StoandlControl.CalendarsChanged(STOANDL_OBJECT_PATH)) }
+            ?.launchIn(scope)
 
         // health lastSync: stamp when fresh health data lands (drives GetSyncStatus's health age).
         libPebble.healthDataUpdated
@@ -2020,6 +2079,14 @@ internal interface SyncControl {
     fun getConfig(): List<String>
     /** Persist + live-apply a single GUI config key. */
     fun setConfig(key: String, value: String): String
+    /** Editable calendar sources as `id\ttype\turl\tusername\tlabel` records (never the password). */
+    fun listCalendarSources(): List<String>
+    /** Add a calendar source ([type] ∈ caldav/ical/ics); persists + re-syncs. `ok:<id>\t<backend>`. */
+    fun addCalendarSource(type: String, url: String, username: String, password: String): String
+    /** Edit a calendar source by id (blank password keeps the stored one); persists + re-syncs. */
+    fun updateCalendarSource(id: String, url: String, username: String, password: String): String
+    /** Remove a calendar source by id (and its stored password); persists + re-syncs. */
+    fun removeCalendarSource(id: String): String
 }
 
 private class StoandlControlImpl(
@@ -2096,14 +2163,28 @@ private class StoandlControlImpl(
 
     override fun ListCalendars(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
+        val cal = calendarSyncRef.get()
         return try {
-            runBlocking { lp.calendars().first() }
-                .map { "${it.id}\t${it.name}\t${if (it.enabled) "enabled" else "disabled"}" }
+            runBlocking { lp.calendars().first() }.map {
+                // The 4th column is the owning source id (accountId) so the GUI can nest calendars under
+                // their CalDAV account / iCal feed / .ics source; empty for an unknown/legacy calendar.
+                "${it.id}\t${it.name}\t${if (it.enabled) "enabled" else "disabled"}\t${cal?.accountIdFor(it.platformId) ?: ""}"
+            }
         } catch (e: Exception) {
             log.warn(e) { "ListCalendars failed" }
             emptyList()
         }
     }
+
+    override fun ListCalendarSources(): List<String> = syncControl.listCalendarSources()
+
+    override fun AddCalendarSource(type: String, url: String, username: String, password: String): String =
+        syncControl.addCalendarSource(type, url, username, password)
+
+    override fun UpdateCalendarSource(id: String, url: String, username: String, password: String): String =
+        syncControl.updateCalendarSource(id, url, username, password)
+
+    override fun RemoveCalendarSource(id: String): String = syncControl.removeCalendarSource(id)
 
     override fun SetCalendarEnabled(query: String, enabled: Boolean): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"

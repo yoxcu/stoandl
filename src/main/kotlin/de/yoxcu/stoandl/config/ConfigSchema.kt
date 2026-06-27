@@ -81,6 +81,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Name the GPS location via OSM Nominatim (sends coordinates to a web service)") { it.weatherReverseGeocode },
     toggle("geolocation.enabled", "Watchapp geolocation",
         "Expose the device's GPS to watchapps / PKJS") { it.geolocation },
+    toggle("calendar.discover", "Auto-discover local calendars",
+        "Find the desktop's local .ics calendars (Calindori, ~/.calendars). No egress.") { it.calendarDiscover },
     toggle("notification.per_app", "Per-app notifications",
         "Track apps and enforce per-app mute host-side") { it.notificationPerApp },
     toggle("music.enabled", "Music control",
