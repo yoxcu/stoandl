@@ -15,7 +15,11 @@ its sibling). `extensions.enabled` in `stoandl.conf` is the run-list; the `stoan
 it for you. There's **no sandbox and no capability config** — an extension runs as you, like any script.
 
 Overrides (optional): `extension.<name>.cmd = …` in `stoandl.conf`, or a `manifest.json` in the
-extension dir (`{ "cmd": "node index.js", "config": { … } }`) for self-contained, non-Python extensions.
+extension dir for self-contained, non-Python extensions, e.g.
+`{ "cmd": "node index.js", "config": { … }, "watchapps": ["app.pbw"], "author": "you", "version": "1.0.0" }`.
+A declared `watchapps` is **managed** — stoandl installs it on connect/enable and removes it on
+disable/uninstall (bump the `.pbw`'s version to ship an update); `author`/`version`/`description` surface
+in a GUI's plugin row. See [`../../docs/extensions.md`](../../docs/extensions.md) for the full field list.
 
 ## Files
 
@@ -39,8 +43,8 @@ extension dir (`{ "cmd": "node index.js", "config": { … } }`) for self-contain
 
 ```sh
 cd findphone && ./package.sh                 # builds the .pbw + makes findphone.tar.gz (needs the Pebble SDK)
-stoandl ext install findphone/findphone.tar.gz   # extracts to ext/findphone/, sideloads the .pbw,
-                                                 # enables + starts it — no daemon restart
+stoandl ext install findphone/findphone.tar.gz   # extracts to ext/findphone/, installs its (managed)
+                                                 # watchapp, enables + starts it — no daemon restart
 ```
 
 Open **Find My Phone** on the watch → **UP** rings the computer, **DOWN** stops it.
@@ -63,8 +67,9 @@ ext.on_initialize = start_my_service_loop      # ext.config has your extension.<
 ext.run("matrix", capabilities=["notify"])     # capabilities are informational
 ```
 
-Package it (`<name>/<name>.py` + `<name>/stoandl_ext.py`, plus a `<name>/<name>.pbw` if it has a
-watchapp) into a `.tar.gz`/`.zip` and `stoandl ext install` it.
+Package it (`<name>/<name>.py` + `<name>/stoandl_ext.py`, plus a `<name>/<name>.pbw` and a
+`manifest.json` declaring `"watchapps": ["<name>.pbw"]` if it has a watchapp) into a `.tar.gz`/`.zip`
+and `stoandl ext install` it.
 
 Rules of thumb:
 - **Never `print()`** — stdout is the protocol wire. Use `ext.log(...)` (goes to stderr → stoandl's log).

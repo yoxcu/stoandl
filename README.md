@@ -251,7 +251,8 @@ Extensions run as you, like any script — there's no sandbox. The default entry
 under `~/.config/stoandl/ext/<name>/`; per-extension settings live in that dir's `config` file (or
 override with `extension.<name>.cmd` / a bundled `manifest.json`). `examples/extensions/` vendors working
 examples, each in its own repo (submodule): a full **[Matrix](examples/extensions/matrix)** client —
-messages on the wrist + canned replies, end-to-end-encrypted — and **find-my-phone**. Set
+messages on the wrist + canned replies + on-demand image previews, end-to-end-encrypted — and
+**find-my-phone**. Set
 `extensions.enabled` to the run-list, or just use `stoandl ext`.
 
 → [docs/extensions.md](docs/extensions.md) — the wire protocol, the helper API, and how to write one.
