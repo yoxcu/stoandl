@@ -2499,7 +2499,7 @@ private class StoandlControlImpl(
                     }
                 }
             }.joinToString(",")
-            listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName)
+            listOf(p.id.toString(), p.type.code, p.order.toString(), flags, p.title, p.developerName, p.version ?: "")
                 .joinToString("\t")
         }
     }

@@ -27,12 +27,14 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -44,6 +46,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
@@ -105,6 +108,9 @@ class ExtensionManager(
                         delay(CONNECT_SETTLE_MS)
                         if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
                             running.values.forEach { it.onWatchConnected() }
+                            // (Re)install declared watchapps for enabled extensions — idempotent, off the
+                            // collector so a slow transfer doesn't stall connect/disconnect handling.
+                            scope.launch { syncDeclaredWatchapps() }
                         }
                     }
             }
@@ -173,6 +179,8 @@ class ExtensionManager(
                 if (running.containsKey(n)) "running" else "stopped",
                 configKind,
                 meta.description.replace('\t', ' ').replace('\n', ' '),
+                meta.author.replace('\t', ' ').replace('\n', ' '),
+                meta.version.replace('\t', ' ').replace('\n', ' '),
             ).joinToString("\t")
         }
     }
@@ -276,18 +284,21 @@ class ExtensionManager(
         return if (existed) "ok:Uninstalled '$n'$tail" else "ok:'$n' disabled (no files were installed)"
     }
 
-    /** If the extension bundled a `.pbw`, remove that watchapp from the watch's locker too (read its
-     *  UUID from the pbw). Best-effort — returns a status suffix. */
-    private fun removeBundledWatchapp(dir: File): String {
-        val pbw = dir.listFiles()?.firstOrNull { it.extension.equals("pbw", ignoreCase = true) } ?: return ""
+    /** On uninstall, remove the extension's watchapp(s) from the watch: declared `watchapps` if any, else a
+     *  bundled `.pbw` (legacy). Reads each pbw's UUID → removeApp. Best-effort status suffix. */
+    private fun removeBundledWatchapp(dir: File): String = removeWatchapps(declaredOrBundledPbws(dir))
+
+    /** Remove [pbws]' UUIDs from the watch's locker (best-effort status suffix). */
+    private fun removeWatchapps(pbws: List<File>): String {
+        if (pbws.isEmpty()) return ""
         val lp = libPebbleRef.get() ?: return "; its watchapp left on the watch (no watch connected)"
-        val uuid = runCatching { Uuid.parse(PbwApp(kotlinx.io.files.Path(pbw.absolutePath)).info.uuid) }.getOrNull()
-            ?: return "; couldn't read ${pbw.name} UUID (watchapp left on the watch)"
+        val uuids = pbws.mapNotNull { runCatching { Uuid.parse(PbwApp(kotlinx.io.files.Path(it.absolutePath)).info.uuid) }.getOrNull() }
+        if (uuids.isEmpty()) return "; couldn't read watchapp UUID (left on the watch)"
         return try {
-            if (runBlocking { lp.removeApp(uuid) }) "; removed its watchapp from the watch"
+            if (runBlocking { uuids.map { lp.removeApp(it) }.any { it } }) "; removed its watchapp from the watch"
             else "; watchapp removal not confirmed"
         } catch (e: Exception) {
-            log.warn(e) { "removeApp($uuid) failed" }
+            log.warn(e) { "removeApp failed" }
             "; watchapp removal failed (${e.message})"
         }
     }
@@ -296,10 +307,11 @@ class ExtensionManager(
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!File(extDir, n).isDirectory) return "error:'$n' is not installed (no ${extDir.path}/$n)"
         setEnabled(n, true)
+        val pbwMsg = sideloadBundledPbw(File(extDir, n))
         val result = when (startProcess(n)) {
-            StartResult.STARTED -> "ok:Enabled '$n'"
-            StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration; edit ${File(File(extDir, n), "config").path}, then: stoandl ext restart $n)"
-            StartResult.NO_ENTRYPOINT -> "error:Enabled '$n' but couldn't start it (no entry point?)"
+            StartResult.STARTED -> "ok:Enabled '$n'$pbwMsg"
+            StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration; edit ${File(File(extDir, n), "config").path}, then: stoandl ext restart $n)$pbwMsg"
+            StartResult.NO_ENTRYPOINT -> "error:Enabled '$n' but couldn't start it (no entry point?)$pbwMsg"
         }
         notifyChanged()
         return result
@@ -309,8 +321,11 @@ class ExtensionManager(
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
         setEnabled(n, false)
+        // Declared (managed) watchapps come off the watch on disable; an undeclared legacy bundled .pbw
+        // is left in place (it's only managed at install/uninstall time).
+        val watchMsg = removeWatchapps(declaredWatchappFiles(File(extDir, n)))
         notifyChanged()
-        return "ok:Disabled '$n'"
+        return "ok:Disabled '$n'$watchMsg"
     }
 
     fun restart(name: String): String {
@@ -400,15 +415,45 @@ class ExtensionManager(
     private fun sanitize(name: String): String? =
         name.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }
 
+    /** Install the extension's watchapp(s) on the watch: the manifest-declared `watchapps` if any, else a
+     *  single bundled `.pbw` (legacy). Idempotent via [ensureSideloaded]. Best-effort status suffix. */
     private fun sideloadBundledPbw(dir: File): String {
-        val pbw = dir.listFiles()?.firstOrNull { it.extension.equals("pbw", ignoreCase = true) } ?: return ""
-        val lp = libPebbleRef.get() ?: return "; ${pbw.name} not installed (no watch connected — `stoandl sideload` it later)"
+        val pbws = declaredOrBundledPbws(dir)
+        if (pbws.isEmpty()) return ""
+        val lp = libPebbleRef.get() ?: return "; watchapp not installed (no watch connected — `stoandl sideload` it later)"
+        val names = pbws.joinToString(", ") { it.name }
         return try {
-            val ok = runBlocking { lp.sideloadApp(kotlinx.io.files.Path(pbw.absolutePath)) }
-            if (ok) "; installed ${pbw.name} on the watch" else "; ${pbw.name} sideload failed"
+            val ok = runBlocking { pbws.map { ensureSideloaded(lp, it) }.all { it } }
+            if (ok) "; installed $names on the watch" else "; $names sideload failed"
         } catch (e: Exception) {
-            log.warn(e) { "sideload ${pbw.name} failed" }
-            "; ${pbw.name} sideload failed (${e.message})"
+            log.warn(e) { "sideload watchapp(s) in ${dir.name} failed" }
+            "; watchapp sideload failed (${e.message})"
+        }
+    }
+
+    /** Declared `watchapps` resolved to existing files in [dir]. */
+    private fun declaredWatchappFiles(dir: File): List<File> =
+        declaredWatchapps(dir).map { File(dir, it) }.filter { it.isFile }
+
+    /** The extension's watchapp pbw files: declared `watchapps` if present, else a single top-level bundled
+     *  `.pbw` (legacy back-compat for extensions that don't declare). */
+    private fun declaredOrBundledPbws(dir: File): List<File> {
+        val declared = declaredWatchappFiles(dir)
+        if (declared.isNotEmpty()) return declared
+        return listOfNotNull(dir.listFiles()?.firstOrNull { it.extension.equals("pbw", ignoreCase = true) })
+    }
+
+    /** (Re)install the declared watchapps of all enabled extensions onto the connected watch. Idempotent
+     *  ([ensureSideloaded] skips when the locker already holds the version), so it's safe on every connect.
+     *  Declared-only: an undeclared bundled `.pbw` is left to the install/enable-time legacy sideload. */
+    private suspend fun syncDeclaredWatchapps() {
+        val lp = libPebbleRef.get() ?: return
+        val enabled = runCatching { currentEnabled() }.getOrElse { emptyList() }
+        enabled.forEach { name ->
+            declaredWatchappFiles(File(extDir, name)).forEach { pbw ->
+                runCatching { ensureSideloaded(lp, pbw) }
+                    .onFailure { log.warn(it) { "[$name] watchapp sync failed for ${pbw.name}" } }
+            }
         }
     }
 
@@ -722,7 +767,7 @@ private class ExtensionProcess(
         val lp = libPebbleRef.get() ?: run { replyError(id, "no watch"); return }
         // Resolve a relative path against the extension's own dir.
         val abs = File(path).let { if (it.isAbsolute) it else File(def.workingDir, path) }
-        val ok = try { lp.sideloadApp(kotlinx.io.files.Path(abs.absolutePath)) } catch (e: Exception) { replyError(id, e.message ?: "install failed"); return }
+        val ok = try { ensureSideloaded(lp, abs) } catch (e: Exception) { replyError(id, e.message ?: "install failed"); return }
         reply(id) { put("ok", ok) }
     }
 
@@ -783,6 +828,28 @@ private class ExtensionProcess(
 }
 
 private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+/**
+ * Sideload [pbw] only when the locker doesn't already hold its UUID at the same `versionLabel`. This makes
+ * (re)install idempotent so it's safe to call on every watch connect: `sideloadApp` restamps
+ * `sideloadeTimestamp` (part of the BlobDB per-watch sync hash), so calling it when nothing changed forces
+ * a redundant re-push to the watch. The locker is the source of truth — a reset watch is re-synced from it
+ * automatically on reconnect — so skipping a no-op install can't leave the watch missing the app. Bump the
+ * .pbw's version to ship an update. Best-effort: if the version can't be read it falls back to installing.
+ * Returns true if the app is present at the bundled version afterward.
+ */
+private suspend fun ensureSideloaded(lp: LibPebble, pbw: File): Boolean {
+    val pbwPath = kotlinx.io.files.Path(pbw.absolutePath)
+    val info = runCatching { PbwApp(pbwPath).info }.getOrNull()
+    val uuid = info?.let { runCatching { Uuid.parse(it.uuid) }.getOrNull() }
+    if (info != null && uuid != null) {
+        val installed = withTimeoutOrNull(2.seconds) {
+            runCatching { lp.getLockerApp(uuid).first()?.properties?.version }.getOrNull()
+        }
+        if (installed == info.versionLabel) return true // already current — skip the redundant re-push
+    }
+    return lp.sideloadApp(pbwPath)
+}
 
 /** [NotifOwner] for an extension: forwards the user's wrist action/reply/dismiss as a JSON-RPC
  *  notification to the child (enqueued — never blocks libpebble3's action flow). The correlation token

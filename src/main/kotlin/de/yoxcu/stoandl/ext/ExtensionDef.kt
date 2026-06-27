@@ -3,6 +3,7 @@ package de.yoxcu.stoandl.ext
 import de.yoxcu.stoandl.util.LenientJson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -110,12 +111,21 @@ private class Manifest(
     val description: String,
     /** The raw `configSchema` JSON array (a typed form descriptor), or null if not declared. */
     val configSchemaJson: String?,
+    /** Bundled `.pbw` filenames (relative to the extension dir) stoandl should keep installed on the
+     *  watch for this extension — installed on connect/enable, removed on disable/uninstall. */
+    val watchapps: List<String>,
+    /** Author/developer name, for display (empty if not declared). */
+    val author: String,
+    /** Extension version string, for display (empty if not declared). */
+    val version: String,
 )
 
 /** Optional `<dir>/manifest.json`: `{ "name": …, "cmd": …, "config": {…}, "requiresConfig": true,
- *  "description": "…", "configSchema": [{key,type,label,secret?,options?}] }`. All fields optional.
- *  `requiresConfig` lets an extension declare it can't run until configured; `configSchema` (when present)
- *  declares a typed config form the GUI renders natively (its presence is the `schema` config-kind). */
+ *  "description": "…", "author": "…", "version": "…", "configSchema": [{key,type,label,secret?,options?}],
+ *  "watchapps": ["app.pbw"] }`. All fields optional; `author`/`version` are display-only.
+ *  `requiresConfig` lets an extension declare it can't run until configured;
+ *  `configSchema` (when present) declares a typed config form the GUI renders natively (its presence is
+ *  the `schema` config-kind); `watchapps` declares bundled `.pbw`s stoandl manages on the watch. */
 private fun readManifest(dir: File): Manifest? {
     val f = File(dir, "manifest.json")
     if (!f.isFile) return null
@@ -126,23 +136,38 @@ private fun readManifest(dir: File): Manifest? {
         val description = obj["description"]?.jsonPrimitive?.contentOrNull ?: ""
         // Keep the array verbatim — the GUI parses the JSON itself (ExtConfigSchema returns it as-is).
         val configSchemaJson = (obj["configSchema"] as? JsonArray)?.toString()
+        // Defensive: skip non-string elements rather than let a bad entry throw and sink the whole manifest.
+        val watchapps = (obj["watchapps"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+        val author = obj["author"]?.jsonPrimitive?.contentOrNull ?: ""
+        val version = obj["version"]?.jsonPrimitive?.contentOrNull ?: ""
         Manifest(obj["name"]?.jsonPrimitive?.contentOrNull, obj["cmd"]?.jsonPrimitive?.contentOrNull,
-            config, requiresConfig, description, configSchemaJson)
+            config, requiresConfig, description, configSchemaJson, watchapps, author, version)
     } catch (e: Exception) {
         log.warn { "Ignoring bad manifest.json in ${dir.path}: ${e.message}" }
         null
     }
 }
 
+/** The `.pbw` filenames an extension's `manifest.json` declares via `watchapps` (empty if none/no manifest).
+ *  These are the watchapps stoandl keeps installed for the extension (install on connect/enable, remove on
+ *  disable/uninstall) — as opposed to a bundled-but-undeclared `.pbw`, which is only sideloaded on install. */
+fun declaredWatchapps(dir: File): List<String> =
+    (if (dir.isDirectory) readManifest(dir) else null)?.watchapps ?: emptyList()
+
 /** The `name` declared in an extracted archive's `manifest.json`, if any (used to name the install dir). */
 fun manifestName(dir: File): String? = readManifest(dir)?.name
 
-/** GUI-surfaced manifest fields for an installed extension: a human [description] and the typed
+/** GUI-surfaced manifest fields for an installed extension: a human [description], the typed
  *  [configSchemaJson] (a JSON array of `{key,type,label,secret?,options?}`; null when no schema is
- *  declared). Both empty/null when there's no (readable) manifest. */
-data class ExtManifestMeta(val description: String, val configSchemaJson: String?)
+ *  declared), and the display [author]/[version]. All empty/null when there's no (readable) manifest. */
+data class ExtManifestMeta(
+    val description: String,
+    val configSchemaJson: String?,
+    val author: String,
+    val version: String,
+)
 
 fun readExtManifestMeta(dir: File): ExtManifestMeta {
     val m = if (dir.isDirectory) readManifest(dir) else null
-    return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson)
+    return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson, m?.author ?: "", m?.version ?: "")
 }

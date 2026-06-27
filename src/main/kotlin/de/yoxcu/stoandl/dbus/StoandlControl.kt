@@ -18,9 +18,10 @@ interface StoandlControl : DBusInterface {
     fun SideloadApp(path: String): String
 
     /** List the apps in the watch locker. Each entry is a tab-separated record:
-     *  `uuid \t type \t order \t flags \t title \t developer`, where flags is a comma-joined
+     *  `uuid \t type \t order \t flags \t title \t developer \t version`, where flags is a comma-joined
      *  subset of {active, sideloaded, config, system, synced} (`synced` = present on the watch;
-     *  system apps are always synced). Returns an empty list if libPebble is not ready. */
+     *  system apps are always synced) and version is the locker version string (empty if unknown).
+     *  Returns an empty list if libPebble is not ready. */
     fun ListApps(): List<String>
 
     /** The menu icon of the installed app/face with [uuid], extracted LOCALLY from its cached `.pbw`
@@ -308,9 +309,10 @@ interface StoandlControl : DBusInterface {
     fun DevConnectionStatus(): String
 
     /** Installed/enabled extensions, one tab-separated row each: `name \t installed|missing \t
-     *  enabled|disabled \t running|stopped \t config \t description`, where config ∈ {none, schema}
-     *  (`schema` = the manifest declares a `configSchema`; the `url` backend isn't implemented) and
-     *  description is the manifest's one-line summary (empty if none). */
+     *  enabled|disabled \t running|stopped \t config \t description \t author \t version`, where
+     *  config ∈ {none, schema} (`schema` = the manifest declares a `configSchema`; the `url` backend
+     *  isn't implemented), description is the manifest's one-line summary, and author/version are the
+     *  manifest's `author`/`version` (all empty if not declared). */
     fun ExtList(): List<String>
 
     /** Install an extension from an archive (.tar.gz/.tgz/.tar/.zip) into `<configDir>/ext/<name>/`:

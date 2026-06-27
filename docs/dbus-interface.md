@@ -149,7 +149,8 @@ relative age of the last connection.
 | `OpenConfig` | `(s) → s` | Config (Clay/PKJS) URL for a running app; empty string if none. The CLI proxies it over a local HTTP server. | `config [app]` |
 | `WebviewClose` | `(s) → ` *(void)* | Hand the saved settings JSON back to the running PKJS app after the config webview closes. | `config [app]` |
 
-`ListApps` record: `uuid \t type \t order \t flags \t title \t developer`, where `flags` is a
+`ListApps` record: `uuid \t type \t order \t flags \t title \t developer \t version` (`version` = the
+locker version string, empty if unknown), where `flags` is a
 comma-joined subset of **`{active, sideloaded, config, system, synced}`** (`active` = current
 watchface, `config` = has a Clay/PKJS config page, `system` = built-in, `sideloaded` = installed from
 a `.pbw`, `synced` = present on the watch — system apps are always synced).
@@ -286,7 +287,7 @@ ack — `ok:` means "queued", not "done".
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `ExtList` | `() → as` | Installed/enabled extensions: `name \t installed\|missing \t enabled\|disabled \t running\|stopped \t config \t description` (config ∈ {none, schema} — `schema` = the manifest declares a `configSchema`; `url` backend not implemented). | `ext list` / `ext status` (also bare `ext`) |
+| `ExtList` | `() → as` | Installed/enabled extensions: `name \t installed\|missing \t enabled\|disabled \t running\|stopped \t config \t description \t author \t version` (config ∈ {none, schema} — `schema` = the manifest declares a `configSchema`; `url` backend not implemented; author/version from the manifest, empty if absent). | `ext list` / `ext status` (also bare `ext`) |
 | `ExtInstall` | `(s) → s` | Install from an archive (`.tar.gz`/`.tgz`/`.tar`/`.zip`, absolute daemon-side path): extract, sideload bundled `.pbw`, enable, hotplug-start. | `ext install <archive>` |
 | `ExtUninstall` | `(s,b) → s` | Stop, drop from `extensions.enabled`, delete files; `keepConfig` retains the `config` file for a later reinstall. | `ext uninstall <name>` (aliases `remove`; `--keep-config`/`--delete-config`) |
 | `ExtEnable` | `(s) → s` | Add to `extensions.enabled` and hotplug-start. | `ext enable <name>` |
@@ -326,13 +327,13 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | Method | Fields |
 |---|---|
 | `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) · `transport`(ble/classic or empty) |
-| `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system,synced) · `title` · `developer` |
+| `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system,synced) · `title` · `developer` · `version` |
 | `ListWatchPrefs` | `id` · `type` · `current` · `default` · `allowed` · `flags` · `name` · `description` |
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
-| `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` |
+| `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` · `author` · `version` |
 | `GetHealthSeries` | steps bars: `label` · `steps` · `typical` · sleep timeline (day): `startFraction` · `widthFraction` · `isDeep`(0/1) · sleep bars: `label` · `totalMin` · `deepMin` · heart (day): `minuteOfDay`(0–1439) · `bpm` · heart bars: `label` · `avgBpm` |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
 | `GetConfig` | `key` · `value` |

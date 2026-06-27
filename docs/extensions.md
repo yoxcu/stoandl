@@ -57,7 +57,7 @@ with `python3`, cwd = that dir, so `import stoandl_ext` finds its sibling). `ext
 `extension.<name>.` prefix — it's already scoped) holds that extension's homeserver/tokens/options. It's
 **preserved across reinstalls** (`stoandl ext install` won't clobber it). So `stoandl.conf` stays at just
 `extensions.enabled`. Settings resolve as: a `manifest.json`'s `config` (author defaults, for a
-self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfig":true }`) **<** the `config`
+self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfig":true, "watchapps":["app.pbw"] }`) **<** the `config`
 file (the user's place) **<** an optional `extension.<name>.<key>` in `stoandl.conf` (a back-compat
 override). The launch command (`cmd`, for non-Python extensions) may come from any of those layers too.
 On install, the status line points at where to configure it (the path of the extension's `config`, and
@@ -89,7 +89,14 @@ file and no `extension.<name>.*`), the daemon **does not spawn it** — it logs 
 pushed directly to the watch), and `install`/`enable`/`restart`
 return a clear "not started — needs configuration" status instead of a fake failure. Configure it, then
 `stoandl ext restart <name>`. (Extensions whose settings are all optional, like find-my-phone's `sound`,
-omit the flag and start normally.) The usual way to add one:
+omit the flag and start normally.)
+
+**`watchapps`** (manifest): bundled `.pbw` filenames stoandl keeps installed for the extension, e.g.
+`"watchapps": ["matrix-preview.pbw"]`. Declared apps are **managed**: the daemon (re)installs them on every
+watch connect and on `enable` (idempotently — it skips the sideload when the locker already holds that
+version, so bump the `.pbw`'s version to ship an update), and **removes** them on `disable`/`uninstall`. An
+extension that bundles a `.pbw` *without* declaring it falls back to the legacy behaviour — sideloaded once
+at install, removed at uninstall, but not re-synced on connect or removed on disable. The usual way to add one:
 
 ```
 stoandl ext install findphone.tar.gz   # extract to ext/findphone/, sideload a bundled .pbw,
@@ -153,7 +160,7 @@ Callbacks (host→ext notifications, dispatched **async** — never blocking the
 {"id":12,"method":"sendAppMessage","params":{"uuid":"6f1c…",
    "data":{"0":{"t":"cstring","v":"Berlin"},"1":{"t":"uint8","v":21}}}}  // -> {"result":"ack"|"nack"|"timeout"}
 {"id":13,"method":"launchApp","params":{"uuid":"6f1c…"}}        // / stopApp   -> {"ok":true}
-{"id":14,"method":"installPbw","params":{"path":"/abs/app.pbw"}}        // -> {"ok":true}  (wraps sideloadApp)
+{"id":14,"method":"installPbw","params":{"path":"/abs/app.pbw"}}        // -> {"ok":true}  (idempotent: skips if the locker already has that UUID at the .pbw's version — safe to call on every onWatchConnected; bump the version to ship an update)
 // host -> ext (NOTIFICATION). The daemon ACKs the watch on receipt, then forwards; fire-and-forget.
 {"method":"onAppMessage","params":{"uuid":"6f1c…","transactionId":7,
    "data":{"0":{"t":"int","v":12}}}}
