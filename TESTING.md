@@ -571,7 +571,7 @@ no `.pbw`, no egress, no config — always available while a watch is connected.
 
 ---
 
-## 5.11 Firmware updates  ⚠️ UNVERIFIED (needs a watch) — ⚠️ the one genuinely risky test
+## 5.11 Firmware updates  ✅ Verified on hardware — flashed flawlessly (2026-07-01; still the highest-risk op)
 
 Flashes watch firmware over BLE. **(a)** Local sideload of a `.pbz` (`stoandl firmware <file>`); **(b)**
 GitHub check/update (`firmware check` / `update`) which downloads the bundle matching the watch's board
