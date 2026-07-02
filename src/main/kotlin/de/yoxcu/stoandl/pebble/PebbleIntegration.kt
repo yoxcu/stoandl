@@ -2367,6 +2367,26 @@ private class StoandlControlImpl(
             intervals.filter { it.isDeep }.mapNotNull { seg(it.start, it.end, true) }
     }
 
+    /** How far back Today's sleep card looks for the most recent recorded night when today has none. */
+    private val SLEEP_LOOKBACK_DAYS = 45
+
+    /** The night to show for a `day` sleep view. Only **Today** (offset 0) falls back to the most recent
+     *  recorded night (within [SLEEP_LOOKBACK_DAYS]) when today has none yet; a specific past day shows
+     *  its own (possibly empty) night. stoandl's sleep data is inherently a night-or-more behind — the
+     *  watch finalizes/hands off each night's overlay late and overlays are consume-once — so a strict
+     *  today-only window leaves the launch view perpetually empty. The GUI dates the shown night from its
+     *  wake epoch and labels it "Last recorded night", so no extra D-Bus field is needed to flag it. */
+    private suspend fun resolveSleepDay(lp: LibPebble, offset: Int, today: LocalDate, zone: ZoneId): LocalDate {
+        val requested = today.minusDays(offset.coerceAtLeast(0).toLong())
+        val requestedHas = (lp.getDailySleepSession(requested.atStartOfDay(zone).toEpochSecond())?.totalSleep ?: 0L) > 0L
+        if (offset != 0 || requestedHas) return requested
+        for (back in 1..SLEEP_LOOKBACK_DAYS) {
+            val d = requested.minusDays(back.toLong())
+            if ((lp.getDailySleepSession(d.atStartOfDay(zone).toEpochSecond())?.totalSleep ?: 0L) > 0L) return d
+        }
+        return requested
+    }
+
     override fun GetHealthSummary(periodType: String, offset: Int): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
         return runBlocking {
@@ -2398,16 +2418,21 @@ private class StoandlControlImpl(
 
             // Sleep per night across the window. For `day` we report that night; for a period the
             // avg/night (light = total − deep; Pebble has no REM). bedtime/wakeup only for `day`.
-            val nights = win.days.mapNotNull { lp.getDailySleepSession(it.atStartOfDay(zone).toEpochSecond()) }
-                .filter { it.totalSleep > 0L }
+            // For the Today card, fall back to the most recent recorded night when today has none yet
+            // (see resolveSleepDay) so the launch view isn't perpetually empty; the GUI dates it. The
+            // resolved night is reused for the sleep-derived resting HR below so the two always agree.
+            val daySleepStart = if (isDay) resolveSleepDay(lp, offset, today, zone).atStartOfDay(zone).toEpochSecond()
+                                else win.start
             val sleepTotalMin: Int; val sleepDeepMin: Int; val sleepBedtime: Long; val sleepWakeup: Long
             if (isDay) {
-                val s = nights.firstOrNull()
+                val s = lp.getDailySleepSession(daySleepStart)?.takeIf { it.totalSleep > 0L }
                 sleepTotalMin = ((s?.totalSleep ?: 0L) / 60L).toInt()
                 sleepDeepMin = ((s?.deepSleep ?: 0L) / 60L).toInt()
                 sleepBedtime = s?.firstStart ?: 0L
                 sleepWakeup = s?.lastEnd ?: 0L
             } else {
+                val nights = win.days.mapNotNull { lp.getDailySleepSession(it.atStartOfDay(zone).toEpochSecond()) }
+                    .filter { it.totalSleep > 0L }
                 val n = nights.size.coerceAtLeast(1)
                 sleepTotalMin = (nights.sumOf { it.totalSleep } / 60L / n).toInt()
                 sleepDeepMin = (nights.sumOf { it.deepSleep } / 60L / n).toInt()
@@ -2421,7 +2446,7 @@ private class StoandlControlImpl(
             val hrAvg = lp.getAverageHeartRate(win.start, win.end)?.roundToInt() ?: 0
             val hrResting: Int; val hrCurrent: Int; val hrMin: Int; val hrMax: Int
             if (isDay) {
-                hrResting = lp.getRestingHeartRate(win.start) ?: 0
+                hrResting = lp.getRestingHeartRate(daySleepStart) ?: 0
                 hrCurrent = lp.getLatestHeartRateReading()?.bpm ?: 0
                 val dayHr = lp.getHealthDataForRange(win.start, win.end).map { it.heartRate }.filter { it > 0 }
                 hrMin = dayHr.minOrNull() ?: 0
@@ -2470,7 +2495,10 @@ private class StoandlControlImpl(
                     }
                 }
                 "sleep" -> if (isDay) {
-                    sleepTimelineRows(win.start, lp.getDailySleepSession(win.start))
+                    // Same Today→most-recent-night fallback as GetHealthSummary, so the timeline and the
+                    // headline always describe the same night (see resolveSleepDay).
+                    val ds = resolveSleepDay(lp, offset, today, zone).atStartOfDay(zone).toEpochSecond()
+                    sleepTimelineRows(ds, lp.getDailySleepSession(ds))
                 } else {
                     // One bar per night: label \t totalMin \t deepMin.
                     win.days.mapIndexed { i, d ->
