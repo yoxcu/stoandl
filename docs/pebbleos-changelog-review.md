@@ -9,7 +9,7 @@ records a disposition for each, then bumps the watermark. Don't re-triage rows a
   JS-rendered Notion — `WebFetch` of it returns only "Notion"; use the JSON endpoint).
 - **Version cross-check:** `gh release list -R coredevices/PebbleOS`.
 
-**Last reviewed: v4.17.0 (2026-06-19).**
+**Last reviewed: v4.20.0 (2026-06-30).**
 
 Disposition key: 🟢 actionable · 🔵 already handled · 🟡 workaround-obviating fix / maintenance (HW re-test) · ⚪ watch-side-only · ⚫ irrelevant.
 
@@ -29,6 +29,22 @@ themes returned `verdict: confirmed`; HR + language packs were investigated by h
 | v4.17.0 | **Ukrainian language pack** (+ translation improvements) | 🟡 submodule bump + rebuild | stoandl's catalog is generated at build by `generateLanguagePackCatalog`, extracting the `LanguagePacksJson` manifest from the fork's `pebble` module (single source of truth, no checked-in JSON). Current submodule (`4caa27da`, 2026-06-17) does **not** yet list `uk_UA`. To surface it: bump libpebble3 to a commit whose `pebble` manifest includes Ukrainian (i.e. once coredevices adds the curated board/version/name metadata — the .pbl alone on binaries.rebble.io can't drive the catalog), then rebuild — **no hand-editing**. Verify with `stoandl language list` after the next bump. |
 | v4.17.0 (+v4.9.175, core) | **Health / HR**: step-tracking improvements, HR-recovery automation, HR-monitor duration, wear detection | 🔵 already handled (+ small 🟢) | Recent changelog HR items are watch-side; stoandl's health sync already ingests HR samples (datalog tag 85) and exposes resting/avg/zones. **NB:** "live HR over a Pebble GATT char" is from the *old Pebble SDK 4.3* doc, **not** this changelog — libpebble3 has **no** live-HR GATT watcher (no 0x180D/0x2A37; only `BatteryWatcher` reads a watch-hosted standard service), so a real-time stream would need a fork `HrmWatcher`. **Cheap win:** libpebble3 already has `getLatestHeartRateReading()` (latest stored sample) → a `stoandl hr` convenience is wiring-only, independent of the changelog. |
 
+### Review 2 — 2026-07-01 (watermark v4.17.0 → v4.20.0)
+
+Newest tag **v4.20.0 (2026-06-30)**. Only **v4.19.0** carries published changelog notes; the
+**v4.18.0 / v4.19.1 / v4.20.0** GitHub tags have **empty release bodies** and the Notion changelog jumps
+4.17 → 4.19, so there is nothing to triage for those three yet (re-check next run in case the notes get
+backfilled). **Nothing actionable for stoandl this round** — v4.19.0 is entirely watch-side / on-watch UX.
+
+| First seen | Changelog item(s) | Disposition | Notes |
+| --- | --- | --- | --- |
+| v4.19.0 | **Expose alarm service to apps** (apps query available alarms, read-only) | ⚪ watch-side-only | Watchapp C-SDK capability. Grounded: libpebble3 has **no** phone→watch alarm endpoint — only the Alarms *system app* UUID (`SystemAppIDs.ALARMS_APP_UUID`), a `vibeScoreAlarms` WatchPref (already listable/settable via `stoandl settings`) and on-watch `AlarmsLPM`. No host hook to wire. |
+| v4.19.0 | **GOTHIC_36 font for non-Latin text**; **RTL text-rendering fixes** | ⚪ watch-side-only | On-watch font / text rendering. Improves how non-Latin & RTL notification/UI text displays; stoandl already sends UTF-8 text — nothing to send differently. Built-in font, not a language pack. |
+| v4.19.0 | **Fixed: only the top notification got dismissed in a stack on iOS** | ⚫ irrelevant | iOS ANCS dismissal path. stoandl identifies as `OSType.Android` and dismisses via `markForDeletion` / `CloseNotification` — not the iOS path, so no effect. See `memory/stoandl-notification-dismissal-fix.md`. |
+| v4.19.0 | **Music app: show progress bar 5 s on accel tap when hidden** | ⚪ watch-side-only | On-watch Music UX. stoandl already streams now-playing position (MPRIS → `SystemMusicControl`); the display behavior is watch-side. |
+| v4.19.0 | Accelerometer sampling tweaks · Touch fixed on PR2 · other minor fixes/cleanups | ⚫ irrelevant | Sensor / hardware / internal; no host surface. |
+| v4.18.0 / v4.19.1 / v4.20.0 | *(binary tags — no published changelog notes at review time)* | ⚫ n/a | Empty GitHub release bodies; absent from the Notion changelog. Re-check next run. |
+
 ## Carry-forward actions (surfaced by this review, not yet done)
 
 - 🟡 **README tightening** (L95-96): scope the "LE-only vs BR/EDR can't coexist on one adapter" note to
@@ -40,3 +56,8 @@ themes returned `verdict: confirmed`; HR + language packs were investigated by h
   confirm Ukrainian (`uk_UA`) is present once upstream adds the curated metadata.
 - ⚪ **conf.example wording**: "surfaces nowhere" → "redundant with host-side filtering/styling" for
   `notification.sync_to_watch` (cosmetic; the setting correctly stays OFF).
+
+_Review 2 (2026-07-01, v4.18.0 → v4.20.0) added **no** new carry-forward actions — the four above (from
+Review 1) remain the only open items. Firmware updates are now **hardware-verified** (v4.19.0's advertising
+fix in PR #1441 etc. don't change that); the README-tightening + Time-2-on-v4.12+ re-test is still the
+relevant follow-up for the BLE/Classic adapter note._
