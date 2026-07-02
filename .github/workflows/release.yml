@@ -1,0 +1,112 @@
+name: CI & Release
+
+# Builds the fat JAR on every push/PR (CI gate) and, when a `v*` tag is pushed,
+# publishes a GitHub Release with the JAR, a deploy tarball, and an auto-generated
+# changelog (features / bug fixes only — see cliff.toml).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build fat JAR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `projectVersion` in build.gradle.kts runs `git describe --tags`, so the
+          # full history + tags MUST be present or the JAR is named "0.1.0-nogit".
+          fetch-depth: 0
+          submodules: false
+
+      - name: Init libpebble3 submodule (composite build)
+        # Only libpebble3 is needed to build the daemon; the gui / extension-example
+        # submodules are not part of the Gradle build.
+        run: git submodule update --init --depth 1 libs/libpebble3
+
+      - name: Set up JDKs
+        # jvmToolchain(25) compiles the code; the Gradle 8.14 daemon runs on JDK 21
+        # (the last version listed becomes JAVA_HOME). 25 is exposed to Gradle's
+        # toolchain resolver via the JAVA_HOME_25_X64 env var below.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            25
+            21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build shadowJar
+        run: >-
+          ./gradlew --no-daemon shadowJar
+          "-Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp build/libs/stoandl-*-all.jar dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stoandl-jar
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # git-cliff needs history + tags for the changelog range
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stoandl-jar
+          path: dist
+
+      - name: Build deploy tarball
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          stage="stoandl-$v"
+          mkdir -p "$stage"
+          cp dist/stoandl-*-all.jar "$stage/stoandl.jar"
+          for f in install.sh packaging/stoandl.service packaging/stoandl.conf.example; do
+            [ -f "$f" ] && cp "$f" "$stage/"
+          done
+          tar czf "dist/stoandl-$v.tar.gz" "$stage"
+
+      - name: Generate changelog
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          # Fall back to a one-line body if a tag has only skipped commits (docs/chore).
+          body: ${{ steps.cliff.outputs.content || format('Release {0}', github.ref_name) }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/stoandl-*-all.jar
+            dist/stoandl-*.tar.gz

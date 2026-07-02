@@ -1,0 +1,42 @@
+# git-cliff configuration — release changelog concentrated on features & bug fixes.
+# Commits follow Conventional Commits (feat/fix/perf/refactor/docs/chore/...).
+# feat/fix/perf/refactor are shown; docs/chore/ci/test/style/build and anything
+# non-conventional are skipped, so the release notes stay user-facing.
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | upper_first }}\
+    {% if commit.scope %} ({{ commit.scope }}){% endif %}\
+    {% if commit.breaking %} [**breaking**]{% endif %}
+{%- endfor %}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+protect_breaking_commits = true
+tag_pattern = "v[0-9]*"
+topo_order = false
+sort_commits = "newest"
+
+commit_parsers = [
+  { message = "^feat",     group = "<!-- 0 -->🚀 Features" },
+  { message = "^fix",      group = "<!-- 1 -->🐛 Bug Fixes" },
+  { message = "^perf",     group = "<!-- 2 -->⚡ Performance" },
+  { message = "^refactor", group = "<!-- 3 -->♻️ Refactor" },
+  { message = "^docs",     skip = true },
+  { message = "^chore",    skip = true },
+  { message = "^ci",       skip = true },
+  { message = "^build",    skip = true },
+  { message = "^test",     skip = true },
+  { message = "^style",    skip = true },
+  { message = ".*",        skip = true },
+]
