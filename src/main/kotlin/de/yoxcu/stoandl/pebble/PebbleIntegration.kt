@@ -27,6 +27,8 @@ import de.yoxcu.stoandl.notification.NotificationAppsControl
 import de.yoxcu.stoandl.icons.AppIconExtractor
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.support.LogsControl
+import de.yoxcu.stoandl.battery.BatteryStore
+import de.yoxcu.stoandl.battery.HeartbeatStore
 import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.health.HealthExporter
 import de.yoxcu.stoandl.weather.DeLocationSource
@@ -234,6 +236,11 @@ class PebbleIntegration(
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
     private val healthExporterRef = AtomicReference<HealthExporter?>(null)
+    // Battery insights (see docs). Heartbeat is the primary source and is fed straight from the
+    // WebServices override, so its ref is a plain field (initialised before init() wires initKoin);
+    // the GATT-level series is a fallback started/stopped by applyBattery. Both null when disabled.
+    private val batteryStoreRef = AtomicReference<BatteryStore?>(null)
+    private val heartbeatStoreRef = AtomicReference<HeartbeatStore?>(null)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
     private val calendarSyncRef = AtomicReference<LinuxSystemCalendar?>(null)
     // Held for the daemon lifetime so its host-DND backend (bus connection / gsettings monitor) and
@@ -321,7 +328,7 @@ class PebbleIntegration(
         )
         val koin = initKoin(
             defaultConfig = libPebbleConfig,
-            webServices = NoOpWebServices,
+            webServices = StoandlWebServices(heartbeatStoreRef),
             appContext = AppContext(),
             tokenProvider = NoOpTokenProvider,
             proxyTokenProvider = MutableStateFlow(null),
@@ -472,6 +479,8 @@ class PebbleIntegration(
         // Health/activity: ask the watch for fresh data on connect (libpebble3 ingests it into the
         // shared DB; nothing requests it on its own), and project that DB to readable NDJSON files.
         applyHealth()
+        // Battery insights: capture the hourly analytics heartbeat (primary) + a GATT-level fallback.
+        applyBattery()
         // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
         // injected (on the first watch connect); nothing to start here, just report the state.
         log.info {
@@ -1386,6 +1395,27 @@ class PebbleIntegration(
         healthRequestJob = onFreshConnect { libPebble.requestHealthData(fullSync = false) }
     }
 
+    /** (Re)start or stop battery-insights capture against the current config. Idempotent: rebuilds the
+     *  GATT-level fallback collector and (re)installs the heartbeat store. Called at boot and on
+     *  SetConfig("battery.*"). The heartbeat store is fed live from [StoandlWebServices] via
+     *  [heartbeatStoreRef] — nulling the ref stops decoding without touching the WebServices binding. */
+    private fun applyBattery() {
+        batteryStoreRef.getAndSet(null)?.stop()
+        if (config.batteryHistory) {
+            BatteryStore(libPebble, scope, config.batteryRetentionDays)
+                .also { batteryStoreRef.set(it); it.start() }
+        } else {
+            log.info { "Battery level history disabled (battery.history=false)" }
+        }
+        if (config.batteryHeartbeat) {
+            // Rebuild so a changed retention window takes effect; the store is passive (no scope).
+            HeartbeatStore(config.batteryRetentionDays).also { heartbeatStoreRef.set(it); it.start() }
+        } else {
+            heartbeatStoreRef.set(null)
+            log.info { "Battery analytics-heartbeat capture disabled (battery.heartbeat=false)" }
+        }
+    }
+
     /** Re-publish music now-playing after a music.* change (the bridge reads music.enabled/volume live;
      *  this nudges it so a just-flipped enable/disable takes effect at once rather than at the next track). */
     private fun applyMusic() {
@@ -1412,6 +1442,7 @@ class PebbleIntegration(
             "calendar" -> applyCalendar()
             "music" -> applyMusic()
             "health" -> applyHealth()
+            "battery" -> applyBattery()
             "dnd" -> applyDnd()
             "notifications" -> log.info { "Notification forwarding ${if (config.notificationForward) "on" else "paused"}" }
         }
@@ -1424,6 +1455,7 @@ class PebbleIntegration(
         key.startsWith("weather.") -> "weather"
         key.startsWith("music.") -> "music"
         key.startsWith("health.") -> "health"
+        key.startsWith("battery.") -> "battery"
         key == "dnd.sync" -> "dnd"
         key.startsWith("calendar.") -> "calendar"
         key == "notification.forward" -> "notifications"
@@ -1526,7 +1558,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -1780,15 +1812,22 @@ internal fun isMutedNow(item: NotificationAppItem, now: kotlin.time.Instant): Bo
     }
 }
 
-private object NoOpWebServices : WebServices {
+// No Rebble account / remote locker / cloud analytics in standalone mode — every remote method is a
+// no-op EXCEPT uploadAnalyticsHeartbeat: the watch's hourly analytics heartbeat (the same blob the
+// official app forwards to its cloud) reaches us here, and instead of dropping it we hand it to the
+// local [HeartbeatStore] (when battery.heartbeat is on) to decode the battery fields — no egress.
+private class StoandlWebServices(
+    private val heartbeatStoreRef: AtomicReference<HeartbeatStore?>,
+) : WebServices {
     override suspend fun fetchLocker() = null
-    // No Rebble account / remote locker in standalone mode: "removed from remote" is trivially
-    // true, so Locker.removeApp() proceeds to delete the local entry instead of bailing out.
+    // "removed from remote" is trivially true, so Locker.removeApp() proceeds to delete the local entry.
     override suspend fun removeFromLocker(id: Uuid) = true
     override suspend fun checkForFirmwareUpdate(watch: WatchInfo) =
         io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult.FoundNoUpdate
     override fun uploadMemfaultChunk(chunk: ByteArray, watchInfo: WatchInfo) {}
-    override fun uploadAnalyticsHeartbeat(payload: ByteArray, watchInfo: WatchInfo) {}
+    override fun uploadAnalyticsHeartbeat(payload: ByteArray, watchInfo: WatchInfo) {
+        heartbeatStoreRef.get()?.record(payload, watchInfo.serial, watchInfo.runningFwVersion.stringVersion)
+    }
 }
 
 private object NoOpTokenProvider : TokenProvider {
@@ -2104,6 +2143,10 @@ private class StoandlControlImpl(
     private val notificationAppsControl: NotificationAppsControl?,
     // Null when health.export is off (no exporter to re-project on demand).
     private val healthExporterRef: AtomicReference<HealthExporter?>,
+    // Battery insights sources: heartbeat (primary) is preferred; the GATT-level series is the fallback.
+    // Both null when their config switch is off.
+    private val batteryStoreRef: AtomicReference<BatteryStore?>,
+    private val heartbeatStoreRef: AtomicReference<HeartbeatStore?>,
     private val extensionManager: ExtensionManager,
     private val scope: CoroutineScope,
     private val pairingGate: PairingGate,
@@ -2291,6 +2334,55 @@ private class StoandlControlImpl(
         val level = dev.batteryLevel ?: return "unknown:${dev.displayName()}"
         return "ok:${dev.displayName()}\t$level"
     }
+
+    override fun BatteryHistory(watch: String, sinceEpoch: Long): String {
+        val hb = heartbeatStoreRef.get()
+        val gatt = batteryStoreRef.get()
+        if (hb == null && gatt == null) return "notready:battery history disabled"
+        val (name, serial) = resolveWatch(watch)
+        // Heartbeat is the source of truth when it has decoded data for this watch; else GATT fallback.
+        val points = if (serial != null && hb?.hasData(serial) == true) hb.history(serial, sinceEpoch)
+        else gatt?.history(name.ifBlank { watch }, sinceEpoch) ?: emptyList()
+        val body = points.joinToString("\n") {
+            "${it.ts}\t${fmtNum(it.level)}\t${it.source}\t${it.voltage?.let { v -> String.format(Locale.ROOT, "%.3f", v) } ?: ""}"
+        }
+        return "ok:$body"
+    }
+
+    override fun BatteryInsights(watch: String): String {
+        val hb = heartbeatStoreRef.get()
+        val gatt = batteryStoreRef.get()
+        if (hb == null && gatt == null) return "notready:battery insights disabled"
+        val (name, serial) = resolveWatch(watch)
+        val label = name.ifBlank { watch.ifBlank { "watch" } }
+        val ins = (if (serial != null) hb?.insights(serial) else null)
+            ?: gatt?.insights(name.ifBlank { watch })
+            ?: return "unknown:$label"
+        val volt = ins.voltage?.let { String.format(Locale.ROOT, "%.3f", it) } ?: ""
+        return "ok:$label\t${fmtNum(ins.level)}\t${if (ins.charging) 1 else 0}\t${String.format(Locale.ROOT, "%.2f", ins.dischargePerHour)}\t" +
+            "${fmtHours(ins.hoursRemaining)}\t${ins.chargeSessions7d}\t${ins.lastChargedEpoch}\t" +
+            "${fmtNum(ins.min24h)}\t${fmtNum(ins.max24h)}\t${ins.sampleCount}\t$volt\t${ins.source}"
+    }
+
+    /** Resolve a watch query to `(displayName, serial-or-null)`. Blank query → the single connected
+     *  watch. A non-blank query matches a connected watch by exact-then-substring display name; if it
+     *  matches none (e.g. querying a disconnected watch's history), the serial is null and the raw query
+     *  is used as the GATT-series key. */
+    private fun resolveWatch(query: String): Pair<String, String?> {
+        val devices = libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>().orEmpty()
+        val dev = if (query.isBlank()) devices.firstOrNull()
+        else devices.firstOrNull { it.displayName().equals(query, ignoreCase = true) }
+            ?: devices.firstOrNull { it.displayName().contains(query, ignoreCase = true) }
+        return if (dev != null) dev.displayName() to dev.watchInfo.serial else query to null
+    }
+
+    /** Integer if whole, else two decimals (heartbeat soc carries fractional centi-percent). Locale.ROOT
+     *  so the decimal point is always `.` — these strings are parsed as doubles by the CLI/GUI. */
+    private fun fmtNum(d: Double): String =
+        if (d == d.toLong().toDouble()) d.toLong().toString() else String.format(Locale.ROOT, "%.2f", d)
+
+    /** Hours-remaining for the wire: empty when unknown/charging (-1), else one decimal. */
+    private fun fmtHours(h: Double): String = if (h < 0) "" else String.format(Locale.ROOT, "%.1f", h)
 
     override fun SyncHealth(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"

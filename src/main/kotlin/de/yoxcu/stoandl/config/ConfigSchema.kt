@@ -95,6 +95,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Pull steps/sleep/HR from the watch on connect") { it.healthSync },
     toggle("health.export", "Health export",
         "Project synced health data to NDJSON files") { it.healthExport },
+    toggle("battery.heartbeat", "Battery insights",
+        "Decode the watch's hourly analytics heartbeat for voltage / time-to-empty / charge trends") { it.batteryHeartbeat },
+    toggle("battery.history", "Battery level history",
+        "Log the BLE battery level over time (fallback when the heartbeat has no data)") { it.batteryHistory },
     toggle("firmware.notify", "Firmware update alerts",
         "Notify when newer firmware is available (needs a firmware source enabled)") { it.firmwareNotify },
     combo("dnd.sync", "Do Not Disturb sync", "Mirror desktop Do Not Disturb and the watch's Quiet Time", listOf(

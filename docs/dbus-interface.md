@@ -118,6 +118,8 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `BluetoothStatus` | `() → s` | Whether host Bluetooth is on/usable: `ok:on` / `ok:off`. Tracked from libpebble3's adapter state **and** `org.bluez.GattManager1` presence (so it catches rfkill/airplane-mode, which leave `Powered=true`). The daemon already detects and logs every transition; this method just exposes the state for polling. | *(GUI)* |
 | `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery`. | `watch list` (also bare `watch`) |
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
+| `BatteryHistory` | `(s,x) → s` | Battery %-over-time series for `(watch, sinceEpoch)` (empty watch = connected). `ok:` + newline-joined `ts\tlevel\tsource\tvoltage` records (see below); `notready:` when capture is off. | `watch battery history` |
+| `BatteryInsights` | `(s) → s` | Derived insights for the GUI Battery card. `ok:` + 12 tab fields (see below), `unknown:<name>` (too little data), or `notready:`. | `watch battery insights` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
 | `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
 | `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. | (polled by `watch pair`/`watch repair`; the CLI prompts y/N on `confirm:`) |
@@ -137,6 +139,16 @@ serial \t battery \t lastSync`. `code` is the BLE-advert-name suffix (may be emp
 full `WatchColor.uiDescription` (e.g. "Pebble Time Steel - Black"); `platform` is the watch-type name
 (e.g. `BASALT`); `transport` is the human label "Bluetooth LE"/"Bluetooth Classic"; `lastSync` is a
 relative age of the last connection.
+
+`BatteryHistory` record (per line, after `ok:`): `ts \t level \t source \t voltage`. `ts` is epoch
+seconds; `level` is 0–100 % (fractional for the heartbeat source); `source` is `heartbeat`
+(primary — the watch's hourly analytics blob) or `gatt` (fallback — the BLE level); `voltage` is
+volts for the heartbeat source, empty for GATT. See [battery-insights.md](battery-insights.md).
+
+`BatteryInsights` record (after `ok:`): `name \t level \t charging(0|1) \t dischargePerHour \t
+hoursRemaining \t chargeSessions7d \t lastChargedEpoch \t min24h \t max24h \t sampleCount \t voltage \t
+source`. `hoursRemaining` is empty when unknown/charging (prefers the firmware's own `battery_tte_s`);
+`voltage` is present only for the `heartbeat` source.
 
 ### Apps & watchfaces (`stoandl apps`, `stoandl config`)
 
@@ -420,7 +432,8 @@ or egress concerns).
 *Active watch, battery, transport, known-watch list, pair/connect/repair/unpair.*
 
 **Satisfied by:** `ListWatches` (identity + state + battery snapshot), `Battery` (active watch
-level), `Connect`, `Pair`+`PairStatus`, `Repair`, `Unpair`, `WatchInfoText` (free-text details panel).
+level), `BatteryHistory`/`BatteryInsights` (trend + charging/voltage/time-to-empty), `Connect`,
+`Pair`+`PairStatus`, `Repair`, `Unpair`, `WatchInfoText` (free-text details panel).
 
 | Gap | Kind | Today | Proposed hook | Feasibility |
 |---|---|---|---|---|
@@ -431,7 +444,8 @@ level), `Connect`, `Pair`+`PairStatus`, `Repair`, `Unpair`, `WatchInfoText` (fre
 | Bluetooth adapter power / scanning state | property/signal | not exposed (checked internally) | `BluetoothStatus() → s` + `BluetoothStateChanged` | **wiring-only** — libpebble3 `Scanning.bluetoothEnabled`/`isScanningBle/Classic` StateFlows |
 | Pair progress as push (vs `PairStatus` polling) | signal | poll only | `PairStatusChanged(s status)` on each internal `pairingState` change | **wiring-only** — `pairingState` already maintained |
 | Rename / nickname a known watch | action | none | `SetWatchNickname(s watch, s nickname) → s` | **wiring-only** — `KnownPebbleDevice.setNickname()` exists |
-| Battery charging state | data | not available | *(none — not feasible)* | **unavailable** — BLE Battery Service (0x180F) is level-only; not a wiring gap |
+| Battery insights (trend, discharge rate, time-to-empty, charge cycles, voltage) | data | **shipped** | `BatteryHistory(s,x)` + `BatteryInsights(s)` | **done** — decodes the watch's hourly analytics native-heartbeat (primary; also works over Classic + backfills), with the GATT level series as fallback. See [battery-insights.md](battery-insights.md) |
+| Battery charging state | data | **shipped** (was "not feasible" over GATT) | folded into `BatteryInsights` (`charging` field) | **done** — the heartbeat's `charge_time_ms` gives a *measured* charge signal; the GATT fallback still can't (0x180F is level-only), so it infers charging from a rising level |
 
 ### Screen 2 — Apps & Faces
 

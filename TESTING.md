@@ -1246,6 +1246,50 @@ path; the GUI built for the GUI rows. The daemon/CLI rows work headless (file fa
 
 ---
 
+## 5.29 Battery insights  ⚠️ UNVERIFIED (needs a watch; Strategy B needs a live heartbeat dump)
+
+Local reimplementation of the official app's cloud "Battery" screen. **Two sources feeding one surface:**
+`battery.heartbeat` (**primary**) decodes the watch's hourly analytics `native_heartbeat_record` — state
+of charge, real voltage, the firmware's own time-to-empty, and a *measured* charge signal; it also works
+over Bluetooth Classic and backfills across disconnects. `battery.history` (**fallback**) logs the BLE
+GATT level on change, used only when the heartbeat has no decoded data for a watch. Both local-only
+(the official app forwards the same heartbeat blob to its cloud). Zero fork change — the heartbeat is
+captured in the `WebServices.uploadAnalyticsHeartbeat` override that used to drop it. See
+[docs/battery-insights.md](docs/battery-insights.md).
+
+**The load-bearing unknown is B on real hardware:** the 523-byte struct layout + offsets are verified
+against `coredevices/PebbleOS@main` source but *not* against a live watch. The decoder is strictly gated
+(`size==523 && version==1` + scale/range checks) and **captures raw on any mismatch**, so a layout
+mismatch degrades to the GATT fallback rather than emitting garbage — but confirm it actually decodes.
+
+**Prerequisites:** a connected Pebble on shipping (non-PRF) firmware; leave it connected **≥ ~1 hour** to
+receive at least one heartbeat (they're emitted hourly). For the charge tests, a charger.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.29a | Heartbeat arrives + decodes (**B**) | leave the watch connected ~1 h, then `stoandl watch battery heartbeat` | ≥1 record, each a `decoded` line: `<time>  <soc>%  <voltage>V [charging] [tte=…h]`. **No** `UNDECODED` lines. If UNDECODED: grab `stoandl watch battery heartbeat --raw`, note `size`/`version`/`build_id`, and finalize offsets against the firmware `tools/analytics_heartbeat_layout.py` for that build. |
+| 5.29b | Decoded values are sane | inspect the 5.29a output vs the watch's own battery UI | `soc` ≈ the watch's displayed % (within a few %); `voltage` in ~3.6–4.3 V; the timestamps advance ~hourly. |
+| 5.29c | Insights (heartbeat source) | `stoandl watch battery insights` | `<name> — <soc>%`, a `Voltage: … V` line, `Time remaining: ~…h` (from the firmware's `tte`), 24h range, last-charged, charge cycles, and `(source: heartbeat, N samples)`. |
+| 5.29d | Charging is *measured* (**B**) | put the watch on the charger, wait for the next heartbeat (~1 h) or trigger one, then `battery insights` | `(charging)` shown; `charge_ms>0` on the heartbeat record (`battery heartbeat`). Unlike the GATT fallback this is measured, not inferred. |
+| 5.29e | History / sparkline feed | `stoandl watch battery history --since 48h` | Oldest-first `<time>  <level>%  <source>  <voltage>` rows; heartbeat rows carry a voltage, gatt rows don't. Powers the GUI Battery card via `BatteryHistory`. |
+| 5.29f | GATT fallback works (**A**) | with `battery.heartbeat = false` set (`stoandl config battery.heartbeat false`) and a fresh level change, `battery insights` then `history` | Insights/history still work from the GATT level series (`source: gatt`), no voltage, `hoursRemaining` computed (not the firmware estimate). Confirms the feature is never empty even without B. |
+| 5.29g | Fallback charging not stuck | on the GATT fallback: charge to 100 %, unplug, wait > 45 min, `battery insights` | `charging` reads **false** after the plateau window (not stuck true) — the review fix: a stale last-rise past `CHARGING_STALE_S` is treated as a plateau, so `hoursRemaining` can estimate again. |
+| 5.29h | Live config toggle | `stoandl config battery.heartbeat false` then `true` (and same for `battery.history`); watch the log | Applies **without a restart** (`applyBattery` via reconcile). Log shows the capture enabling/disabling. GUI **Settings** shows both toggles (`GetConfigSchema`). |
+| 5.29i | Classic-transport battery (**B only**) | with a classic-era watch (Time / Time Steel) over Bluetooth Classic: `battery insights` after a heartbeat | Works from the **heartbeat** (datalog rides RFCOMM) even though `stoandl watch battery` (GATT 0x180F) is null over Classic — the one case where B is the *only* battery source. |
+| 5.29j | Retention prune | leave running past `battery.retention_days` (or set it low, e.g. `1`, and re-run) | Rows older than the window are pruned from both `<configDir>/battery/*.ndjson` and `battery/heartbeat/*.ndjson`; recent rows stay. No torn files under concurrent GUI polling (per-file locks). |
+| 5.29k | GUI Battery page | in the GUI, Watch tab → **Battery insights** row | Opens the Battery sub-page: big current %, charging/voltage/time-left hero + gauge, a battery-%-over-time chart with a **24 h / 7 days / 30 days** switcher, and trend tiles (discharge rate, charges·7d, last charged, 24h range). Live-refreshes on `WatchesChanged`. Empty/placeholder state when no data or no watch. |
+
+> **Sandbox note:** the daemon compiles clean (`compileKotlin` green). There is **no BLE/DLS radio in the
+> sandbox**, so the whole capture path — and especially whether tag-87 heartbeat frames actually traverse
+> stoandl's DLS receive path and decode at the source-derived offsets — is a hardware item. The parser
+> offsets, decode gate, insights math, and D-Bus/CLI contract were adversarially code-reviewed (4
+> dimensions + per-finding verification); the two low findings (fallback charging staleness, file-write
+> races) are fixed. The **GUI** Battery page builds clean (`cmake --build`, qmlcachegen + qmllint) and was
+> smoke-tested headless (offscreen) against the mock — it instantiates and renders the chart/tiles with no
+> runtime QML errors; only a real display + watch data remains for visual confirmation.
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

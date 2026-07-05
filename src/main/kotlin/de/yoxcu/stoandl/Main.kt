@@ -105,7 +105,7 @@ private fun printUsage() {
     println()
     println("Watch & apps")
     row("watch", "list connect pair unpair repair")
-    row("", "battery find")
+    row("", "battery [history|insights|heartbeat] find")
     row("apps", "list launch install remove")
     row("settings", "list · set <id> <value>")
     row("notif", "list mute unmute style filter")
@@ -1042,7 +1042,7 @@ private fun ctlWatch(rest: List<String>) {
         "pair" -> watchPair()
         "unpair" -> watchUnpair(rest.getOrNull(1))
         "repair" -> watchRepair(rest.getOrNull(1))
-        "battery" -> watchBattery()
+        "battery" -> ctlBattery(rest.drop(1))
         "find" -> watchFind()
         else -> {
             System.err.println("Usage: stoandl watch <list|connect <n>|pair|unpair [n]|repair <n>|battery|find>")
@@ -1110,6 +1110,21 @@ private fun watchUnpair(name: String?) = withControl { control ->
     catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
 }
 
+// `watch battery` = live level; `history`/`insights` show the recorded trend (daemon-computed);
+// `heartbeat` dumps the captured analytics heartbeats (offline file read, like `datalog`/`health dump`).
+private fun ctlBattery(rest: List<String>) {
+    when (rest.firstOrNull()?.lowercase()) {
+        null -> watchBattery()
+        "history" -> batteryHistory(rest.drop(1))
+        "insights" -> batteryInsights(rest.drop(1))
+        "heartbeat" -> batteryHeartbeat(rest.drop(1))
+        else -> {
+            System.err.println("Usage: stoandl watch battery [history|insights|heartbeat] [--watch <name>] [--since <dur>]")
+            System.exit(1)
+        }
+    }
+}
+
 private fun watchBattery() = withControl { control ->
     val resp = try { control.Battery() } catch (e: Exception) {
         System.err.println("Error: ${e.message}"); System.exit(1); return
@@ -1121,6 +1136,118 @@ private fun watchBattery() = withControl { control ->
         else -> handleStatusResponse(resp)
     }
 }
+
+/** Parse a duration like `24h`, `7d`, `90m`, `3600s` (or a bare number = seconds) to seconds. */
+private fun parseDurationSeconds(s: String): Long {
+    val t = s.trim().lowercase()
+    val num = t.dropLast(if (t.isNotEmpty() && !t.last().isDigit()) 1 else 0).toLongOrNull() ?: return 24L * 3600
+    return when (t.lastOrNull()) {
+        's' -> num
+        'm' -> num * 60
+        'h' -> num * 3600
+        'd' -> num * 86_400
+        else -> num
+    }
+}
+
+private fun batteryHistory(args: List<String>) {
+    val watch = flagValue(args, "--watch") ?: ""
+    val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
+    withControl { control ->
+        val resp = try { control.BatteryHistory(watch, since) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(resp)
+        when (kind) {
+            "ok" -> {
+                if (body.isBlank()) { println("No battery samples in that window."); return@withControl }
+                body.split('\n').forEach { line ->
+                    val f = line.split('\t')
+                    val ts = f.getOrElse(0) { "" }.toLongOrNull()
+                    val volt = f.getOrElse(3) { "" }
+                    println("  %-19s  %6s%%  %-9s %s".format(
+                        ts?.let { formatEpoch(it) } ?: "?", f.getOrElse(1) { "?" }, f.getOrElse(2) { "" },
+                        if (volt.isNotBlank()) "${volt}V" else ""))
+                }
+            }
+            else -> handleStatusResponse(resp)
+        }
+    }
+}
+
+private fun batteryInsights(args: List<String>) {
+    val watch = flagValue(args, "--watch") ?: ""
+    withControl { control ->
+        val resp = try { control.BatteryInsights(watch) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(resp)
+        when (kind) {
+            "ok" -> {
+                val f = body.split('\t')
+                val charging = f.getOrElse(2) { "0" } == "1"
+                val rate = f.getOrElse(3) { "" }
+                val hours = f.getOrElse(4) { "" }
+                val lastCharged = f.getOrElse(6) { "-1" }.toLongOrNull() ?: -1
+                val voltage = f.getOrElse(10) { "" }
+                println("${f.getOrElse(0) { "Watch" }} — ${f.getOrElse(1) { "?" }}%${if (charging) "  (charging)" else ""}")
+                if (voltage.isNotBlank()) println("  Voltage:        $voltage V")
+                if (!charging && hours.isNotBlank()) println("  Time remaining: ~$hours h")
+                if (rate.isNotBlank() && rate != "0.00") println("  Discharge rate: $rate %/h")
+                println("  24h range:      ${f.getOrElse(7) { "?" }}–${f.getOrElse(8) { "?" }}%")
+                if (lastCharged > 0) println("  Last charged:   ${relativeAge(lastCharged)}")
+                println("  Charge cycles:  ${f.getOrElse(5) { "0" }} in last 7d")
+                println("  (source: ${f.getOrElse(11) { "?" }}, ${f.getOrElse(9) { "0" }} samples)")
+            }
+            "unknown" -> println("$body: not enough battery history yet (needs a couple of samples)")
+            else -> handleStatusResponse(resp)
+        }
+    }
+}
+
+/** Dump the captured analytics heartbeats — offline, reading the per-serial NDJSON under
+ *  `<configDir>/battery/heartbeat/` directly (no daemon). Useful to confirm B decodes on the actual
+ *  hardware; `--raw` shows the raw blob (base64) so an undecodable firmware layout can be sent upstream
+ *  to finalize the offsets. */
+private fun batteryHeartbeat(args: List<String>) {
+    val watch = flagValue(args, "--watch")
+    val limit = flagValue(args, "--limit")?.toIntOrNull()?.takeIf { it > 0 } ?: 10
+    val raw = args.contains("--raw")
+    val dir = File(configDir(), "battery/heartbeat")
+    val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".ndjson") }
+        ?.filter { watch == null || it.name.removeSuffix(".ndjson").contains(watch, ignoreCase = true) }
+        ?.sortedBy { it.name } ?: emptyList()
+    if (files.isEmpty()) {
+        println("No analytics heartbeats captured yet under ${dir.path}.")
+        println("(They arrive ~hourly while the watch is connected; needs battery.heartbeat on.)")
+        return
+    }
+    files.forEach { file ->
+        val all = file.readLines().filter { it.isNotBlank() }
+        println("== ${file.name.removeSuffix(".ndjson")} (${all.size} record${if (all.size == 1) "" else "s"}, showing last ${minOf(limit, all.size)}) ==")
+        all.takeLast(limit).forEach { line ->
+            val o = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@forEach
+            fun s(k: String) = o[k]?.jsonPrimitive?.content
+            val decoded = s("decoded") == "true"
+            val rx = s("rx")?.toLongOrNull()?.let { formatEpoch(it) } ?: "?"
+            if (decoded) {
+                val charging = s("charging") == "true"
+                val tte = s("tte_s")?.toLongOrNull()?.takeIf { it > 0 }
+                    ?.let { String.format(java.util.Locale.ROOT, " tte=%.1fh", it / 3600.0) } ?: ""
+                println("  %-19s  %6s%%  %sV%s%s".format(
+                    rx, s("soc") ?: "?", s("voltage") ?: "?", if (charging) " charging" else "", tte))
+            } else {
+                println("  %-19s  UNDECODED (size=${s("size") ?: "?"} version=${s("version") ?: "?"} build=${s("build_id") ?: "?"})".format(rx))
+            }
+            if (raw) s("raw")?.let { println("      raw: $it") }
+        }
+    }
+}
+
+/** Format an epoch-second as a local `yyyy-MM-dd HH:mm` for the battery listings. */
+private fun formatEpoch(epochSeconds: Long): String =
+    LocalDateTime.ofInstant(java.time.Instant.ofEpochSecond(epochSeconds), ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
 
 private fun watchFind() = withControl { control ->
     try {

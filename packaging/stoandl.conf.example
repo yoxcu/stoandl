@@ -230,6 +230,26 @@ health.export_samples = false
 # written stay in place. Default 30.
 health.export_days = 30
 
+# ── Battery insights ─────────────────────────────────────────────────────────────────────────────
+# Record the watch's battery over time so `stoandl watch battery insights` and the GUI can show trends
+# (discharge rate, time-to-empty, charge cycles, voltage). Two local sources, both on by default:
+#
+#   battery.heartbeat — PRIMARY. Decode the watch's hourly analytics "native heartbeat" — state of
+#   charge, real voltage, the firmware's own time-to-empty, and a measured charge signal. This is the
+#   same blob the official app forwards to its cloud; stoandl decodes it locally (never uploaded) and
+#   writes it to ~/.config/stoandl/battery/heartbeat/. It also works over Bluetooth Classic and
+#   backfills across disconnects. Decoded only behind a strict firmware-layout guard, else captured raw.
+#
+#   battery.history — FALLBACK. Log the BLE battery level (integer %) whenever it changes, to
+#   ~/.config/stoandl/battery/. Used only when the heartbeat has no decoded data for a watch.
+#
+# Read with `stoandl watch battery [history|insights|heartbeat]`. Local-only — nothing is uploaded.
+battery.heartbeat = true
+battery.history = true
+
+# How many days of battery history (both sources) to keep before pruning. Default 90.
+battery.retention_days = 90
+
 # ── Bluetooth Classic (EXPERIMENTAL) ─────────────────────────────────────────────────────────────
 # Classic-era Pebbles (Pebble Time / Time Steel) use Bluetooth Classic RFCOMM/SPP as their reliable
 # native transport — BLE on these watches is a flaky firmware-side race. The BLE path is unaffected:

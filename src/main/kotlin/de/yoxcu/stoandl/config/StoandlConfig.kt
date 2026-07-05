@@ -157,6 +157,21 @@ data class StoandlConfig(
     /** How many days back the export re-projects on each update (the daily summary, activities and
      *  samples window). Older days already written stay in place. */
     val healthExportDays: Int,
+    /** Record the watch's battery over time so `stoandl battery insights` and the GUI can show trends
+     *  (discharge rate, time-to-empty, charge cycles, voltage). The **primary** source is the watch's
+     *  hourly analytics heartbeat ([batteryHeartbeat]); this switch additionally enables a lean
+     *  **fallback** that logs the BLE GATT battery level whenever it changes, used only when the
+     *  heartbeat has no decoded data for a watch. Local-only (no egress), on by default. */
+    val batteryHistory: Boolean,
+    /** Capture + decode the watch's analytics native-heartbeat — state-of-charge, real voltage, the
+     *  firmware's own time-to-empty, and a measured charge signal. This is the richer battery source
+     *  (and the only one over Bluetooth Classic / across disconnects). It writes the raw heartbeat blob
+     *  to `<configDir>/battery/heartbeat/` (local-only, never uploaded — the official app forwards the
+     *  same blob to its cloud). On by default; the blob is decoded only behind a strict firmware-layout
+     *  guard, else captured raw. */
+    val batteryHeartbeat: Boolean,
+    /** How many days of battery history (both sources) to retain before pruning. */
+    val batteryRetentionDays: Int,
     /** EXPERIMENTAL Bluetooth Classic (BR/EDR) transport for classic-era Pebbles (Time / Time Steel),
      *  whose native, reliable transport is RFCOMM/SPP — not BLE. When set, stoandl discovers these
      *  watches via a BR/EDR inquiry (during a pairing window) and auto-pairs + connects them over a
@@ -206,6 +221,7 @@ data class StoandlConfig(
         private const val DEFAULT_FIRMWARE_GITHUB_REPO = "coredevices/PebbleOS"
         private const val DEFAULT_FIRMWARE_COHORTS_URL = "https://cohorts.rebble.io"
         private const val DEFAULT_HEALTH_EXPORT_DAYS = 30
+        private const val DEFAULT_BATTERY_RETENTION_DAYS = 90
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
 
@@ -252,6 +268,9 @@ data class StoandlConfig(
             healthExport = true,
             healthExportSamples = false,
             healthExportDays = DEFAULT_HEALTH_EXPORT_DAYS,
+            batteryHistory = true,
+            batteryHeartbeat = true,
+            batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
             classicDiscover = false,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
@@ -346,6 +365,10 @@ data class StoandlConfig(
                 classicDiscover = parseBool(map["classic.discover"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
+                batteryHistory = map["battery.history"]?.let { parseBool(it) } ?: true,
+                batteryHeartbeat = map["battery.heartbeat"]?.let { parseBool(it) } ?: true,
+                batteryRetentionDays = map["battery.retention_days"]?.trim()?.toIntOrNull()
+                    ?.takeIf { it > 0 } ?: DEFAULT_BATTERY_RETENTION_DAYS,
                 dndSync = parseDndSync(map["dnd.sync"]),
                 extensionsEnabled = parseList(map["extensions.enabled"]),
                 extensionConfig = parseExtensionConfig(map),
@@ -371,6 +394,8 @@ data class StoandlConfig(
                     ", languageDownload=${cfg.languageDownload}" +
                     ", healthSync=${cfg.healthSync}, healthExport=${cfg.healthExport}" +
                     (if (cfg.healthExport) " (samples=${cfg.healthExportSamples}, days=${cfg.healthExportDays})" else "") +
+                    ", battery=history:${cfg.batteryHistory}/heartbeat:${cfg.batteryHeartbeat}" +
+                    (if (cfg.batteryHistory || cfg.batteryHeartbeat) " (retention=${cfg.batteryRetentionDays}d)" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")

@@ -166,6 +166,22 @@ interface StoandlControl : DBusInterface {
      *  `unknown:<name>` (connected but no reading yet), or `notready:<msg>` (no watch). */
     fun Battery(): String
 
+    /** Battery %-over-time series for the sparkline (see docs/battery-insights.md). [watch] selects a
+     *  watch (empty = the connected one); [sinceEpoch] filters to samples at/after that epoch-second
+     *  (0 = all). Returns `ok:` followed by newline-joined `ts\tlevel\tsource\tvoltage` records, oldest
+     *  first — `source` is `heartbeat` (primary: hourly analytics, fractional %, `voltage` in volts) or
+     *  `gatt` (fallback: BLE level, integer %, empty `voltage`). `ok:` with an empty body when the watch
+     *  has no samples yet; `notready:<msg>` when battery capture is disabled. */
+    fun BatteryHistory(watch: String, sinceEpoch: Long): String
+
+    /** Derived battery insights for the GUI Battery card. [watch] selects a watch (empty = connected).
+     *  Returns `ok:` + 12 tab-separated fields:
+     *  `name, level, charging(0|1), dischargePerHour, hoursRemaining, chargeSessions7d, lastChargedEpoch,
+     *  min24h, max24h, sampleCount, voltage, source`. `hoursRemaining`/`voltage` are empty when unknown
+     *  (`voltage` only comes from the `heartbeat` source; `hoursRemaining` prefers the firmware's own
+     *  estimate). `unknown:<name>` when there's too little data yet; `notready:<msg>` when disabled. */
+    fun BatteryInsights(watch: String): String
+
     /** Structured details for the connected watch (the GUI's watch-details dialog). Returns
      *  `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync` — transport is
      *  the human label `Bluetooth LE`/`Bluetooth Classic`; code is the BLE-name suffix (empty if none);
