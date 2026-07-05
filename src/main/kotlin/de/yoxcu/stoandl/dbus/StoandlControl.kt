@@ -182,6 +182,25 @@ interface StoandlControl : DBusInterface {
      *  estimate). `unknown:<name>` when there's too little data yet; `notready:<msg>` when disabled. */
     fun BatteryInsights(watch: String): String
 
+    /** Per-interval battery activity for the drop-per-hour bar and the notification overlay. [watch]
+     *  selects a watch (empty = connected); [sinceEpoch] filters to records at/after that epoch-second
+     *  (0 = all). Returns `ok:` + newline-joined `ts\tdrop\tnotif\tnotifDnd` records, oldest first —
+     *  `drop` is the SoC percent consumed over that interval (the firmware's own `soc_pct_drop` for the
+     *  `heartbeat` source, else the consecutive-sample delta), `notif`/`notifDnd` are the count of
+     *  notifications received that interval (total / while in Quiet Time; always 0 for the `gatt`
+     *  fallback, which carries no counters). `ok:` with an empty body when there are no records;
+     *  `notready:<msg>` when battery capture is disabled. */
+    fun BatteryActivity(watch: String, sinceEpoch: Long): String
+
+    /** Power/usage-attribution breakdown for the "what drew power" pie (heartbeat source only). [watch]
+     *  selects a watch (empty = connected); [sinceEpoch] filters records (0 = all). Returns `ok:` +
+     *  newline-joined `category\tactivityMs\tsharePct` slices, largest share first — an **estimate** of
+     *  usage (on-time × intensity for analog loads, CPU-active fraction × interval for compute), not
+     *  measured energy. Categories: Display (backlight), Vibration, Speaker, Heart rate, Bluetooth, CPU.
+     *  `ok:` with an empty body when there's no heartbeat data (e.g. GATT-only watch); `notready:<msg>`
+     *  when battery capture is disabled. */
+    fun BatteryPower(watch: String, sinceEpoch: Long): String
+
     /** Structured details for the connected watch (the GUI's watch-details dialog). Returns
      *  `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync` — transport is
      *  the human label `Bluetooth LE`/`Bluetooth Classic`; code is the BLE-name suffix (empty if none);

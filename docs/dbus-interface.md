@@ -120,6 +120,8 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
 | `BatteryHistory` | `(s,x) → s` | Battery %-over-time series for `(watch, sinceEpoch)` (empty watch = connected). `ok:` + newline-joined `ts\tlevel\tsource\tvoltage` records (see below); `notready:` when capture is off. | `watch battery history` |
 | `BatteryInsights` | `(s) → s` | Derived insights for the GUI Battery card. `ok:` + 12 tab fields (see below), `unknown:<name>` (too little data), or `notready:`. | `watch battery insights` |
+| `BatteryActivity` | `(s,x) → s` | Per-interval drop + notification counts for `(watch, sinceEpoch)`. `ok:` + newline-joined `ts\tdrop\tnotif\tnotifDnd` records (see below); `notready:` when capture is off. | `watch battery activity` |
+| `BatteryPower` | `(s,x) → s` | Estimated power/usage attribution for `(watch, sinceEpoch)` (heartbeat only). `ok:` + newline-joined `category\tactivityMs\tsharePct` slices, largest first (empty body for a GATT-only watch); `notready:`. | `watch battery power` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
 | `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
 | `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. | (polled by `watch pair`/`watch repair`; the CLI prompts y/N on `confirm:`) |
@@ -149,6 +151,17 @@ volts for the heartbeat source, empty for GATT. See [battery-insights.md](batter
 hoursRemaining \t chargeSessions7d \t lastChargedEpoch \t min24h \t max24h \t sampleCount \t voltage \t
 source`. `hoursRemaining` is empty when unknown/charging (prefers the firmware's own `battery_tte_s`);
 `voltage` is present only for the `heartbeat` source.
+
+`BatteryActivity` record (per line, after `ok:`): `ts \t drop \t notif \t notifDnd`. `ts` is epoch
+seconds; `drop` is the SoC percent consumed that interval (firmware `soc_pct_drop` for `heartbeat`, else
+the consecutive-sample delta); `notif`/`notifDnd` are notifications received that interval (total / while
+in Quiet Time — always 0 for the `gatt` fallback). Powers the GUI's drop-per-hour bar + notification
+overlay. See [battery-insights.md](battery-insights.md).
+
+`BatteryPower` record (per line, after `ok:`): `category \t activityMs \t sharePct`. Categories: Display
+(backlight), Vibration, Speaker, Heart rate, Bluetooth, CPU. An **estimate** (on-time × intensity /
+CPU-active fraction), **not measured energy** — the record has no per-subsystem mAh. Powers the GUI's
+"what drew power" pie.
 
 ### Apps & watchfaces (`stoandl apps`, `stoandl config`)
 

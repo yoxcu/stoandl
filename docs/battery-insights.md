@@ -49,6 +49,24 @@ battery block:  soc_pct:u32 @102 (÷ scale:u16 @106 = 100  → percent)
 total sizeof = 523 B  (== one uploadAnalyticsHeartbeat payload)
 ```
 
+The same 523-byte record carries 91 analytics metrics in total (the battery block is 7 of them). The
+richer views below decode a further subset on demand (`HeartbeatStore.decodeActivity`, re-read from the
+stored raw blob so it **backfills across existing history**):
+
+```
+subsystem on-time (TIMER, u32 ms):  backlight @138 | vibrator @146 | speaker @154 | hrm @174
+                                    phone_call @314 | watchface @326 | bt_connected @515
+intensity (u32 %):                  backlight @142 | vibrator_strength @150 | speaker_volume @162
+cpu residency (SCALED %, ÷ scale @+4 = 100):  cpu_running @198
+per-task cpu (SCALED %):            app @244 | worker @238 | kernel_main @226 | kernel_bg @232
+                                    bt_host @250 | bt_controller @256 | bt_hci @262
+event counts (u32):                 notification_received @302 | notification_received_dnd @306
+                                    phone_call_incoming @310
+```
+
+The full 91-metric layout is in `analytics.def`; see the `stoandl-heartbeat-record-layout` note for the
+complete offset map.
+
 ### Decode guard (defensive)
 
 The blob layout is firmware-version-specific: any reordered/added metric in `analytics.def` shifts
@@ -67,12 +85,29 @@ so the file is a lossless local capture — an unrecognized firmware build can b
 stoandl watch battery                       # live level (unchanged)
 stoandl watch battery insights [--watch N]  # summary: %, voltage, time-remaining, discharge, cycles
 stoandl watch battery history [--since 24h] [--watch N]   # the sparkline series
+stoandl watch battery activity [--since 24h] [--watch N]  # per-interval drop + notification counts
+stoandl watch battery power [--since 24h] [--watch N]     # estimated usage share (the "pie")
 stoandl watch battery heartbeat [--watch serial] [--limit N] [--raw]   # decoded heartbeats (offline)
 ```
 
-`history`/`insights` are daemon-computed (same data the GUI's Battery card reads via `BatteryHistory`/
-`BatteryInsights`). `heartbeat` reads the NDJSON files directly, so it works with no daemon — use it to
-confirm B decodes on real hardware.
+`history`/`insights`/`activity`/`power` are daemon-computed (the same data the GUI's Battery page reads
+via `BatteryHistory`/`BatteryInsights`/`BatteryActivity`/`BatteryPower`). `heartbeat` reads the NDJSON
+files directly, so it works with no daemon — use it to confirm B decodes on real hardware.
+
+## Derived charts (GUI Battery page)
+
+Three views the official cloud screen showed, rebuilt locally from the fields above — all read-side, no
+new capture, and they backfill from already-stored records:
+
+- **Battery drain (bar).** Per-interval SoC drop — the firmware's own `soc_pct_drop`, or the
+  consecutive-sample delta for the GATT fallback. `BatteryActivity`.
+- **What drew power (pie).** A usage-attribution donut: Display (backlight), Vibration, Speaker, Heart
+  rate, Bluetooth, CPU. Each is an **estimate** — on-time × intensity for analog loads, CPU-active
+  fraction × interval for compute (Bluetooth uses BT-stack CPU time, not idle-connected time). It is
+  **not measured energy**: the record carries no per-subsystem mAh. Heartbeat source only. `BatteryPower`.
+- **Notification overlay.** Faint bands on the % chart mark hours that received notifications
+  (`notification_received_count`), denser where there were more — the battery/notification correlation
+  the official combined graph hinted at. `BatteryActivity`.
 
 ## Config
 
@@ -97,5 +132,12 @@ The heartbeat layout is verified from firmware source but **not yet on hardware*
    DWARF tool for that `build_id`.
 3. **Values match.** The decoded soc / voltage should track what the watch itself reports. Charging
    (`charge_time_ms > 0`) should flip when it's on the charger.
+4. **Richer fields sanity-check.** The `activity`/`power` offsets are verified from firmware source but
+   not yet on hardware. `stoandl watch battery activity`/`power` should show plausible drops and a
+   breakdown that moves with real usage (a heavy-notification hour, backlight-heavy use, etc.). The
+   firmware console `analytics native_metrics_dump` prints key=value per metric for a direct cross-check;
+   if offsets drift for a build, gate on its `build_id`.
 
 Until confirmed, the GATT fallback keeps `insights`/`history` working, so the feature is never empty.
+The `activity` drop also works on the GATT fallback (consecutive-sample delta); `power` needs the
+heartbeat.

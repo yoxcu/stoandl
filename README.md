@@ -25,7 +25,7 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 - Captures watch screenshots to a PNG — `stoandl screenshot` — for sharing watchfaces and filing bug reports
 - Pulls watch logs and builds a support bundle — `stoandl logs` dumps the watch's firmware logs; `stoandl support` packages them with the daemon log + watch info + redacted config into a `.tar.gz` for bug reports
 - Resets the watch — `stoandl reset recovery` reboots it into recovery (PRF) firmware to un-brick a bad flash; `stoandl reset factory` wipes it back to out-of-box state
-- Reads the watch's battery — the level via `stoandl watch battery` (and inline in `stoandl watch list`), plus local **insights** (`stoandl watch battery insights`/`history`): a charge-level trend, discharge rate, time-to-empty, charge cycles and voltage, decoded from the watch's own hourly analytics heartbeat — the same data the official app graphs, computed on-device here with no cloud
+- Reads the watch's battery — the level via `stoandl watch battery` (and inline in `stoandl watch list`), plus local **insights** (`stoandl watch battery insights`/`history`): a charge-level trend, discharge rate, time-to-empty, charge cycles and voltage. Decoded from the watch's own hourly analytics heartbeat, it goes further with a per-hour **drain** bar, an estimated **power-attribution** breakdown (`stoandl watch battery power` — what drew power: display, vibration, Bluetooth, CPU, …) and a **notification-density** overlay on the charge graph — the same data the official app graphs, computed on-device here with no cloud
 - Reconnects automatically — after a watch disconnect, daemon restart, or coming back into range. BLE watches are handed to BlueZ's own background auto-connect (no polling); classic-era watches reconnect by paging the watch's fixed address (no advertising needed, so it survives airplane mode). Either way it links up on its own, with no restarts
 - Runs as a background daemon with no UI
 
@@ -109,6 +109,8 @@ stoandl watch list                 # known watches, their connection state and b
 stoandl watch battery              # the connected watch's battery level
 stoandl watch battery insights     # charge trend, discharge rate, time-to-empty, cycles, voltage
 stoandl watch battery history      # the battery %-over-time series (--since 24h / 7d / …)
+stoandl watch battery activity     # per-hour battery drain + notifications-received counts
+stoandl watch battery power        # estimated usage share: what drew power (display, radio, CPU, …)
 stoandl watch connect B349         # connect a specific known watch by name/substring (switches the active watch)
 stoandl watch repair B349          # re-pair ONE watch by name/substring (forgets just it, then pairs)
 stoandl watch unpair [name]        # forget watches on this host — all of them, or just the named one

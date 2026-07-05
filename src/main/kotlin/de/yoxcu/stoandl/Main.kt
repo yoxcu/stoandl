@@ -1117,9 +1117,11 @@ private fun ctlBattery(rest: List<String>) {
         null -> watchBattery()
         "history" -> batteryHistory(rest.drop(1))
         "insights" -> batteryInsights(rest.drop(1))
+        "activity" -> batteryActivity(rest.drop(1))
+        "power" -> batteryPower(rest.drop(1))
         "heartbeat" -> batteryHeartbeat(rest.drop(1))
         else -> {
-            System.err.println("Usage: stoandl watch battery [history|insights|heartbeat] [--watch <name>] [--since <dur>]")
+            System.err.println("Usage: stoandl watch battery [history|insights|activity|power|heartbeat] [--watch <name>] [--since <dur>]")
             System.exit(1)
         }
     }
@@ -1200,6 +1202,58 @@ private fun batteryInsights(args: List<String>) {
                 println("  (source: ${f.getOrElse(11) { "?" }}, ${f.getOrElse(9) { "0" }} samples)")
             }
             "unknown" -> println("$body: not enough battery history yet (needs a couple of samples)")
+            else -> handleStatusResponse(resp)
+        }
+    }
+}
+
+// Per-interval drop + notification counts — the data behind the GUI's drop-per-hour bar and
+// notification overlay. Handy to confirm the richer heartbeat decode on real hardware.
+private fun batteryActivity(args: List<String>) {
+    val watch = flagValue(args, "--watch") ?: ""
+    val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
+    withControl { control ->
+        val resp = try { control.BatteryActivity(watch, since) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(resp)
+        when (kind) {
+            "ok" -> {
+                if (body.isBlank()) { println("No battery activity in that window."); return@withControl }
+                body.split('\n').forEach { line ->
+                    val f = line.split('\t')
+                    val ts = f.getOrElse(0) { "" }.toLongOrNull()
+                    val dnd = f.getOrElse(3) { "0" }.toLongOrNull() ?: 0
+                    println("  %-19s  −%5s%%  %s notif%s".format(
+                        ts?.let { formatEpoch(it) } ?: "?", f.getOrElse(1) { "0" }, f.getOrElse(2) { "0" },
+                        if (dnd > 0) " ($dnd in quiet time)" else ""))
+                }
+            }
+            else -> handleStatusResponse(resp)
+        }
+    }
+}
+
+// Estimated power/usage attribution (the "what drew power" pie) as a text bar chart.
+private fun batteryPower(args: List<String>) {
+    val watch = flagValue(args, "--watch") ?: ""
+    val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
+    withControl { control ->
+        val resp = try { control.BatteryPower(watch, since) } catch (e: Exception) {
+            System.err.println("Error: ${e.message}"); System.exit(1); return
+        }
+        val (kind, body) = splitStatus(resp)
+        when (kind) {
+            "ok" -> {
+                if (body.isBlank()) { println("No power-attribution data yet (needs the hourly analytics heartbeat)."); return@withControl }
+                println("Estimated usage share (on-time × intensity — not measured energy):")
+                body.split('\n').forEach { line ->
+                    val f = line.split('\t')
+                    val share = f.getOrElse(2) { "0" }.toDoubleOrNull() ?: 0.0
+                    val bar = "█".repeat((share / 5.0).toInt().coerceIn(0, 20))
+                    println("  %-12s %6s%%  %s".format(f.getOrElse(0) { "?" }, f.getOrElse(2) { "0" }, bar))
+                }
+            }
             else -> handleStatusResponse(resp)
         }
     }

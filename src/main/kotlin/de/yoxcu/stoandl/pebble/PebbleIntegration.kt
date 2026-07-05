@@ -2364,6 +2364,43 @@ private class StoandlControlImpl(
             "${fmtNum(ins.min24h)}\t${fmtNum(ins.max24h)}\t${ins.sampleCount}\t$volt\t${ins.source}"
     }
 
+    override fun BatteryActivity(watch: String, sinceEpoch: Long): String {
+        val hb = heartbeatStoreRef.get()
+        val gatt = batteryStoreRef.get()
+        if (hb == null && gatt == null) return "notready:battery capture disabled"
+        val (name, serial) = resolveWatch(watch)
+        // Heartbeat is the source of truth when it has decoded data (firmware drop + notif counters);
+        // else derive per-sample drops from the GATT level series (no notification counters there).
+        val rows: List<BatteryActivityRow> = if (serial != null && hb?.hasData(serial) == true) {
+            val acts = hb.activity(serial, sinceEpoch)
+            acts.mapIndexed { i, a ->
+                val drop = a.socDropPct ?: (if (i > 0) (acts[i - 1].socPct - a.socPct).coerceAtLeast(0.0) else 0.0)
+                BatteryActivityRow(a.ts, drop, a.notifCount, a.notifDndCount)
+            }
+        } else {
+            val pts = gatt?.history(name.ifBlank { watch }, sinceEpoch).orEmpty()
+            pts.mapIndexed { i, p ->
+                val drop = if (i > 0) (pts[i - 1].level - p.level).coerceAtLeast(0.0) else 0.0
+                BatteryActivityRow(p.ts, drop, 0, 0)
+            }
+        }
+        val body = rows.joinToString("\n") { "${it.ts}\t${String.format(Locale.ROOT, "%.2f", it.drop)}\t${it.notif}\t${it.notifDnd}" }
+        return "ok:$body"
+    }
+
+    override fun BatteryPower(watch: String, sinceEpoch: Long): String {
+        val hb = heartbeatStoreRef.get() ?: return "notready:battery capture disabled"
+        val (_, serial) = resolveWatch(watch)
+        // Power attribution comes only from the analytics heartbeat; a GATT-only watch has no breakdown.
+        if (serial == null || !hb.hasData(serial)) return "ok:"
+        val body = hb.power(serial, sinceEpoch).joinToString("\n") {
+            "${it.category}\t${it.activityMs}\t${String.format(Locale.ROOT, "%.1f", it.sharePct)}"
+        }
+        return "ok:$body"
+    }
+
+    private data class BatteryActivityRow(val ts: Long, val drop: Double, val notif: Long, val notifDnd: Long)
+
     /** Resolve a watch query to `(displayName, serial-or-null)`. Blank query → the single connected
      *  watch. A non-blank query matches a connected watch by exact-then-substring display name; if it
      *  matches none (e.g. querying a disconnected watch's history), the serial is null and the raw query

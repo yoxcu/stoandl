@@ -37,6 +37,11 @@ private val log = KotlinLogging.logger {}
  *                                     tte_s:u32 @126 | charge_time_ms:u32 @130 | discharge_ms:u32 @134
  *     total sizeof = 523 B (== one uploadAnalyticsHeartbeat payload).
  *
+ * The same record also carries per-subsystem on-time timers, CPU residency/per-task CPU %, and event
+ * counters (notifications, etc.). Those are decoded on demand by [decodeActivity] (for the drop /
+ * power-attribution / notification views) from the stored raw blob — see `analytics.def` for the full
+ * 91-metric layout; the offsets used live in that method.
+ *
  * The blob layout is firmware-version-specific (any reordered/added metric in `analytics.def` shifts
  * every offset, and the version byte does not necessarily change). So decoding is **strictly guarded**:
  * we decode only when `size == 523 && version == 1`, the on-wire scale fields match the compile-time
@@ -132,6 +137,46 @@ class HeartbeatStore(
         )
     }
 
+    /** Decode the richer subsystem-activity + event-counter fields (drop / power / notifications), or null
+     *  when the layout isn't trusted. Same trust gate as [decode] plus the CPU-percent scale field; every
+     *  value read here lives in the same guarded 523-byte record, so it backfills from the stored raw. */
+    private fun decodeActivity(p: ByteArray): HeartbeatActivity? {
+        if (p.size != NATIVE_HB_SIZE) return null
+        if ((p[0].toInt() and 0xFF) != NATIVE_HB_VERSION) return null
+        if (p.u16le(106) != 100 || p.u16le(118) != 1000) return null
+        if (p.u16le(202) != 100) return null // cpu_running_pct scale — a mismatch signals layout drift
+        val soc = p.u32le(102) / 100.0
+        if (soc !in 0.0..100.0) return null
+        // Scaled percentages carry an inline u16 scale right after the u32 value; divide by it.
+        fun pct(o: Int): Double { val s = p.u16le(o + 4); return if (s > 0) p.u32le(o).toDouble() / s else 0.0 }
+        val dropScale = p.u16le(112)
+        val drop = if (dropScale > 0) p.u32le(108).toDouble() / dropScale else null
+        return HeartbeatActivity(
+            ts = p.u64le(1),
+            socPct = soc,
+            socDropPct = drop?.takeIf { it in 0.0..100.0 },
+            intervalMs = p.u32le(130) + p.u32le(134), // charge_time_ms + discharge_duration_ms
+            backlightMs = p.u32le(138),
+            backlightIntensityPct = p.u32le(142).toInt().coerceIn(0, 100),
+            vibratorMs = p.u32le(146),
+            vibratorStrengthPct = p.u32le(150).toInt().coerceIn(0, 100),
+            speakerMs = p.u32le(154),
+            speakerVolumePct = p.u32le(162).toInt().coerceIn(0, 100),
+            hrmMs = p.u32le(174),
+            phoneCallMs = p.u32le(314),
+            watchfaceMs = p.u32le(326),
+            btConnectedMs = p.u32le(515),
+            cpuRunningPct = pct(198),
+            cpuAppPct = pct(244),
+            cpuBtPct = pct(250) + pct(256) + pct(262), // bt_host + bt_controller + bt_hci
+            cpuWorkerPct = pct(238),
+            cpuKernelPct = pct(226) + pct(232), // kernel_main + kernel_background
+            notifCount = p.u32le(302),
+            notifDndCount = p.u32le(306),
+            phoneCallCount = p.u32le(310),
+        )
+    }
+
     /** Whether we have at least one *decoded* heartbeat for [serialQuery] — the gate the read layer uses
      *  to decide "heartbeat is the source of truth for this watch" vs. falling back to the GATT series. */
     fun hasData(serialQuery: String): Boolean = readDecoded(resolveKey(serialQuery)).isNotEmpty()
@@ -191,6 +236,42 @@ class HeartbeatStore(
         )
     }
 
+    /** Per-interval subsystem activity (drop, notifications, on-times), newest last, `ts >= sinceEpoch`.
+     *  Re-decoded from each row's stored raw blob, so it backfills across the whole retained history. */
+    fun activity(serialQuery: String, sinceEpoch: Long): List<HeartbeatActivity> =
+        readRaw(resolveKey(serialQuery)).mapNotNull { decodeActivity(it) }
+            .filter { it.ts >= sinceEpoch }.sortedBy { it.ts }
+
+    /**
+     * Aggregate the window's subsystem activity into a power/usage-attribution breakdown (the pie).
+     *
+     * Each subsystem's contribution is an **active-time proxy**: analog loads by on-time × intensity
+     * (backlight/speaker) or raw on-time (vibration/HRM), compute by CPU-active fraction × interval
+     * (`task_cpu_*_pct`). BT uses the BT-stack CPU time (`bt_host+controller+hci`), not the connected
+     * on-time — an idle-but-connected link draws little, so connected time would dominate misleadingly.
+     * Shares are of the total. This is a usage estimate, not measured energy (see [PowerSlice]).
+     * Returns slices sorted by share desc, dropping zero contributors; empty when there's no data.
+     */
+    fun power(serialQuery: String, sinceEpoch: Long): List<PowerSlice> {
+        val rows = activity(serialQuery, sinceEpoch)
+        if (rows.isEmpty()) return emptyList()
+        val acc = LinkedHashMap<String, Double>() // insertion order = stable legend order on ties
+        fun add(cat: String, v: Double) { if (v > 0) acc[cat] = (acc[cat] ?: 0.0) + v }
+        for (r in rows) {
+            val period = if (r.intervalMs > 0) r.intervalMs.toDouble() else HEARTBEAT_PERIOD_MS
+            add(CAT_DISPLAY, r.backlightMs * (r.backlightIntensityPct / 100.0))
+            add(CAT_VIBRATION, r.vibratorMs.toDouble()) // motor on-time (short, high-draw bursts)
+            add(CAT_SPEAKER, r.speakerMs * (r.speakerVolumePct / 100.0))
+            add(CAT_HRM, r.hrmMs.toDouble())
+            add(CAT_BLUETOOTH, (r.cpuBtPct / 100.0) * period)
+            add(CAT_CPU, ((r.cpuAppPct + r.cpuWorkerPct + r.cpuKernelPct) / 100.0) * period)
+        }
+        val total = acc.values.sum()
+        if (total <= 0) return emptyList()
+        return acc.entries.map { PowerSlice(it.key, it.value.toLong(), 100.0 * it.value / total) }
+            .sortedByDescending { it.sharePct }
+    }
+
     // ---- internals -----------------------------------------------------------------------------
 
     private data class HbRow(
@@ -214,6 +295,21 @@ class HeartbeatStore(
                     chargeMs = o["charge_ms"]?.jsonPrimitive?.long ?: 0L,
                     charging = o["charging"]?.jsonPrimitive?.booleanOrNull ?: false,
                 )
+            }.getOrNull()
+        }
+    }
+
+    /** The raw (base64-decoded) blob of every stored record for [key], in file order. Used by
+     *  [activity]/[power] to re-decode the richer fields retroactively — every row keeps its raw bytes. */
+    private fun readRaw(key: String): List<ByteArray> {
+        val file = File(baseDir, "$key.ndjson")
+        if (!file.isFile) return emptyList()
+        return BatteryFileLocks.withLock(file) { file.readLines() }.mapNotNull { raw ->
+            val line = raw.trim()
+            if (line.isEmpty()) return@mapNotNull null
+            runCatching {
+                val b64 = Json.parseToJsonElement(line).jsonObject["raw"]?.jsonPrimitive?.content ?: return@runCatching null
+                Base64.getDecoder().decode(b64)
             }.getOrNull()
         }
     }
@@ -246,6 +342,16 @@ class HeartbeatStore(
         private const val DAY_S = 24L * 3600
         private const val WEEK_S = 7L * DAY_S
         private const val RATE_WINDOW_S = DAY_S
+        private const val HEARTBEAT_PERIOD_MS = 3_600_000.0 // firmware HEARTBEAT_PERIOD_SEC, ms
+
+        // Power/usage-attribution categories (see `power`). Display is proxied by the backlight (the
+        // record has no display-on-time metric); Bluetooth is the BT-stack CPU time.
+        internal const val CAT_DISPLAY = "Display"
+        internal const val CAT_VIBRATION = "Vibration"
+        internal const val CAT_SPEAKER = "Speaker"
+        internal const val CAT_HRM = "Heart rate"
+        internal const val CAT_BLUETOOTH = "Bluetooth"
+        internal const val CAT_CPU = "CPU"
 
         // native_heartbeat_record layout (coredevices/PebbleOS@main, PACKED little-endian).
         private const val NATIVE_HB_VERSION = 1

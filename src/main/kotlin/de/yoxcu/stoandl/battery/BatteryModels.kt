@@ -63,6 +63,58 @@ data class BatteryInsights(
     val source: String,
 )
 
+/**
+ * Per-interval subsystem activity + event counters decoded from one native-heartbeat record — the
+ * richer fields beyond the battery block. These power the drop-per-hour bar, the power-attribution
+ * breakdown and the notification overlay. Every field is already present in the record stoandl stores
+ * raw (base64), so [HeartbeatStore.activity] re-decodes them across the whole retained history — no new
+ * capture, retroactive by construction.
+ *
+ * On-times are milliseconds within the (~1 h) heartbeat interval; percentages are 0–100. CPU per-task
+ * percentages are the firmware's `task_cpu_*_pct` (BT is `bt_host + bt_controller + bt_hci`, kernel is
+ * `kernel_main + kernel_background`).
+ */
+data class HeartbeatActivity(
+    /** The watch's own record timestamp (epoch seconds). */
+    val ts: Long,
+    /** State of charge at the record, 0–100 %. */
+    val socPct: Double,
+    /** Firmware's own SoC drop over the interval, percent; null when absent/implausible. */
+    val socDropPct: Double?,
+    /** Wall time the record covers, ms (`charge_time_ms + discharge_duration_ms`); ~3.6e6 for a full hour. */
+    val intervalMs: Long,
+    val backlightMs: Long,
+    val backlightIntensityPct: Int,
+    val vibratorMs: Long,
+    val vibratorStrengthPct: Int,
+    val speakerMs: Long,
+    val speakerVolumePct: Int,
+    val hrmMs: Long,
+    val phoneCallMs: Long,
+    val watchfaceMs: Long,
+    /** BT connected on-time, ms (`connectivity_connected_time_ms`). */
+    val btConnectedMs: Long,
+    val cpuRunningPct: Double,
+    val cpuAppPct: Double,
+    val cpuBtPct: Double,
+    val cpuWorkerPct: Double,
+    val cpuKernelPct: Double,
+    /** Notifications the watch received this interval (`notification_received_count`). */
+    val notifCount: Long,
+    /** Of those, ones received while in Quiet Time (`notification_received_dnd_count`). */
+    val notifDndCount: Long,
+    val phoneCallCount: Long,
+)
+
+/**
+ * One slice of the power/usage-attribution breakdown (the "what drew power" pie). [activityMs] is the
+ * subsystem's intensity-weighted active-time proxy summed over the window; [sharePct] is its share of
+ * the total. This is a **usage estimate** (on-time × intensity for analog loads, CPU-active fraction ×
+ * interval for compute) — NOT measured energy: the record carries no per-subsystem mAh. "Display" is
+ * proxied by the backlight (the record has no display-on-time metric).
+ */
+data class PowerSlice(val category: String, val activityMs: Long, val sharePct: Double)
+
 /** The latest decoded battery fields from a single native-heartbeat record. */
 data class BatterySnapshot(
     /** The watch's own record timestamp (epoch seconds). */
