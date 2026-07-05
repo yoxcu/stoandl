@@ -193,6 +193,12 @@ JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew shadowJar   # → build/libs/st
 If your default `java` is already JDK 21, the `JAVA_HOME=` prefix is unnecessary. (`install.sh`
 applies this pin for you via `BUILD_JAVA_HOME`.)
 
+**Releases.** CI (`.github/workflows/release.yml`) builds the fat JAR on every push, and pushing a
+`v*` tag publishes a GitHub Release with the JAR, a deploy tarball (jar + service + `install.sh` +
+`conf.example`), and an auto-generated changelog (features / bug fixes). The version is derived from
+`git describe --tags`, so the JAR is named for the tag. The Kirigami GUI ([`gui/`](gui/), a separate
+repo) has its own release pipeline shipping a Flatpak — see its README.
+
 ## Run
 
 The daemon requires a **JDK 25** runtime (see [Requirements](#requirements)). `gradlew` itself still
