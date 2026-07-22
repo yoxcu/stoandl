@@ -243,32 +243,62 @@ class HeartbeatStore(
             .filter { it.ts >= sinceEpoch }.sortedBy { it.ts }
 
     /**
-     * Aggregate the window's subsystem activity into a power/usage-attribution breakdown (the pie).
+     * Aggregate the window's subsystem activity into a battery-drain attribution breakdown (the pie).
      *
-     * Each subsystem's contribution is an **active-time proxy**: analog loads by on-time × intensity
-     * (backlight/speaker) or raw on-time (vibration/HRM), compute by CPU-active fraction × interval
-     * (`task_cpu_*_pct`). BT uses the BT-stack CPU time (`bt_host+controller+hci`), not the connected
-     * on-time — an idle-but-connected link draws little, so connected time would dominate misleadingly.
-     * Shares are of the total. This is a usage estimate, not measured energy (see [PowerSlice]).
-     * Returns slices sorted by share desc, dropping zero contributors; empty when there's no data.
+     * Two steps. **(1) Energy model:** each subsystem's active time is weighted by an estimated average
+     * current ([MA_BACKLIGHT] etc.) to turn "time on" into "charge drawn" (mA × on-time ∝ energy) —
+     * analog loads by on-time × intensity (backlight/speaker) or raw on-time (vibration/HRM), compute by
+     * CPU-active fraction × interval. BT uses the BT-stack CPU time (`bt_host+controller+hci`), not the
+     * connected on-time (an idle-but-connected link draws little). A [CAT_SYSTEM] floor
+     * ([MA_SYSTEM] × the whole interval) models the always-on baseline (MCU sleep, LCD retention), so
+     * measured drain has somewhere to go other than the load that merely happens to be on the longest.
+     *
+     * **(2) Anchor to measured drain:** each interval's own measured SoC drop (`soc_pct_drop`) is split
+     * across its subsystems by their charge weight, and the results summed. So [PowerSlice.estDrainPct]
+     * is a real percent of battery (all slices sum to the window's measured drop) and [PowerSlice.sharePct]
+     * is its share of it. A window with no measured discharge (all charging) falls back to the unanchored
+     * charge model for the shares, reporting `estDrainPct = 0` (no measured magnitude to give).
+     *
+     * Still an estimate, not metered energy: currents are representative constants (see [MA_SYSTEM]) and
+     * drain in intervals with no modeled activity isn't attributed. Returns slices sorted by share desc,
+     * dropping zero contributors; empty when there's no data.
      */
     fun power(serialQuery: String, sinceEpoch: Long): List<PowerSlice> {
         val rows = activity(serialQuery, sinceEpoch)
         if (rows.isEmpty()) return emptyList()
-        val acc = LinkedHashMap<String, Double>() // insertion order = stable legend order on ties
-        fun add(cat: String, v: Double) { if (v > 0) acc[cat] = (acc[cat] ?: 0.0) + v }
+        // drain: measured SoC drop (%) apportioned by the energy model (the anchored, honest number).
+        // model: raw modeled charge (mA·ms), the fallback for windows with no measured discharge.
+        // Insertion order = stable legend order on ties.
+        val drain = LinkedHashMap<String, Double>()
+        val model = LinkedHashMap<String, Double>()
+        fun accum(map: LinkedHashMap<String, Double>, cat: String, v: Double) {
+            if (v > 0) map[cat] = (map[cat] ?: 0.0) + v
+        }
         for (r in rows) {
             val period = if (r.intervalMs > 0) r.intervalMs.toDouble() else HEARTBEAT_PERIOD_MS
-            add(CAT_DISPLAY, r.backlightMs * (r.backlightIntensityPct / 100.0))
-            add(CAT_VIBRATION, r.vibratorMs.toDouble()) // motor on-time (short, high-draw bursts)
-            add(CAT_SPEAKER, r.speakerMs * (r.speakerVolumePct / 100.0))
-            add(CAT_HRM, r.hrmMs.toDouble())
-            add(CAT_BLUETOOTH, (r.cpuBtPct / 100.0) * period)
-            add(CAT_CPU, ((r.cpuAppPct + r.cpuWorkerPct + r.cpuKernelPct) / 100.0) * period)
+            // Per-subsystem modeled charge for this interval (mA × on-time ∝ energy).
+            val q = LinkedHashMap<String, Double>()
+            fun draw(cat: String, onMs: Double, mA: Double) { if (onMs > 0 && mA > 0) q[cat] = mA * onMs }
+            draw(CAT_SYSTEM, period, MA_SYSTEM) // always-on floor across the whole interval
+            draw(CAT_DISPLAY, r.backlightMs * (r.backlightIntensityPct / 100.0), MA_BACKLIGHT)
+            draw(CAT_VIBRATION, r.vibratorMs.toDouble(), MA_VIBRATION)
+            draw(CAT_SPEAKER, r.speakerMs * (r.speakerVolumePct / 100.0), MA_SPEAKER)
+            draw(CAT_HRM, r.hrmMs.toDouble(), MA_HRM)
+            draw(CAT_BLUETOOTH, (r.cpuBtPct / 100.0) * period, MA_BLE)
+            draw(CAT_CPU, ((r.cpuAppPct + r.cpuWorkerPct + r.cpuKernelPct) / 100.0) * period, MA_CPU)
+            val qTotal = q.values.sum()
+            if (qTotal <= 0) continue
+            for ((c, v) in q) accum(model, c, v)
+            // Anchor: apportion this interval's measured drop across subsystems by their charge weight.
+            val drop = r.socDropPct ?: 0.0
+            if (drop > 0) for ((c, v) in q) accum(drain, c, drop * v / qTotal)
         }
-        val total = acc.values.sum()
+        val anchored = drain.values.sum() > 0
+        val src = if (anchored) drain else model
+        val total = src.values.sum()
         if (total <= 0) return emptyList()
-        return acc.entries.map { PowerSlice(it.key, it.value.toLong(), 100.0 * it.value / total) }
+        return src.entries
+            .map { PowerSlice(it.key, if (anchored) it.value else 0.0, 100.0 * it.value / total) }
             .sortedByDescending { it.sharePct }
     }
 
@@ -344,14 +374,33 @@ class HeartbeatStore(
         private const val RATE_WINDOW_S = DAY_S
         private const val HEARTBEAT_PERIOD_MS = 3_600_000.0 // firmware HEARTBEAT_PERIOD_SEC, ms
 
-        // Power/usage-attribution categories (see `power`). Display is proxied by the backlight (the
-        // record has no display-on-time metric); Bluetooth is the BT-stack CPU time.
+        // Battery-drain attribution categories (see `power`). Display is proxied by the backlight (the
+        // record has no display-on-time metric); Bluetooth is the BT-stack CPU time; System is the
+        // always-on floor (MCU sleep + LCD retention) that would otherwise be misattributed to the
+        // load with the longest on-time.
+        internal const val CAT_SYSTEM = "System"
         internal const val CAT_DISPLAY = "Display"
         internal const val CAT_VIBRATION = "Vibration"
         internal const val CAT_SPEAKER = "Speaker"
         internal const val CAT_HRM = "Heart rate"
         internal const val CAT_BLUETOOTH = "Bluetooth"
         internal const val CAT_CPU = "CPU"
+
+        // Representative average current per subsystem, milliamps — the power model. The record carries
+        // only on-time / CPU-residency, never energy, so we weight each subsystem's active time by an
+        // estimated draw to turn "time on" into "charge drawn" (mA × on-time ∝ energy). These are
+        // ESTIMATES for a Pebble-class device (single-cell ~150 mAh, Cortex-M MCU) — representative,
+        // not metered. Only the *ratios* between them shape the pie (the absolute magnitude is fixed by
+        // the measured SoC drop we anchor to), and getting them wrong only re-skews shares — it never
+        // touches the lossless raw capture. Tune against a hardware `analytics native_metrics_dump` or
+        // the official app's own breakdown. Set MA_SYSTEM = 0.0 to drop the always-on baseline slice.
+        private const val MA_SYSTEM = 1.0     // always-on floor: MCU sleep + Sharp-LCD retention + RTC
+        private const val MA_BACKLIGHT = 25.0 // backlight LED at full intensity (scaled by intensity %)
+        private const val MA_VIBRATION = 80.0 // ERM vibration motor (short, high-draw bursts)
+        private const val MA_SPEAKER = 30.0   // speaker at full volume (scaled by volume %)
+        private const val MA_HRM = 2.0        // PPG optical HR front-end (pulsed LED + AFE), averaged
+        private const val MA_BLE = 8.0        // BLE radio averaged over BT-stack active CPU time
+        private const val MA_CPU = 12.0       // MCU running non-BT tasks, averaged over active CPU time
 
         // native_heartbeat_record layout (coredevices/PebbleOS@main, PACKED little-endian).
         private const val NATIVE_HB_VERSION = 1

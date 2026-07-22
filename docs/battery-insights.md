@@ -86,7 +86,7 @@ stoandl watch battery                       # live level (unchanged)
 stoandl watch battery insights [--watch N]  # summary: %, voltage, time-remaining, discharge, cycles
 stoandl watch battery history [--since 24h] [--watch N]   # the sparkline series
 stoandl watch battery activity [--since 24h] [--watch N]  # per-interval drop + notification counts
-stoandl watch battery power [--since 24h] [--watch N]     # estimated usage share (the "pie")
+stoandl watch battery power [--since 24h] [--watch N]     # estimated battery-drain attribution (the "pie")
 stoandl watch battery heartbeat [--watch serial] [--limit N] [--raw]   # decoded heartbeats (offline)
 ```
 
@@ -101,10 +101,29 @@ new capture, and they backfill from already-stored records:
 
 - **Battery drain (bar).** Per-interval SoC drop — the firmware's own `soc_pct_drop`, or the
   consecutive-sample delta for the GATT fallback. `BatteryActivity`.
-- **What drew power (pie).** A usage-attribution donut: Display (backlight), Vibration, Speaker, Heart
-  rate, Bluetooth, CPU. Each is an **estimate** — on-time × intensity for analog loads, CPU-active
-  fraction × interval for compute (Bluetooth uses BT-stack CPU time, not idle-connected time). It is
-  **not measured energy**: the record carries no per-subsystem mAh. Heartbeat source only. `BatteryPower`.
+- **What drew power (pie).** A battery-drain attribution donut: System (always-on floor), Display
+  (backlight), Vibration, Speaker, Heart rate, Bluetooth, CPU. Built in two steps: **(1)** each
+  subsystem's active time is weighted by an estimated average current (`MA_*` in `HeartbeatStore`) to
+  turn on-time into charge drawn (on-time × intensity for analog loads, CPU-active fraction × interval
+  for compute; Bluetooth uses BT-stack CPU time, not idle-connected time); **(2)** each interval's own
+  measured `soc_pct_drop` is split across its subsystems by that weight, so the slices sum to the
+  window's real measured drain (`estDrainPct`, percent of battery) and `sharePct` is each one's share.
+  A window with no measured discharge falls back to the unanchored charge model (`estDrainPct = 0`).
+  Still an **estimate**, not metered energy: the record carries no per-subsystem mAh, and the currents
+  are representative constants — see the power-model note below. Heartbeat source only. `BatteryPower`.
+
+  > **Power model (tunable estimate).** The record carries only on-time / CPU-residency, never energy,
+  > so `power()` weights each subsystem by a representative average current (`MA_SYSTEM`, `MA_BACKLIGHT`,
+  > `MA_VIBRATION`, `MA_SPEAKER`, `MA_HRM`, `MA_BLE`, `MA_CPU` in `HeartbeatStore`). Only the *ratios*
+  > between them shape the pie — the absolute magnitude is pinned by the measured `soc_pct_drop` — and
+  > getting them wrong only re-skews shares. The **`System` floor** (`MA_SYSTEM` × the whole interval)
+  > is load-bearing: without it the always-on idle drain (MCU sleep, LCD retention) has nowhere to go
+  > and is misattributed to whichever load has the longest on-time (usually the HRM). Set `MA_SYSTEM = 0`
+  > to drop it. Calibrate the constants against a hardware `analytics native_metrics_dump` or the
+  > official app's own breakdown for the same window; note per-model differences (Basalt/Chalk/Diorite/
+  > Emery) aren't yet split out. **Caveat:** the `hrm` on-time offset (`@174`) is firmware-source-derived
+  > and not hardware-verified — if the HRM slice still looks large after weighting, confirm `hrmMs` is
+  > genuinely near-hour-scale (continuous HR) and not an offset slip via `native_metrics_dump`.
 - **Notification overlay.** Faint bands on the % chart mark hours that received notifications
   (`notification_received_count`), denser where there were more — the battery/notification correlation
   the official combined graph hinted at. `BatteryActivity`.

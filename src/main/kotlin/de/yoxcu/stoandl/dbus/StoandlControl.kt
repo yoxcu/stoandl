@@ -192,13 +192,16 @@ interface StoandlControl : DBusInterface {
      *  `notready:<msg>` when battery capture is disabled. */
     fun BatteryActivity(watch: String, sinceEpoch: Long): String
 
-    /** Power/usage-attribution breakdown for the "what drew power" pie (heartbeat source only). [watch]
-     *  selects a watch (empty = connected); [sinceEpoch] filters records (0 = all). Returns `ok:` +
-     *  newline-joined `category\tactivityMs\tsharePct` slices, largest share first — an **estimate** of
-     *  usage (on-time × intensity for analog loads, CPU-active fraction × interval for compute), not
-     *  measured energy. Categories: Display (backlight), Vibration, Speaker, Heart rate, Bluetooth, CPU.
-     *  `ok:` with an empty body when there's no heartbeat data (e.g. GATT-only watch); `notready:<msg>`
-     *  when battery capture is disabled. */
+    /** Battery-drain attribution for the "what drew power" pie (heartbeat source only). [watch] selects
+     *  a watch (empty = connected); [sinceEpoch] filters records (0 = all). Returns `ok:` +
+     *  newline-joined `category\testDrainPct\tsharePct` slices, largest share first. Each subsystem's
+     *  active time is weighted by an estimated average current and the interval's measured SoC drop is
+     *  apportioned by that weight, so `estDrainPct` is a percent of battery (slices sum to the window's
+     *  measured drop; 0 when the window has no measured discharge) and `sharePct` is its share — a
+     *  modeled **estimate**, not metered energy. Categories: System (always-on floor), Display
+     *  (backlight), Vibration, Speaker, Heart rate, Bluetooth, CPU. `ok:` with an empty body when
+     *  there's no heartbeat data (e.g. GATT-only watch); `notready:<msg>` when battery capture is
+     *  disabled. */
     fun BatteryPower(watch: String, sinceEpoch: Long): String
 
     /** Structured details for the connected watch (the GUI's watch-details dialog). Returns

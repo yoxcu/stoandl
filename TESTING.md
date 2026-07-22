@@ -1288,6 +1288,45 @@ receive at least one heartbeat (they're emitted hourly). For the charge tests, a
 > smoke-tested headless (offscreen) against the mock — it instantiates and renders the chart/tiles with no
 > runtime QML errors; only a real display + watch data remains for visual confirmation.
 
+### 5.29L Power pie: mA-weighting + drain-anchoring + HRM-offset check (no soldering)  ⚠️ UNVERIFIED
+
+The "what drew power" pie was reworked (2026-07-16): it no longer shows unweighted subsystem *on-time*
+(which read **~86 % Heart rate**, because the always-on HRM is "on" most of the hour). It now weights each
+subsystem's on-time by an estimated average current (`MA_*` in `HeartbeatStore.kt`) + a `System` always-on
+floor, and **anchors** the result to the firmware's own measured `soc_pct_drop`, so `estDrainPct` is a real
+percent of battery (slices sum to the window's measured drop) and `sharePct` is the pie slice. Two things
+to confirm on hardware, both **without a serial cable**:
+1. **the `hrm@174` decode offset really is the HRM on-time** — a wrong offset would be *masked* by the
+   reweight, so this must be checked directly; and
+2. **the pie now looks right.**
+
+**Helper (offline, no daemon):** `tools/hb_offset_check.py` re-reads the raw 523-byte blobs stoandl already
+stored (`<config>/battery/heartbeat/<serial>.ndjson`, stdlib only) and prints `hrm@174` in ms and as a % of
+the hour. Run it on the host where the daemon captures, or copy the `.ndjson` over and point
+`STOANDL_HB_DIR` at it. `--scan` adds a u32 neighbour dump to hunt the real offset if @174 is wrong.
+
+**Prerequisites:** offset checks (a–c) work with **any** build that has captured heartbeats (they read the
+stored raw blobs) — the daemon must have been connected ≥ ~1 h. Pie checks (d–f) need the **reworked build
+installed** (`./install.sh`, or `./install.sh --remote user@host`). Which watch matters: **Pebble Time Steel
+(basalt) has NO heart-rate sensor; Pebble Time 2 (emery) has one.**
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.29L-a | HRM offset — no-HRM watch (**strongest**) | with the **Time Steel** (basalt) connected ≥1 h: `python3 tools/hb_offset_check.py` | Every record shows `hrm@174=0ms (0% of hour)`. A **large** hrm@174 on a watch with no HRM ⇒ offset @174 is **WRONG** — the reweight is masking a decode bug; re-derive it (`--scan` shows which offset holds a plausible ms on-time). |
+| 5.29L-b | HRM offset — on/off behavioural (emery) | on the **Time 2** (emery): (1) disable continuous/automatic HR (watch Settings → Health, or the app), leave connected ≥1–2 h (or overnight); (2) enable continuous HR, wait ≥1–2 h; (3) `python3 tools/hb_offset_check.py` | `hrm@174` ≈ 0 for the HR-off hours and clearly larger for the HR-on hours. If it **tracks** the setting → @174 is correct and a large Heart-rate slice is *real* draw. If it does **not** move → offset is wrong. |
+| 5.29L-c | HRM offset — plausibility / neighbour hunt | `python3 tools/hb_offset_check.py --scan` | `0 ≤ hrm@174 ≤ interval` (~3.6e6 ms). If @174 is implausible, the neighbour scan lists u32-LE values @130–330; the real offset is one holding a sane ms on-time that tracks HR usage (a–b). |
+| 5.29L-d | Pie distribution (needs new build) | `stoandl watch battery power --since 24h` | Header `Estimated battery-drain attribution (…, split over ~X% measured drain):`, then per line `<category>  <share>%  ~<abs>%  <bar>`. Categories incl. **System** (usually largest), Display, Bluetooth, CPU, Heart rate, Vibration, Speaker. Heart rate is a plausible slice — **not ~86 %** (unless 5.29L-b proved real continuous HR on the emery). |
+| 5.29L-e | Anchoring math holds | inspect the 5.29L-d output | The per-line `~<abs>%` values sum to the header's total measured drain; the `share%` values sum to ~100. GUI Battery page shows the donut + legend + a `≈ N% battery over this window` line. |
+| 5.29L-f | Pie tracks real usage | use the backlight heavily (or trigger vibrations) for an hour with the watch connected, wait for the next heartbeat, re-run `stoandl watch battery power --since 2h` | The **Display** (or **Vibration**) share rises for that window vs a quiet hour — confirms the model responds to real activity, not just HRM on-time. |
+| 5.29L-g | Baseline is tunable (calibration, not pass/fail) | if `System` dominates unrealistically, edit `MA_SYSTEM` in `HeartbeatStore.kt` (`0.0` drops the floor) and rebuild; compare against the official app's breakdown for the same window | `System` share moves with `MA_SYSTEM`; the pie approaches the official app's spread once the `MA_*` constants are tuned. |
+
+> **Cable-free vs ground truth:** the `hrm@174` offset (and the whole layout) is firmware-source-derived,
+> not hardware-confirmed. Checks **a–c** are the cable-free discriminator and are usually decisive (a
+> no-HRM watch reading non-zero HRM = wrong offset, full stop). The firmware console
+> (`analytics native metrics_dump` over serial/PULSE — needs a cable) is only needed if a–c are
+> inconclusive. `analytics heartbeat` on that same console force-emits a heartbeat immediately (skips the
+> ~1 h wait) — it lands on the datalog stoandl already ingests.
+
 ---
 
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)

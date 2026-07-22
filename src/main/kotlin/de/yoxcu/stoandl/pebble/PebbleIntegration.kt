@@ -2394,7 +2394,8 @@ private class StoandlControlImpl(
         // Power attribution comes only from the analytics heartbeat; a GATT-only watch has no breakdown.
         if (serial == null || !hb.hasData(serial)) return "ok:"
         val body = hb.power(serial, sinceEpoch).joinToString("\n") {
-            "${it.category}\t${it.activityMs}\t${String.format(Locale.ROOT, "%.1f", it.sharePct)}"
+            "${it.category}\t${String.format(Locale.ROOT, "%.3f", it.estDrainPct)}\t" +
+                String.format(Locale.ROOT, "%.1f", it.sharePct)
         }
         return "ok:$body"
     }

@@ -107,13 +107,15 @@ data class HeartbeatActivity(
 )
 
 /**
- * One slice of the power/usage-attribution breakdown (the "what drew power" pie). [activityMs] is the
- * subsystem's intensity-weighted active-time proxy summed over the window; [sharePct] is its share of
- * the total. This is a **usage estimate** (on-time × intensity for analog loads, CPU-active fraction ×
- * interval for compute) — NOT measured energy: the record carries no per-subsystem mAh. "Display" is
- * proxied by the backlight (the record has no display-on-time metric).
+ * One slice of the battery-drain attribution breakdown (the "what drew power" pie). [estDrainPct] is the
+ * subsystem's estimated share of battery drained over the window, in **percent of full charge** — the
+ * window's measured SoC drop apportioned by a modeled current × on-time weight (0.0 when the window has
+ * no measured discharge to anchor to, e.g. an all-charging window; then only [sharePct] is meaningful).
+ * [sharePct] is its share of the modeled drain (the pie slice). This is a modeled **estimate**, not
+ * metered energy: the record carries no per-subsystem mAh, so representative average currents weight the
+ * on-times. "Display" is proxied by the backlight; "System" is the always-on floor.
  */
-data class PowerSlice(val category: String, val activityMs: Long, val sharePct: Double)
+data class PowerSlice(val category: String, val estDrainPct: Double, val sharePct: Double)
 
 /** The latest decoded battery fields from a single native-heartbeat record. */
 data class BatterySnapshot(

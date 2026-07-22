@@ -1234,7 +1234,7 @@ private fun batteryActivity(args: List<String>) {
     }
 }
 
-// Estimated power/usage attribution (the "what drew power" pie) as a text bar chart.
+// Estimated battery-drain attribution (the "what drew power" pie) as a text bar chart.
 private fun batteryPower(args: List<String>) {
     val watch = flagValue(args, "--watch") ?: ""
     val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
@@ -1246,12 +1246,21 @@ private fun batteryPower(args: List<String>) {
         when (kind) {
             "ok" -> {
                 if (body.isBlank()) { println("No power-attribution data yet (needs the hourly analytics heartbeat)."); return@withControl }
-                println("Estimated usage share (on-time × intensity — not measured energy):")
-                body.split('\n').forEach { line ->
-                    val f = line.split('\t')
+                // Wire: category \t estDrainPct \t sharePct (decimals are locale-independent "." form).
+                val rows = body.split('\n').map { it.split('\t') }
+                val totalDrain = rows.sumOf { it.getOrElse(1) { "0" }.toDoubleOrNull() ?: 0.0 }
+                println(
+                    if (totalDrain > 0)
+                        String.format(java.util.Locale.ROOT,
+                            "Estimated battery-drain attribution (modeled current × on-time, split over ~%.1f%% measured drain):", totalDrain)
+                    else "Estimated battery-drain attribution (modeled current × on-time — no measured discharge to anchor):"
+                )
+                rows.forEach { f ->
                     val share = f.getOrElse(2) { "0" }.toDoubleOrNull() ?: 0.0
+                    val drain = f.getOrElse(1) { "0" }.toDoubleOrNull() ?: 0.0
                     val bar = "█".repeat((share / 5.0).toInt().coerceIn(0, 20))
-                    println("  %-12s %6s%%  %s".format(f.getOrElse(0) { "?" }, f.getOrElse(2) { "0" }, bar))
+                    val abs = if (totalDrain > 0) String.format(java.util.Locale.ROOT, "~%.2f%%", drain) else "—"
+                    println(String.format(java.util.Locale.ROOT, "  %-12s %5.1f%%  %7s  %s", f.getOrElse(0) { "?" }, share, abs, bar))
                 }
             }
             else -> handleStatusResponse(resp)
