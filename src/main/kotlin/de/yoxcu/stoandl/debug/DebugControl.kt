@@ -4,7 +4,9 @@ import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.random.Random
 
 private val log = KotlinLogging.logger {}
 
@@ -59,6 +61,45 @@ class DebugControl(
         } catch (e: Exception) {
             log.warn(e) { "resetIntoPrf failed" }
             "error:${e.message ?: "recovery reset failed"}"
+        }
+    }
+
+    /**
+     * Round-trip liveness check: send a PING with a random cookie and await the echoed cookie,
+     * reporting latency. Unlike the BLE link state (up/down), this exercises the full PPoG/protocol
+     * path end-to-end — useful to tell a healthy link from a wedged one, and the latency is handy in
+     * the support bundle. Blocks briefly on the round-trip.
+     */
+    fun ping(): String {
+        val dev = device() ?: return "notready:No watch connected"
+        val cookie = Random.nextInt().toUInt()
+        return try {
+            val startNs = System.nanoTime()
+            val echoed = runBlocking { dev.sendPing(cookie) }
+            val ms = (System.nanoTime() - startNs) / 1_000_000
+            if (echoed == cookie) "ok:Ping round-trip $ms ms (${dev.displayName()})"
+            else "error:Ping cookie mismatch (sent $cookie, got $echoed)"
+        } catch (e: Exception) {
+            log.warn(e) { "sendPing failed" }
+            "error:${e.message ?: "ping failed"}"
+        }
+    }
+
+    /**
+     * Ask the watch to capture a fresh core dump — a snapshot of its RAM for crash diagnosis. The
+     * watch writes the dump to flash and reboots to do so (it drops the BLE link like a reset), after
+     * which the dump can be pulled with `stoandl support --coredump` ([GetCoreDump]). Fire-and-forget:
+     * libpebble3 sends a single RESET-endpoint packet and there's no completion ack.
+     */
+    fun forceCoreDump(): String {
+        val dev = device() ?: return "notready:No watch connected"
+        return try {
+            dev.createCoreDump()
+            log.info { "Requested core-dump capture on ${dev.displayName()}" }
+            "ok:Core-dump requested on ${dev.displayName()} — the watch reboots to capture it; fetch with 'stoandl support --coredump' once it reconnects"
+        } catch (e: Exception) {
+            log.warn(e) { "createCoreDump failed" }
+            "error:${e.message ?: "core-dump request failed"}"
         }
     }
 }

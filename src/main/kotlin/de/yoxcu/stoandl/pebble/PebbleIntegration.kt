@@ -21,6 +21,8 @@ import de.yoxcu.stoandl.dnd.DndSync
 import de.yoxcu.stoandl.dnd.detectHostDnd
 import de.yoxcu.stoandl.ext.ExtensionManager
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
+import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
+import io.rebble.libpebblecommon.database.entity.HealthGender
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
@@ -54,6 +56,7 @@ import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.bt.isBonded
 import io.rebble.libpebblecommon.js.PKJSApp
 import io.rebble.libpebblecommon.locker.AppType
+import io.rebble.libpebblecommon.music.PlaybackState
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
@@ -270,6 +273,9 @@ class PebbleIntegration(
     }
     // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
     private var mprisMusicControl: MprisMusicControl? = null
+    // The shared notification send choke point (assigned in init()); passed to StoandlControlImpl so
+    // SendTestNotification can inject through the same path desktop/extension notifications use.
+    private lateinit var watchNotifier: WatchNotifier
     // The health on-connect-request collector (when health.sync is on), held so applyHealth can cancel it.
     private var healthRequestJob: Job? = null
     // Last successful sync time (epoch seconds) per discrete-sync service (weather/calendar/health), for
@@ -348,7 +354,7 @@ class PebbleIntegration(
         // from history), so a route never needs to outlive the daemon.
         val routeTable = NotifRouteTable()
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
-        val watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao, configStore, notificationFilters)
+        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao, configStore, notificationFilters)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
@@ -1276,7 +1282,7 @@ class PebbleIntegration(
             .launchIn(scope)
 
     private fun startWatchPrefsSync() {
-        // Always build the control (the `settings`/`set-setting` CLI works even with nothing in the config).
+        // Always build the control (the `settings` / `settings set` CLI works even with nothing in the config).
         val control = WatchPrefsControl(
             libPebble = libPebble,
             resolveAppUuid = { q -> resolve(libPebble, q).map { it.properties.id }.distinct().singleOrNull() },
@@ -1284,7 +1290,7 @@ class PebbleIntegration(
         )
         watchPrefsControlRef.set(control)
         if (config.watchPrefs.isEmpty()) {
-            log.info { "No watch.* prefs configured (set them in stoandl.conf or via 'stoandl set-setting')" }
+            log.info { "No watch.* prefs configured (set them in stoandl.conf or via 'stoandl settings set')" }
             return
         }
         // Config is authoritative: re-apply the listed prefs on every connect so they win over any
@@ -1558,7 +1564,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -2162,6 +2168,11 @@ private class StoandlControlImpl(
     private val syncControl: SyncControl,
     // Global allow/block notification filters (NotifListFilters/AddFilter/RemoveFilter).
     private val notificationFilters: NotificationFilters,
+    // The shared send choke point — used by SendTestNotification to inject a debug notification.
+    private val watchNotifier: WatchNotifier,
+    // The live MPRIS bridge (built lazily on first connect), read by MusicStatus. A supplier because
+    // it may still be null when this impl is constructed.
+    private val musicControl: () -> MprisMusicControl?,
     // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -2448,6 +2459,92 @@ private class StoandlControlImpl(
         return "ok:${hr.bpm}\t${hr.timestampEpochSec}"
     }
 
+    override fun GetHealthProfile(): List<String> {
+        val lp = libPebbleRef.get() ?: return emptyList()
+        val s = try {
+            runBlocking { lp.healthSettings.first() }
+        } catch (e: Exception) {
+            log.warn(e) { "healthSettings read failed" }
+            return emptyList()
+        }
+        fun b(v: Boolean) = if (v) "on" else "off"
+        val interval = when (s.hrmMeasurementInterval) {
+            HRMonitoringInterval.TenMin -> "10min"
+            HRMonitoringInterval.ThirtyMin -> "30min"
+            HRMonitoringInterval.OneHour -> "1h"
+            HRMonitoringInterval.Disabled -> "off"
+        }
+        return listOf(
+            "tracking\t${b(s.trackingEnabled)}",
+            "activity_insights\t${b(s.activityInsightsEnabled)}",
+            "sleep_insights\t${b(s.sleepInsightsEnabled)}",
+            "hrm\t${b(s.hrmEnabled)}",
+            "hrm_interval\t$interval",
+            "units\t${if (s.imperialUnits) "imperial" else "metric"}",
+            "height_cm\t${s.heightMm / 10}",
+            "weight_kg\t${String.format(Locale.ROOT, "%.1f", s.weightDag / 100.0)}",
+            "age\t${s.ageYears}",
+            "gender\t${s.gender.name.lowercase()}",
+            "resting_hr\t${s.restingHr}",
+            "max_hr\t${s.maxHr}",
+        )
+    }
+
+    override fun SetHealthProfile(key: String, value: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val cur = try {
+            runBlocking { lp.healthSettings.first() }
+        } catch (e: Exception) {
+            return "error:${e.message ?: "could not read health settings"}"
+        }
+        fun bool(v: String): Boolean? = when (v.trim().lowercase()) {
+            "on", "true", "yes", "1", "enabled" -> true
+            "off", "false", "no", "0", "disabled" -> false
+            else -> null
+        }
+        val v = value.trim()
+        val next = when (key.trim().lowercase()) {
+            "tracking" -> cur.copy(trackingEnabled = bool(v) ?: return "error:Expected on/off")
+            "activity_insights" -> cur.copy(activityInsightsEnabled = bool(v) ?: return "error:Expected on/off")
+            "sleep_insights" -> cur.copy(sleepInsightsEnabled = bool(v) ?: return "error:Expected on/off")
+            "hrm" -> cur.copy(hrmEnabled = bool(v) ?: return "error:Expected on/off")
+            "hrm_interval" -> cur.copy(hrmMeasurementInterval = when (v.lowercase()) {
+                "10min", "10m" -> HRMonitoringInterval.TenMin
+                "30min", "30m" -> HRMonitoringInterval.ThirtyMin
+                "1h", "60min", "1hr" -> HRMonitoringInterval.OneHour
+                "off", "disabled" -> HRMonitoringInterval.Disabled
+                else -> return "error:Expected 10min/30min/1h/off"
+            })
+            "units" -> cur.copy(imperialUnits = when (v.lowercase()) {
+                "imperial" -> true
+                "metric" -> false
+                else -> return "error:Expected metric/imperial"
+            })
+            "height_cm", "height" -> cur.copy(heightMm = ((v.toDoubleOrNull()
+                ?: return "error:Expected a number (cm)") * 10).toInt().toShort())
+            "weight_kg", "weight" -> cur.copy(weightDag = ((v.toDoubleOrNull()
+                ?: return "error:Expected a number (kg)") * 100).toInt().toShort())
+            "age" -> cur.copy(ageYears = v.toIntOrNull() ?: return "error:Expected a whole number (years)")
+            "gender" -> cur.copy(gender = when (v.lowercase()) {
+                "female", "f" -> HealthGender.Female
+                "male", "m" -> HealthGender.Male
+                "other", "o" -> HealthGender.Other
+                else -> return "error:Expected female/male/other"
+            })
+            "resting_hr" -> cur.copy(restingHr = (v.toIntOrNull() ?: return "error:Expected a number (bpm)").toShort())
+            "max_hr" -> cur.copy(maxHr = (v.toIntOrNull() ?: return "error:Expected a number (bpm)").toShort())
+            else -> return "error:Unknown health key '$key' (see 'stoandl health profile')"
+        }
+        return try {
+            lp.updateHealthSettings(next)
+            log.info { "Health profile: set $key = $v" }
+            "ok:Set $key = $v (synced to the watch when connected)"
+        } catch (e: Exception) {
+            log.warn(e) { "updateHealthSettings failed" }
+            "error:${e.message ?: "update failed"}"
+        }
+    }
+
     /** The calendar days + epoch bounds + bar labels for a (periodType, offset) selection.
      *  `day`: one day (today − offset); `week`: 7 days ending today − offset·7; `month`: the calendar
      *  month offset months back (current month = 1st → today, a past month = the whole month). */
@@ -2679,6 +2776,13 @@ private class StoandlControlImpl(
         return debugControl.resetIntoRecovery()
     }
 
+    override fun Ping(): String = debugControl.ping()
+
+    override fun ForceCoreDump(): String {
+        log.info { "ForceCoreDump requested" }
+        return debugControl.forceCoreDump()
+    }
+
     override fun StartDevConnection(): String {
         log.info { "StartDevConnection requested" }
         return developerControl.start()
@@ -2705,6 +2809,36 @@ private class StoandlControlImpl(
     override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
         notificationAppsControl?.setStyle(query, color, icon, vibe)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun SendTestNotification(title: String, body: String): String {
+        libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val t = title.ifBlank { "Test notification" }
+        return try {
+            val id = runBlocking {
+                watchNotifier.push(
+                    NotifRequest(appName = "stoandl", title = t, body = body),
+                    ownerId = "desktop", ownerToken = null,
+                )
+            }
+            if (id != null) "ok:Sent test notification to the watch"
+            else "error:Not delivered (no watch connected, or dropped by mute/filter)"
+        } catch (e: Exception) {
+            log.warn(e) { "SendTestNotification failed" }
+            "error:${e.message ?: "send failed"}"
+        }
+    }
+
+    override fun MusicStatus(): String {
+        val mc = musicControl() ?: return "notready:Music control is off"
+        val st = mc.playbackState.value ?: return "none:"
+        val playing = st.playbackState == PlaybackState.Playing || st.playbackState == PlaybackState.Buffering
+        val player = st.playerInfo?.name?.takeIf { it.isNotBlank() } ?: "player"
+        val t = st.currentTrack
+        val track = if (t != null)
+            listOfNotNull(t.title?.takeIf { it.isNotBlank() }, t.artist?.takeIf { it.isNotBlank() }).joinToString(" — ")
+        else ""
+        return "ok:${if (playing) "playing" else "paused"}\t$player\t$track"
+    }
 
     override fun ExtList(): List<String> = extensionManager.list()
     override fun ExtInstall(path: String): String = extensionManager.install(path)
@@ -2795,6 +2929,47 @@ private class StoandlControlImpl(
         } catch (e: Exception) {
             log.warn(e) { "RemoveApp(${app.properties.id}) failed" }
             "error:${e.message ?: "remove failed"}"
+        }
+    }
+
+    override fun RunningApp(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+            ?: return "notready:No watch connected"
+        val uuid = dev.runningApp.value ?: return "none:"
+        val title = allApps(lp).firstOrNull { it.properties.id == uuid }?.properties?.title ?: "(unknown)"
+        return "ok:$title\t$uuid"
+    }
+
+    override fun SetAppOrder(query: String, order: Int): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        if (order < 0) return "error:Order must be ≥ 0"
+        val matches = resolve(lp, query)
+        when {
+            matches.isEmpty() -> return "notfound:No app matching '$query'"
+            matches.size > 1 -> return "ambiguous:" +
+                matches.joinToString("; ") { "${it.properties.title} (${it.properties.id})" }
+        }
+        val app = matches.first()
+        return try {
+            runBlocking { lp.setAppOrder(app.properties.id, order) }
+            log.info { "SetAppOrder: ${app.properties.title} → $order" }
+            "ok:Moved ${app.properties.title} to position $order"
+        } catch (e: Exception) {
+            log.warn(e) { "SetAppOrder(${app.properties.id}, $order) failed" }
+            "error:${e.message ?: "reorder failed"}"
+        }
+    }
+
+    override fun RestoreSystemAppOrder(): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        return try {
+            lp.restoreSystemAppOrder()
+            log.info { "RestoreSystemAppOrder requested" }
+            "ok:Restored system apps to their default order"
+        } catch (e: Exception) {
+            log.warn(e) { "restoreSystemAppOrder failed" }
+            "error:${e.message ?: "restore failed"}"
         }
     }
 

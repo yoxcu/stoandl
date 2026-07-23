@@ -130,7 +130,7 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `Unpair` | `(s) → s` | Forget watch(es): empty = blanket (all), name = single (exact-then-substring). libpebble `forget()` + BlueZ `RemoveDevice`. | `watch unpair [name]` |
 | `FindWatch` | `() → b` | Ring the watch continuously (a "Find My Watch" call screen) until a button is pressed. `false` = not ready. | `watch find` |
 | `WatchDetails` | `() → s` | Structured details for the connected watch: `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync`, or `notready:`. | *(GUI; no standalone verb — see `support`/`watch list`)* |
-| `SetWatchNickname` | `(s,s) → s` | Rename a known watch `(query, nickname)` (exact-then-unique-substring; nickname non-empty). `ok:`/`notfound:`/`error:`/`notready:`. | *(GUI; no verb yet)* |
+| `SetWatchNickname` | `(s,s) → s` | Rename a known watch `(query, nickname)` (exact-then-unique-substring; nickname non-empty). `ok:`/`notfound:`/`error:`/`notready:`. | `watch rename <name> <new name>` |
 
 `ListWatches` record: `name \t state \t battery \t transport` — `state` ∈ `connected` | `connecting` |
 `disconnected`; `battery` is the 0–100 level for a connected watch, else empty; `transport` is
@@ -177,6 +177,9 @@ power" pie. See [battery-insights.md](battery-insights.md).
 | `SideloadApp` | `(s) → s` | Install a local `.pbw` (absolute daemon-side path). | `apps install <path.pbw>` (aliases `sideload`, `add`) |
 | `OpenConfig` | `(s) → s` | Config (Clay/PKJS) URL for a running app; empty string if none. The CLI proxies it over a local HTTP server. | `config [app]` |
 | `WebviewClose` | `(s) → ` *(void)* | Hand the saved settings JSON back to the running PKJS app after the config webview closes. | `config [app]` |
+| `RunningApp` | `() → s` | The app/face **currently on the watch's screen** (what's running now — may be a launched watchapp, distinct from the `active` watchface flag in `ListApps`). `ok:<title>\t<uuid>` / `none:` / `notready:`. | `watch running` |
+| `SetAppOrder` | `(s,i) → s` | Move the app/face matching `query` to 0-based locker position `order`; syncs to the watch menu via the locker BlobDB. `ok:`/`notfound:`/`ambiguous:`/`error:`. | `apps order <name\|uuid> <pos>` |
+| `RestoreSystemAppOrder` | `() → s` | Reset the system apps to their default locker order. | `apps order reset` |
 
 `ListApps` record: `uuid \t type \t order \t flags \t title \t developer \t version` (`version` = the
 locker version string, empty if unknown), where `flags` is a
@@ -210,6 +213,7 @@ enum display-name-or-constant, a color preset-name-or-hex, and a quick-launch ap
 | `NotifSetMute` | `(s,s) → s` | Set mute for the app matching `<query>`; spec = `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`). | `notif mute <app> [spec]` / `notif unmute <app>` (sends `never`) |
 | `NotifSetMuteAll` | `(s) → s` | Apply a mute spec to every tracked app. | `notif mute-all [spec]` / `notif unmute-all` |
 | `NotifSetStyle` | `(s,s,s,s) → s` | Per-app styling `(query, color, icon, vibe)` applied host-side; per value, empty = unchanged, `default` = reset. | `notif style <app> [--color] [--icon] [--vibe]` |
+| `SendTestNotification` | `(s,s) → s` | Debug: inject a synthetic notification `(title, body)` to the watch through the normal send path (per-app mute, style and filters all apply) — the notification-pipeline counterpart of `FakeCallRing`. `ok:`/`error:`/`notready:`. | `notif test [title] [body]` |
 | `NotifListFilters` | `() → as` | Global notification filters, one record each: `pattern\taction` (`action` ∈ `allow`/`block`). | `notif filter list` |
 | `NotifAddFilter` | `(s,s) → s` | Add a global filter `(pattern, action)`. `pattern` is a Java regex (inline flags like `(?i)` work), matched against appName + title + body; `action` `allow`/`block` (anything not `allow` ⇒ `block`). `ok:added <action> filter` / `error:empty pattern` / `error:invalid regex …`. Applied **live** (no restart). | `notif filter add <regex> [allow\|block]` |
 | `NotifRemoveFilter` | `(s) → s` | Remove a global filter by exact `pattern`. `ok:filter removed` / `notfound:`. Live. | `notif filter remove <regex>` |
@@ -234,6 +238,8 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
+| `GetHealthProfile` | `() → as` | The watch's health **profile** (its own activity-tracking config, in the HealthParams BlobDB — the *write* side, vs the read-only data sync). One `key \t value` per row; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval`, `units`, `height_cm`, `weight_kg`, `age`, `gender`, `resting_hr`, `max_hr`. | `health profile` |
+| `SetHealthProfile` | `(s,s) → s` | Set one profile `key` to `value` and sync to the watch. `ok:`/`error:`/`notready:`. | `health profile set <key> <value>` |
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled \t accountId`. `accountId` is the owning source's id (see `ListCalendarSources`) so the GUI nests calendars under their account (`discover` for auto-discovered, empty if unknown). | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
 | `ListCalendarSources` | `() → as` | Editable calendar **sources** (vs the discovered calendars): `id \t type \t url \t username \t label`, `type` ∈ {caldav, ical, ics}, `id` self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). Password is **never** returned (write-only). | `calendar sources` |
@@ -243,6 +249,7 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `GetHealthSummary` | `(s,i) → s` | Health summary (20 tab fields; see below) for the period `periodType`(`day`\|`week`\|`month`) + `offset`(periods back, 0 = current) from the synced DB, or `notready:`. | *(GUI; CLI `health` reads the export files directly)* |
 | `GetHealthSeries` | `(s,s,i) → as` | Health chart series for `metric` over (`periodType`, `offset`): `steps` (`day`: 24 `hour\tsteps` hourly buckets; `week`/`month`: one `label\tsteps\ttypical` row per day), `sleep` (`day`: `startFraction\twidthFraction\tisDeep` timeline rows; `week`/`month`: one `label\ttotalMin\tdeepMin` row per night), `heart` (`day`: **minute-level** `minuteOfDay\tbpm` rows; `week`/`month`: one `label\tavgBpm` row per day). | *(GUI)* |
 | `GetSyncStatus` | `() → as` | Per-feature **live** runtime status, one row each: `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health, dnd}. Reflects the running state (after any `SetSyncEnabled`), not just the startup config. `available` is `false` for weather/calendar when no source is configured (the GUI greys the toggle then); `lastSync` is `live`/`off`/`no source` (and the dnd mode string when dnd is on). | *(GUI)* |
+| `MusicStatus` | `() → s` | Now-playing state from the desktop MPRIS bridge, for the GUI Sync screen's Music row: `ok:<playing\|paused>\t<player>\t<track>` (track = `Title — Artist`, may be empty), `none:` (nothing playing / no player), or `notready:` (music control off). | *(GUI)* |
 
 `GetHealthSummary` record (after `ok:`, 20 fields): `stepsTotal \t stepsAvgPerDay \t stepsTypical \t
 distanceKm \t kcal \t activeMin \t sleepTotalMin \t sleepDeepMin \t sleepLightMin \t sleepTypicalMin \t
@@ -304,6 +311,8 @@ not yet a tracked timestamp.
 |---|---|---|---|
 | `ResetIntoRecovery` | `() → s` | Reboot the watch into recovery (PRF) firmware. Fire-and-forget. | `reset recovery` / `reset prf` |
 | `FactoryReset` | `() → s` | Wipe the watch to out-of-box state and reboot. Fire-and-forget; **destructive** (CLI/GUI owns the confirmation). | `reset factory [--yes]` |
+| `ForceCoreDump` | `() → s` | Ask the watch to capture a fresh core dump (a RAM snapshot). The watch reboots to write it to flash (fire-and-forget); pull it afterwards with `GetCoreDump`. | `reset coredump` |
+| `Ping` | `() → s` | Round-trip liveness check: send a PING and await the echoed cookie, exercising the full PPoG/protocol path (not just the BLE link). `ok:<msg with latency>` / `notready:` / `error:` (timeout / cookie mismatch). | `watch ping` |
 
 Both are fire-and-forget: one RESET packet is sent, the link drops, and there is **no** completion
 ack — `ok:` means "queued", not "done".
@@ -478,7 +487,7 @@ present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` + `WebviewClose`
 | `synced`-to-watch flag per app | data | the `sync` field is read but **not** added to flags | add `synced` to the `ListApps` flags set | **wiring-only** — `NormalApp.sync` already in the iterated object |
 | Menu icon per app/face | data | ~~dropped from the row~~ **done** — `GetAppIcon(s)` (below) | `GetAppIcon(s) → s` returns a local PNG path | **done** — extracted LOCALLY from the cached `.pbw` (`app_resources.pbpack` → PNG passthrough or GBitmap decode, no AWT, no network); the GUI fetches it lazily per row |
 | Version / category / capabilities for richer rows | data | dropped from the row | extend `ListApps` row or `AppDetails(s) → s` | **wiring-only** — version/category/caps are already locker fields |
-| Reorder apps (drag-to-reorder) | action | `order` is shown but read-only | `SetAppOrder(s uuid, i order) → s` (+ `RestoreSystemAppOrder`) | **wiring-only** — libpebble3 `setAppOrder()`/`restoreSystemAppOrder()` exist |
+| Reorder apps (drag-to-reorder) | action | **done** — `SetAppOrder(s query, i order)` + `RestoreSystemAppOrder()` | `SetAppOrder(s query, i order) → s` (+ `RestoreSystemAppOrder`) | **done** — backed by libpebble3 `setAppOrder()`/`restoreSystemAppOrder()`; CLI `apps order <name\|uuid> <pos>` / `apps order reset`; GUI up/down move buttons per row on Apps & Faces + a "Restore default order" action |
 | Install from cloud locker / store (not just a local `.pbw`) | action | only `SideloadApp(path)` | `AddAppFromLocker(s uuid) → s` | **design work** — plumbing exists (`addAppToLocker`/`fetchLocker`) but stoandl is local-only/no-egress; needs a store fetch + egress opt-in |
 
 ### Screen 3 — Plugins
@@ -514,7 +523,7 @@ notification filters.*
 | Per-service **last-sync** timestamp (+ result/error) | data | partial — `GetSyncStatus.lastSync` is a state label (`live`/`off`/`no source`, dnd mode when on), not a timestamp | add a real `lastSync`/`lastResult` timestamp to the row | **needs bookkeeping** — sync moments are observable but no timestamp is stored yet |
 | Quiet-hours (scheduled mute window) | action | **dropped — superseded by `dnd.sync`** (which mirrors desktop DND ↔ the watch's native Quiet Time); a separate host-side time-window subsystem would be redundant | *(none — dropped)* | **not pursued** |
 | Force-sync for **music** and **notifications** | action | **no `SyncMusic`/`SyncNotifications`** (both are continuous push by design) | `SyncMusic() → s` (re-enumerate MPRIS + re-push) / `SyncNotifications() → s`, or omit from the screen | **wiring-only if wanted** — `MprisMusicControl` has `enumerateExisting()`/`recompute()`; arguably unnecessary |
-| Music/MPRIS state for the screen (active player, playing?) | data | not exposed (state stays internal to the watch bridge) | include music in `GetSyncStatus`, or `MusicStatus() → s` | **wiring-only** — `MprisMusicControl._playbackState: StateFlow` already carries it |
+| Music/MPRIS state for the screen (active player, playing?) | data | **done** — `MusicStatus() → s` (`playing\|paused\tplayer\ttrack`); the Sync screen's Music row shows now-playing | `MusicStatus() → s` | **done** — reads `MprisMusicControl.playbackState`; refreshed on page open |
 | DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | live on/off via `SetSyncEnabled("dnd", …)` (true → `both`, false → `off`); the **direction** mode is set via `SetConfig dnd.sync` and read via `GetSyncStatus` (mode string in `lastSync`) | *(covered)* | **implemented (live)** |
 
 ### Screen 5 — System

@@ -40,6 +40,19 @@ interface StoandlControl : DBusInterface {
     /** Uninstall the app/watchface matching [query] (UUID or case-insensitive name) from the
      *  locker. Same status-prefixed return convention as [LaunchApp]. System apps are refused. */
     fun RemoveApp(query: String): String
+
+    /** The app/watchface currently on the watch's screen (what's actually running now, which may be a
+     *  launched watchapp — distinct from the *active watchface* flagged in [ListApps]). Returns
+     *  `ok:<title>\t<uuid>` (title is `(unknown)` if the running UUID isn't in the locker), `none:`
+     *  (nothing reported / not yet known), or `notready:<msg>` (no watch connected). */
+    fun RunningApp(): String
+
+    /** Move the app/watchface matching [query] to locker position [order] (0-based); the change syncs
+     *  to the watch's menu via the locker BlobDB. Same status-prefixed return convention as [LaunchApp]. */
+    fun SetAppOrder(query: String, order: Int): String
+
+    /** Reset the system apps to their default locker order. Returns `ok:<msg>` or `notready:<msg>`. */
+    fun RestoreSystemAppOrder(): String
     /** Returns the configuration URL for the running PKJS app matching [app] (name or UUID).
      *  Returns empty string if no matching app is running or it has no config page. */
     fun OpenConfig(app: String): String
@@ -60,6 +73,11 @@ interface StoandlControl : DBusInterface {
      *  the watch's call screen is pressed (Answer or Decline both just silence it — there is no
      *  real call to hold). Returns false if libPebble is not ready (no watch connected). */
     fun FindWatch(): Boolean
+
+    /** Debug: send a synthetic notification ([title] + [body]) to the watch through the normal send
+     *  path (so per-app mute, style and the global filters all apply). The host-side counterpart of
+     *  [FakeCallRing] for the notification pipeline. Status-prefixed return (`ok:`/`error:`/`notready:`). */
+    fun SendTestNotification(title: String, body: String): String
 
     /** Force an immediate weather fetch for the configured locations and push it to the watch.
      *  Same status-prefixed return convention as [LaunchApp]. Returns `error:` if weather sync is
@@ -226,6 +244,17 @@ interface StoandlControl : DBusInterface {
      *  Not a live GATT stream — freshness follows the synced samples. */
     fun HeartRate(): String
 
+    /** The watch's health *profile* (its own activity-tracking configuration, written to the watch's
+     *  HealthParams BlobDB — distinct from the read-only data sync). Each entry is tab-separated
+     *  `key \t value`; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval`
+     *  (`10min`/`30min`/`1h`/`off`), `units` (`metric`/`imperial`), `height_cm`, `weight_kg`, `age`,
+     *  `gender` (`female`/`male`/`other`), `resting_hr`, `max_hr`. Empty if libPebble isn't ready. */
+    fun GetHealthProfile(): List<String>
+
+    /** Set one [key] of the watch's health profile (see [GetHealthProfile] for keys) to [value] and
+     *  sync it to the watch. Status-prefixed return (`ok:`/`error:`/`notready:`). */
+    fun SetHealthProfile(key: String, value: String): String
+
     /** Health summary for the GUI Health screen over a period, computed from the synced health DB
      *  (works whether or not a watch is currently connected). [periodType] ∈ `day`|`week`|`month`;
      *  [offset] = how many periods back (0 = current; clamped ≥ 0) — `day`: today − offset days;
@@ -325,6 +354,16 @@ interface StoandlControl : DBusInterface {
      *  firmware (reflash from PRF with `firmware`). Fire-and-forget (the link drops as the watch
      *  reboots). Returns `ok:<msg>`, `notready:<msg>`, or `error:<msg>`. */
     fun ResetIntoRecovery(): String
+
+    /** Round-trip liveness check: send a PING to the watch and await the echoed cookie, exercising the
+     *  full PPoG/protocol path (not just the BLE link state). Returns `ok:<msg with latency>`,
+     *  `notready:<msg>` (no watch), or `error:<msg>` (timeout / cookie mismatch). */
+    fun Ping(): String
+
+    /** Ask the watch to capture a fresh core dump (a RAM snapshot for crash diagnosis). The watch
+     *  reboots to write it to flash (the link drops like a reset); pull it afterwards with
+     *  [GetCoreDump]. Fire-and-forget. Returns `ok:<msg>`, `notready:<msg>`, or `error:<msg>`. */
+    fun ForceCoreDump(): String
 
     /** List the per-app notification store (apps lazy-tracked as they notify). Each entry is
      *  tab-separated: `name \t muteLabel \t lastNotifiedEpochSeconds` (muteLabel is one of
@@ -427,6 +466,11 @@ interface StoandlControl : DBusInterface {
      *  dnd}, reflecting live runtime state. `available` is false for weather/calendar when no source is
      *  configured (the toggle is then greyed); `lastSync` is `live`/`off`/`no source` (and the dnd mode). */
     fun GetSyncStatus(): List<String>
+
+    /** Current now-playing state from the desktop MPRIS bridge, for the GUI Sync screen's Music row.
+     *  Returns `ok:<playing|paused>\t<player>\t<track>` (track = `Title — Artist`, may be empty),
+     *  `none:` (music control on but nothing playing / no player), or `notready:` (music control off). */
+    fun MusicStatus(): String
 
     /** Turn a sync service on/off at runtime: [service] is one of {notifications, weather, calendar,
      *  music, health, dnd}. Persists the backing key and **starts/stops the live service** (no restart) —

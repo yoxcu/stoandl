@@ -39,8 +39,10 @@ import kotlin.time.Duration.Companion.seconds
  * Answer/Hangup from the watch are wired back through the [Call] callbacks to `Accept()`/`Hangup()`
  * on the matching `org.freedesktop.ModemManager1.Call` object.
  *
- * Note: ModemManager exposes only the caller number, not a contact name — [Call.contactName] is
- * left null and PhoneControlManager falls back to the number.
+ * Note: ModemManager exposes only the caller number. The caller name is resolved host-side —
+ * vCard files via [ContactResolver] then the recent dialer-notification title via [DialerNameCache]
+ * — and passed as [Call.contactName]; PhoneControlManager falls back to the number only when it
+ * stays unresolved.
  */
 class ModemManagerCallMonitor(
     private val libPebble: LibPebble,

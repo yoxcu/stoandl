@@ -105,8 +105,9 @@ private fun printUsage() {
     println()
     println("Watch & apps")
     row("watch", "list connect pair unpair repair")
-    row("", "battery [history|insights|heartbeat] find")
-    row("apps", "list launch install remove")
+    row("", "battery [history|insights|activity|")
+    row("", "         power|heartbeat] · find")
+    row("apps", "list launch install remove order")
     row("settings", "list · set <id> <value>")
     row("notif", "list mute unmute style filter")
     row("ext", "list install enable disable")
@@ -551,6 +552,7 @@ private fun ctlHealth(rest: List<String>) {
         null -> healthSummary(7)
         "hr" -> healthHr()
         "sync" -> healthSync()
+        "profile" -> healthProfile(rest.drop(1))
         "activities" -> healthActivities(rest.getOrNull(1)?.toIntOrNull()?.takeIf { it > 0 } ?: 7)
         "dump" -> {
             val which = rest.getOrNull(1)?.lowercase() ?: "daily"
@@ -566,10 +568,41 @@ private fun ctlHealth(rest: List<String>) {
             val days = sub.toIntOrNull()
             if (days != null && days > 0) healthSummary(days)
             else {
-                System.err.println("Usage: stoandl health [days | hr | sync | activities [days] | dump [daily|activities]]")
+                System.err.println("Usage: stoandl health [days | hr | sync | profile [set <key> <value>] | activities [days] | dump [daily|activities]]")
                 System.exit(1)
             }
         }
+    }
+}
+
+/** `stoandl health profile` prints the watch's health/tracking configuration; `health profile set
+ *  <key> <value>` changes one field and syncs it to the watch. This is the *write* side of health
+ *  (the watch's own activity-tracking profile) — the read side is `health` / `health sync`. */
+private fun healthProfile(args: List<String>) {
+    if (args.firstOrNull() == "set") {
+        val key = args.getOrNull(1)
+        val value = args.drop(2).joinToString(" ")
+        if (key.isNullOrBlank() || value.isBlank()) {
+            System.err.println("Usage: stoandl health profile set <key> <value>\n" +
+                "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (10min/30min/1h/off),\n" +
+                "        units (metric/imperial), height_cm, weight_kg, age, gender (female/male/other), resting_hr, max_hr")
+            System.exit(1); return
+        }
+        withControl { control ->
+            try { handleStatusResponse(control.SetHealthProfile(key, value)) }
+            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        }
+        return
+    }
+    withControl { control ->
+        val records = try { control.GetHealthProfile() } catch (e: Exception) {
+            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+        }
+        if (records.isEmpty()) { println("No health profile available (is a health-capable watch set up?)"); return }
+        val rows = records.mapNotNull { val f = it.split('\t'); if (f.size < 2) null else f[0] to f[1] }
+        val w = rows.maxOf { it.first.length }
+        rows.forEach { (k, v) -> println("  ${k.padEnd(w)}  $v") }
+        println("\nSet one with:  stoandl health profile set <key> <value>")
     }
 }
 
@@ -911,6 +944,13 @@ private fun ctlNotif(rest: List<String>) {
                 }
                 printNotifList(rows)
             }
+            // Inject a synthetic notification to the watch (through the normal mute/style/filter path).
+            "test" -> {
+                val title = rest.getOrNull(1) ?: "Test notification"
+                val body = rest.drop(2).joinToString(" ")
+                try { handleStatusResponse(control.SendTestNotification(title, body)) }
+                catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+            }
             // Quote multi-word app names: `stoandl notif mute "My App" 1h`.
             "mute", "unmute" -> {
                 val query = rest.getOrNull(1)
@@ -1044,10 +1084,44 @@ private fun ctlWatch(rest: List<String>) {
         "repair" -> watchRepair(rest.getOrNull(1))
         "battery" -> ctlBattery(rest.drop(1))
         "find" -> watchFind()
+        "ping" -> withControl { control ->
+            try { handleStatusResponse(control.Ping()) }
+            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        }
+        "running" -> watchRunning()
+        "rename", "nickname" -> watchRename(rest.getOrNull(1), rest.drop(2).joinToString(" "))
         else -> {
-            System.err.println("Usage: stoandl watch <list|connect <n>|pair|unpair [n]|repair <n>|battery|find>")
+            System.err.println("Usage: stoandl watch <list|connect <n>|pair|unpair [n]|repair <n>|rename <n> <name>|battery|find|ping|running>")
             System.exit(1)
         }
+    }
+}
+
+/** Show the app/watchface currently on the watch's screen (distinct from the default watchface). */
+private fun watchRunning() = withControl { control ->
+    val resp = try { control.RunningApp() } catch (e: Exception) {
+        System.err.println("Error: ${e.message}"); System.exit(1); return
+    }
+    when {
+        resp.startsWith("ok:") -> {
+            val parts = resp.removePrefix("ok:").split('\t')
+            val title = parts.getOrElse(0) { "" }
+            val uuid = parts.getOrElse(1) { "" }
+            println("Running: $title" + if (uuid.isNotBlank()) "  ($uuid)" else "")
+        }
+        resp.startsWith("none:") -> println("No app reported as running yet.")
+        else -> handleStatusResponse(resp)
+    }
+}
+
+/** Rename (set the nickname of) the watch matching [query] — the CLI counterpart of the GUI rename. */
+private fun watchRename(query: String?, nickname: String) {
+    if (query.isNullOrBlank() || nickname.isBlank()) {
+        System.err.println("Usage: stoandl watch rename <name|uuid> <new name>"); System.exit(1); return
+    }
+    withControl { control ->
+        try { handleStatusResponse(control.SetWatchNickname(query, nickname)) }
+        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
     }
 }
 
@@ -1360,10 +1434,34 @@ private fun ctlApps(rest: List<String>) {
         "launch" -> appLaunchOrRemove(true, rest.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
         "remove" -> appLaunchOrRemove(false, rest.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
         "sideload", "install", "add" -> appSideload(rest.getOrNull(1))
+        "order" -> appOrder(rest.drop(1))
         else -> {
-            System.err.println("Usage: stoandl apps <list|launch <name|uuid>|remove <name|uuid>|install <path.pbw>>")
+            System.err.println("Usage: stoandl apps <list|launch <name|uuid>|remove <name|uuid>|install <path.pbw>|order <name|uuid> <pos>|order reset>")
             System.exit(1)
         }
+    }
+}
+
+/** Reorder the locker: `apps order <name|uuid> <pos>` moves an app to 0-based position [pos]; the
+ *  name may contain spaces (the position is the last token). `apps order reset` restores the default
+ *  system-app order. */
+private fun appOrder(args: List<String>) {
+    if (args.firstOrNull() == "reset") {
+        withControl { control ->
+            try { handleStatusResponse(control.RestoreSystemAppOrder()) }
+            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        }
+        return
+    }
+    val pos = args.lastOrNull()?.toIntOrNull()
+    val query = args.dropLast(1).joinToString(" ")
+    if (args.size < 2 || pos == null || pos < 0 || query.isBlank()) {
+        System.err.println("Usage: stoandl apps order <name|uuid> <position≥0> | apps order reset")
+        System.exit(1); return
+    }
+    withControl { control ->
+        try { handleStatusResponse(control.SetAppOrder(query, pos)) }
+        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
     }
 }
 
@@ -1820,7 +1918,7 @@ private fun printWatchPrefs(records: List<String>, filter: String?) {
         rows.forEach { println(render(it)) }
         if (rows.any { it.debug }) println("\n* debug/advanced setting · allowed values + descriptions: stoandl settings <name>")
     }
-    println("\nSet one with:  stoandl set-setting <SETTING> <value>")
+    println("\nSet one with:  stoandl settings set <SETTING> <value>")
 }
 
 /** stoandl's data directory: locker DB, pbw cache and PKJS settings all live here. */
@@ -2095,8 +2193,9 @@ private fun ctlReset(rest: List<String>) {
             sendReset { it.FactoryReset() }
         }
         "recovery", "prf" -> sendReset { it.ResetIntoRecovery() }
+        "coredump", "core-dump" -> sendReset { it.ForceCoreDump() }
         else -> {
-            System.err.println("Usage: stoandl reset <factory|recovery> [--yes]")
+            System.err.println("Usage: stoandl reset <factory|recovery|coredump> [--yes]")
             System.exit(1)
         }
     }
