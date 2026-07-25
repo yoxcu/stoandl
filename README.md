@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/stoandl-icon.png" alt="stoandl" width="120"></p>
+
 # stoandl
 
 > **⚠️ Work in progress — but broad.** Most of what the Android/iOS Pebble companion apps do is
@@ -17,12 +19,40 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 
 At its core stoandl forwards your desktop notifications (`org.freedesktop.Notifications`) to the
 watch — but it does most of what the official Android/iOS Pebble companion apps do: the locker,
-weather, music, calendar, firmware flashing, language packs, health sync, battery insights,
-screenshots, and companion apps for any messaging service. All headless — from the CLI, with no
-phone, no account and no UI.
+weather, music, calendar, firmware flashing, language packs, health sync, battery insights and
+screenshots. All headless — from the CLI, with no phone, no account and no UI.
+
+It's also **extensible**: an [extension system](docs/extensions.md) lets you plug in your own
+host-side integrations — Matrix, Signal, SMS, "find my phone", anything — in any language, driving
+watch notifications (with replies and actions) and optionally shipping their own watchapp. A Matrix
+client and a find-my-phone example ship in the box.
 
 → **[docs/features.md](docs/features.md)** — the full feature list, each with its CLI usage, a
 comparison with the other companion apps, and what's not yet implemented.
+
+## Desktop / mobile GUI (optional)
+
+The daemon is fully headless — but there's also an optional **[Kirigami](https://develop.kde.org/frameworks/kirigami/)
+GUI** ([`gui/`](gui/), a separate repo: [yoxcu/stoandl-gui](https://github.com/yoxcu/stoandl-gui)).
+It's a pure D-Bus client of the `de.yoxcu.stoandl.Control` interface — no code shared with the daemon —
+and is **convergent**: the same app runs on a KDE/GNOME desktop and on Plasma Mobile. Five screens —
+**Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates, the locker + extensions,
+health charts, battery insights, notification rules, calendars and the full `stoandl.conf`.
+
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/watch.png" width="260" alt="Watch tab"><br><sub><b>Watch</b> — pairing, firmware, battery</sub></td>
+    <td align="center" width="50%"><img src="docs/screenshots/battery.png" width="260" alt="Battery insights"><br><sub><b>Battery insights</b> — charge, drain, power</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/health.png" width="260" alt="Health tab"><br><sub><b>Health</b> — steps, sleep, heart rate</sub></td>
+    <td align="center" width="50%"><img src="docs/screenshots/apps.png" width="260" alt="Apps tab"><br><sub><b>Apps</b> — faces, apps, extensions</sub></td>
+  </tr>
+</table>
+
+**Build, run & install:** see the GUI repo's [README](https://github.com/yoxcu/stoandl-gui#build) for
+the native Qt6 build, or install the **Flatpak** / postmarketOS `.apk` from its
+[releases](https://github.com/yoxcu/stoandl-gui/releases).
 
 ## Compatibility
 

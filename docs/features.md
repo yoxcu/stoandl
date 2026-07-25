@@ -9,11 +9,10 @@ with no UI and no sign-in, talking to the watch over Bluetooth — BLE for moder
 Classic for classic-era ones. Many gaps below are deliberate consequences of that (no health
 dashboard, no account-backed app store); others are genuine TODOs.
 
-Features are grouped by readiness. **[Working today](#working-today)** works now and — unless a note
-says otherwise — is hardware-verified. **[Implemented — to be tested](#implemented--to-be-tested)** is
-written but not yet fully verified on hardware; each entry's note says what's confirmed and what's
-still pending (test plan: [TESTING.md](../TESTING.md)). **[Not yet implemented](#not-yet-implemented)**
-is the roadmap.
+Features are grouped by readiness. **[Working today](#working-today)** is implemented and
+hardware-verified — each entry's note flags any remaining caveat. **[Implemented — to be
+tested](#implemented--to-be-tested)** is written but not yet run on hardware (test plan:
+[TESTING.md](../TESTING.md)). **[Not yet implemented](#not-yet-implemented)** is the roadmap.
 
 ## Working today
 
@@ -76,6 +75,19 @@ Serve a PKJS app's config page via a local proxy, so you can change its settings
 ```sh
 stoandl config [app]   # open a PKJS app's Clay config page (launches the app if needed)
 ```
+
+### Watch settings (advanced)
+
+Set the "advanced" watch prefs the official app exposes (quick-launch buttons, ambient-light
+threshold, backlight, vibration, etc.), applied authoritatively on connect.
+
+```sh
+stoandl settings [filter]      # list the watch's advanced settings (quick-launch, backlight, …)
+stoandl settings set <id> <v>  # set one, e.g. settings set lightAmbientThreshold 200
+```
+
+Or via `watch.<id>` config keys. See [configuration.md](configuration.md#watch-settings-advanced).
+_Hardware-verified._
 
 ### Bluetooth Classic transport
 
@@ -164,6 +176,51 @@ stoandl weather   # force a refresh now
 _Hardware-verified. (Watch firmware only surfaces the next ~2–3 days of timeline, so the furthest
 pins sync but may not display.)_ See [configuration.md](configuration.md#weather).
 
+### Calendar sync / timeline pins
+
+Desktop calendar events → the watch timeline as native calendar pins, via libpebble3's
+`PhoneCalendarSyncer` fed by a Linux `SystemCalendar` reader (so libpebble3 owns all pin
+creation/diffing/deletion). DE-agnostic sources: local `.ics` files/dirs, best-effort discovery of the
+DE's local calendars (`calendar.discover` — e.g. Calindori on Plasma Mobile), published iCal feed URLs
+and CalDAV (auto-discovers all of an account's calendars via RFC 6764/4791, or a single collection
+URL). CalDAV passwords go in the system keyring (`org.freedesktop.secrets`), else a 0600 `secrets`
+file beside the config — never in `stoandl.conf`.
+
+```sh
+stoandl calendar list                 # synced calendars + enabled state
+stoandl calendar sources              # editable sources (CalDAV accounts / iCal feeds / .ics) + ids
+stoandl calendar add caldav https://dav.example.com/alice/ alice   # prompts (no echo) for the password
+stoandl calendar passwd <id>          # change a stored CalDAV password
+stoandl calendar remove <id>          # drop a source (and its stored password)
+stoandl calendar disable <id|name>    # stop syncing one calendar (enable to undo)
+stoandl calendar sync                 # force a re-read now
+stoandl calendar dump <file|url>      # parse + print events offline (no daemon/watch needed)
+```
+
+Recurrence (RRULE/RDATE, minus EXDATE) is expanded with ical4j; all-day events, per-event timezones
+and event reminders (VALARM) are handled. Refreshes on `calendar.sync_interval`, on local `.ics`
+change (filesystem watch), and on demand. On only when a `calendar.*` source is configured; local
+sources are egress-free. Manage sources from the GUI (**Settings → Calendars**) or the CLI; changes
+apply live (no restart). _**Hardware-verified** — local `.ics`, CalDAV (incl. auto-discovery),
+iCal-URL feeds and local DE-discovery (`calendar.discover`): pins, reminders, enable/disable,
+deletion. [TESTING.md §5.7](../TESTING.md). Known gaps (the rest of libpebble3's calendar surface is
+not done):_
+
+- _**RSVP / pin actions** — the watch doesn't show Accept/Maybe/Decline/Cancel on calendar pins
+  (`supportsPinActions=false`). Write-back needs CalDAV scheduling/iTIP and so is **CalDAV-only**
+  (read-only `.ics`/feed sources can't write back). Tracked under
+  [Not yet implemented](#not-yet-implemented) below._
+- _**Attendee metadata is partial** — names/emails only; `isCurrentUser`/`isOrganizer`/`role`/
+  `attendanceStatus` (PARTSTAT) aren't parsed, so pins show no RSVP "Status" line and the syncer's
+  hide-declined-events filter never triggers._
+- _**GNOME EDS / KDE Akonadi *online* calendars** (Google/Nextcloud/MS) aren't read from the native
+  store — reach them via `calendar.ical_urls` or `calendar.caldav`. A GNOME EDS reader (raw D-Bus, to
+  avoid a musl-breaking native `libecal` dep) is a possible future addition._
+- _Minor: calendar **color** is left default; a singly-**edited recurring occurrence** shows at its
+  original time (detached `RECURRENCE-ID` overrides are skipped to avoid duplicates)._
+
+See [configuration.md](configuration.md#calendar).
+
 ### Watch screenshot
 
 Capture the watch's current screen to a PNG on the host — handy for sharing watchfaces and filing bug
@@ -249,6 +306,38 @@ this is unavailable — the level rides a BLE GATT service (see
 [Battery level over Bluetooth Classic](#battery-level-over-bluetooth-classic)); the richer
 [battery insights](#battery-insights) do work over Classic. _**Hardware-verified.**
 [TESTING.md §5.20](../TESTING.md)._
+
+### Battery insights
+
+The local equivalent of the official Core app's "Battery" screen (which is a cloud WebView the
+backend computes from uploaded telemetry). stoandl decodes the watch's hourly analytics
+*native-heartbeat* — state of charge, real voltage, the firmware's own time-to-empty, and a measured
+charge signal — locally, in the `WebServices.uploadAnalyticsHeartbeat` hook libpebble3 already routes
+the blob to (zero fork change; it's the very blob the official app forwards to its cloud, decoded
+on-device here instead).
+
+```sh
+stoandl watch battery insights   # charge trend, discharge rate, time-to-empty, cycles, voltage
+stoandl watch battery history    # the battery %-over-time series (--since 24h / 7d / …)
+stoandl watch battery activity   # per-hour battery drain + notifications-received counts
+stoandl watch battery power      # estimated usage share: what drew power (display, radio, CPU, …)
+stoandl watch battery heartbeat  # the raw decoded heartbeat record
+```
+
+Decoding is strictly version/size-gated against the firmware-verified 523-byte record layout and
+captures the raw blob on any mismatch, so a firmware layout change degrades to the BLE
+battery-level fallback rather than emitting garbage. The same 523-byte record carries 91 metrics (the
+battery block is 7); the rest — per-subsystem on-times (backlight, vibration, speaker, HRM), CPU
+run/stop + per-task residency, and event counters (notifications received) — are decoded on demand
+from the stored raw blob (so they **backfill across existing history**) to build three further views
+the official cloud screen showed: a per-hour **drain** bar, a **power-attribution** breakdown (an
+*estimate*: on-time × intensity, not measured mAh) and a **notification-density** overlay on the
+charge graph. Also surfaced in the GUI's **Battery** page and via the `battery.heartbeat` /
+`battery.history` / `battery.retention_days` config keys (on by default, local-only, no egress).
+Because the heartbeat rides the datalog service rather than GATT, it also works over **Bluetooth
+Classic** and backfills across disconnects.
+
+_**Hardware-verified.** [TESTING.md §5.29](../TESTING.md)._ See [battery-insights.md](battery-insights.md).
 
 ### Developer connection
 
@@ -405,54 +494,6 @@ Update notification all flashed flawlessly. [TESTING.md §5.11](../TESTING.md)._
 Implemented but not yet fully verified on hardware — each entry's note says what's confirmed and
 what's still pending. Test plan: [TESTING.md](../TESTING.md).
 
-### Watch settings (advanced)
-
-Set the "advanced" watch prefs the official app exposes (quick-launch buttons, ambient-light
-threshold, backlight, vibration, etc.), applied authoritatively on connect.
-
-```sh
-stoandl settings [filter]      # list the watch's advanced settings (quick-launch, backlight, …)
-stoandl settings set <id> <v>  # set one, e.g. settings set lightAmbientThreshold 200
-```
-
-Or via `watch.<id>` config keys. See [configuration.md](configuration.md#watch-settings-advanced).
-_To be tested. [TESTING.md](../TESTING.md)._
-
-### Battery insights
-
-The local equivalent of the official Core app's "Battery" screen (which is a cloud WebView the
-backend computes from uploaded telemetry). stoandl decodes the watch's hourly analytics
-*native-heartbeat* — state of charge, real voltage, the firmware's own time-to-empty, and a measured
-charge signal — locally, in the `WebServices.uploadAnalyticsHeartbeat` hook libpebble3 already routes
-the blob to (zero fork change; it's the very blob the official app forwards to its cloud, decoded
-on-device here instead).
-
-```sh
-stoandl watch battery insights   # charge trend, discharge rate, time-to-empty, cycles, voltage
-stoandl watch battery history    # the battery %-over-time series (--since 24h / 7d / …)
-stoandl watch battery activity   # per-hour battery drain + notifications-received counts
-stoandl watch battery power      # estimated usage share: what drew power (display, radio, CPU, …)
-stoandl watch battery heartbeat  # the raw decoded heartbeat record
-```
-
-Decoding is strictly version/size-gated against the firmware-verified 523-byte record layout and
-captures the raw blob on any mismatch, so a firmware layout change degrades to the BLE
-battery-level fallback rather than emitting garbage. The same 523-byte record carries 91 metrics (the
-battery block is 7); the rest — per-subsystem on-times (backlight, vibration, speaker, HRM), CPU
-run/stop + per-task residency, and event counters (notifications received) — are decoded on demand
-from the stored raw blob (so they **backfill across existing history**) to build three further views
-the official cloud screen showed: a per-hour **drain** bar, a **power-attribution** breakdown (an
-*estimate*: on-time × intensity, not measured mAh) and a **notification-density** overlay on the
-charge graph. Also surfaced in the GUI's **Battery** page and via the `battery.heartbeat` /
-`battery.history` / `battery.retention_days` config keys (on by default, local-only, no egress).
-Because the heartbeat rides the datalog service rather than GATT, it also works over **Bluetooth
-Classic** and backfills across disconnects.
-
-_On main; not yet hardware-verified — whether the heartbeat actually decodes on a live watch is the
-open item (it degrades to the GATT fallback if not), and the richer offsets want a
-`analytics native_metrics_dump` spot-check. [TESTING.md §5.29](../TESTING.md)._ See
-[battery-insights.md](battery-insights.md).
-
 ### Phone call notifications
 
 ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive
@@ -479,51 +520,6 @@ stoandl notif filter add <regex> block|allow   # matched against app name + titl
 ```
 
 See [configuration.md](configuration.md#per-app-notification-settings). _To be tested._
-
-### Calendar sync / timeline pins
-
-Desktop calendar events → the watch timeline as native calendar pins, via libpebble3's
-`PhoneCalendarSyncer` fed by a Linux `SystemCalendar` reader (so libpebble3 owns all pin
-creation/diffing/deletion). DE-agnostic sources: local `.ics` files/dirs, best-effort discovery of the
-DE's local calendars (`calendar.discover` — e.g. Calindori on Plasma Mobile), published iCal feed URLs
-and CalDAV (auto-discovers all of an account's calendars via RFC 6764/4791, or a single collection
-URL). CalDAV passwords go in the system keyring (`org.freedesktop.secrets`), else a 0600 `secrets`
-file beside the config — never in `stoandl.conf`.
-
-```sh
-stoandl calendar list                 # synced calendars + enabled state
-stoandl calendar sources              # editable sources (CalDAV accounts / iCal feeds / .ics) + ids
-stoandl calendar add caldav https://dav.example.com/alice/ alice   # prompts (no echo) for the password
-stoandl calendar passwd <id>          # change a stored CalDAV password
-stoandl calendar remove <id>          # drop a source (and its stored password)
-stoandl calendar disable <id|name>    # stop syncing one calendar (enable to undo)
-stoandl calendar sync                 # force a re-read now
-stoandl calendar dump <file|url>      # parse + print events offline (no daemon/watch needed)
-```
-
-Recurrence (RRULE/RDATE, minus EXDATE) is expanded with ical4j; all-day events, per-event timezones
-and event reminders (VALARM) are handled. Refreshes on `calendar.sync_interval`, on local `.ics`
-change (filesystem watch), and on demand. On only when a `calendar.*` source is configured; local
-sources are egress-free. Manage sources from the GUI (**Settings → Calendars**) or the CLI; changes
-apply live (no restart). _Verified on hardware: local `.ics` + CalDAV (incl. auto-discovery), pins,
-reminders, enable/disable, deletion. Still to test: iCal-URL feeds + local DE-discovery
-(`calendar.discover`). [TESTING.md §5.7](../TESTING.md). Known gaps (the rest of libpebble3's calendar
-surface is not done):_
-
-- _**RSVP / pin actions** — the watch doesn't show Accept/Maybe/Decline/Cancel on calendar pins
-  (`supportsPinActions=false`). Write-back needs CalDAV scheduling/iTIP and so is **CalDAV-only**
-  (read-only `.ics`/feed sources can't write back). Tracked under
-  [Not yet implemented](#not-yet-implemented) below._
-- _**Attendee metadata is partial** — names/emails only; `isCurrentUser`/`isOrganizer`/`role`/
-  `attendanceStatus` (PARTSTAT) aren't parsed, so pins show no RSVP "Status" line and the syncer's
-  hide-declined-events filter never triggers._
-- _**GNOME EDS / KDE Akonadi *online* calendars** (Google/Nextcloud/MS) aren't read from the native
-  store — reach them via `calendar.ical_urls` or `calendar.caldav`. A GNOME EDS reader (raw D-Bus, to
-  avoid a musl-breaking native `libecal` dep) is a possible future addition._
-- _Minor: calendar **color** is left default; a singly-**edited recurring occurrence** shows at its
-  original time (detached `RECURRENCE-ID` overrides are skipped to avoid duplicates)._
-
-See [configuration.md](configuration.md#calendar).
 
 ### Factory reset / reset to recovery
 
