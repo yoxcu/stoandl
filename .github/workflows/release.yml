@@ -171,8 +171,28 @@ jobs:
             openjdk21-jdk
             openjdk25-jdk
 
-      - name: Generate a throwaway abuild signing key
-        run: abuild-keygen -a -i -n
+      - name: Set up the package signing key
+        # With a persistent key configured (ABUILD_PRIVKEY secret + a committed public
+        # key under packaging/keys/), sign with it so anyone who trusts that public key
+        # once can `apk add` every release without --allow-untrusted. Otherwise fall
+        # back to a throwaway key (installs then need --allow-untrusted).
+        env:
+          ABUILD_PRIVKEY: ${{ secrets.ABUILD_PRIVKEY }}
+        run: |
+          mkdir -p "$HOME/.abuild"
+          pub="$(ls packaging/keys/*.rsa.pub 2>/dev/null | head -1 || true)"
+          if [ -n "$ABUILD_PRIVKEY" ] && [ -n "$pub" ]; then
+            key="$(basename "${pub%.pub}")"
+            printf '%s\n' "$ABUILD_PRIVKEY" > "$HOME/.abuild/$key"
+            chmod 600 "$HOME/.abuild/$key"
+            cp "$pub" "$HOME/.abuild/$key.pub"
+            echo "PACKAGER_PRIVKEY=$HOME/.abuild/$key" > "$HOME/.abuild/abuild.conf"
+            doas cp "$pub" /etc/apk/keys/
+            echo "Signing with the committed release key: $key"
+          else
+            abuild-keygen -a -i -n
+            echo "No ABUILD_PRIVKEY/pubkey configured — throwaway key (apk needs --allow-untrusted)"
+          fi
         shell: alpine.sh {0}
 
       - name: Build the .apk
@@ -203,8 +223,14 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
-      - name: Attach .apk(s) to the release
+      - name: Attach .apk(s) + signing key to the release
         if: startsWith(github.ref, 'refs/tags/v')
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
+          # Publish the public signing key so users can trust it once, then apk add
+          # without --allow-untrusted.
+          for pub in packaging/keys/*.rsa.pub; do
+            [ -f "$pub" ] && gh release upload "$GITHUB_REF_NAME" "$pub" --clobber
+          done
         env:
           GH_TOKEN: ${{ github.token }}
