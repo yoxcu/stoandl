@@ -178,13 +178,14 @@ jobs:
       - name: Build the .apk
         # abuild installs the makedepends via abuild-apk (abuild-group members only);
         # add the user to the group and re-login with `doas su`. Pin REPODEST so the
-        # Stage step finds the apks regardless of the su session's $HOME. (sha512sums
-        # are SKIP in the APKBUILD, so no `abuild checksum` is needed.)
+        # Stage step finds the apks regardless of the su session's $HOME. Run
+        # `abuild checksum` first: the source tarballs are commit-pinned, so their
+        # sha512sums change every time _commit / _libpebble3_commit are rewritten.
         run: |
           doas adduser "$(id -un)" abuild
           mkdir -p "$GITHUB_WORKSPACE/packages"
           pkgdir="$(pwd)/packaging"
-          doas su "$(id -un)" -c "cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild -r"
+          doas su "$(id -un)" -c "cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild checksum && abuild -r"
         shell: alpine.sh {0}
 
       - name: Stage the .apk(s)
