@@ -39,19 +39,9 @@ and is **convergent**: the same app runs on a KDE/GNOME desktop and on Plasma Mo
 **Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates, the locker + extensions,
 health charts, battery insights, notification rules, calendars and the full `stoandl.conf`.
 
-<table>
-  <tr>
-    <td align="center" width="50%"><img src="docs/screenshots/watch.png" width="260" alt="Watch tab"><br><sub><b>Watch</b> — pairing, firmware, battery</sub></td>
-    <td align="center" width="50%"><img src="docs/screenshots/battery.png" width="260" alt="Battery insights"><br><sub><b>Battery insights</b> — charge, drain, power</sub></td>
-  </tr>
-  <tr>
-    <td align="center" width="50%"><img src="docs/screenshots/health.png" width="260" alt="Health tab"><br><sub><b>Health</b> — steps, sleep, heart rate</sub></td>
-    <td align="center" width="50%"><img src="docs/screenshots/apps.png" width="260" alt="Apps tab"><br><sub><b>Apps</b> — faces, apps, extensions</sub></td>
-  </tr>
-</table>
-
-**Build, run & install:** see the GUI repo's [README](https://github.com/yoxcu/stoandl-gui#build) for
-the native Qt6 build, or install the **Flatpak** / postmarketOS `.apk` from its
+**Screenshots, build & install:** see the GUI repo's README — it has
+[screenshots](https://github.com/yoxcu/stoandl-gui#screenshots), the native Qt6
+[build](https://github.com/yoxcu/stoandl-gui#build), and **Flatpak** / postmarketOS `.apk`
 [releases](https://github.com/yoxcu/stoandl-gui/releases).
 
 ## Compatibility
