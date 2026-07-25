@@ -185,7 +185,10 @@ jobs:
           doas adduser "$(id -un)" abuild
           mkdir -p "$GITHUB_WORKSPACE/packages"
           pkgdir="$(pwd)/packaging"
-          doas su "$(id -un)" -c "cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild checksum && abuild -r"
+          # GitHub's runner image ships the Android SDK and exports ANDROID_HOME, which
+          # leaks into the chroot — libpebble3 then tries to configure its Android target
+          # against an SDK that isn't in Alpine. Unset it so it's a Linux-only JVM build.
+          doas su "$(id -un)" -c "unset ANDROID_HOME ANDROID_SDK_ROOT; cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild checksum && abuild -r"
         shell: alpine.sh {0}
 
       - name: Stage the .apk(s)
