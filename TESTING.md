@@ -476,7 +476,7 @@ calendar.ics_paths = /tmp/stoandl-test.ics
 calendar.sync_interval = 30
 ```
 
-For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging)). On the watch, open the
+For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging--reporting-bugs)). On the watch, open the
 **timeline** by pressing **up** (past) / **down** or select (future) from the watchface.
 
 | # | Test | Command / Step | Expected |
@@ -916,7 +916,7 @@ RFCOMM/SPP) — their reliable native transport. The host is the RFCOMM client; 
 watch's fixed address (no advertising), so it survives airplane mode. Discovery (BR/EDR inquiry) runs
 only while a pairing window is open; a bonded watch reconnects with no scan. Off by default
 (`classic.discover`); the BLE path is untouched. See
-[README → Bluetooth Classic](README.md#bluetooth-classic-classic-era-watches) and
+[docs/devices.md → Bluetooth Classic](docs/devices.md#bluetooth-classic) and
 [docs/configuration.md](docs/configuration.md#bluetooth-classic).
 
 ```sh
