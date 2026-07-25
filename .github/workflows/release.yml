@@ -12,10 +12,10 @@ on:
     inputs:
       pkgver:
         description: >-
-          Version label for a test apk build (dispatch always builds the selected
-          branch's HEAD — no tag needed)
+          Version label for a test apk build — must be a valid Alpine version (no
+          "-"; e.g. 0.0.0 or 0.7.0). Dispatch always builds the selected branch's HEAD.
         required: false
-        default: "0.0.0-test"
+        default: "0.0.0"
 
 permissions:
   contents: read
