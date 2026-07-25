@@ -9,6 +9,13 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      pkgver:
+        description: >-
+          Version label for a test apk build (dispatch always builds the selected
+          branch's HEAD — no tag needed)
+        required: false
+        default: "0.0.0-test"
 
 permissions:
   contents: read
@@ -20,6 +27,8 @@ concurrency:
 jobs:
   build:
     name: Build fat JAR
+    # Skip on manual dispatch — dispatch is for iterating the pmOS apk job only.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,3 +119,88 @@ jobs:
           files: |
             dist/stoandl-*-all.jar
             dist/stoandl-*.tar.gz
+
+  apk:
+    name: Build pmOS package
+    needs: release
+    # A tag runs this after the release job; a manual dispatch builds the selected
+    # branch's HEAD so the packaging can be iterated without cutting a tag.
+    # !cancelled() lets it run even though `release` is skipped on dispatch.
+    if: >-
+      !cancelled() &&
+      (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # attach the .apk(s) to the release (tag runs only)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false  # the APKBUILD fetches libpebble3 by commit from GitHub
+
+      - name: Point APKBUILD at this build
+        # The APKBUILD builds from source fetched by commit from GitHub, so pin
+        # pkgver + both commit SHAs to exactly what's being built. The stoandl commit
+        # and the recorded libpebble3 submodule commit must already be pushed to their
+        # repos for the archive downloads to resolve.
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            v="${{ inputs.pkgver }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          commit="$(git rev-parse HEAD)"
+          lp3="$(git ls-tree HEAD libs/libpebble3 | awk '{print $3}')"
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=$v/" \
+            -e "s/^_commit=.*/_commit=$commit/" \
+            -e "s/^_libpebble3_commit=.*/_libpebble3_commit=$lp3/" \
+            packaging/APKBUILD
+          echo "Building pkgver=$v  stoandl=$commit  libpebble3=$lp3"
+
+      # A pure-Java noarch package — no cross-arch/QEMU, build on native x86_64.
+      # edge is required for openjdk 25; the Gradle build needs network, which
+      # `abuild -r` (unlike rootbld) allows.
+      - uses: jirutka/setup-alpine@v1
+        with:
+          branch: edge
+          extra-repositories: |
+            https://dl-cdn.alpinelinux.org/alpine/edge/community
+          packages: >
+            alpine-sdk
+            doas
+            openjdk21-jdk
+            openjdk25-jdk
+
+      - name: Generate a throwaway abuild signing key
+        run: abuild-keygen -a -i -n
+        shell: alpine.sh {0}
+
+      - name: Build the .apk
+        # abuild installs the makedepends via abuild-apk (abuild-group members only);
+        # add the user to the group and re-login with `doas su`. Pin REPODEST so the
+        # Stage step finds the apks regardless of the su session's $HOME. (sha512sums
+        # are SKIP in the APKBUILD, so no `abuild checksum` is needed.)
+        run: |
+          doas adduser "$(id -un)" abuild
+          mkdir -p "$GITHUB_WORKSPACE/packages"
+          pkgdir="$(pwd)/packaging"
+          doas su "$(id -un)" -c "cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild -r"
+        shell: alpine.sh {0}
+
+      - name: Stage the .apk(s)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          find "$GITHUB_WORKSPACE/packages" -name '*.apk' -exec cp {} "$GITHUB_WORKSPACE/dist/" \;
+        shell: alpine.sh {0}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stoandl-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Attach .apk(s) to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

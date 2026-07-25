@@ -1,5 +1,10 @@
 # Contributor: Michael Auer <mick@yoxcu.de>
 # Maintainer: Michael Auer <mick@yoxcu.de>
+#
+# NOTE: the release CI (.github/workflows/release.yml, "apk" job) rewrites pkgver,
+# _commit and _libpebble3_commit to the exact version/commits being released before
+# building — so these committed values are just placeholders. Building by hand? Set
+# all three to a released tag and its commit SHAs first.
 pkgname=stoandl
 pkgver=0.1.0
 pkgrel=0
