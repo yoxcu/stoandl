@@ -27,3 +27,4 @@ __pycache__/
 # Pebble SDK build artifacts (testing/ watchapp projects)
 .lock-waf_*
 .pebble/
+*.rsa
