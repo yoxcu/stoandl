@@ -99,11 +99,13 @@ address, so no advertising is needed). The protocol layer is transport-agnostic,
 here works the same over Classic — the lone exception is the BLE-only battery *level* read-out. The
 JVM/BlueZ side (RFCOMM socket via a `java.lang.foreign` (FFM) socket — no native library, so it
 carries no glibc-only blob — native SDP channel resolution, the scanner, Classic pairing) spans this
-repo and the libpebble3 fork. Off by default — opt in with `classic.discover`:
+repo and the libpebble3 fork. On by default (experimental) — it's idle when no classic watch is
+paired (the BR/EDR inquiry only runs during a pairing window), so disable it with
+`classic.discover = false` if you never use a classic-era watch:
 
 ```ini
 # ~/.config/stoandl/stoandl.conf
-classic.discover = true     # discover, pair and connect classic-era Pebbles automatically
+classic.discover = false    # turn off classic-era Pebble discovery (on by default)
 ```
 
 _Hardware-verified on a Pebble Time Steel; the JNA→FFM rewrite that drops the last native blob (so it

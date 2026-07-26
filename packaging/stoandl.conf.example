@@ -256,10 +256,12 @@ battery.retention_days = 90
 # BLE-native watches (Pebble Time 2 / Pebble 2) still use BLE. The adapter must have BR/EDR enabled
 # (the default — not LE-only mode).
 #
-# Turn this on to discover, pair and connect classic-era watches over a BR/EDR inquiry. To pair a NEW
+# Discover, pair and connect classic-era watches over a BR/EDR inquiry. On by default (experimental) —
+# it costs nothing when no classic watch is paired (the inquiry only runs while a pairing window is
+# open; a bonded watch reconnects by paging its fixed address). Set to false to disable. To pair a NEW
 # watch, run `stoandl watch pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH — same
 # flow as BLE; the RFCOMM channel is resolved via SDP. A bonded watch then reconnects on its own.
-classic.discover = false
+classic.discover = true
 #
 # If auto-pairing doesn't yield a working BR/EDR bond on your dual-mode watch, pair it once by hand:
 #     bluetoothctl remove <MAC>            # clear any half-bond; put the watch in pairing mode, then:

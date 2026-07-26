@@ -271,7 +271,7 @@ data class StoandlConfig(
             batteryHistory = true,
             batteryHeartbeat = true,
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
-            classicDiscover = false,
+            classicDiscover = true,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
             extensionConfig = emptyMap(),

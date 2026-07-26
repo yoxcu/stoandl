@@ -2,7 +2,7 @@
 
 stoandl connects BLE-native watches (Pebble 2 / Time 2) over **BLE**, and classic-era watches
 (Pebble Time / Time Steel) over **Bluetooth Classic** (RFCOMM/SPP) — their reliable native transport.
-The Classic transport is experimental (hardware-verified on a Time Steel) and off by default; see
+The Classic transport is experimental (hardware-verified on a Time Steel) and on by default; see
 [Bluetooth Classic](#bluetooth-classic) below to enable it.
 
 ## Watch support matrix
@@ -39,7 +39,7 @@ Full diagnosis is in [`debug.md`](../debug.md).
 ## Bluetooth Classic
 
 > **Experimental.** Works and is hardware-verified on a Pebble Time Steel, but it's newer and less
-> battle-tested than the BLE path, and off by default.
+> battle-tested than the BLE path. On by default, but idle when no classic watch is paired.
 
 Classic-era Pebbles (Pebble Time / Time Steel — and, by class, the original Pebble / Steel and Time
 Round) connect reliably only over **Bluetooth Classic** (RFCOMM/SPP), their native transport. Their
@@ -63,15 +63,14 @@ libpebble3 fork (the BlueZ RFCOMM socket via a `java.lang.foreign` (FFM) socket 
 so it ships no glibc-only blob — native L2CAP SDP channel resolution, the scanner, and Classic pairing
 over D-Bus).
 
-### Enabling it
+### Using it
 
-It's off until you opt in, in `~/.config/stoandl/stoandl.conf`:
+It's **on by default** (experimental) — no config needed. It stays idle when no classic watch is
+paired (the BR/EDR inquiry runs only while a pairing window is open; a bonded watch reconnects by
+paging its fixed address), so it costs nothing on a BLE-only setup. To turn it off, set
+`classic.discover = false` in `~/.config/stoandl/stoandl.conf`.
 
-```ini
-classic.discover = true     # discover, pair and connect classic-era Pebbles automatically
-```
-
-Then pair as usual:
+Just pair as usual:
 
 ```sh
 stoandl watch pair                 # opens a pairing window; inquires for BLE and classic watches alike
