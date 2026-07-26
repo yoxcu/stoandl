@@ -107,6 +107,18 @@ applies this pin for you via `BUILD_JAVA_HOME`.)
 `git describe --tags`, so the JAR is named for the tag. The Kirigami GUI ([`gui/`](gui/), a separate
 repo) has its own release pipeline shipping a Flatpak — see its README.
 
+**Installing the postmarketOS `.apk`.** A tagged release also ships an aarch64 pmOS `.apk` and the
+public signing key (`mick@yoxcu.de-*.rsa.pub`). Trust the key once and `apk add` installs it — and
+every future release — without `--allow-untrusted`:
+
+```sh
+# from the release page, download the .apk and the matching .rsa.pub, then:
+doas cp mick@yoxcu.de-*.rsa.pub /etc/apk/keys/   # trust the signing key (once)
+doas apk add ./stoandl-*.apk
+```
+
+(Or skip the key with `doas apk add --allow-untrusted ./stoandl-*.apk`.)
+
 ## Run
 
 The daemon requires a **JDK 25** runtime (see [Requirements](#requirements)). `gradlew` itself still
