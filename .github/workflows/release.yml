@@ -179,14 +179,46 @@ jobs:
         env:
           ABUILD_PRIVKEY: ${{ secrets.ABUILD_PRIVKEY }}
         run: |
+          set -eu
           mkdir -p "$HOME/.abuild"
           pub="$(ls packaging/keys/*.rsa.pub 2>/dev/null | head -1 || true)"
           if [ -n "$ABUILD_PRIVKEY" ] && [ -n "$pub" ]; then
             key="$(basename "${pub%.pub}")"
-            printf '%s\n' "$ABUILD_PRIVKEY" > "$HOME/.abuild/$key"
-            chmod 600 "$HOME/.abuild/$key"
-            cp "$pub" "$HOME/.abuild/$key.pub"
-            echo "PACKAGER_PRIVKEY=$HOME/.abuild/$key" > "$HOME/.abuild/abuild.conf"
+            priv="$HOME/.abuild/$key"
+            printf '%s\n' "$ABUILD_PRIVKEY" > "$priv"
+            chmod 600 "$priv"
+            cp "$pub" "$priv.pub"
+
+            # Validate the secret here. abuild-sign runs `openssl dgst -sign` deep in
+            # the build; a bad key there dies with an opaque OpenSSL decode stack
+            # ("Could not find private key … Input structure: EncryptedPrivateKeyInfo").
+            # Fail at this step with an actionable message instead. </dev/null so an
+            # encrypted key errors out rather than blocking on a passphrase prompt.
+            if ! openssl pkey -in "$priv" -noout </dev/null 2>/tmp/keyerr; then
+              echo "::error::ABUILD_PRIVKEY is not a loadable, unencrypted PEM private key."
+              echo "The secret must be the *verbatim* private key that matches $key.pub:"
+              echo "  - full PEM incl. the -----BEGIN/END … PRIVATE KEY----- lines and every newline"
+              echo "  - no passphrase (abuild-keygen keys are never encrypted)"
+              echo "  - no extra base64/hex wrapping, no leading indent, not collapsed to one line"
+              echo "  Set it straight from the key file to avoid paste corruption:"
+              echo "    gh secret set ABUILD_PRIVKEY < ~/.abuild/$key"
+              sed 's/^/  openssl: /' /tmp/keyerr || true
+              exit 1
+            fi
+
+            # It must be the private half of the COMMITTED public key, else we would
+            # sign every release with a key nobody trusts (installs would silently need
+            # --allow-untrusted). Compare canonical SPKI serialisations of both.
+            openssl pkey -in "$priv" -pubout 2>/dev/null > /tmp/derived.pub
+            openssl pkey -pubin -in "$priv.pub" -pubout 2>/dev/null > /tmp/committed.pub
+            if ! cmp -s /tmp/derived.pub /tmp/committed.pub; then
+              echo "::error::ABUILD_PRIVKEY does not match the committed public key $key.pub."
+              echo "Point the secret at that key's private half, or commit the .pub that"
+              echo "pairs with this secret (the key id in the filename must match too)."
+              exit 1
+            fi
+
+            echo "PACKAGER_PRIVKEY=$priv" > "$HOME/.abuild/abuild.conf"
             doas cp "$pub" /etc/apk/keys/
             echo "Signing with the committed release key: $key"
           else
