@@ -147,6 +147,14 @@ Reconnection needs the adapter's LE scanner free; another process running Blueto
 it — stoandl warns (and sends a desktop notification) when it detects that. See
 [devices.md](devices.md#wont-reconnect) if a watch won't come back.
 
+**Multiple paired watches — follow the wrist.** stoandl connects one watch at a time, so with two or
+more paired it picks whichever is actually in range instead of only ever the last one you paired: it
+arms the most-recently-connected watch and, if it's out of range, rotates to the next until one
+connects. It never drops a live link to chase another watch, and it holds the goal steady across a
+firmware/language update's reboot. On by default (`connection.autoswitch`, inert with a single watch) —
+set it off to pin the connection to the last watch you chose (`stoandl watch connect <name>` to move
+it). When both watches are in range at once the tie goes to the most recently used.
+
 ### Music / now-playing control
 
 Bridges desktop media players (MPRIS over D-Bus, on the session bus) to the watch's native Music app:

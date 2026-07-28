@@ -128,6 +128,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     )),
     toggle("classic.discover", "Bluetooth Classic (classic-era watches)",
         "Discover, pair and connect Pebble Time / Time Steel over Bluetooth Classic (experimental)") { it.classicDiscover },
+    toggle("connection.autoswitch", "Auto-switch between watches",
+        "With 2+ paired watches, connect whichever is in range — preferring the most recently used") { it.connectionAutoswitch },
     toggle("datalog.enabled", "Datalog capture",
         "Save custom-watchapp datalog to NDJSON files (writes app-supplied data to disk)") { it.datalog },
     toggle("developer.autostart", "Developer connection autostart",

@@ -212,6 +212,21 @@ private val DISCOVERY_WARN_GRACE = 5.minutes
 private val BROKEN_BOND_WINDOW = 3.minutes
 private const val BROKEN_BOND_FLAPS = 5   // auth-failure (Reason.Authentication) disconnects → notify
 private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification this often while it persists
+
+// "Follow the wrist" multi-watch auto-switch (connection.autoswitch). Single-watch mode connects only
+// the ONE watch holding libpebble3's persisted connectGoal — the last one paired or explicitly
+// `Connect`ed — which need not be the one you're wearing. The follower loop chooses the goal from
+// recency + presence instead: arm the most-recently-connected watch, and if it doesn't come up within
+// [WRIST_ARM_GRACE] (out of range) rotate to the next candidate and try that. The grace also doubles as
+// the tolerance for a brief drop of a *connected* watch — long enough that BlueZ's standing
+// Device1.Connect re-links it before we'd rotate, so an in-use watch that flaps is never abandoned.
+private val WRIST_FOLLOW_TICK = 3.seconds
+private val WRIST_ARM_GRACE = 20.seconds
+// After a firmware/language op is last seen active, hold the goal for this long even while the watch is
+// disconnected — a firmware flash reboots the watch (a disconnect that can outlast [WRIST_ARM_GRACE]),
+// and it MUST be the same watch that reconnects to confirm the update, so the follower must not rotate
+// the goal to a sibling during the reboot gap.
+private val WRIST_OP_GRACE = 2.minutes
                                            // (in place, via replaces_id — it updates, never stacks)
 // The OTHER broken-bond direction: the host lost the BlueZ pairing (e.g. `bluetoothctl remove`) while
 // libpebble still wants the watch. It can never reconnect without a fresh pair, so once it's been
@@ -457,6 +472,7 @@ class PebbleIntegration(
         libPebble.init()
         startScanLoop()
         startAutoConnect()
+        startWristFollower()
         startClassicWatch()
         startStaleBondReaper()
         startDiscoveryInterferenceWarning()
@@ -1704,6 +1720,97 @@ class PebbleIntegration(
                 watchConnector.requestConnection(device.identifier)
             }
         }.launchIn(scope)
+    }
+
+    /**
+     * "Follow the wrist" — decide which of several paired watches to connect (gated by
+     * `connection.autoswitch`, on by default; inert with a single paired watch). Single-watch mode only
+     * ever connects the ONE watch holding libpebble3's persisted connectGoal — the last one paired or
+     * explicitly `Connect`ed — which need not be the watch you're actually wearing. This loop drives the
+     * goal from recency + presence instead: arm the most-recently-connected known watch, and if it hasn't
+     * come up within [WRIST_ARM_GRACE] (out of range), rotate the goal to the next candidate (most-recent
+     * first) and try that one, so we land on whichever watch is nearby. A connected watch is never dropped
+     * to chase another; a brief link drop is tolerated (its own standing Device1.Connect re-links it inside
+     * the grace, so we don't rotate). We only ever choose an identifier and call [PebbleDevice.connect] —
+     * libpebble3's single-watch machinery (connectGoal set on it, cleared on the rest) does the actual
+     * arm/disconnect/reconnect, so there's no fork change and no second live connection.
+     *
+     * Note the goal moves through libpebble3's persisted connectGoal, so on startup libpebble3 may briefly
+     * connect the stale persisted goal before this loop's first tick re-picks by recency; whenever the
+     * connected watch later goes out of range the loop rotates to whichever watch is present, so it
+     * converges. When two watches are in range at once the tie is broken by "most recently connected".
+     */
+    private fun startWristFollower() {
+        // Track firmware/language activity so we never rotate the goal across an update's reboot gap
+        // (the flashing watch disconnects to reboot and must be the one that reconnects). statusFlow emits
+        // the live phase right up to the reboot, so the last active-phase timestamp anchors [WRIST_OP_GRACE].
+        scope.launch { firmwareControl.statusFlow().collect(::noteWatchOp) }
+        scope.launch { languageControl.statusFlow().collect(::noteWatchOp) }
+        scope.launch {
+            var armedId: String? = null      // identifier we last handed the goal to
+            var armedAt = 0L                 // when we armed it (ms) — also the brief-drop grace anchor
+            while (true) {
+                delay(WRIST_FOLLOW_TICK)
+                if (!config.connectionAutoswitch) { armedId = null; continue }
+                // Don't fight pairing (its discovery/connect path owns the radio) or a powered-off adapter,
+                // and hold the goal steady across a firmware/language update's reboot gap.
+                if (pairingGate.isOpen()) continue
+                if (!(libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value)) continue
+                if (System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds) continue
+
+                val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
+                if (known.size < 2) { armedId = null; continue }   // nothing to choose between
+
+                val connected = known.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+                if (connected != null) {
+                    // Hold the live link: adopt it as the goal and keep the grace anchor fresh, so if it
+                    // later drops it gets the full window to self-heal before we'd consider rotating.
+                    armedId = connected.identifier.asString
+                    armedAt = System.currentTimeMillis()
+                    continue
+                }
+
+                // Nobody connected: make sure a goal is armed, and rotate off one that's taking too long.
+                val byRecency = known.sortedByDescending { it.lastConnected.epochSeconds }
+                val now = System.currentTimeMillis()
+                val current = armedId?.let { id -> byRecency.firstOrNull { it.identifier.asString == id } }
+                when {
+                    current == null -> {
+                        // Fresh start, or the armed watch vanished from the known set → arm most-recent.
+                        val pick = byRecency.first()
+                        armGoal(pick, "most recently connected")
+                        armedId = pick.identifier.asString
+                        armedAt = now
+                    }
+                    now - armedAt >= WRIST_ARM_GRACE.inWholeMilliseconds -> {
+                        // Armed watch hasn't come up in time → it's out of range; try the next candidate.
+                        val idx = byRecency.indexOfFirst { it.identifier.asString == armedId }
+                        val next = byRecency[(idx + 1) % byRecency.size]
+                        if (next.identifier.asString != armedId) armGoal(next, "${current.displayName()} unreachable")
+                        armedId = next.identifier.asString
+                        armedAt = now   // restart the grace whether we rotated or (lone candidate) kept waiting
+                    }
+                }
+            }
+        }
+    }
+
+    /** Hand the single connection slot to [device]: sets its connectGoal (clearing the others in
+     *  single-watch mode) so libpebble3 connects it once it's in range. */
+    private fun armGoal(device: KnownPebbleDevice, why: String) {
+        log.info { "Auto-switch: arming ${device.displayName()} ($why; last connected ${relAge(device.lastConnected.epochSeconds)})" }
+        device.connect()
+    }
+
+    // Last time a firmware/language op was seen active (ms). Read by the wrist-follower to hold the goal
+    // across an update's reboot gap; see [WRIST_OP_GRACE]. Written from the status collectors above.
+    @Volatile private var lastWatchOpMs = 0L
+
+    private fun noteWatchOp(status: String) {
+        if (status.startsWith("downloading:") || status.startsWith("waiting:") ||
+            status.startsWith("inprogress:") || status.startsWith("reboot:") || status.startsWith("installing:")) {
+            lastWatchOpMs = System.currentTimeMillis()
+        }
     }
 }
 

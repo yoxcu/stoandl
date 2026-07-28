@@ -268,6 +268,16 @@ classic.discover = true
 #     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
 #     bluetoothctl trust <MAC>
 
+# ── Multi-watch: follow the wrist ────────────────────────────────────────────────────────────────
+# When two or more watches are paired, connect whichever one is actually in range instead of only ever
+# the watch that last held the connection goal (the last one paired or `stoandl watch connect`ed — which
+# need not be the one you're wearing). The daemon arms the most-recently-connected watch first and, if
+# it's out of range, rotates to the next candidate until one connects; a live link is never dropped to
+# chase another watch (a brief drop is tolerated — it reconnects on its own). Inert with a single paired
+# watch. On by default. Set to false to pin the connection to the last-chosen watch (move it with
+# `stoandl watch connect <name>`).
+connection.autoswitch = true
+
 # ── Do Not Disturb ↔ Quiet Time ──────────────────────────────────────────────────────────────────
 # Mirror the desktop's "Do Not Disturb" toggle and the watch's manual Quiet Time so enabling one
 # enables the other. The host backend is auto-detected: GNOME/Phosh (the show-banners GSettings) or

@@ -1329,6 +1329,43 @@ installed** (`./install.sh`, or `./install.sh --remote user@host`). Which watch 
 
 ---
 
+## 5.30 Follow-the-wrist multi-watch auto-switch  ⚠️ UNVERIFIED (needs 2 bonded Pebbles)
+
+stoandl connects **one** watch at a time (single-watch mode). With two or more paired, libpebble3 would
+otherwise only ever reconnect the watch holding its persisted `connectGoal` — the last one paired or
+`stoandl watch connect`ed — which need not be the one you're wearing. A daemon-side policy loop
+(`startWristFollower`, gated by `connection.autoswitch`, on by default) drives the goal from **recency +
+presence** instead: it arms the most-recently-connected known watch and, if it doesn't come up within
+`WRIST_ARM_GRACE` (20 s → out of range), rotates the goal to the next candidate (most-recent first) until
+one connects. It only ever chooses an identifier and calls `device.connect()`; libpebble3's single-watch
+machinery (set `connectGoal` on it, clear the rest) does the arm/disconnect/reconnect — **zero fork
+change, no second live connection.** A connected watch is never dropped to chase another; a brief drop is
+tolerated (its standing `Device1.Connect()` re-links it inside the grace). Rotation is suppressed for
+`WRIST_OP_GRACE` (2 min) after a firmware/language op is last seen active, so a flash's reboot gap never
+hands the goal to a sibling.
+
+**Prerequisite:** two bonded Pebbles (ideally both BLE-native, e.g. Pebble 2 / Time 2), `connection.autoswitch`
+on (default), the daemon restarted. Watch the log for `Auto-switch: arming …`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.300 | Reconnect the last-used watch | Wear + connect watch A. `systemctl --user restart stoandl` with **both** A and B in range | A reconnects (the most-recently-connected), not B. Log: `Auto-switch: arming <A> (most recently connected; …)` then A connects. |
+| 5.301 | Switch by presence | With A connected, take A out of range (power off / walk away), leave B in range | After ~20 s: `Auto-switch: arming <B> (<A> unreachable; …)`; B connects. A is not needed. |
+| 5.302 | No flap while both present | A connected, B also sitting in range (bonded) | A stays connected indefinitely; **no** `arming <B>` entries — only the goal watch is armed, so B can't steal the slot. |
+| 5.303 | Brief drop self-heals | A connected; briefly toggle A's Bluetooth (or step out < 20 s) | A reconnects on its own; **no** rotation to B (the drop is inside `WRIST_ARM_GRACE`). |
+| 5.304 | Startup with only the away watch present | Persisted goal / most-recent = A but A is off; only B in range | Arms A first (it's most-recent), A doesn't connect, after ~20 s rotates to B, B connects. First connect may take up to one grace period. |
+| 5.305 | Firmware update not hijacked | A connected + B in range; flash firmware to A (`stoandl firmware update`); A reboots | During the flash **and** the reboot gap the goal stays on A (log shows no `arming <B>`); A reconnects and the update confirms. `connection.autoswitch` off would also pass, but this proves the `WRIST_OP_GRACE` guard. |
+| 5.306 | Kill switch | set `connection.autoswitch = false` (GUI **Daemon configuration** toggle or conf), no restart needed | Follower goes inert within a tick; behaviour reverts to "reconnect the last-chosen watch only". Toggle back on → follows again. |
+| 5.307 | Single watch unaffected | one paired watch only | Follower is inert (`known.size < 2`); reconnect behaves exactly as before. |
+
+**Open questions for hardware:** (a) does BlueZ cleanly tear down watch A's armed connection when the
+goal rotates to B, or does a stale LE link linger? (b) rotation latency with a real out-of-range
+`ConnectTimeout` (the connector may hold `Connecting` longer than 20 s — tune `WRIST_ARM_GRACE` if so);
+(c) behaviour with one **Classic** + one **BLE** watch (the follower is transport-agnostic but only
+BLE-native pairs were exercised in design).
+
+---
+
 ## 6. Multiple concurrent watches  ⚠️ UNVERIFIED (needs 2 Pebbles)
 
 The daemon's connection layer is multi-watch by design (`watches` is a list; scan and auto-connect

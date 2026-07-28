@@ -177,6 +177,14 @@ data class StoandlConfig(
      *  watches via a BR/EDR inquiry (during a pairing window) and auto-pairs + connects them over a
      *  secure RFCOMM socket. Off by default. The BLE path is unaffected — BLE-native watches use BLE. */
     val classicDiscover: Boolean,
+    /** "Follow the wrist": when two or more watches are paired, connect whichever one is actually in
+     *  range instead of only ever the watch that last held the connection goal (the last one paired or
+     *  explicitly `Connect`ed — which need not be the one you're wearing). The daemon arms the
+     *  most-recently-connected watch first and, if it's out of range, rotates the goal to the next
+     *  candidate until one connects; a live link is never dropped to chase another watch. Inert with a
+     *  single paired watch. On by default; turn off to pin the connection to the last-chosen watch
+     *  (use `stoandl watch connect <name>` to move it). */
+    val connectionAutoswitch: Boolean,
     /** Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time. [DndSyncMode.OFF]
      *  by default — it actively changes state on both the host and the watch, so it's opt-in (it never
      *  touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property)
@@ -272,6 +280,7 @@ data class StoandlConfig(
             batteryHeartbeat = true,
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
             classicDiscover = true,
+            connectionAutoswitch = true,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
             extensionConfig = emptyMap(),
@@ -363,6 +372,7 @@ data class StoandlConfig(
                 healthExport = map["health.export"]?.let { parseBool(it) } ?: true,
                 healthExportSamples = parseBool(map["health.export_samples"]),
                 classicDiscover = parseBool(map["classic.discover"]),
+                connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
                 batteryHistory = map["battery.history"]?.let { parseBool(it) } ?: true,
@@ -397,6 +407,7 @@ data class StoandlConfig(
                     ", battery=history:${cfg.batteryHistory}/heartbeat:${cfg.batteryHeartbeat}" +
                     (if (cfg.batteryHistory || cfg.batteryHeartbeat) " (retention=${cfg.batteryRetentionDays}d)" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
+                    (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
             }
