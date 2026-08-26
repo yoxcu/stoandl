@@ -60,7 +60,16 @@ dependencies {
 
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
+
+    // Test-only. The daemon's behaviour needs a watch and a session bus, so there is no unit-test
+    // suite for it; what IS unit-testable is the settings surface — the GUI config schema, its
+    // validation, and its agreement with the config parser. That logic can silently corrupt
+    // stoandl.conf or persist a value the daemon then ignores, so it gets tests. `gradle test` is not
+    // part of `shadowJar`, so nothing ships.
+    testImplementation(kotlin("test"))
 }
+
+tasks.test { useJUnitPlatform() }
 
 // Bake the version into a classpath resource so the daemon/CLI can report it (`stoandl version`).
 val generateVersionFile by tasks.registering {
