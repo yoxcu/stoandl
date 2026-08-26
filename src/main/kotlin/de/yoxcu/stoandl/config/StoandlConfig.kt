@@ -36,6 +36,22 @@ data class StoandlConfig(
      *  When off, every notification is dropped host-side at the send choke point (per-app mute, filters
      *  and styling are moot) — calls and firmware prompts use their own paths and are unaffected. */
     val notificationForward: Boolean,
+    /** Master switch for the desktop alerts stoandl raises **about itself** — pairing/bond trouble, a
+     *  Bluetooth scan blocking reconnects, an extension that needs setup. These are the daemon's own
+     *  events, not forwarded app notifications (those follow [notificationForward] / per-app mute), and
+     *  they're posted on the host desktop, not the watch. On by default; the per-event switches below
+     *  refine it. The firmware-update alert has its own, older key ([firmwareNotify]) because it also
+     *  drives a *watch* notification with an Update button — it is NOT gated by this. */
+    val alertsEnabled: Boolean,
+    /** Alert when a watch loses its pairing, keeps connecting-then-dropping, or is nearby but no longer
+     *  paired with this host. Each carries the action that fixes it (Pair / Re-pair). On by default —
+     *  without it a watch can silently stop reconnecting forever. */
+    val alertsPairing: Boolean,
+    /** Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which
+     *  blocks the watch from reconnecting. On by default. */
+    val alertsBluetooth: Boolean,
+    /** Alert when an installed extension requires configuration before it can start. On by default. */
+    val alertsExtensions: Boolean,
     /** Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the
      *  native call screen replaces them) and their title is used as a fallback caller name. */
     val dialerApps: List<String>,
@@ -238,6 +254,10 @@ data class StoandlConfig(
             notificationDefaultMute = "never",
             notificationSyncToWatch = false,
             notificationForward = true,
+            alertsEnabled = true,
+            alertsPairing = true,
+            alertsBluetooth = true,
+            alertsExtensions = true,
             dialerApps = DEFAULT_DIALER_APPS,
             vcardPaths = emptyList(),
             weatherEnabled = true,
@@ -279,7 +299,10 @@ data class StoandlConfig(
             batteryHistory = true,
             batteryHeartbeat = true,
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
-            classicDiscover = true,
+            // Off, matching both the KDoc above and the `load()` parse (a bare parseBool, so an absent
+            // key is false). These two disagreed: with no config file at all you got Classic discovery
+            // on, with a config file that simply omits the key you got it off.
+            classicDiscover = false,
             connectionAutoswitch = true,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
@@ -323,6 +346,10 @@ data class StoandlConfig(
                 notificationDefaultMute = parseDefaultMute(map["notification.default_mute"]),
                 notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
+                alertsEnabled = map["alerts.enabled"]?.let { parseBool(it) } ?: true,
+                alertsPairing = map["alerts.pairing"]?.let { parseBool(it) } ?: true,
+                alertsBluetooth = map["alerts.bluetooth"]?.let { parseBool(it) } ?: true,
+                alertsExtensions = map["alerts.extensions"]?.let { parseBool(it) } ?: true,
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
                 vcardPaths = list("contacts.vcard_paths").map(::expandTilde),
                 weatherEnabled = map["weather.enabled"]?.let { parseBool(it) } ?: true,
@@ -409,6 +436,12 @@ data class StoandlConfig(
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
                     (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
+                    (if (!cfg.alertsEnabled) ", alerts=off"
+                     else listOfNotNull(
+                         if (!cfg.alertsPairing) "pairing" else null,
+                         if (!cfg.alertsBluetooth) "bluetooth" else null,
+                         if (!cfg.alertsExtensions) "extensions" else null,
+                     ).takeIf { it.isNotEmpty() }?.let { ", alerts muted: ${it.joinToString("/")}" }.orEmpty()) +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
             }
             return cfg

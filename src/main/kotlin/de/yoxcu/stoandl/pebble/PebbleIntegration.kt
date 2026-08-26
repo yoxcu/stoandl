@@ -297,7 +297,7 @@ class PebbleIntegration(
     // GetSyncStatus's lastSync column; continuous services (notif/music/dnd) report live/mode instead.
     private val lastSyncAt = ConcurrentHashMap<String, Long>()
     private fun stampSync(service: String) { lastSyncAt[service] = System.currentTimeMillis() / 1000 }
-    private val contactResolver = ContactResolver(config.vcardPaths)
+    private val contactResolver = ContactResolver { config.vcardPaths }
     private val dialerNameCache = DialerNameCache()
     private val missedCallLog = MissedCallLog()
     // Headless BlueZ pairing agent so MITM/Secure-Connections pairing (newer Pebble firmware,
@@ -369,7 +369,9 @@ class PebbleIntegration(
         // from history), so a route never needs to outlive the daemon.
         val routeTable = NotifRouteTable()
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
-        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, parseMuteState(config.notificationDefaultMute), timelineNotifDao, configStore, notificationFilters)
+        // defaultMute is read live (not snapshotted) so changing notification.default_mute applies to the
+        // next newly-seen app instead of only after a restart.
+        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, { parseMuteState(config.notificationDefaultMute) }, timelineNotifDao, configStore, notificationFilters)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
@@ -381,6 +383,7 @@ class PebbleIntegration(
             owners = notifOwners,
             libPebbleRef = libPebbleRef,
             scope = scope,
+            alertsAllowed = { alertsAllow { c -> c.alertsExtensions } },
         )
 
         // The Linux calendar reader — always built (reads its sources live from config), so a source
@@ -395,7 +398,8 @@ class PebbleIntegration(
             single<NotificationListenerConnection> {
                 DbusNotificationListenerConnection(
                     notificationFlow, scope,
-                    dialerApps = config.dialerApps,
+                    // Read live so editing call.dialer_apps takes effect on the next notification.
+                    dialerApps = { config.dialerApps },
                     dialerNameCache = dialerNameCache,
                     watchNotifier = watchNotifier,
                 )
@@ -456,11 +460,11 @@ class PebbleIntegration(
 
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
-        firmwareControl = FirmwareControl(libPebbleRef, scope, config, notifyDesktop = { summary, body, label, onAction ->
+        firmwareControl = FirmwareControl(libPebbleRef, scope, { config }, notifyDesktop = { summary, body, label, onAction ->
             // STOANDL_DESKTOP_ONLY_APP → not bridged to the watch (the watch gets a direct notif too).
             sendActionableNotification(summary, body, label, appName = STOANDL_DESKTOP_ONLY_APP, onInvoke = onAction)
         })
-        languageControl = LanguageControl(libPebbleRef, config)
+        languageControl = LanguageControl(libPebbleRef) { config }
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
@@ -725,11 +729,13 @@ class PebbleIntegration(
                             log.info { "Stale-bond reaper: ${d.displayName()} did not re-pair within ${REPAIR_GRACE.inWholeSeconds}s — forgetting" }
                             bluezObjectPath(key)?.let { removeBluezBond(it) } // ensure bond gone (usually already)
                             d.forget()
-                            sendDesktopNotification(
-                                "Pebble unpaired",
-                                "${d.displayName()} is nearby but no longer paired with this device. " +
-                                    "Run 'stoandl pair' to use it here.",
-                            )
+                            if (alertsAllow { it.alertsPairing }) {
+                                sendDesktopNotification(
+                                    "Pebble unpaired",
+                                    "${d.displayName()} is nearby but no longer paired with this device. " +
+                                        "Run 'stoandl pair' to use it here.",
+                                )
+                            }
                             clearedAt.remove(key)
                         }
                         continue
@@ -812,11 +818,13 @@ class PebbleIntegration(
                                     "so the watch cannot reconnect. Close it (e.g. an open Bluetooth settings " +
                                     "or pairing window) or stop the scan."
                             }
-                            sendDesktopNotification(
-                                "Pebble blocked by a Bluetooth scan",
-                                "Another app is scanning for Bluetooth devices, which blocks your Pebble " +
-                                    "from reconnecting. Close any open Bluetooth settings or pairing window.",
-                            )
+                            if (alertsAllow { it.alertsBluetooth }) {
+                                sendDesktopNotification(
+                                    "Pebble blocked by a Bluetooth scan",
+                                    "Another app is scanning for Bluetooth devices, which blocks your Pebble " +
+                                        "from reconnecting. Close any open Bluetooth settings or pairing window.",
+                                )
+                            }
                         }
                     } else {
                         warned = false
@@ -969,6 +977,7 @@ class PebbleIntegration(
             "Broken-bond detector: $name — BlueZ reports repeated authentication-failure disconnects " +
                 "(Reason.Authentication); the watch has unpaired on its side. Notifying; not forgetting it on its own."
         }
+        if (!alertsAllow { it.alertsPairing }) return UInt32(0)
         return sendActionableNotification(
             "Pebble won't stay connected",
             "$name keeps connecting then dropping without finishing — if you unpaired it on the watch, " +
@@ -987,6 +996,7 @@ class PebbleIntegration(
             "Host bond lost for $name — BlueZ has no pairing (removed on this computer). Forgetting it; " +
                 "the watch must be unpaired on its side and re-paired to reconnect."
         }
+        if (!alertsAllow { it.alertsPairing }) return
         sendActionableNotification(
             "Pebble pairing removed",
             "$name's pairing was removed on this computer. To reconnect, unpair it on the watch " +
@@ -1072,6 +1082,21 @@ class PebbleIntegration(
                 conn.disconnect()
             }
         }
+    }
+
+    /**
+     * Whether stoandl may raise one of its **own** desktop alerts right now (see the `alerts.*` config
+     * keys). The master `alerts.enabled` gates every kind; [perEvent] is the kind's own switch. Read off
+     * the live config, so a GUI toggle takes effect immediately.
+     *
+     * Turning an alert off silences the *popup* only — the underlying condition is still logged at WARN
+     * (and still surfaces in `stoandl support`), so a muted alert never hides a diagnosis. The
+     * firmware-update alert is deliberately NOT covered here: it has its own, older `firmware.notify`
+     * key because it also drives a watch notification with an Update button.
+     */
+    private fun alertsAllow(perEvent: (StoandlConfig) -> Boolean): Boolean {
+        val cfg = config
+        return cfg.alertsEnabled && perEvent(cfg)
     }
 
     /**
@@ -1254,7 +1279,7 @@ class PebbleIntegration(
     private fun buildCalendarSync(): LinuxSystemCalendar =
         LinuxSystemCalendar(
             sources = ::currentCalendarSources,
-            intervalMinutes = config.calendarSyncIntervalMinutes,
+            intervalMinutes = { config.calendarSyncIntervalMinutes },
             watchDirs = ::calendarWatchDirs,
             isEnabled = { config.calendarEnabled },
             onSync = { stampSync("calendar") },
@@ -1379,9 +1404,14 @@ class PebbleIntegration(
      *  disconnect, so re-arming it on each reconnect is what makes autostart actually persistent. Off
      *  by default — the server is an unauthenticated LAN listener (see [DeveloperControl]). */
     private fun startDeveloperAutostart() {
-        if (!config.developerAutostart) return
-        log.info { "Developer connection autostart on (LAN server :9000 on every watch connect)" }
-        onFreshConnect { scope.launch { developerControl.start() } }
+        log.info {
+            if (config.developerAutostart) "Developer connection autostart on (LAN server :9000 on every watch connect)"
+            else "Developer connection autostart off (developer.autostart=false)"
+        }
+        // The hook is always registered and the switch checked INSIDE it (like the firmware notifier
+        // above), so toggling developer.autostart applies from the next connect either way. Gating the
+        // registration instead made "on" need a restart and left "off" still auto-starting.
+        onFreshConnect { if (config.developerAutostart) scope.launch { developerControl.start() } }
     }
 
     /**
@@ -1817,7 +1847,8 @@ class PebbleIntegration(
 private class DbusNotificationListenerConnection(
     private val notificationFlow: Flow<IncomingNotification>,
     private val scope: CoroutineScope,
-    private val dialerApps: List<String>,
+    /** Read live off the config store, so a `call.dialer_apps` edit applies without a restart. */
+    private val dialerApps: () -> List<String>,
     private val dialerNameCache: DialerNameCache,
     // The shared choke point: per-app tracking/mute/style + build + send + route now live here, used by
     // extensions too. This bridge just turns a desktop notification into a [NotifRequest].
@@ -1832,7 +1863,7 @@ private class DbusNotificationListenerConnection(
                 val appLower = notification.appName.lowercase()
                 // Dialer notifications: capture the title for caller-name fallback, then suppress
                 // them from the watch (the native call screen already shows the call).
-                if (dialerApps.any { appLower.contains(it.lowercase()) }) {
+                if (dialerApps().any { appLower.contains(it.lowercase()) }) {
                     dialerNameCache.record(notification.summary)
                     log.info { "Suppressed dialer notification from ${notification.appName} (name='${notification.summary}')" }
                     return@collect
@@ -3529,8 +3560,10 @@ private class StoandlControlImpl(
     // Read off the live config store (reloaded on every write) so a just-set value sticks.
     override fun GetConfig(): List<String> = syncControl.getConfig()
 
-    override fun GetConfigSchema(): List<String> =
-        GUI_CONFIG_FIELDS.map { "${it.key}\t${it.type}\t${it.label}\t${it.options}\t${it.desc}" }
+    // `key type label options desc group apply min max unit placeholder` — the first five columns are
+    // the original contract, everything after is appended, so an older client that reads five columns
+    // positionally is unaffected. ConfigField owns the row so the schema can't drift from the write path.
+    override fun GetConfigSchema(): List<String> = GUI_CONFIG_FIELDS.map { it.schemaRow() }
 
     // Persist + live-apply (validate, write, reload, reconcile the affected subsystem).
     override fun SetConfig(key: String, value: String): String = syncControl.setConfig(key, value)

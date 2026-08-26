@@ -35,8 +35,11 @@ private val log = KotlinLogging.logger {}
  */
 class LanguageControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
-    private val config: StoandlConfig,
+    /** The daemon's **live** config (a getter over the reloaded-on-write `ConfigStore`), so toggling
+     *  `language.download` from the GUI/CLI applies at once rather than only after a restart. */
+    private val configOf: () -> StoandlConfig,
 ) {
+    private val config: StoandlConfig get() = configOf()
     private val catalog by lazy { LanguagePackCatalog.load() }
 
     /** The locale of a pack we installed this session, per watch — used to show the right "installed"

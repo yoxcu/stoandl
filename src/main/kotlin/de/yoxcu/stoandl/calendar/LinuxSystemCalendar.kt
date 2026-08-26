@@ -43,7 +43,9 @@ class LinuxSystemCalendar(
     // GUI/CLI takes effect on the next [requestRefresh] with no daemon restart — mirrors how the weather
     // syncer re-reads its config. Always bound (even when empty), so the FIRST source added live works.
     private val sources: () -> List<CalendarSource>,
-    private val intervalMinutes: Long,
+    // Also read live, and re-sampled on every tick, so editing `calendar.sync_interval` takes effect from
+    // the next re-sync instead of only after a daemon restart.
+    private val intervalMinutes: () -> Long,
     // Directories file-watched for near-instant .ics updates. Read once when the watch starts; a path
     // added live is still picked up by [requestRefresh] + the ticker (just not the instant file-watch).
     private val watchDirs: () -> List<File>,
@@ -145,7 +147,7 @@ class LinuxSystemCalendar(
     /** Periodic re-sync. Delays first — PhoneCalendarSyncer.init() already does an immediate sync. */
     private fun ticker(): Flow<Unit> = flow {
         while (true) {
-            delay(intervalMinutes.minutes)
+            delay(intervalMinutes().minutes)
             emit(Unit)
         }
     }

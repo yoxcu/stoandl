@@ -73,6 +73,9 @@ class ExtensionManager(
     private val owners: NotifOwnerRegistry,
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
+    /** Whether stoandl's own extension alerts may be posted (`alerts.enabled` + `alerts.extensions`,
+     *  read live). Defaults to always-on so tests and any other caller keep the previous behaviour. */
+    private val alertsAllowed: () -> Boolean = { true },
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
 
@@ -142,6 +145,7 @@ class ExtensionManager(
      *  direct watch notification, which would show up twice. */
     private fun notifyNeedsConfig(name: String, configFile: File) {
         log.warn { "[$name] requires configuration but none found — not starting. Edit ${configFile.path} (copy config.example), then: stoandl ext restart $name" }
+        if (!alertsAllowed()) return
         scope.launch(Dispatchers.IO) {
             sendDesktopNotification(
                 "$name needs setup",

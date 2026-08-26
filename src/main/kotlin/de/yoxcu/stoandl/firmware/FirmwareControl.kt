@@ -51,7 +51,12 @@ private val log = KotlinLogging.logger {}
 class FirmwareControl(
     private val libPebbleRef: AtomicReference<LibPebble?>,
     private val scope: CoroutineScope,
-    private val config: StoandlConfig,
+    /**
+     * The daemon's **live** config — a getter over the reloaded-on-write `ConfigStore`, not a startup
+     * snapshot, so a `firmware.*` change from the GUI/CLI applies at the next check instead of only
+     * after a daemon restart.
+     */
+    private val configOf: () -> StoandlConfig,
     /**
      * Hook to post the "firmware available" alert as a host *desktop* notification (with an Update
      * button), in addition to the direct watch notification. It's tagged with the `stoandl-desktop` app
@@ -62,10 +67,13 @@ class FirmwareControl(
      */
     private val notifyDesktop: ((summary: String, body: String, actionLabel: String, onAction: () -> Unit) -> Unit)? = null,
 ) {
-    private val github by lazy {
-        GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
-    }
-    private val cohorts by lazy { CohortsFirmwareSource(config.firmwareCohortsUrl) }
+    private val config: StoandlConfig get() = configOf()
+
+    // Stateless value holders (repo/URL + a suspend resolve()), so they're rebuilt per use rather than
+    // cached — that's what lets a live firmware.github_repo / firmware.cohorts_url edit take effect.
+    private val github: GithubFirmwareSource
+        get() = GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
+    private val cohorts: CohortsFirmwareSource get() = CohortsFirmwareSource(config.firmwareCohortsUrl)
 
     // Set to the asset name while a bundle is downloading (before the on-device flash begins), so
     // [status] can report "downloading" in the gap where the device is still Idle.

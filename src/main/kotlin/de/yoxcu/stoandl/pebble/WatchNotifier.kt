@@ -107,7 +107,9 @@ class WatchNotifier(
     // Per-app mute/style store. Always built now (so per_app can be toggled live); whether it's
     // consulted is gated per-push on the live `notification.per_app`. Null only in tests.
     private val notifAppDao: NotificationAppRealDao?,
-    private val defaultMute: MuteState,
+    /** Mute state given to a newly-tracked app. Read live off the config store (not snapshotted) so a
+     *  `notification.default_mute` change applies to the next new app without a daemon restart. */
+    private val defaultMuteOf: () -> MuteState,
     private val timelineNotifDao: TimelineNotificationRealDao,
     // Live config (master forwarding switch + per_app gate, read per-push) and the global allow/block
     // filter list — both checked at the top of [push] so every source (desktop + extensions) obeys them.
@@ -144,6 +146,7 @@ class WatchNotifier(
             val now = Clock.System.now()
             val existing = dao.getEntry(req.appName)
             val entry = if (existing == null) {
+                val defaultMute = defaultMuteOf()
                 val created = NotificationAppItem(
                     packageName = req.appName, name = req.appName, muteState = defaultMute,
                     channelGroups = emptyList(), stateUpdated = now.asMillisecond(),

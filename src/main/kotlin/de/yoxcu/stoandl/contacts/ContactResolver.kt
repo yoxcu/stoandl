@@ -12,7 +12,13 @@ import java.io.File
  * Numbers are matched digits-only by suffix, so a stored `0151 23456789` resolves an incoming
  * `+4915123456789` and vice versa. Files are re-read when their size/mtime changes.
  */
-class ContactResolver(private val vcardPaths: List<String>) {
+class ContactResolver(
+    /** Read live off the daemon's config store, so editing `contacts.vcard_paths` re-points the resolver
+     *  without a restart — the file-signature check below then re-reads the new set on the next lookup. */
+    private val vcardPathsOf: () -> List<String>,
+) {
+    private val vcardPaths: List<String> get() = vcardPathsOf()
+
     private val log = KotlinLogging.logger {}
 
     // normalized (digits-only) number -> display name
