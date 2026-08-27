@@ -5,12 +5,15 @@ import io.rebble.libpebblecommon.calendar.CalendarEvent
 import io.rebble.libpebblecommon.calendar.SystemCalendar
 import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
@@ -58,6 +61,12 @@ class LinuxSystemCalendar(
 ) : SystemCalendar {
     @Volatile private var byPlatformId: Map<String, RawCalendar> = emptyMap()
     private val manualTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    /** The interval [ticker] is currently counting down. Re-sampled from [intervalMinutes] on every
+     *  [requestRefresh] — which is what a `calendar.sync_interval` write triggers — so a changed value
+     *  restarts the countdown instead of waiting out the old one. A StateFlow conflates equal values, so
+     *  a refresh that does NOT change the interval leaves the countdown running rather than resetting
+     *  it; that is what stops repeated edits to other calendar keys from starving the sync. */
+    private val tickInterval = MutableStateFlow(intervalMinutes())
     private val _calendarsChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
 
     /** Emits when the SET of exposed calendars (by platformId) changes between enumerations — i.e. a
@@ -70,6 +79,7 @@ class LinuxSystemCalendar(
      *  account's calendars appear (and a removed one's pins drop) within ~5s (the syncer samples the
      *  changes flow). */
     fun requestRefresh() {
+        tickInterval.value = intervalMinutes()
         manualTrigger.tryEmit(Unit)
     }
 
@@ -144,11 +154,16 @@ class LinuxSystemCalendar(
 
     override fun supportsPinActions(): Boolean = false // no write-back (no CalDAV PUT / RSVP) yet
 
-    /** Periodic re-sync. Delays first — PhoneCalendarSyncer.init() already does an immediate sync. */
-    private fun ticker(): Flow<Unit> = flow {
-        while (true) {
-            delay(intervalMinutes().minutes)
-            emit(Unit)
+    /** Periodic re-sync. Delays first — PhoneCalendarSyncer.init() already does an immediate sync.
+     *  Keyed on [tickInterval], so changing `calendar.sync_interval` cancels the pending delay and
+     *  starts counting down the new one rather than serving out the old interval first. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun ticker(): Flow<Unit> = tickInterval.flatMapLatest { minutes ->
+        flow {
+            while (true) {
+                delay(minutes.minutes)
+                emit(Unit)
+            }
         }
     }
 

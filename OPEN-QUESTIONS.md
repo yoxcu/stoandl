@@ -1,7 +1,19 @@
 # Open questions
 
-Decisions from the unattended settings-parity session (2026-08-27) that are genuinely yours to make. I
-made a conservative choice for each and carried on; none of these blocks anything.
+Decisions from the unattended settings-parity session (2026-08-27). **All eight were answered by the
+author on 2026-08-27 and are now implemented** — this file is kept as the record of what was decided and
+why, not as a to-do list.
+
+| # | Question | Decision |
+| --- | --- | --- |
+| 1 | Dual controls for `music.enabled` / `health.sync` / `dnd.sync` | **Keep both** |
+| 2 | Fold `firmware.notify` under `alerts.enabled`? | **No — keep it separate** |
+| 3 | `extension.<name>.<key>` overriding the GUI | **Flip the precedence** — the config file now wins |
+| 4 | `watch.<prefId>` reverting the GUI | **Sync back only already-pinned keys** |
+| 5 | `classic.discover` default | **Confirmed on** |
+| 6 | `i18ndc` runtime noise | **Fixed** — new shared `FormTextRow` component |
+| 7 | `stoandl daemon` CLI name | **Keep** |
+| 8 | `calendar.sync_interval` next-tick lag | **Changed** — the ticker now restarts on an interval change |
 
 ---
 
@@ -11,13 +23,10 @@ Each appears **both** as a Sync-screen master toggle (`SetSyncEnabled`) and as a
 Daemon configuration (`SetConfig`). Both write the same `stoandl.conf` key through the same store, so
 they cannot disagree — it is duplicated *presentation*, not duplicated state.
 
-**What I did:** left both. Removing either is a UX judgement call, not a correctness fix: the Sync screen
+**Decided: keep both.** Removing either is a UX judgement call, not a correctness fix: the Sync screen
 also shows availability and last-sync, which a flat schema row cannot express, while the Daemon
-configuration page is where you go to see *everything*.
-
-**If you want one:** dropping them from `GUI_CONFIG_FIELDS` is a three-line change and both GUIs follow
-automatically (the schema drives them). The cost is that `stoandl daemon list` would then stop showing
-those keys, so I'd rather keep them.
+configuration page is where you go to see *everything*. Dropping them from `GUI_CONFIG_FIELDS` would also
+remove them from `stoandl daemon list/set`, which reads the same list. No code change.
 
 ## 2. `firmware.notify` is not under `alerts.enabled`
 
@@ -26,73 +35,74 @@ fifth member, but it is **not** included, because it also drives a *watch* notif
 Update button — folding it under `alerts.enabled` would make one switch mean two different things
 depending on the surface.
 
-**What I did:** kept `firmware.notify` as the single switch for that event, and said so in the KDoc, the
-conf.example, `docs/settings-parity.md` and the Alerts screen's footer text.
-
-**Alternative** (if you'd rather have one master for "stoandl talking to me at all"): make
-`alerts.enabled` gate the desktop half of the firmware alert too, leaving `firmware.notify` owning the
-watch half. That is defensible but strictly more confusing to explain, which is why I didn't.
+**Decided: keep it separate.** `firmware.notify` remains the single switch for that event, documented in
+the KDoc, `conf.example`, `docs/settings-parity.md` and the Alerts screen's footer text. No code change.
 
 ## 3. `extension.<name>.<key>` in `stoandl.conf` silently overrides what the GUI writes
 
-Found while mapping, **not introduced by this session, and not fixed by it.**
+Found while mapping; **not introduced by this session.**
 
-`ExtensionDef` merges extension settings as *manifest defaults < the extension's own `config` file <
+`ExtensionDef` merged extension settings as *manifest defaults < the extension's own `config` file <
 `stoandl.conf`*. The GUI's `ExtSetConfig` writes the **config file**. So a stale
-`extension.<name>.<key>` line in `stoandl.conf` silently wins over whatever the user just saved in the
+`extension.<name>.<key>` line in `stoandl.conf` silently won over whatever the user had just saved in the
 GUI, with no way for the GUI to see or clear it.
 
-**What I did:** documented it in `docs/configuration.md` (the `extension.<name>.<key>` row now warns) and
-in `docs/settings-parity.md` §3. I did not change the precedence — that is a behaviour change for
-existing installs and needs your call.
+**Decided: flip the precedence.** Settings now merge as *manifest defaults < `stoandl.conf` < the
+extension's own `config` file*, so the layer the GUI and `stoandl ext` write wins. A leftover conf key
+that the file also sets is logged once at resolve time (`… is now overridden by …/config — remove it from
+stoandl.conf`) so it can be cleaned up rather than sitting there invisibly.
 
-**Options:** (a) leave it, documented; (b) have `ExtGetConfig` report the effective value plus an
-"overridden in stoandl.conf" flag so the GUI can show it; (c) flip the precedence so the file wins.
-(b) is the honest one.
+`cmd` deliberately keeps its OLD precedence (stoandl.conf first): an explicit `cmd` override is how you
+rescue an extension whose own config is broken, so stoandl.conf has to stay authoritative for it.
+
+⚠️ **This is a behaviour change for existing installs** that relied on stoandl.conf overriding the file.
+The log line is how you find them.
 
 ## 4. `watch.<prefId>` in `stoandl.conf` silently reverts GUI changes on reconnect
 
-Same shape, same session-found-not-fixed status. `config.watchPrefs` is re-applied **authoritatively** on
-every fresh connect, so a conf entry overwrites a `SetWatchPref` made from the GUI at the next
-reconnect — the GUI change appears to work, then quietly reverts.
+Same shape, also pre-existing. `config.watchPrefs` is re-applied **authoritatively** on every fresh
+connect, so a conf entry overwrote a `SetWatchPref` made from the GUI at the next reconnect — the GUI
+change appeared to work, then quietly reverted.
 
-**What I did:** fixed the *adjacent* bug (adding the first `watch.*` key used to need a restart, because
-the on-connect hook's registration was gated on the map being non-empty at startup — now the hook is
-always registered and the map read inside it). Documented the precedence in `docs/settings-parity.md` §3.
+An *adjacent* bug was fixed during the session regardless: adding the first `watch.*` key used to need a
+restart, because the on-connect hook's registration was gated on the map being non-empty at startup. The
+hook is now always registered and the map read inside it.
 
-**Not fixed:** the precedence itself. "Config is authoritative" is a deliberate design decision recorded
-in the code comment; changing it is your call. If you want the GUI to win, the cleanest fix is for
-`SetWatchPref` to also upsert the matching `watch.<prefId>` conf key, so the two stores stop disagreeing.
+**Decided: sync back, but only already-pinned keys.** `SetWatchPref` now also rewrites `watch.<id>` in
+`stoandl.conf` — **only when that key is already there**. So a pinned pref can no longer revert a GUI/CLI
+change, while a pref you have *not* pinned is left alone, keeping `watch.*` an opt-in pin list rather than
+turning it into a mirror of every pref you touch. "Config is authoritative on connect" is unchanged, so a
+pinned pref still wins over a change made on the watch. Read+write happen under the shared conf lock, and
+a failure to update the file never fails the pref write (the pref itself already applied).
 
 ## 5. `classic.discover` — I changed this twice; the final state is "on"
 
-Worth flagging because I got it wrong first. `defaults()` said `true` while `load()` used a bare
+Worth recording because I got it wrong first. `defaults()` said `true` while `load()` used a bare
 `parseBool`, which reads an **absent** key as `false` — so behaviour differed between "no config file"
 (on) and "config file that omits the key" (off).
 
 I first "fixed" it by flipping `defaults()` to false. That was the wrong direction: commit `cb89049`
 ("default classic.discover on"), `stoandl.conf.example` and `docs/configuration.md` all say **on**, so
-the parse was the bug. Final state: `defaults()` stays `true` and `load()` now uses
-`?: true`, matching the docs and the commit's intent. The KDoc, which still said "Off by default", was
-corrected too.
+the parse was the bug. The KDoc, which still said "Off by default", was corrected too.
 
-**Confirm this is what you want** — it is the only behaviour change in this session that alters a default
-for existing users with a config file that omits the key.
+**Decided: confirmed on.** Final state stands: `defaults()` is `true` and `load()` uses `?: true`,
+matching `conf.example`, `docs/configuration.md` and commit `cb89049`.
 
 ---
 
-## Smaller things, noted without action
+## Smaller things
 
-- **`FormTextFieldDelegate` throws `ReferenceError: i18ndc is not defined`** at runtime in the Kirigami
-  front-end (its character-counter label calls `i18ndc`, and this app deliberately links no KF6 C++).
-  Pre-existing, cosmetic (the counter is invisible), and affects `HealthProfileSettingsPage`, `AppsPage`
-  and `CalendarsSettingsPage`. The new headless smoke harness surfaces it as ~22 lines of stderr noise.
-  My new settings rows sidestep it by building on `AbstractFormDelegate` instead — the same reason
-  `FormColorDelegate` is already avoided. Worth doing the same to the other three if the noise bothers
-  you.
-- **`stoandl daemon` is the name I picked** for the new config CLI. `config` was taken (it is the
-  PKJS/Clay *watchapp* settings page), and `daemon` matches the GUI page's own name, "Daemon
-  configuration". Rename freely — it is one `when` branch and one help row.
-- **`calendar.sync_interval` applies from the next tick**, so up to one old interval of lag. Deliberate:
-  restarting the ticker on every write would reset the countdown and could starve the sync under
-  repeated edits. Say if you'd rather it restart immediately.
+- **`FormTextFieldDelegate`'s `ReferenceError: i18ndc is not defined`** — **fixed.** All twelve usages
+  across `HealthProfileSettingsPage`, `CalendarsSettingsPage` and `AppsPage` now use a new shared
+  `FormTextRow.qml`, built on `AbstractFormDelegate` (the same reason `FormColorDelegate` is avoided).
+  `GeneralSettingsPage`'s hand-rolled equivalent was folded into it too, so there is one component rather
+  than two. It also gains a `description` line, which `FormTextFieldDelegate` has no property for. Its
+  one API difference: the text is `value`, not `text`, because `AbstractFormDelegate` derives from
+  `T.ItemDelegate`, which already owns `text`. Verified: 22 runtime errors → **0**.
+- **`stoandl daemon` as the config CLI name** — **kept.** `config` was taken (it is the PKJS/Clay
+  *watchapp* settings page), and `daemon` matches the GUI page's own name, "Daemon configuration".
+  Renaming later is one `when` branch and one help row.
+- **`calendar.sync_interval` now applies at once** — **changed.** The ticker is keyed on a `StateFlow` of
+  the interval (`flatMapLatest`), so changing the value cancels the pending delay and starts counting the
+  new one. The starvation risk I was worried about is handled by `StateFlow` conflating equal values: a
+  calendar write that does *not* change the interval leaves the countdown running.

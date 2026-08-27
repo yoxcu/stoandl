@@ -32,11 +32,17 @@ data class ExtensionDef(
  * Resolve an extension by name from `<extDir>/<name>/`.
  *
  * Settings come from three layers, each overriding the previous: the archive's `manifest.json` `config`
- * (author defaults) < the per-extension **`<extDir>/<name>/config`** file (the user's place — a simple
- * `key = value` file co-located with the extension, no `extension.<name>.` prefix) < any leftover
- * `extension.<name>.<key>` in stoandl.conf ([conf], a back-compat override). stoandl.conf should normally
- * carry only `extensions.enabled`. The spawn command, in priority order: `cmd` from stoandl.conf, the
- * `config` file, `manifest.json`, then `python3 <name>.py`.
+ * (author defaults) < any leftover `extension.<name>.<key>` in stoandl.conf ([conf], a back-compat
+ * escape hatch) < the per-extension **`<extDir>/<name>/config`** file (the user's place — a simple
+ * `key = value` file co-located with the extension, no `extension.<name>.` prefix).
+ *
+ * The config file wins because it is what the GUI and `stoandl ext` write. With stoandl.conf on top, a
+ * stale `extension.<name>.<key>` silently overrode whatever the user had just saved, with nothing in the
+ * GUI able to show why. stoandl.conf should normally carry only `extensions.enabled`.
+ *
+ * The spawn command keeps its own, unchanged precedence: `cmd` from stoandl.conf, then the `config`
+ * file, then `manifest.json`, then `python3 <name>.py` — a `cmd` override is how you rescue an extension
+ * whose own config is broken, so stoandl.conf must stay authoritative for it.
  *
  * Returns null (warned) if the directory is missing and no `cmd` resolves, or no entry point is found.
  */
@@ -48,12 +54,22 @@ fun resolveExtension(name: String, extDir: File, conf: Map<String, String>): Ext
     // `cmd` precedence: stoandl.conf > ext/<name>/config > manifest.json (then the python default below).
     val cmd = (conf["cmd"] ?: fileConf["cmd"] ?: manifest?.cmd)?.trim()?.takeIf { it.isNotEmpty() }
 
-    // Child config = manifest defaults < config file < stoandl.conf override, with `cmd` (meta) stripped.
+    // Child config = manifest defaults < stoandl.conf < config file, with `cmd` (meta) stripped. The
+    // config file is last because it is the layer the GUI/CLI write — see the KDoc above.
     val config = LinkedHashMap<String, String>()
     manifest?.config?.let { config.putAll(it) }
-    config.putAll(fileConf)
     config.putAll(conf)
+    config.putAll(fileConf)
     config.remove("cmd")
+    // A leftover stoandl.conf key that the config file now also sets no longer does anything, and is
+    // invisible in the GUI. Say so once, at resolve time, so it can be cleaned up.
+    val shadowed = conf.keys.filter { it != "cmd" && it in fileConf }
+    if (shadowed.isNotEmpty()) {
+        log.info {
+            "Extension '$name': ${shadowed.joinToString(", ") { "extension.$name.$it" }} in stoandl.conf " +
+                "is now overridden by ${File(dir, "config").path} — remove it from stoandl.conf"
+        }
+    }
 
     val requiresConfig = manifest?.requiresConfig == true
     // "Configured" = the user supplied settings via the config file or stoandl.conf (manifest defaults

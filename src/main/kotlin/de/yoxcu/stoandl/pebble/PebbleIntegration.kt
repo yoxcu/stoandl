@@ -1329,6 +1329,7 @@ class PebbleIntegration(
             libPebble = libPebble,
             resolveAppUuid = { q -> resolve(libPebble, q).map { it.properties.id }.distinct().singleOrNull() },
             appName = { uuid -> allApps(libPebble).firstOrNull { it.properties.id == uuid }?.properties?.title },
+            syncPinnedPref = ::syncPinnedWatchPref,
         )
         watchPrefsControlRef.set(control)
         log.info {
@@ -1342,6 +1343,29 @@ class PebbleIntegration(
         onFreshConnect {
             val prefs = config.watchPrefs
             if (prefs.isNotEmpty()) control.applyConfigured(prefs)
+        }
+    }
+
+    /**
+     * Rewrite an **already-pinned** `watch.<id>` line in `stoandl.conf` after a `SetWatchPref`, so the
+     * two stores stop disagreeing. `config.watchPrefs` is re-applied authoritatively on every fresh
+     * connect, so a pinned pref used to silently revert a GUI/CLI change at the next reconnect.
+     *
+     * Deliberately a no-op for a pref that is NOT already pinned: writing every pref the user touches
+     * would turn `watch.*` from an opt-in pin list into a full mirror of the watch's settings. Read and
+     * write happen under the shared conf lock so a concurrent `SetConfig` can't interleave.
+     */
+    private fun syncPinnedWatchPref(id: String, raw: String) {
+        try {
+            ConfFile.withLock {
+                if (configStore.current().watchPrefs[id] == null) return@withLock
+                ConfFile.upsert(StoandlConfig.configFile(), mapOf("watch.$id" to raw))
+                configStore.reload()
+                log.info { "Updated pinned watch.$id = $raw in stoandl.conf to match" }
+            }
+        } catch (e: Exception) {
+            // Never fail the pref write over this — the pref itself already applied.
+            log.warn { "Couldn't update pinned watch.$id in stoandl.conf: ${e.message}" }
         }
     }
 

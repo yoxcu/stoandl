@@ -34,6 +34,17 @@ class WatchPrefsControl(
     private val libPebble: LibPebble,
     private val resolveAppUuid: (String) -> Uuid?,
     private val appName: (Uuid) -> String?,
+    /**
+     * Keep an EXISTING `watch.<id>` line in `stoandl.conf` in step with a pref set here.
+     *
+     * `config.watchPrefs` is re-applied authoritatively on every fresh connect, so without this a pref
+     * pinned in the config file silently reverted a GUI/CLI change at the next reconnect — the change
+     * appeared to work, then undid itself. Only keys that are ALREADY pinned are rewritten: writing
+     * every pref you touch would turn `watch.*` from an opt-in pin list into a full mirror.
+     *
+     * Null in tests / when there is no config file to keep in step with.
+     */
+    private val syncPinnedPref: ((id: String, raw: String) -> Unit)? = null,
 ) {
     /** Apply every configured `watch.<id> = value`. Unknown ids / bad values are logged and skipped
      *  (one bad entry never blocks the rest). Called on each connect so config stays authoritative. */
@@ -60,6 +71,8 @@ class WatchPrefsControl(
         return try {
             val wp = parse(pref, raw)
             libPebble.setWatchPref(wp)
+            // Keep a pinned `watch.<id>` in stoandl.conf in step, else it would revert this on reconnect.
+            syncPinnedPref?.invoke(pref.id, raw.trim())
             "ok:Set ${pref.id} = ${format(pref, wp.valueOrDefault())} (syncs to the watch on next connect)"
         } catch (e: IllegalArgumentException) {
             "error:${e.message}"

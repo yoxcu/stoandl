@@ -94,8 +94,10 @@ provider forever, so the watchapp path kept the old id until a restart; the cach
 | `calendar.sync_interval` | int | ✓ | live² | the ticker re-samples it each tick (was captured once; **fixed this session**) | `30` min |
 | `calendar.enabled` | toggle | Sync screen | live | `SetSyncEnabled("calendar", …)` | `true` |
 
-² Takes effect from the *next* tick, so up to one old interval of lag. Deliberate: restarting the ticker
-on every write would reset the countdown and could starve the sync under repeated edits.
+² Applies at once: the ticker is keyed on a `StateFlow` of the interval, so changing the value cancels
+the pending delay and starts counting the new one. Because a `StateFlow` conflates equal values, a
+calendar write that does *not* change the interval leaves the countdown running — which is what stops
+repeated edits from starving the sync.
 
 ### Music · Health · Battery
 
@@ -159,11 +161,17 @@ Not gaps — each has a richer surface that a flat key/value row cannot express.
 | `extensions.enabled`, `extension.<name>.<key>` | `ExtEnable`/`ExtDisable`, `ExtConfigSchema`/`ExtGetConfig`/`ExtSetConfig` — each extension ships its own typed schema | Apps → Extensions |
 | `notification.forward`, `weather.enabled`, `calendar.enabled`, `music.enabled`, `health.sync`, `dnd.sync` | `GetSyncStatus`/`SetSyncEnabled` — the six master switches, which also report availability and last-sync | Settings → Sync (and the Alerts screen for forwarding) |
 
-Two of these have a **known interaction** worth documenting rather than fixing blind — see
-[OPEN-QUESTIONS.md](../OPEN-QUESTIONS.md): a stale `extension.<name>.<key>` in `stoandl.conf` silently
-overrides what the GUI writes to the extension's own config file, and a `watch.<prefId>` conf entry is
-re-applied authoritatively on every connect, so it silently reverts a GUI `SetWatchPref` on the next
-reconnect.
+Both of these used to have a **precedence trap** where `stoandl.conf` silently beat the GUI. Fixed:
+
+- **`extension.<name>.<key>`** — settings now merge as *manifest defaults < `stoandl.conf` < the
+  extension's own `config` file*, i.e. the file the GUI and `stoandl ext` write now wins. A leftover
+  conf key that the file also sets is logged once at resolve time so it can be cleaned up. `cmd` keeps
+  its old precedence (stoandl.conf first) — an explicit `cmd` is how you rescue an extension whose own
+  config is broken.
+- **`watch.<prefId>`** — `SetWatchPref` now also rewrites the conf key, **but only when that key is
+  already pinned there**. `config.watchPrefs` stays authoritative on connect (so a pinned pref still
+  wins over an on-watch change), it just can no longer revert a GUI/CLI change. A pref you have *not*
+  pinned is untouched, so `watch.*` stays an opt-in pin list rather than becoming a mirror.
 
 ---
 
@@ -206,9 +214,9 @@ left alone:
 
 1. **`music.enabled`, `health.sync` and `dnd.sync` each have two controls** — the Sync screen master
    toggle and the Daemon configuration row. Both write the same conf key through the same store, so they
-   cannot disagree; it is duplicated *presentation*, not duplicated state. Kept, because removing either
-   is a UX judgement call (the Sync screen shows availability + last-sync, which the flat row cannot),
-   and this session was not the place to make it unattended. Noted in OPEN-QUESTIONS.md.
+   cannot disagree; it is duplicated *presentation*, not duplicated state. **Decision: keep both.** The
+   Sync screen adds availability and last-sync that a flat row cannot express, and keeping the keys in
+   `GUI_CONFIG_FIELDS` is also what makes them reachable from `stoandl daemon list/set`.
 2. **`firmware.notify` vs `alerts.*`** — deliberately not unified: `firmware.notify` gates a *watch*
    notification too, so folding it under `alerts.enabled` would make one switch mean two different
    things. Documented in both KDoc and the Alerts screen's footer text.
