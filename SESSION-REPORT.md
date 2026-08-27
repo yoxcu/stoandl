@@ -246,6 +246,39 @@ Two more commits on each branch (`8004622`, `9a00bac`; `182af14`). TESTING.md §
 the behaviour changes. Re-verified after: daemon 19/19, GTK 22/22, both front-ends still report
 `45 keys in 14 groups` headless.
 
+## Follow-up: duplication sweep
+
+Asked to re-check for duplicates afterwards. It found errors in this session's own output, which is the
+part worth recording:
+
+**Two wrong numbers, each copied into two or three files** — `TimelineAttribute` "33 attributes" (it is
+39; I conflated the count with the highest id `0x33`) and `WatchPrefEntity` "44 prefs" (45). Written
+once, duplicated, wrong everywhere. Both firmware docs also cited `HeartbeatLayout.kt:181-184`, a file
+that is **untracked on this branch** — committed docs pointing at your uncommitted work. And
+`docs/settings-parity.md` contradicted itself about the three dual-exposed keys.
+
+**One real bug, hiding behind duplicated code.** `SetSyncEnabled` re-implemented the tail of
+`applyGuiConfig` inline and skipped validation entirely — and its DND arm wrote `both` whenever
+`enabled=true`, so choosing "To watch" on the Settings page and then toggling DND off-then-on on the Sync
+screen silently became "Both". Both write paths now share one `persistConfig()`.
+
+**One redundant parameter I added.** `WatchNotifier` already held the live `ConfigStore`; I gave it a
+second `defaultMuteOf` supplier that read the same store, so `notification.default_mute` was fetched
+twice per push. Removed — the default now comes off the snapshot already in hand.
+
+**Deduplicated:** the GTK front-end had switch/combo/spin row builders written three times in one file
+(daemon config, watch prefs, health profile) plus three copies of the 500 ms debounce; I had added the
+third of each. They now share four helpers in `pages/mod.rs`. The two *schemas* are deliberately not
+merged — `WatchPref` has quicklaunch/colour kinds and a watch-supplied allowed-set, `ConfigField` has
+group/apply/placeholder — only the leaf widgets are shared. Kirigami got `FormSpinRow.qml`, the number
+sibling of `FormTextRow`.
+
+**Clean:** no duplicate config keys; the 52 / 45 / 7 / 14-group counts all verify against the code; the
+six supplier fixes are two justified patterns rather than six spellings of one; `alertsAllow` is a single
+helper. Left alone by decision: the mock's 45-key table is a hand copy of the daemon schema with nothing
+catching drift, and `gui/docs/dbus-interface.md` is a stale 441-line fork of the daemon's 586-line
+contract doc that `gui/CLAUDE.md` still points at (pre-existing).
+
 ## What I'd do next
 
 1. **Bump `libs/libpebble3`.** It is the single blocker on three of the five firmware items, and for the
