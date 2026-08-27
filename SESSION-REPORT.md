@@ -220,14 +220,37 @@ the session-start `git diff --stat`: 224 insertions across the same six files).
 
 ---
 
+## Follow-up: the open questions, answered
+
+The author answered all eight on 2026-08-27; the decisions and reasoning are now recorded in
+[OPEN-QUESTIONS.md](OPEN-QUESTIONS.md), and four of them changed code:
+
+- **Extension config precedence flipped** — the extension's own `config` file (what the GUI and
+  `stoandl ext` write) now wins over a stale `extension.<name>.<key>` in `stoandl.conf`, which used to
+  silently beat it. A shadowed key is logged once at resolve time so it can be found. `cmd` keeps the old
+  order, since it is the escape hatch for an extension whose own config is broken. *Behaviour change for
+  installs that relied on the old order.*
+- **Pinned watch prefs no longer revert the GUI** — `SetWatchPref` also rewrites `watch.<id>` in
+  `stoandl.conf`, but only when that key is already pinned, so `watch.*` stays an opt-in pin list.
+- **`calendar.sync_interval` applies at once** — the ticker is keyed on a `StateFlow` of the interval, so
+  a change cancels the pending delay. `StateFlow` conflating equal values is what keeps repeated edits to
+  other calendar keys from starving the sync.
+- **The `i18ndc` noise is gone** — a shared `FormTextRow.qml` replaces all twelve `FormTextFieldDelegate`
+  usages (and absorbs `GeneralSettingsPage`'s hand-rolled equivalent, so there is one component, not two).
+  22 runtime errors → 0.
+
+Kept as they were: the dual Sync-screen/config-page controls, `firmware.notify` outside `alerts.enabled`,
+`classic.discover` on, and the `stoandl daemon` CLI name.
+
+Two more commits on each branch (`8004622`, `9a00bac`; `182af14`). TESTING.md §5.31 gained three rows for
+the behaviour changes. Re-verified after: daemon 19/19, GTK 22/22, both front-ends still report
+`45 keys in 14 groups` headless.
+
 ## What I'd do next
 
 1. **Bump `libs/libpebble3`.** It is the single blocker on three of the five firmware items, and for the
    new watch prefs it *is* the entire implementation — stoandl needs no code, the prefs just appear.
 2. **Run TESTING §5.31 on hardware**, especially the six live-apply rows.
-3. **Read [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md)** — five decisions are yours, including two pre-existing
-   precedence traps I documented but deliberately did not change (a stale `extension.<name>.<key>` in
-   `stoandl.conf` silently beats what the GUI writes to the extension's own config file; a
-   `watch.<prefId>` conf entry silently reverts a GUI `SetWatchPref` on the next reconnect), and the
-   `classic.discover` default.
-4. **Check weather on 4.36** before updating a daily-driver watch.
+3. **Check weather on 4.36** before updating a daily-driver watch.
+4. Note the extension-config precedence flip when upgrading an install that pinned
+   `extension.<name>.<key>` in `stoandl.conf` — the daemon logs each shadowed key at startup.
