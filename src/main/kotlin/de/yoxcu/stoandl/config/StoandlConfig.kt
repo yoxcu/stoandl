@@ -191,7 +191,9 @@ data class StoandlConfig(
     /** EXPERIMENTAL Bluetooth Classic (BR/EDR) transport for classic-era Pebbles (Time / Time Steel),
      *  whose native, reliable transport is RFCOMM/SPP — not BLE. When set, stoandl discovers these
      *  watches via a BR/EDR inquiry (during a pairing window) and auto-pairs + connects them over a
-     *  secure RFCOMM socket. Off by default. The BLE path is unaffected — BLE-native watches use BLE. */
+     *  secure RFCOMM socket. On by default — it's idle when no classic watch is paired (the inquiry only
+     *  runs while a pairing window is open, and a bonded watch reconnects by paging its fixed address).
+     *  The BLE path is unaffected — BLE-native watches use BLE. */
     val classicDiscover: Boolean,
     /** "Follow the wrist": when two or more watches are paired, connect whichever one is actually in
      *  range instead of only ever the watch that last held the connection goal (the last one paired or
@@ -299,10 +301,7 @@ data class StoandlConfig(
             batteryHistory = true,
             batteryHeartbeat = true,
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
-            // Off, matching both the KDoc above and the `load()` parse (a bare parseBool, so an absent
-            // key is false). These two disagreed: with no config file at all you got Classic discovery
-            // on, with a config file that simply omits the key you got it off.
-            classicDiscover = false,
+            classicDiscover = true,
             connectionAutoswitch = true,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
@@ -398,7 +397,9 @@ data class StoandlConfig(
                 healthSync = map["health.sync"]?.let { parseBool(it) } ?: true,
                 healthExport = map["health.export"]?.let { parseBool(it) } ?: true,
                 healthExportSamples = parseBool(map["health.export_samples"]),
-                classicDiscover = parseBool(map["classic.discover"]),
+                // Default TRUE, so only an explicit falsey value disables it — a bare parseBool() would
+                // read an absent key as false and contradict defaults(), conf.example and the docs.
+                classicDiscover = map["classic.discover"]?.let { parseBool(it) } ?: true,
                 connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,

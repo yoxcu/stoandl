@@ -14,17 +14,24 @@ import kotlin.time.Duration
  * daemon restart — the Koin binding is fixed (cached single), but the behaviour behind it is not.
  *
  * [enabled] reads the live config; [provider] builds the GeoClue provider on first use (so nothing is
- * created until a watchapp actually asks for location while enabled).
+ * created until a watchapp actually asks for location while enabled). The cached delegate is keyed on
+ * [desktopId] (`weather.gps_desktop_id`) so editing the GeoClue identity rebuilds the provider — caching
+ * it unconditionally would keep the old identity, and therefore the old geoclue.conf allow-list entry,
+ * until a daemon restart.
  */
 class LiveGeolocation(
     private val enabled: () -> Boolean,
-    private val provider: () -> GeoClueLocationProvider,
+    private val desktopId: () -> String,
+    private val provider: (String) -> GeoClueLocationProvider,
 ) : SystemGeolocation {
-    @Volatile private var delegate: GeoClueSystemGeolocation? = null
+    @Volatile private var cached: Pair<String, GeoClueSystemGeolocation>? = null
 
-    private fun active(): SystemGeolocation =
-        if (enabled()) (delegate ?: GeoClueSystemGeolocation(provider()).also { delegate = it })
-        else DisabledGeolocation
+    private fun active(): SystemGeolocation {
+        if (!enabled()) return DisabledGeolocation
+        val id = desktopId()
+        cached?.let { (cachedId, delegate) -> if (cachedId == id) return delegate }
+        return GeoClueSystemGeolocation(provider(id)).also { cached = id to it }
+    }
 
     override suspend fun getCurrentPosition(
         maximumAge: Duration?,

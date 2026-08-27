@@ -1272,9 +1272,9 @@ receive at least one heartbeat (they're emitted hourly). For the charge tests, a
 | 5.29c | Insights (heartbeat source) | `stoandl watch battery insights` | `<name> — <soc>%`, a `Voltage: … V` line, `Time remaining: ~…h` (from the firmware's `tte`), 24h range, last-charged, charge cycles, and `(source: heartbeat, N samples)`. |
 | 5.29d | Charging is *measured* (**B**) | put the watch on the charger, wait for the next heartbeat (~1 h) or trigger one, then `battery insights` | `(charging)` shown; `charge_ms>0` on the heartbeat record (`battery heartbeat`). Unlike the GATT fallback this is measured, not inferred. |
 | 5.29e | History / sparkline feed | `stoandl watch battery history --since 48h` | Oldest-first `<time>  <level>%  <source>  <voltage>` rows; heartbeat rows carry a voltage, gatt rows don't. Powers the GUI Battery card via `BatteryHistory`. |
-| 5.29f | GATT fallback works (**A**) | with `battery.heartbeat = false` set (`stoandl config battery.heartbeat false`) and a fresh level change, `battery insights` then `history` | Insights/history still work from the GATT level series (`source: gatt`), no voltage, `hoursRemaining` computed (not the firmware estimate). Confirms the feature is never empty even without B. |
+| 5.29f | GATT fallback works (**A**) | with `battery.heartbeat = false` set (`stoandl daemon set battery.heartbeat false`) and a fresh level change, `battery insights` then `history` | Insights/history still work from the GATT level series (`source: gatt`), no voltage, `hoursRemaining` computed (not the firmware estimate). Confirms the feature is never empty even without B. |
 | 5.29g | Fallback charging not stuck | on the GATT fallback: charge to 100 %, unplug, wait > 45 min, `battery insights` | `charging` reads **false** after the plateau window (not stuck true) — the review fix: a stale last-rise past `CHARGING_STALE_S` is treated as a plateau, so `hoursRemaining` can estimate again. |
-| 5.29h | Live config toggle | `stoandl config battery.heartbeat false` then `true` (and same for `battery.history`); watch the log | Applies **without a restart** (`applyBattery` via reconcile). Log shows the capture enabling/disabling. GUI **Settings** shows both toggles (`GetConfigSchema`). |
+| 5.29h | Live config toggle | `stoandl daemon set battery.heartbeat false` then `true` (and same for `battery.history`); watch the log | Applies **without a restart** (`applyBattery` via reconcile). Log shows the capture enabling/disabling. GUI **Settings** shows both toggles (`GetConfigSchema`). |
 | 5.29i | Classic-transport battery (**B only**) | with a classic-era watch (Time / Time Steel) over Bluetooth Classic: `battery insights` after a heartbeat | Works from the **heartbeat** (datalog rides RFCOMM) even though `stoandl watch battery` (GATT 0x180F) is null over Classic — the one case where B is the *only* battery source. |
 | 5.29j | Retention prune | leave running past `battery.retention_days` (or set it low, e.g. `1`, and re-run) | Rows older than the window are pruned from both `<configDir>/battery/*.ndjson` and `battery/heartbeat/*.ndjson`; recent rows stay. No torn files under concurrent GUI polling (per-file locks). |
 | 5.29k | GUI Battery page | in the GUI, Watch tab → **Battery insights** row | Opens the Battery sub-page: big current %, charging/voltage/time-left hero + gauge, a battery-%-over-time chart with a **24 h / 7 days / 30 days** switcher, and trend tiles (discharge rate, charges·7d, last charged, 24h range). Live-refreshes on `WatchesChanged`. Empty/placeholder state when no data or no watch. |
@@ -1383,6 +1383,36 @@ peripheral connections at once.
 | 6.4 | Reconnect | power the disconnected watch back on | It reconnects cleanly; both are connected again. |
 | 6.5 | `stoandl watch pair` — bonded watch absent | one watch bonded but out of range, run `stoandl watch pair` for a new (unbonded) watch | Should work: the absent watch is `KnownPebbleDevice` (not `ConnectedPebbleDevice`), so the guard doesn't fire; the `alreadyBonded` snapshot prevents false-positive completion on the old watch. New watch bonds and `pair` returns `"ok:Paired"`. |
 | 6.6 | `stoandl watch pair` — watch already connected | one watch actively connected, run `stoandl watch pair` for a second (unbonded) watch | **Known broken**: the early-return guard in `Pair()` exits immediately with `"Watch already connected"`. Fix requires removing that guard and scoping the connected-detector to newly connected devices only. |
+
+## 5.31 Settings parity: the full config schema, alerts.* and live-apply  ⚠️ UNVERIFIED (needs a watch for the alert/apply rows)
+
+The GUI Settings page is schema-driven: the daemon advertises `key type label options desc group apply
+min max unit placeholder` and both front-ends render whatever it says. This milestone grew the schema
+from 23 keys / 2 widget kinds / 5 columns to 45 keys / 5 kinds (`toggle`, `combo`, `text`, `int`,
+`list`) / 11 columns, added the `alerts.*` family, added `stoandl daemon` as the CLI half, and fixed
+six keys that persisted but did nothing until a restart.
+
+Verified in the sandbox (no watch needed): both front-ends report `general loaded 45 keys in 14 groups`
+under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test` 19/19 and
+`cargo test` 22/22 pass. Everything below needs the real daemon.
+
+| # | What | How | Expect |
+|---|------|-----|--------|
+| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 14 section headers; spin boxes with units for the 4 `int` keys; text fields with placeholders for the 8 `text` keys; comma lists for the 3 `list` keys. Nothing renders as a bare unlabelled text box. |
+| 5.31b | Restart marking | look at `notification.sync_to_watch`, `classic.discover`, `datalog.enabled` | Each row says "takes effect after restarting stoandl". No other row does. |
+| 5.31c | Validation surfaces | set `weather.interval` below its minimum via `stoandl daemon set weather.interval 1`; set `weather.locations` to `Nowhere` | `error:weather.interval must be at least 5`; `error:weather.locations: expected comma-separated Name:lat:lon entries`. `stoandl.conf` unchanged in both cases. |
+| 5.31d | Conf-breaking input | `stoandl daemon set weather.gps_name 'Home # 2'` | `error:… cannot contain '#'`. Then confirm `stoandl.conf` still parses (`stoandl daemon get weather.gps_name` returns the old value). |
+| 5.31e | CLI ↔ GUI round-trip | `stoandl daemon set weather.units Imperial`, then open the GUI page | Combo shows Imperial. Reverse: change it in the GUI, `stoandl daemon get weather.units` agrees. |
+| 5.31f | **firmware.\* is now live** | with a watch connected: `stoandl daemon set firmware.github true`, then `stoandl firmware check` **without restarting** | Check runs against GitHub. Before this milestone it returned `disabled:` until a restart — this is the regression to watch. Same shape for `language.download` + `stoandl language install`. |
+| 5.31g | **notification.default_mute is now live** | `stoandl daemon set notification.default_mute always`, then trigger a notification from an app that has never notified before | The new app is tracked with mute=always and the notification is dropped. Previously needed a restart. |
+| 5.31h | **developer.autostart is now live both ways** | toggle it off while on, then reconnect the watch; toggle it on while off, then reconnect | Off → the LAN server does **not** start on connect (previously it still did). On → it starts on the next connect (previously needed a restart). |
+| 5.31i | **calendar.sync_interval is now live** | `stoandl daemon set calendar.sync_interval 5`, wait through one old interval | The next re-sync lands on the new cadence. Up to one old interval of lag is expected and correct. |
+| 5.31j | **contacts.vcard_paths / call.dialer_apps are now live** | add a vCard dir, then place a call; add a dialer app name, then have it notify | Caller name resolves / the dialer notification is suppressed, with no restart. |
+| 5.31k | `alerts.*` gating | `stoandl daemon set alerts.bluetooth false`, then run `bluetoothctl scan on` from another terminal and leave a watch out of range | **No** "blocked by a Bluetooth scan" desktop popup, but the WARN line is still in `/tmp/stoandl.log`. Re-enable → popup returns. |
+| 5.31l | `alerts.enabled` master | set it false, then provoke any pairing alert (e.g. unpair on the watch) | No desktop popup for any `alerts.*` event. Firmware-update alerts are **unaffected** (they follow `firmware.notify`) — confirm that separately if a firmware update is pending. |
+| 5.31m | Send test from Alerts | GUI → Alerts → **Send test** | Notification arrives on the watch. Then mute all / pause forwarding and repeat: it must **not** arrive (the test deliberately goes through the same policy path), and the toast reports it. With no watch: "No watch connected". |
+| 5.31n | `stoandl daemon list` | run it | Every key grouped by section with its current value; `(restart)` next to exactly the three keys from 5.31b. |
+| 5.31o | Old-client compatibility | run an **older** GUI build against this daemon | Settings page still renders (it reads the first 5 columns and ignores the rest). This is the version-gating claim — worth one check before shipping. |
 
 ---
 

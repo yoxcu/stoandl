@@ -385,7 +385,7 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Start the LAN dev server (port 9000) on every connect — UNAUTHENTICATED: anyone on your network can install apps") { it.developerAutostart },
 )
 
-/** Lookup by conf key — used by the write path and by the CLI's `config set`. */
+/** Lookup by conf key — used by the write path ([applyGuiConfig], behind `SetConfig`/`stoandl daemon set`). */
 fun guiConfigField(key: String): ConfigField? = GUI_CONFIG_FIELDS.firstOrNull { it.key == key }
 
 /**

@@ -34,7 +34,7 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "fakecall")
+private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -113,6 +113,7 @@ private fun printUsage() {
     row("ext", "list install enable disable")
     row("", "restart uninstall")
     row("config", "[app]   PKJS config page")
+    row("daemon", "list · get/set <key> [value]")
     println("Sync")
     row("sync", "list · enable/disable <service>")
     row("weather", "push weather to the watch now")
@@ -196,6 +197,7 @@ private fun ctl(args: Array<String>) {
                 runConfigProxy(configUrl) { data -> control.WebviewClose(data) }
             }
         }
+        "daemon" -> ctlDaemon(args.drop(1))
         "fakecall" -> {
             val sub = args.getOrNull(1) ?: "ring"
             withControl { control ->
@@ -1067,6 +1069,86 @@ private fun ctlSync(rest: List<String>) {
             }
             else -> {
                 System.err.println("Usage: stoandl sync <list | enable <service> | disable <service>>  (notifications weather calendar music health dnd)")
+                System.exit(1)
+            }
+        }
+    }
+}
+
+// ---- daemon group (the stoandl.conf keys the GUI's "Daemon configuration" page edits) -----------
+
+/**
+ * `stoandl daemon [list | get <key> | set <key> <value>]` — the CLI half of `GetConfigSchema` /
+ * `GetConfig` / `SetConfig`, i.e. the same keys and the same validation the GUI's "Daemon
+ * configuration" page drives. There was previously no CLI path to daemon config at all (`stoandl
+ * config` is the PKJS/Clay *watchapp* settings page, which takes an app name), so a headless host
+ * could only hand-edit stoandl.conf and restart.
+ *
+ * `list` renders the schema grouped by section, with the current value, the allowed values and a
+ * `(restart)` marker on keys the daemon only reads at startup.
+ */
+private fun ctlDaemon(rest: List<String>) {
+    val sub = rest.firstOrNull() ?: "list"
+    withControl { control ->
+        val schema = try { control.GetConfigSchema() } catch (e: Exception) {
+            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+        }
+        // key -> row fields (see StoandlControl.GetConfigSchema for the column order).
+        val fields = schema.map { it.split('\t') }.filter { it.isNotEmpty() && it[0].isNotBlank() }
+        fun col(f: List<String>, i: Int) = f.getOrElse(i) { "" }
+        val values = try { control.GetConfig() } catch (e: Exception) {
+            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+        }.associate { val p = it.split('\t'); p.getOrElse(0) { "" } to p.getOrElse(1) { "" } }
+
+        when (sub) {
+            "list", "status" -> {
+                if (fields.isEmpty()) { println("The daemon exposes no editable configuration keys."); return@withControl }
+                var group = ""
+                fields.forEach { f ->
+                    val g = col(f, 5).ifBlank { "Settings" }
+                    if (g != group) { group = g; println("\n$group") }
+                    val unit = col(f, 9).let { if (it.isBlank()) "" else " $it" }
+                    val restart = if (col(f, 6) == "restart") "  (restart)" else ""
+                    println("  %-30s %s%s%s".format(col(f, 0), values[col(f, 0)] ?: "", unit, restart))
+                }
+                println("\nSet one with:  stoandl daemon set <key> <value>")
+                println("Keys marked (restart) only take effect after: systemctl --user restart stoandl")
+            }
+            "get" -> {
+                val key = rest.getOrNull(1)
+                if (key.isNullOrBlank()) { System.err.println("Usage: stoandl daemon get <key>"); System.exit(1); return }
+                val f = fields.firstOrNull { it[0] == key }
+                if (f == null) {
+                    System.err.println("No config key '$key'  (list them with: stoandl daemon list)")
+                    System.exit(1); return
+                }
+                println(values[key] ?: "")
+                // Everything a caller needs to write a valid value back, on stderr so `get` stays pipeable.
+                val allowed = when (col(f, 1)) {
+                    "combo" -> col(f, 3)
+                    "toggle" -> "true, false"
+                    "int" -> "${col(f, 7)}..${col(f, 8)}${col(f, 9).let { if (it.isBlank()) "" else " $it" }}"
+                    "list" -> "comma-separated" + col(f, 10).let { if (it.isBlank()) "" else " (e.g. $it)" }
+                    else -> "text" + col(f, 10).let { if (it.isBlank()) "" else " (e.g. $it)" }
+                }
+                System.err.println("# ${col(f, 2)} — ${col(f, 4)}")
+                System.err.println("# accepts: $allowed" + if (col(f, 6) == "restart") "  (needs a daemon restart)" else "")
+            }
+            "set" -> {
+                val key = rest.getOrNull(1)
+                // Join the remainder so a value with spaces (a volume command, a location list) works
+                // without the caller having to quote it.
+                val value = rest.drop(2).joinToString(" ")
+                if (key.isNullOrBlank() || rest.size < 3) {
+                    System.err.println("Usage: stoandl daemon set <key> <value>   (list keys with: stoandl daemon list)")
+                    System.exit(1); return
+                }
+                handleStatusResponse(try { control.SetConfig(key, value) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            else -> {
+                System.err.println("Usage: stoandl daemon <list | get <key> | set <key> <value>>")
                 System.exit(1)
             }
         }

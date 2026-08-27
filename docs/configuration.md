@@ -6,8 +6,23 @@ stoandl reads an optional config file at:
 $XDG_CONFIG_HOME/stoandl/stoandl.conf      # default: ~/.config/stoandl/stoandl.conf
 ```
 
-A missing or unreadable file is fine — the daemon falls back to defaults. **Edits require a
-restart** (`systemctl --user restart stoandl`); the file is read once at startup.
+A missing or unreadable file is fine — the daemon falls back to defaults.
+
+**Hand-edits require a restart** (`systemctl --user restart stoandl`) — nothing watches the file. But
+you rarely need to hand-edit: almost every key below is also settable at runtime, from the GUI
+(Settings → Daemon configuration) or the CLI:
+
+```sh
+stoandl daemon list                    # every key, its current value, grouped
+stoandl daemon get weather.interval
+stoandl daemon set weather.interval 15
+```
+
+Those go through the daemon, which validates the value, writes it, reloads, and re-applies the affected
+subsystem — no restart. Three keys are the exception because they decide startup wiring
+(`notification.sync_to_watch`, `classic.discover`, `datalog.enabled`); they are marked **Needs a daemon
+restart** below, the GUI says so on the row, and `stoandl daemon` prints `(restart)` next to them.
+[docs/settings-parity.md](settings-parity.md) records why, per key.
 
 Syntax is `key = value`, `#` starts a comment, and list values are comma-separated. A starter file
 is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.example).
@@ -18,7 +33,12 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 |-----|------|---------|---------|
 | `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). |
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
-| `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. |
+| `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
+| `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
+| `alerts.enabled` | bool | `true` | Master switch for the desktop alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup) — as opposed to forwarded app notifications. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
+| `alerts.pairing` | bool | `true` | Alert when a watch loses its pairing, keeps connecting-then-dropping, or is nearby but no longer paired with this host — each with the action that fixes it. Without it a watch can silently stop reconnecting forever. |
+| `alerts.bluetooth` | bool | `true` | Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which blocks the watch from reconnecting. |
+| `alerts.extensions` | bool | `true` | Alert when an installed extension requires configuration before it can start. |
 | `call.dialer_apps` | list | `spacebar, calls` | Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the native call screen replaces them) and their title is used as a fallback caller name. |
 | `contacts.vcard_paths` | list | _(empty)_ | vCard (`.vcf`) files or directories scanned for caller-ID resolution. `~` expands to `$HOME`. |
 | `music.enabled` | bool | `true` | Bridge desktop media players (MPRIS) to the watch's Music app — now-playing display plus play/pause, next/previous and volume from the watch. Local-only; set `false` to disable. |
@@ -35,13 +55,15 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
 | `weather.pins` | bool | `true` | Also emit weather **timeline pins** (a sunrise + sunset pin per day, today … +2 days) for the primary location. On by default whenever weather is enabled; set `false` to keep the Weather app but leave the timeline clear. |
+| `weather.enabled` | bool | `true` | Master switch for weather sync, flipped live by the Sync screen (`SetSyncEnabled("weather", …)`). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
 | `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
 | `calendar.caldav` | list | _(empty)_ | CalDAV accounts, each `id\|url\|username` (the **password is not here** — it's in the keyring/secrets store). **Don't hand-edit** — manage via the GUI (Settings → Calendars) or `stoandl calendar add/passwd/remove`. Point at an **account/principal URL** to auto-discover and sync **all** the user's calendars, or a single **collection URL** for just that one. **Opt-in egress.** |
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
-| `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. |
+| `calendar.enabled` | bool | `true` | Master switch for calendar sync, flipped live by the Sync screen (`SetSyncEnabled("calendar", …)`). Turning it off stops syncing and removes the watch's calendar pins until re-enabled. |
+| `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
 ## Bluetooth Classic
@@ -608,3 +630,11 @@ timestamps are unix epoch seconds. Both halves are local-only (no egress), so th
 | `health.export` | `true` | Project the synced data to NDJSON under `~/.config/stoandl/health/` whenever new data arrives. |
 | `health.export_samples` | `false` | Also write minute-level samples (steps + heart rate per minute). Much higher volume than the daily summary, so off by default. |
 | `health.export_days` | `30` | How many days back each export re-projects (the daily/activities/samples window). Days already written outside the window stay in place. |
+| `battery.history` | bool | `true` | Log the watch's BLE GATT battery level whenever it changes, as a lean **fallback** for `stoandl watch battery history|insights` when the analytics heartbeat has no decoded data for a watch. Local-only. |
+| `battery.heartbeat` | bool | `true` | Capture and decode the watch's hourly analytics native-heartbeat — state of charge, real voltage, the firmware's own time-to-empty and a measured charge signal. The **primary** battery source (and the only one over Bluetooth Classic / across disconnects). The raw blob is written under `<configDir>/battery/heartbeat/` and never uploaded. Decoded only behind a strict firmware-layout guard, else captured raw. |
+| `battery.retention_days` | int | `90` | How many days of battery history (both sources) to keep before pruning. |
+| `connection.autoswitch` | bool | `true` | "Follow the wrist": with two or more paired watches, connect whichever is actually in range rather than only the one that last held the connection goal. A live link is never dropped to chase another watch. Inert with a single paired watch. |
+| `datalog.enabled` | bool | `false` | Capture datalog frames from custom watchapps (PebbleKit DataLogging) to NDJSON under `<configDir>/datalog/<uuid>/<tag>.ndjson`. Local-only, but it writes app-supplied data to disk, so it's off by default. **Needs a daemon restart.** |
+| `dnd.sync` | string | `off` | Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time: `off`, `to_watch`, `to_host` or `both`. Opt-in — it actively changes state on both sides (it never touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property) are auto-detected. |
+| `extensions.enabled` | list | _(empty)_ | Enabled extensions ("companion apps"). Each resolves to a child process under `<configDir>/ext/<name>/`. Edited live by `stoandl ext` and the GUI's Apps → Extensions — see [extensions.md](extensions.md). |
+| `extension.<name>.<key>` | string | _(unset)_ | Optional per-extension settings, passed to the child in its `initialize` handshake (`cmd` overrides the default entry command). **Note:** a value here wins over the extension's own `config` file, which is what the GUI edits. |

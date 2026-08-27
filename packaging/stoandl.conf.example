@@ -23,6 +23,26 @@ notification.sync_to_watch = false
 # `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
 notification.forward = true
 
+# --- stoandl's own alerts -------------------------------------------------------------------------
+# The desktop alerts stoandl raises ABOUT ITSELF -- pairing trouble, another app's Bluetooth scan
+# blocking reconnects, an extension that needs setting up. These are NOT forwarded app notifications
+# (those follow notification.forward / per-app mute above) and they show on the host desktop, not the
+# watch. All on by default: without them a watch can silently stop reconnecting forever.
+# Turning one off silences the POPUP only -- the condition is still logged at WARN and still lands in
+# `stoandl support`, so a muted alert never hides a diagnosis.
+# The firmware-update alert has its own switch (firmware.notify, below), because it also drives a
+# *watch* notification with an Update button -- one switch per event, not two.
+alerts.enabled = true
+# Per-event, under the master switch above.
+# A watch that lost its pairing, keeps connecting-then-dropping, or is nearby but no longer paired
+# with this host. Each alert carries the action that fixes it (Pair / Re-pair).
+alerts.pairing = true
+# Another process is running Bluetooth discovery and monopolising the adapter's scanner, which blocks
+# the watch from reconnecting (usually an open Bluetooth settings or pairing window).
+alerts.bluetooth = true
+# An installed extension requires configuration before it can start.
+alerts.extensions = true
+
 # Telephony/dialer apps. Their notifications are suppressed from the watch (the native call
 # screen replaces them), and their notification title is used as a fallback caller name when
 # the number isn't found in the vCard files below.

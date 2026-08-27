@@ -453,7 +453,8 @@ class PebbleIntegration(
             single<SystemGeolocation> {
                 LiveGeolocation(
                     enabled = { config.geolocation },
-                    provider = { GeoClueLocationProvider(config.weatherGpsDesktopId) },
+                    desktopId = { config.weatherGpsDesktopId },
+                    provider = { id -> GeoClueLocationProvider(id) },
                 )
             }
         }), allowOverride = true)
@@ -1330,14 +1331,18 @@ class PebbleIntegration(
             appName = { uuid -> allApps(libPebble).firstOrNull { it.properties.id == uuid }?.properties?.title },
         )
         watchPrefsControlRef.set(control)
-        if (config.watchPrefs.isEmpty()) {
-            log.info { "No watch.* prefs configured (set them in stoandl.conf or via 'stoandl settings set')" }
-            return
+        log.info {
+            if (config.watchPrefs.isEmpty()) "No watch.* prefs configured (set them in stoandl.conf or via 'stoandl settings set')"
+            else "Watch prefs: ${config.watchPrefs.size} configured (${config.watchPrefs.keys}), applied on connect"
         }
         // Config is authoritative: re-apply the listed prefs on every connect so they win over any
-        // on-watch change (most have no on-watch UI anyway).
-        log.info { "Watch prefs: ${config.watchPrefs.size} configured (${config.watchPrefs.keys}), applied on connect" }
-        onFreshConnect { control.applyConfigured(config.watchPrefs) }
+        // on-watch change (most have no on-watch UI anyway). The hook is registered unconditionally and
+        // the map read inside it — an empty-at-startup early return meant adding the FIRST watch.* key
+        // never took effect until a restart.
+        onFreshConnect {
+            val prefs = config.watchPrefs
+            if (prefs.isNotEmpty()) control.applyConfigured(prefs)
+        }
     }
 
     /** Mirror desktop Do Not Disturb ↔ watch Quiet Time (manual). Off unless `dnd.sync` is set; the

@@ -344,9 +344,9 @@ ack — `ok:` means "queued", not "done".
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `GetConfigSchema` | `() → as` | Schema for the curated GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc` (type ∈ {toggle, combo}; options is a CSV for combos). | *(GUI)* |
+| `GetConfigSchema` | `() → as` | Schema for the GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder` (type ∈ {toggle, combo, text, int, list}; `options` is a CSV for combos; `apply` ∈ {live, restart}; `min`/`max`/`unit` are set for `int`; `placeholder` for `text`/`list`). Columns 6–11 were **appended** to the original 5-column contract, so an older client that indexes the first five positionally is unaffected. | `stoandl daemon list` |
 | `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Read from the **live** config store (reloaded on every `SetConfig`/`SetSyncEnabled` write), so a value just written is reflected. | *(GUI)* |
-| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token>`, `notfound:` (unknown key), or `error:` (bad value / IO). Applied **live**: the write persists to `stoandl.conf`, reloads the config store, and re-reconciles the affected subsystem — **no daemon restart**. | *(GUI)* |
+| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token>`, `notfound:` (unknown key), or `error:` (bad value / IO). Applied **live** for most keys: the write persists to `stoandl.conf`, reloads the config store, and re-reconciles the affected subsystem. Three keys decide startup wiring and cannot be re-applied at runtime (`notification.sync_to_watch`, `classic.discover`, `datalog.enabled`); the schema marks them `apply=restart` and their `ok:` tail carries “(restart stoandl to apply)”. | `stoandl daemon set` |
 
 The curated key set lives in `config/ConfigSchema.kt` (a small, hand-maintained subset, not the full
 config surface). `SetConfig` shares the atomic `key = value` writer + lock (`util/ConfFile.kt`) with the
@@ -380,7 +380,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `GetHealthSeries` | steps bars: `label` · `steps` · `typical` · sleep timeline (day): `startFraction` · `widthFraction` · `isDeep`(0/1) · sleep bars: `label` · `totalMin` · `deepMin` · heart (day): `minuteOfDay`(0–1439) · `bpm` · heart bars: `label` · `avgBpm` |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
 | `GetConfig` | `key` · `value` |
-| `GetConfigSchema` | `key` · `type`(toggle/combo) · `label` · `options`(CSV) · `desc` |
+| `GetConfigSchema` | `key` · `type`(toggle/combo/text/int/list) · `label` · `options`(CSV) · `desc` · `group` · `apply`(live/restart) · `min` · `max` · `unit` · `placeholder` |
 
 ## Long-running operations
 
@@ -439,8 +439,9 @@ or egress concerns).
 > `ListWatches`, `synced` on `ListApps`, `WatchDetails`, `SetWatchNickname`,
 > `GetHealthSummary`/`GetHealthSeries` (Health screen), `ExtConfigSchema`/`ExtGetConfig`/`ExtSetConfig`
 > + `config`/`description` on `ExtList` (extension config), the `changelogUrl` on `CheckFirmware`, and
-> the full Settings/Sync write path: `GetConfig`/`GetConfigSchema` + `SetConfig` (all **live** — no
-> restart, via the `config/ConfigStore.kt` reload + re-reconcile), `GetSyncStatus` (now **live** runtime
+> the full Settings/Sync write path: `GetConfig`/`GetConfigSchema` + `SetConfig` (live via the
+> `config/ConfigStore.kt` reload + re-reconcile, **except** the three keys the schema marks
+> `apply=restart` — see [settings-parity.md](settings-parity.md)), `GetSyncStatus` (now **live** runtime
 > state) + `SetSyncEnabled` (runtime per-service on/off, full start *and* stop), and the notification
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
 > `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
