@@ -101,15 +101,22 @@ class NotifRouteTable {
     fun remove(itemId: Uuid) { routes.remove(itemId.toString()) }
 }
 
+/** `notification.default_mute` → the mute state a newly-tracked app starts in. Unknown values fall back
+ *  to Never; [de.yoxcu.stoandl.config.StoandlConfig] has already warned about them at load time. Lives
+ *  here, next to its only caller. */
+private fun parseMuteState(s: String): MuteState = when (s.lowercase()) {
+    "always" -> MuteState.Always
+    "weekdays" -> MuteState.Weekdays
+    "weekends" -> MuteState.Weekends
+    else -> MuteState.Never
+}
+
 class WatchNotifier(
     private val libPebbleRef: java.util.concurrent.atomic.AtomicReference<LibPebble?>,
     private val routeTable: NotifRouteTable,
     // Per-app mute/style store. Always built now (so per_app can be toggled live); whether it's
     // consulted is gated per-push on the live `notification.per_app`. Null only in tests.
     private val notifAppDao: NotificationAppRealDao?,
-    /** Mute state given to a newly-tracked app. Read live off the config store (not snapshotted) so a
-     *  `notification.default_mute` change applies to the next new app without a daemon restart. */
-    private val defaultMuteOf: () -> MuteState,
     private val timelineNotifDao: TimelineNotificationRealDao,
     // Live config (master forwarding switch + per_app gate, read per-push) and the global allow/block
     // filter list — both checked at the top of [push] so every source (desktop + extensions) obeys them.
@@ -146,7 +153,10 @@ class WatchNotifier(
             val now = Clock.System.now()
             val existing = dao.getEntry(req.appName)
             val entry = if (existing == null) {
-                val defaultMute = defaultMuteOf()
+                // Read off the same per-push config snapshot taken above, so a `notification.default_mute`
+                // change applies to the next newly-seen app with no restart — and with no second read of
+                // the store, which is what a separate supplier parameter amounted to.
+                val defaultMute = parseMuteState(cfg.notificationDefaultMute)
                 val created = NotificationAppItem(
                     packageName = req.appName, name = req.appName, muteState = defaultMute,
                     channelGroups = emptyList(), stateUpdated = now.asMillisecond(),

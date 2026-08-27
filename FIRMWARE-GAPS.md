@@ -33,8 +33,8 @@ Grounded against the daemon (`/workspace/src`), the libpebble3 fork (`libs/libpe
 stoandl identifies as `OSType.Android`, so "Android only" does **not** exclude it — this is the most
 interesting item in the batch. It is a **two-part gap**, and both parts are missing:
 
-- **Watch side.** `TimelineAttribute` (`libpebble3/.../packets/blobdb/Timeline.kt:269`) defines 33
-  attributes, highest id `0x33` (`NotificationFilteringRules`). There is no image/bitmap attribute.
+- **Watch side.** `TimelineAttribute` (`libpebble3/.../packets/blobdb/Timeline.kt:269`) defines 39
+  attributes, up to id `0x33` (`NotificationFilteringRules`). None of them is an image/bitmap.
   `TinyIcon`/`SmallIcon`/`LargeIcon`/`Icon` all carry an icon *code* — a reference to a built-in
   firmware resource — not pixels. So the fork cannot express an image today.
 - **Host side.** `IncomingNotification` (`src/.../dbus/DbusNotificationMonitor.kt:37`) is
@@ -88,8 +88,8 @@ render one widget per *type*, not per id. So a new firmware pref costs **zero st
 once libpebble3 knows about it.
 
 And libpebble3's pref list is a **hardcoded enum**, not something read off the watch:
-`libpebble3/.../database/entity/WatchPrefEntity.kt` defines 44 prefs across five enums — `BoolWatchPref`
-(18), `QuicklaunchWatchPref` (8), `EnumWatchPref` (12), `NumberWatchPref` (5), `RgbColorWatchPref` (1).
+`libpebble3/.../database/entity/WatchPrefEntity.kt` defines 45 prefs across five enums — `BoolWatchPref`
+(19), `QuicklaunchWatchPref` (8), `EnumWatchPref` (12), `NumberWatchPref` (5), `RgbColorWatchPref` (1).
 None of the 4.33/4.36 prefs above is present at the pinned commit.
 
 So: **every new firmware pref requires a libpebble3 submodule bump to appear at all** — the same shape as
@@ -156,7 +156,8 @@ project's convention this stays _TBT_.
 ## Already handled — no action
 
 - **Battery/heartbeat layout risk.** `battery.heartbeat` decoding is guarded on the exact
-  `(size, version)` pair — `HeartbeatLayout.kt:181-184` whitelists `(523,1)`, `(527,1)`, `(523,2)` and
+  `(size, version)` pair — `HeartbeatLayout.kt` (part of the uncommitted heartbeat work, not on this
+  branch) whitelists `(523,1)`, `(527,1)`, `(523,2)` and
   nothing else. An unknown layout sets `known = false`, decodes **no** metrics, and stores the blob raw.
   So a 4.36 record with a changed layout degrades to "nothing decoded, here's why" rather than to wrong
   numbers — which is exactly the intended behaviour, and the GUI's Heartbeat page already explains it.

@@ -12,6 +12,7 @@ import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.GUI_CONFIG_FIELDS
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.applyGuiConfig
+import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.util.ConfFile
@@ -369,9 +370,7 @@ class PebbleIntegration(
         // from history), so a route never needs to outlive the daemon.
         val routeTable = NotifRouteTable()
         val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
-        // defaultMute is read live (not snapshotted) so changing notification.default_mute applies to the
-        // next newly-seen app instead of only after a restart.
-        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, { parseMuteState(config.notificationDefaultMute) }, timelineNotifDao, configStore, notificationFilters)
+        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
@@ -1583,29 +1582,57 @@ class PebbleIntegration(
             "calendar" -> "calendar.enabled" to enabled.toString()
             "music" -> "music.enabled" to enabled.toString()
             "health" -> "health.sync" to enabled.toString()
-            "dnd" -> "dnd.sync" to if (enabled) "both" else "off"
+            // dnd is a 4-way mode behind a 2-way switch. Turning it ON must not flatten a direction the
+            // user picked on the Settings page: keep whatever non-off mode is stored, and only fall back
+            // to `both` when there is none. (Writing `both` unconditionally silently turned "To watch"
+            // into "Both" on the next off/on cycle.)
+            "dnd" -> "dnd.sync" to when {
+                !enabled -> "off"
+                config.dndSync != StoandlConfig.DndSyncMode.OFF -> config.dndSync.name.lowercase()
+                else -> "both"
+            }
             else -> return "notfound:no sync service '$service'"
         }
-        return try {
-            ConfFile.upsert(StoandlConfig.configFile(), mapOf(key to token))
-            configStore.reload()
-            reconcile(service)
-            "ok:$service ${if (enabled) "enabled" else "disabled"}"
-        } catch (e: Exception) {
-            log.warn(e) { "SetSyncEnabled($service=$enabled) failed" }
-            "error:${e.message ?: "failed to update $service"}"
-        }
+        // Same persist path as SetConfig (validate where a schema field exists, write under the shared
+        // conf lock, reload, reconcile) rather than a second inline copy of it.
+        val result = persistConfig(key, token, service)
+        return if (result.startsWith("ok:")) "ok:$service ${if (enabled) "enabled" else "disabled"}" else result
     }
 
-    /** Persist + live-apply a single GUI config key: validate+write (applyGuiConfig), reload the store,
-     *  then re-reconcile the affected subsystem so the change takes effect without a restart. */
-    private fun setConfigLive(key: String, value: String): String {
-        val result = applyGuiConfig(key, value, StoandlConfig.configFile())
+    /**
+     * The single write path for a `stoandl.conf` key: validate + persist, then reload the store and
+     * re-reconcile the affected subsystem. Validation is [applyGuiConfig] whenever the key has a
+     * [de.yoxcu.stoandl.config.ConfigField]; three of the six sync masters (`notification.forward`,
+     * `weather.enabled`, `calendar.enabled`) deliberately have none, and those are written directly —
+     * they are plain booleans this daemon generates itself, not user input.
+     *
+     * [service] forces a reconcile bucket (the Sync screen knows its own); when null it is derived from
+     * the key. Both `SetConfig` and `SetSyncEnabled` come through here, so there is one place that
+     * writes, reloads and reconciles instead of two that could drift.
+     */
+    private fun persistConfig(key: String, value: String, service: String? = null): String {
+        val result = if (guiConfigField(key) != null) {
+            applyGuiConfig(key, value, StoandlConfig.configFile())
+        } else {
+            try {
+                ConfFile.upsert(StoandlConfig.configFile(), mapOf(key to value))
+                "ok:$key = $value"
+            } catch (e: Exception) {
+                log.warn(e) { "Config write $key=$value failed" }
+                "error:${e.message ?: "failed to write ${StoandlConfig.configFile().name}"}"
+            }
+        }
         if (!result.startsWith("ok:")) return result
         configStore.reload()
-        serviceForConfigKey(key)?.let { reconcile(it) }
+        (service ?: serviceForConfigKey(key))?.let { reconcile(it) }
         return result
     }
+
+    /** Persist + live-apply a single GUI config key. Refuses anything outside the schema (so a typo is
+     *  reported rather than silently written), then goes through the shared [persistConfig] path. */
+    private fun setConfigLive(key: String, value: String): String =
+        if (guiConfigField(key) == null) "notfound:no config key '$key'"
+        else persistConfig(key, value)
 
     /** The live actuation behind the GUI Sync/Settings screens, delegated to by [StoandlControlImpl]. */
     private val syncControl = object : SyncControl {
@@ -1950,12 +1977,7 @@ internal fun perAppVibe(spec: String?): List<UInt>? {
     return spec.split(',').mapNotNull { it.trim().toUIntOrNull() }.takeIf { it.isNotEmpty() }
 }
 
-private fun parseMuteState(s: String): MuteState = when (s.lowercase()) {
-    "always" -> MuteState.Always
-    "weekdays" -> MuteState.Weekdays
-    "weekends" -> MuteState.Weekends
-    else -> MuteState.Never
-}
+
 
 /** Format an epoch-seconds timestamp as a short relative age ("just now"/"5 min ago"/"2h ago"/
  *  "yesterday"/"3d ago"); "never" for a non-positive (unset) timestamp. Used for the GUI's lastSync /

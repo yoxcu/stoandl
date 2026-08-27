@@ -11,7 +11,7 @@ private val log = KotlinLogging.logger {}
  * (default `~/.config/stoandl/stoandl.conf`). A missing/unreadable file yields defaults.
  *
  * The daemon holds the loaded config in a live [ConfigStore]: the `SetConfig`/`SetSyncEnabled` D-Bus
- * methods (and `stoandl config`/`sync`) persist a change here, reload the store, then re-reconcile the
+ * methods (and `stoandl daemon set`/`stoandl sync`) persist a change here, reload the store, then re-reconcile the
  * affected subsystem — so GUI-exposed keys take effect without a restart. A hand-edit of this file
  * still needs a restart (nothing watches it), as do a few startup-only structural keys.
  */

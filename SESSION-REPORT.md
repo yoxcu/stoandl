@@ -28,7 +28,7 @@ bump or hardware, so all of it is deferred with sketches rather than half-built.
 | Config keys on the Settings page | 23 | **45** (all 52 keys reachable; 7 via richer dedicated surfaces) |
 | Widget kinds | toggle, combo | + **text, int, list** |
 | Schema columns | 5 | **11** (group, apply, min, max, unit, placeholder appended) |
-| Keys that silently needed a restart | 6, unmarked | **0 unmarked** — 3 genuinely need one and say so; 6 were fixed to be live |
+| Exposed keys that silently needed a restart | 8, unmarked | **0 unmarked** — 6 were fixed to be live, 2 genuinely need one and say so |
 | Config keys documented in `configuration.md` | 42 of 52 | **52 of 52** |
 | CLI access to daemon config | none | `stoandl daemon list/get/set` |
 | Daemon unit tests | none | 19 |
