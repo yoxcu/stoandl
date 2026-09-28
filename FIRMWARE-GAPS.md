@@ -1,198 +1,457 @@
-# Firmware gaps — PebbleOS v4.31 → v4.36.2
+# Firmware gaps: PebbleOS through v4.38.2
 
-Gap analysis from the settings-parity session (2026-08-27). The previous analysis was based on
-**v4.30.0**; the newest firmware is **v4.36.2** (2026-08-26). Per-item dispositions are appended to
-[docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md); this file is the *implementation*
-view — what was done, what was deferred, and why.
+This is the implementation view for the `pebbleos-changelog` reviews: what to do, in what order, and how.
+The per-item dispositions live in [docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md)
+(review 5, 2026-09-28, watermark v4.36.2 → **v4.38.2**). This file replaces the review-4 edition
+(v4.31 → v4.36.2), and two of that edition's calls are corrected here:
 
-**Nothing from this batch was implemented.** That is the finding, not an omission: every actionable item
-below is blocked on either a libpebble3 submodule bump (which the project gates behind hardware
-verification) or on hardware running 4.36. There were no low-risk, self-contained wins to take, and the
-brief was explicit that a half-implementation is worse than a deferral.
+- The heartbeat layout was **not** handled (§1.1).
+- The weather v3 risk was a false alarm, but two *other* weather regressions are real (§1.3, §1.4).
 
-## Sources
+**Nothing in this file is implemented yet.** Everything is _TBT_ on hardware once implemented.
 
-- Changelog: the Notion page via `https://notion-api.splitbee.io/v1/page/25efbb55ea84801da04bfcf73c9346e1`.
-  Only **v4.31.2, v4.33.2 and v4.36.0** carry published notes since the watermark.
-- `https://api.github.com/repos/coredevices/PebbleOS/releases` — **every** GitHub release body in this
-  range is empty, so v4.31.1, v4.32.0, v4.33.0, v4.33.1, v4.34.0, v4.35.0, v4.36.1, v4.36.2 and the
-  v4.27.1 backport have nothing to triage yet. Re-check next run in case notes are backfilled.
-- Network egress worked from this container, so nothing was skipped for connectivity.
+## Sources and method
 
-Grounded against the daemon (`/workspace/src`), the libpebble3 fork (`libs/libpebble3`, pinned at
-`4156262d`, **2026-07-23** — i.e. it predates every firmware release in this range) and both GUIs.
+- **Changelog.** The Notion changelog carries notes only for **v4.38.1** in this window. v4.37.0, v4.38.0,
+  v4.38.2 and five backport tags have empty release bodies.
+- **Firmware source.** Because the notes no longer describe the wire, review 5 also diffed the firmware source
+  (`/home/vscode/.cache/pebbleos-src`, 326 commits).
+- **Upstream libpebble3.** It also compared the fork against upstream libpebble3
+  (`/home/vscode/.cache/libpebble3-upstream`, `433fef18`, 517 commits past the fork's base `e4180ffc`).
+- **Review.** Each theme had a grounded researcher and an adversarial verifier. Nothing was refuted.
 
 ---
 
-## Deferred — actionable, blocked on an upstream bump
+## 0. Priorities
 
-### 1. Notification images  ·  v4.36.0  ·  large
-
-> "Notification images now shown (Android only, requires Pebble app >1.10)"
-
-stoandl identifies as `OSType.Android`, so "Android only" does **not** exclude it — this is the most
-interesting item in the batch. It is a **two-part gap**, and both parts are missing:
-
-- **Watch side.** `TimelineAttribute` (`libpebble3/.../packets/blobdb/Timeline.kt:269`) defines 39
-  attributes, up to id `0x33` (`NotificationFilteringRules`). None of them is an image/bitmap.
-  `TinyIcon`/`SmallIcon`/`LargeIcon`/`Icon` all carry an icon *code* — a reference to a built-in
-  firmware resource — not pixels. So the fork cannot express an image today.
-- **Host side.** `IncomingNotification` (`src/.../dbus/DbusNotificationMonitor.kt:37`) is
-  `(id, appName, summary, body)`. The monitor's `Notify` signature takes the `hints` map
-  (`DbusNotificationMonitor.kt:153`) and **discards it entirely** — including `image-data` (the
-  `(iiibiiay)` inline bitmap) and `image-path`.
-
-**Sketch.** (a) Bump libpebble3 past whatever upstream commit adds the attribute, and confirm the wire
-format — most likely a new attribute id carrying a PNG or a Pebble GBitmap. (b) Extend
-`IncomingNotification` with the image, extracting `image-path` first (cheap, a file path) and
-`image-data` second (raw bitmap in the hints Variant). (c) Convert and downscale to the watch's
-resolution and depth — stoandl already has `icons/GBitmap.kt` and `screenshot/PngEncoder.kt`, so the
-pixel plumbing exists in-tree, in the right direction (it currently decodes GBitmap→PNG; this needs the
-inverse). (d) A `notification.images` config key, default off — it is a real bandwidth cost over PPoGATT
-and a privacy consideration (notification images can be photos).
-
-**Blocked on:** the libpebble3 bump. Do not attempt the host half first — without a verified wire format
-it is guesswork.
-
-### 2. Album art in the Music app  ·  v4.36.0  ·  large
-
-> "Album art in Music app (toggle in phone → Watch → Music)"
-
-`MusicTrack` (`libpebble3/.../endpointmanager/musiccontrol/MusicTrack.kt:8`) is
-`title/artist/album/length/trackNumber/totalTracks`, and `toPacket()` maps it to
-`MusicControl.UpdateCurrentTrack` — text only. Grepping the whole fork for `albumArt`, `album_art` and
-`artwork` returns nothing. So there is no phone→watch artwork path at the pinned commit.
-
-The **host half is available**: MPRIS exposes `mpris:artUrl` in its metadata, which
-`src/.../dbus/MprisMusicControl.kt` already reads metadata from — it just doesn't pull that key.
-
-The changelog's "toggle in phone → Watch → Music" also implies a new **watch pref** for it, which folds
-into item 3.
-
-**Sketch.** Same shape as item 1, and probably shares the image-encoding work: bump libpebble3, read
-`mpris:artUrl`, fetch/decode (it is usually a `file://` URL to a cached JPEG/PNG), downscale to the
-watch's Music-app art size, send. A `music.album_art` key, default off, for the same bandwidth reason.
-
-**Blocked on:** the libpebble3 bump.
-
-### 3. New watch settings from 4.33/4.36  ·  small, but gated  ·  **affects the settings surface**
-
-> v4.36.0: "Album art in Music app (toggle in phone → Watch → Music)", "Music app controls require
-> double tap", "Plain menu rows open with single tap", "Inertial flings for menus and scroll views",
-> "Dynamic backlight dark-room brightness per mode"
-> v4.33.2: "Touch control now enabled across OS", "Health assignable to any Quick Launch button"
-
-**The crux, and the reason this matters for a settings-parity session:** stoandl drives watch settings
-*generically* — `ListWatchPrefs`/`SetWatchPref` enumerate whatever libpebble3 exposes, and both GUIs
-render one widget per *type*, not per id. So a new firmware pref costs **zero stoandl code**… but only
-once libpebble3 knows about it.
-
-And libpebble3's pref list is a **hardcoded enum**, not something read off the watch:
-`libpebble3/.../database/entity/WatchPrefEntity.kt` defines 45 prefs across five enums — `BoolWatchPref`
-(19), `QuicklaunchWatchPref` (8), `EnumWatchPref` (12), `NumberWatchPref` (5), `RgbColorWatchPref` (1).
-None of the 4.33/4.36 prefs above is present at the pinned commit.
-
-So: **every new firmware pref requires a libpebble3 submodule bump to appear at all** — the same shape as
-the Ukrainian language-pack item from review 1. After a bump, both GUIs pick the new prefs up
-automatically and `watch.<prefId>` in `stoandl.conf` works for them immediately.
-
-**Blocked on:** the submodule bump, which memory records as HW-verification-gated (the fork sits on
-`stoandl-rebased`, rebased onto `coredevices/master`, not yet promoted). This is the **highest
-value-for-effort item in the batch** once that lands.
-
-**Probably already fine:** *"Health assignable to any Quick Launch button"* is a firmware-side
-restriction being lifted, not a new pref — the quick-launch pref value is a UUID
-(`QuickLaunchSetting(enabled, uuid)`), and both GUIs build the option list from `ListApps`, so Health
-should already be selectable. _TBT_ on 4.33.2+.
-
----
-
-## Risk to an existing feature — needs a hardware check
-
-### 4. The new weather app  ·  v4.36.0  ·  ⚠️ could break weather sync
-
-> "New weather app by Grim (needs Pebble app >1.10)"
-
-This is the one item that could **regress** something stoandl already ships. The weather BlobDB record is
-**versioned**: `WeatherAppEntity` (`libpebble3/.../database/entity/WeatherAppEntity.kt:67`) writes
-`version: UByte = 3u`, followed by a fixed field layout (current/today/tomorrow temps + types, update
-time, current-location flag, location name, short forecast).
-
-If the replacement watch app expects a **version 4** record — new fields, a different layout — a
-version-3 record may render partially, or be rejected. "Needs Pebble app >1.10" says the official
-companion was updated in lockstep, which is consistent with a format bump.
-
-**This cannot be settled from the code**: libpebble3 is pinned before 4.36 existed, so its record is by
-definition the old one. What would settle it: (a) a watch on 4.36.x with `stoandl weather` pushed, and
-look at the watch's Weather app; or (b) reading libpebble3 upstream commits after 2026-07-23 for a
-`WeatherAppEntity` version bump.
-
-**Recommended:** run TESTING §5.x weather verification before updating a daily-driver watch to 4.36, and
-treat a weather regression on 4.36 as expected-until-bumped rather than a stoandl bug.
-
----
-
-## Workaround-obviating — do not remove anything without a hardware re-test
-
-### 5. NimBLE 1.10.0 · fast-advertising battery drain  ·  v4.31.2 / v4.33.2
-
-> v4.31.2: "NimBLE updated to 1.10.0", "Power consumption bug fixes"
-> v4.33.2: "Battery drain from fast advertising fixed"
-
-stoandl carries a lot of reconnect/pairing engineering, but most of it is **BlueZ-side or host-side and
-firmware-independent**: the stale-bond reaper, the broken-bond detector, the external-discovery
-(scanner-hogging) detector, the suspend/GATT-app re-registration, the 420 ms LE supervision timeout
-(adapter-wide, a BlueZ knob). A watch-side BLE stack bump does not touch those.
-
-The advertising fix is plausibly relevant to the **overnight out-of-range flapping** noted in memory, but
-"plausibly" is the whole claim — and a firmware fix only helps once the watch is actually on 4.33.2+.
-
-**Recommended:** no code change. When the user's watches are on 4.33.2+, re-run the reconnect rows in
-TESTING and see whether the flapping profile changed; only then consider relaxing anything. Per the
-project's convention this stays _TBT_.
-
----
-
-## Already handled — no action
-
-- **Battery/heartbeat layout risk.** `battery.heartbeat` decoding is guarded on the exact
-  `(size, version)` pair — `HeartbeatLayout.kt` (part of the uncommitted heartbeat work, not on this
-  branch) whitelists `(523,1)`, `(527,1)`, `(523,2)` and
-  nothing else. An unknown layout sets `known = false`, decodes **no** metrics, and stores the blob raw.
-  So a 4.36 record with a changed layout degrades to "nothing decoded, here's why" rather than to wrong
-  numbers — which is exactly the intended behaviour, and the GUI's Heartbeat page already explains it.
-  If 4.36 does change the layout, adding a row to that table is the whole fix.
-- **"Battery readings no longer truncated on nPM1300"** — a firmware-side measurement fix. It improves
-  the accuracy of what stoandl reads (GATT level and the heartbeat SoC/voltage metrics); no host change.
-  It does mean any power-model calibration should be done on 4.36+, not before.
-- **"Unserved HRM subscribers no longer drain battery"** — relevant background for the pending
-  power-pie HRM calibration (memory: the `hrm@174` offset check): the HRM drain profile on 4.36+ is
-  deliberately different from earlier firmware, so calibrate against one firmware generation, not across.
-- **"Heart-rate variability API on Pebble Time 2"** (v4.33.2) — a watchapp C-SDK capability. No
-  phone-side HRV path in the health model; watch-side only unless upstream adds a datalog tag for it.
-- **"Notification storage crashes fixed"**, **"Blank white notification popups fixed"**,
-  **"Alarm/notification sounds no longer reboot watch"** — watch-side stability fixes that make stoandl's
-  existing notification path more reliable with no change on our side.
-
-## Watch-side only / irrelevant
-
-Inertial flings for menus and scroll views · plain menu rows open with single tap · fast-forward/rewind
-icons · music controls require double tap · workout app stays pinned · snooze survives DST · quick-launch
-combos for timeline apps · left-hand quick launch · touch control enabled across OS · Round 2 UI tweaks ·
-speaker pop before low-volume tones · dynamic backlight dark-room brightness · LECO '5' readability ·
-compass calibration in weak fields · emoji at large text size · SDK 128 KB app limit for emery/gabbro.
-
----
-
-## Summary
-
-| # | Item | Disposition | Blocked on | Effort once unblocked |
+| # | What | Why first | Effort | Needs bump? |
 | --- | --- | --- | --- | --- |
-| 1 | Notification images | deferred, actionable | libpebble3 bump (no image attribute) | large — wire format + hints extraction + bitmap encode + a new config key |
-| 2 | Album art | deferred, actionable | libpebble3 bump (MusicTrack is text-only) | large — shares the encode work with #1 |
-| 3 | New watch prefs (4.33/4.36) | deferred, actionable | libpebble3 bump (prefs are a hardcoded enum) | **near-zero stoandl code** — best value in the batch |
-| 4 | New weather app | risk to an existing feature | hardware on 4.36 | unknown until the format is known |
-| 5 | NimBLE 1.10 / advertising fix | workaround-obviating | hardware on 4.33.2+ | removal only, after a re-test |
+| 1 | Cherry-pick upstream `90b9caa3` (health parser) into the fork | Data loss: fw 4.38.0/4.38.1 minute records drop **all** steps and HR. A future fw will likely send v14 again, and then it loses everything on every watch | trivial | no |
+| 2 | Heartbeat `(567, 3)` layout row | Battery insights' power pie, drain bars and notification overlay have been **dark since fw 4.33** | trivial | no |
+| 3 | Weather: UTF-8 string length (`cf8f33e4`) + units from `unitsDistance` | Non-ASCII locations never update; warnings say "Below freezing" on warm days | trivial + small | no |
+| 4 | Firmware "latest" = max semver | A backport release can hide newer fw, and a PRF watch would flash the backport | small | no |
+| 5 | Small correctness fixes: notification timeout ≥15 s, all-day at UTC midnight, session distance ×100, sleep-card cherry-picks, `textStyle` docs | Each is a wrong result in a shipped feature | trivial each | no |
+| 6 | libpebble3 bump to `433fef18` (§3) | Unlocks notification images, album art, weather v4, new prefs, QEMU testing, firmware resume/CRC | 4–6 d + 1–2 d HW | — |
+| 7 | Host features independent of the bump (§5) | `pebbleos-translations` packs (4.38 removed built-in languages), Quick Launch actions, MPRIS seek | small each | no |
+| 8 | Features on top of the bump (§4) | New prefs → weather v4 → album art → notification images, by value for effort | 0.5–3 d each | yes |
 
-**One recommendation above the others:** bump `libs/libpebble3`. It is the single blocker on three of the
-five items, and for item 3 it is the *entire* implementation.
+---
+
+## 1. Regressions in shipped features: host-only fixes
+
+### 1.1 Heartbeat record 567 B / v3 (fw ≥4.33.0)
+
+`df6d08bd` appended 10 metrics and bumped `NATIVE_HEARTBEAT_RECORD_VERSION` to 3 (native.c: 2 at v4.32.0, 3 at
+v4.33.0 and v4.38.2). `HeartbeatLayout.kt:180-183` whitelists only `(523,1)`, `(527,1)` and `(523,2)`, so
+`HeartbeatLayouts.of()` returns null and `decodeActivity()` returns null (`HeartbeatStore.kt:173-174`). The
+battery block survives through the structural fallback, so insights and history still work.
+
+**Fix.** Append these to `METRICS`, in `analytics.def` order:
+
+- `ble_conn_slave_lat0_time_ms` (TIMER)
+- `ble_conn_param_update_count` (U32)
+- `accel_stream_recovery_count` (U32)
+- `unexpected_reboot_count` (U32)
+- `battery_temp_c` (SCALED_I32)
+- `i2c_transfer_error_count` (U32)
+- `ble_conn_itvl_other_time_ms` (TIMER)
+- `drv_init_fail_flags` (U32)
+- `battery_soc_pct_min` (SCALED_U32)
+- `touch_gated_touchdown_count` (U32)
+
+Then add all 10 names to the omit sets of the three existing rows, and add
+`Layout(567, 3, omit = setOf("settings_power_mode"))`. The self-check walk gives 523 + 44 = 567. History
+backfills from the stored raw blobs. Bonus fields: `battery_temp_c` and `battery_soc_pct_min`. Update
+`docs/heartbeat-metrics.md` and the `battery-insights.md` layout tables.
+
+**Note:** `HeartbeatLayout.kt` is still uncommitted WIP on `feature/settings-parity`.
+
+### 1.2 Health minute record v14 (fw 4.38.0/4.38.1), plus overlay bugs
+
+- **Minute records.** Fork `HealthDataParser.kt:47-61,248-254` skips any version outside {5,6,7,8,13}. The DLS
+  ACK precedes the parse (`DataLoggingService.kt:69`), so the records are gone from the watch.
+- **Upstream fix.** `90b9caa3` (commonMain; its pre-image is byte-identical to the fork, so it cherry-picks
+  cleanly) accepts `version > 13 && sampleSize >= 16`, skips the extra bytes, and fixes `VERSION_FW_4_1`
+  8 → 12.
+- **Overlay kcal.** The same commit fixes the swapped active/resting kcal in activity overlays
+  (`HealthDataParser.kt:205-208`) and adds the fw's bit-0 compatibility gate.
+- **Not fixed upstream: session distance.** The overlay distance is `distance_meters` on the wire, but it is
+  stored as `distanceCm`, and `HealthExporter.kt:120` divides by 100. Change that line to
+  `put("distance_m", s.distanceCm)`. Line `:165` is minute-level and really is cm, so it is fine. Past NDJSON
+  rows stay wrong: overlays are consume-once.
+- **Sleep card.** Cherry-pick `7de45f8a` then `42cbc5a4`. Fork `HealthStatsSync.kt:107-113` writes epoch
+  seconds into the watch's bedtime/wake fields, and `:155-158` writes zero typicals.
+- **HW check.** After moving the watch to 4.38.2, see whether the next sync backfills the 4.38.0/4.38.1 gap
+  (`MAX(timestamp)` did not advance).
+
+### 1.3 Weather: non-ASCII strings rejected (fw ≥4.34.0)
+
+- **The mismatch.** The fw validator `prv_strings_block_is_valid` (`weather_db.c:50-77`) walks the string
+  block. Fork `WeatherAppEntity.kt:90` declares its length as `locationName.length + 2 + forecastShort.length
+  + 2`, which counts UTF-16 chars, while `SLongString` writes UTF-8 bytes.
+- **Effect.** "München", Nominatim names, or stoandl's own "—" fallback phrase (`WeatherSync.kt:443`) make
+  the record `E_INVALID_ARGUMENT`. The row stays dirty with no error surfaced.
+- **Fix.** Cherry-pick upstream `cf8f33e4` (helper `serializedWeatherStringsLength()`). Independently, make the
+  `else` phrase ASCII ("Unknown").
+
+### 1.4 Weather: warning thresholds follow the watch's `unitsDistance` (fw ≥4.37.0)
+
+- **The mismatch.** `weather_app_layout.c:435-518` converts the °C warning thresholds to °F when
+  `unitsDistance` is Miles (the fw default), assuming the phone sent temperatures in that unit.
+- **stoandl today.** It picks its unit from `weather.units` (`StoandlConfig.kt:73-74`, `WeatherSync.kt:233`).
+- **Fix, and a single-source-of-truth cleanup.** Read the unit from
+  `libPebble.healthSettings.first().imperialUnits` (the value `stoandl health profile units` already writes),
+  and drop `weather.units` from config, schema, GUI and docs. This is what upstream `e501ff12` did.
+- **Interim.** Until then, document that the two must match.
+
+### 1.5 Firmware check: backports hijack "latest"
+
+- **Why.** Backport releases (v4.9.142.4, v4.27.2/3, v4.30.2/3, published 2026-09-11…15) use GitHub's default
+  `make_latest`. `GithubFirmwareSource.kt:51` trusts `/releases/latest`, and the pre-release path takes list
+  order (`:44-49`).
+- **Fix.** Fetch `/releases?per_page=30` and pick the max semver among non-draft releases (pre-releases per
+  config) that have a `normal_<board>` asset. `SEMVER` also truncates 4-part tags (`FirmwareControl.kt:366`).
+- **Tests.** Include the PRF case: `needsUpdate` returns true for `isRecovery` (`FirmwareControl.kt:289-290`),
+  so a PRF watch would have flashed the backport.
+
+### 1.6 Smaller ones
+
+- **Notification timeout.** A `notifWindowTimeout` below 15 s makes the notification vanish and cancels the
+  vibe on every released fw; the fw clamp `2782836` is only on `main`. Enforce a 15 000 ms minimum in
+  `WatchPrefsControl` (the fork's min is 0 at `WatchPrefEntity.kt:533`). The bump brings upstream `912fde2c`.
+- **All-day events.** `ICalParser.kt:177` uses `atStartOfDay(ZoneId.systemDefault())`. The fw applies
+  `time_local_to_utc` to all-day timestamps (`item.c`), so anchor to **UTC midnight**. Absolute-time VALARMs
+  on all-day events (`:203-206`) need the same compensation.
+- **`textStyle` (fw ≥4.38.1).** It is now only a one-shot seed; the real keys `systemTextSize` and
+  `notifTextSize` are not phone-syncable. Reword `packaging/stoandl.conf.example:93` and the pref description.
+  Raising the missing whitelist entries with PebbleOS is worth a short issue.
+- **Dead backlight prefs.** `lightDynamicIntensity` and `dynBacklightMinThreshold` are rejected by every current
+  fw, and each rejected row is resent on every connect (`BlobDB.kt:374-384`). Hide them with a small deny-list
+  pre-bump, or just take the bump, which removes them. Drop the GUI section-rule special cases (`qml:75`,
+  `settings.rs:53`).
+- **Built-in languages removed (fw ≥4.38.0).** Add a line to the `firmware update` flow and docs: users of
+  built-in de/fr/it/es/pt/nl/ca/pl need a pack afterwards. The real fix is §5.1.
+
+---
+
+## 2. Fork cherry-picks: no full bump needed
+
+These are commonMain, self-contained, and a safer interim than the 517-commit bump.
+
+| Commit(s) | Fixes | Notes |
+| --- | --- | --- |
+| `90b9caa3` | v14 minute records, overlay kcal swap, bit-0 gate, `VERSION_FW_4_1` | §1.2. Also adds `HealthDataParserTest`. |
+| `7de45f8a` → `42cbc5a4` | Watch sleep card (typicals, seconds-of-day) | Order matters. |
+| `cf8f33e4` | Weather UTF-8 string length | §1.3. |
+| `WatchPrefEntity.kt` diff `e4180ffc..433fef18` (185 lines, one file) | New prefs (QT schedule, `dndAutoDismiss`, `musicShowAlbumArt`, `lightPreset`, `lightDynamicMode`, `unitsWind`, `language`); removes the dead ones; notification-timeout min 15 s | Brings the new `ScheduleWatchPref` type, so `WatchPrefsControl` and both GUIs need the §4.1 work. Trim `WatchLanguage` to Custom/English for fw ≥4.38. |
+| fork-only patch | `VibeScore` 15-20 (DoublePulseMedium, PebbleMorse, Heartbeat, DoubleTap, Wave, Imperial) + `dndTouchBacklight` | Not upstream. The patterns exist only on Core boards with fw ≥4.38.0. Also fixes a display bug: a watch-picked id ≥15 decodes to the default, so a pinned `watch.vibeScore*` overwrites it. |
+
+---
+
+## 3. The libpebble3 bump to upstream `433fef18`: runbook
+
+**Status: not attempted.** The overnight session was asked to try it, but the container had run out of process
+slots before the first build (see Environment below). Everything here comes from a read-only analysis:
+`git merge-tree` plus a probe rebase in a scratch clone.
+
+**Cost:** about 4–6 engineering days plus 1–2 days of hardware testing, for a bump that ships no feature by
+itself.
+
+### 3.1 Before starting
+
+- `stoandl backup`. Room goes from schema 38 to 47 (auto-migrations + `MIGRATION_39_40`, which forces a full
+  locker re-sync). Downgrades are destructive (`fallbackToDestructiveMigrationOnDowngrade`), so rolling the jar
+  back wipes `libpebble3.db`.
+- Work in a scratch clone under `/home/vscode/.cache`, never in `/workspace` (bind mount).
+- Pre-squash the 8 Rhino-era commits into `889a6498` (GraalJS), and fold `0636519d` into `d3cb437e`.
+
+### 3.2 Textual conflicts (16 files)
+
+| File | Resolution | Difficulty |
+| --- | --- | --- |
+| `settings.gradle.kts` | Keep the fork's `ANDROID_HOME` gate; put upstream's new `:androidApp`/`:cactus-native` inside it. `:pebble` stays excluded (stoandl only reads `LanguagePackRepository.kt` as text; the marker is still at `:99`). | trivial |
+| `gradle/libs.versions.toml` | Take upstream (AGP 9.3.1, Kotlin 2.4.10, Koin 4.2.2, Ktor 3.5.1, serialization/coroutines 1.11.0, kotlinx-io 0.9.1, kermit 2.1.0, atomicfu 0.33.0, kable 0.43.1) but keep `jvm-toolchain = "21"` and its comment. | easy |
+| `blobannotations/build.gradle.kts` | Re-implement the gate for the AGP-9 KMP plugin. Configure `android {}` through the extension API: type-safe accessors don't exist for conditionally applied plugins. Drop `iosX64`. | moderate |
+| `libpebble3/build.gradle.kts` (9 hunks) | Start from upstream. Re-wrap the android block, android source sets and `kspAndroidMain` in the gate. Keep `jvmToolchain(25)` + `JVM_21`, the `kspKotlinJvm` hook and the jvmMain dbus-java/Graal deps. Keep the iOS targets (Room codegen). | hard |
+| `PlatformIdentifier.kt` | `data class BlePlatformIdentifier(val peripheral: Peripheral?, val autoConnect: Boolean = false)`. Keep the fork's `expect`; the JVM actual returns `(null, false)`. | moderate |
+| `KableGattClient.{android,ios,jvm}.kt` | Re-apply the fork's actuals with the new signatures. JVM: `refreshServicesNative() = false`, keep `requestMtuNative`. | easy |
+| `ConnectionParams.kt` | Keep the fork's DEBUG level. | trivial |
+| `ppog/PPoG.kt` | Take upstream's structure (`respondToResetRequest`/`initWithResetRequest`, `run(reversed)`). Re-apply the fork's four changes: re-send ResetComplete on a repeated ResetRequest, inbound baseline resync when `lastSentAck == null`, the `if (!closed)` guard, and a 30 s forward-path timeout (reversed stays 12 s). **Watch the positional `run(Boolean)` call:** the parameter changed meaning. | hard |
+| `Datalogging.kt` + `DataLoggingService.kt` | Drop the fork's `records`/`DataLogRecord`. Add `itemType` (and optionally `sessionId`) to upstream's `ThirdPartyDatalogEvent.Batch`: a good upstream PR. | moderate |
+| `di/LibPebbleModule.kt` | Keep the fork's `platformGattConnector` binding (plus a `BlePlatformConfig` arg); keep upstream's scoped `BlePlatformIdentifier` and `QemuTransport`. | easy |
+| `js/PKJSApp.kt` | Take upstream; change its `catch (Exception)` back to `Throwable` (StackOverflowError). | easy |
+| `Pairing.jvm.kt` | Keep the fork's BlueZ implementation; add the `connectionScope` parameter. | trivial |
+| `KableBleScanner.jvm.kt` | Keep the fork's body with the new signatures; add a no-op `configureKableCentral`. | easy |
+| `GattServer.jvm.kt` (rebase-only stop) | Keep the fork's server + GattManager1 self-heal; add a no-op `removeServices()`. | trivial |
+
+### 3.3 Silent breaks (no conflict marker)
+
+- **`BluezBle.jvm.kt`.** `ConnectedGattClient.subscribeToCharacteristic` gained `onSubscription` (call it after
+  `StartNotify` succeeds; reversed PPoG depends on it). It also needs `refreshServicesNative()`: re-run
+  `discover()` and return true.
+- **`PebbleBle.kt` auto-merges but won't compile.** The fork's post-pairing `registerDevice` references a
+  removed `config`. Drop it (upstream covers it); keep the post-bond `discoverServices()`.
+- **GATT server lifecycle.** Upstream `1d3574d1`/`379e4b77` make service registration *lazy* (first
+  `registerDevice`), and the merge adopts that silently. The watch is sensitive to when the PPoG service appears
+  (see fork `3ae71cb0`). Keep eager `addServices` on JVM, and HW-test daemon-restart → reconnect and first
+  pair.
+- **`PPoGReset` is gone upstream.** The connect-time reset-characteristic write disappears with the rebase.
+  HW-test the forward handshake.
+- **PKJS.** `JsRunner.signalConfigMessage(requestId, json)` is new and abstract; implement it as a JS eval with
+  JSON-encoded args. `PrivatePKJSInterface` needs `pluginRegistry` (inject it via `PKJSModule.jvm.kt`). Port
+  upstream's `startup.js` config-message/plugin hooks.
+- **JVM Koin module (runtime crash, not a compile error).** Add `single { PhoneBatteryMonitor() }`,
+  `single { PhoneNetworkMonitor() }`, `single { PlatformPlugins(emptySet()) }` and
+  `single<NotificationImageProvider> { NoNotificationImages() }`. Upstream's JVM module is `TODO()`, so nothing
+  upstream catches this. Add a test that resolves the whole Koin graph.
+
+### 3.4 Daemon API drift (one behaviour-neutral commit)
+
+- **`PebbleIntegration.kt:353`.** Change to `BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false)`.
+  Also **pin `LibPebbleConfigFlow`**: upstream `PebbleBle` reads `libPebbleConfigFlow.value.bleConfig`, not
+  `BleConfigFlow`, so today's pin would stop protecting the transport choice from persisted Java Preferences.
+- **Interface stubs:**
+  - `MprisMusicControl` gets `supportsAlbumArt = false`, `getAlbumArt(...) = null` and
+    `albumArtUpdated = emptyFlow()`.
+  - `LinuxSystemCalendar` gets `createEvent(...) = null` and `defaultCalendarPlatformId() = null`.
+- **`StoandlWebServices.checkForFirmwareUpdate(watch, force)`.** Also check the call sites of
+  `checkForFirmwareUpdates(force)` and `FirmwareUpdate.checkforFirmwareUpdate(force)`.
+- **`DatalogStore.kt:49,67-74`.** Move to `thirdPartyEvents.filterIsInstance<Batch>()` after the `itemType`
+  patch. Semantics change: health tags are consumed only when `uuid == SYSTEM_APP_UUID`, the buffer is 256 and
+  drops *new* batches when full, and malformed batches are dropped. Re-test §5.8.
+- **`WatchPrefsControl.kt:105,161,169,180`.** Add an `is ScheduleWatchPref` branch to each: parse via
+  `QuietTimeSchedule.parse`, type `schedule`, allowed `HH:MM-HH:MM`, format `encode()`. Add the type to
+  `docs/dbus-interface.md` (ListWatchPrefs record), `gui/tools/mock_stoandl.py` and both GUIs (§4.1).
+- **Removed pref ids.** `lightDynamicIntensity`, `langEnglish` and `dynBacklightMinThreshold`: remove them from
+  the conf example, GUI section rules and the mock. A pinned `watch.langEnglish` will log "Unknown watch pref";
+  mention it in the release notes.
+- **`SystemGeolocation.DEFAULT_MAX_AGE`** drops from 30 min to zero, which means more GeoClue requests.
+  Pass an explicit `maximumAge` if that matters.
+- **Outer build pins** (`build.gradle.kts:2-5,42-49`). Kotlin 2.3.10 → 2.4.10, Koin, Ktor, serialization,
+  kotlinx-io, coroutines, kermit.
+
+### 3.5 Toolchain
+
+- **Gradle version.** Upstream's wrapper is Gradle 9.6.1; stoandl's is 8.14.2, and an included build runs on
+  the root's Gradle. First try Kotlin 2.4.10 on Gradle 8.14.2 with AGP 9 kept unapplied by the gate.
+- **If that doesn't configure,** do the deferred Gradle 9 bump in the same change: shadow plugin →
+  `com.gradleup.shadow`, then APKBUILD, CI and `install.sh`. Upside: Gradle ≥9.1 runs on JDK 25, which ends the
+  dual-JDK build.
+
+### 3.6 Hardware regression pass (before promoting)
+
+TESTING §5.23b, plus these rows:
+
+- BLE reconnect, suspend/resume and first pair
+- Classic
+- PKJS: `Pebble JS Bridge initialized.`, Clay, AppMessage, XHR
+- datalog §5.8
+- firmware §5.11
+- weather, music and calendar
+
+**Handle §4.5 (downgrade → PRF) before shipping.** Only then promote to `stoandl`, update `.gitmodules`, and
+push both repos.
+
+### 3.7 Afterwards
+
+Upstream the small commonMain patches (datalog `itemType`, the PPoG resend/resync, the nullable-peripheral
+`BlePlatformIdentifier`) so the next bump is cheaper.
+
+Extra Large text, notification text size and the new vibe patterns are **not** in upstream yet either.
+
+---
+
+## 4. Features the bump unlocks
+
+### 4.1 New watch prefs: near-zero code
+
+- **Zero code.** Bool/Enum prefs render generically: `dndAutoDismiss` (fw ≥4.37), QT weekday/weekend schedule
+  toggles, `musicShowAlbumArt`, `lightPreset`, `lightDynamicMode`, `unitsWind`, `language`.
+- **Needs work: the `schedule` type.** It needs a time-range widget in the Kirigami page and GTK
+  `settings.rs`. Until then both show a read-only fallback row.
+- **Optional polish:**
+  - Show the schedule hours only while their toggle is on.
+  - Hide the preset-managed backlight prefs unless `lightPreset = Advanced` (upstream app `0d3c8a93`).
+  - File `units*` and `language` under Display (today they fall into "Other").
+- **HW check:** does a phone-written `lightPreset` apply its bundle, or only store the value?
+
+### 4.2 Weather v4: ~1 d
+
+After the bump the v4 record (minor 5) goes out automatically when the watch advertises bit 24, but with
+sentinel extras. To fill it, extend the Open-Meteo request in `WeatherSync`. This is the same endpoint, so
+there is no new egress:
+
+- **Daily:** `apparent_temperature_max`, `uv_index_max`, `precipitation_probability_max`,
+  `wind_speed_10m_max`, `wind_direction_10m_dominant`, `precipitation_sum`.
+- **Hourly:** `uv_index`, `relative_humidity_2m`, `visibility`.
+- **Other request parameters:** `forecast_days = 7`, and **always `wind_speed_unit = mph`** (the watch converts).
+
+Map them into the record:
+
+- **Hourly slots:** today's and tomorrow's 24 location-local slots.
+- **`utc_offset_seconds`:** divide by 60 into `locationUtcOffsetMin`.
+- **Day 0:** put `wmoCode`, humidity, visibility and precip sum on `daily[0]`.
+- **Location:** pass lat/lon.
+
+The firmware's `weather_db_v4_example.md` maps every field. This also brings back the storm/hail/fog/UV warning
+meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
+
+### 4.3 Album art: ~1–1.5 d
+
+- **Wire path.** The watch pulls over Imaging endpoint `0x35` (AlbumArt), and only on emery (166×166) and
+  gabbro (260×260). It asks only when all three hold: `musicShowAlbumArt` is on, the phone advertises
+  SupportsImageFetch (17), and something is playing.
+- **commonMain handles the rest.** `MusicControlManager` registers the handler when
+  `supportsAlbumArt == true`. `ImageEncoder.encode(argb, w, h)` does the 16-colour median cut + dither against
+  a measured Time 2 palette.
+- **Host work:**
+  - Read `mpris:artUrl` per player (`MprisMusicControl.kt:274-289` doesn't today).
+  - Load it: `file://` and `data:` are local; `http(s)://` needs its own opt-in key, default off.
+  - Decode, centre-crop and bilinear-scale, then encode.
+  - Emit `albumArtUpdated` when the art URL changes mid-track.
+  - Advertise SupportsImageFetch via a `PhoneCapabilities` override.
+- **The crux is the decoder.** stoandl avoids AWT/ImageIO for the musl headless JRE (`PngEncoder.kt:10-13`).
+  Options:
+  - ImageIO headless, verified on the phone
+  - a pure-JVM decoder dependency
+  - shelling out to `magick`/`ffmpeg`, like `SystemVolume` does
+- **No `music.album_art` host key.** The watch pref is the switch; a host key would duplicate it.
+
+### 4.4 Notification images: ~2–3 d, shares the decoder with §4.3
+
+- **Wire path.**
+  1. The notification carries `TimelineAttribute` ImageAspectRatio `0x34` (gated on the watch's
+     SupportsNotificationImages, bit 18).
+  2. The watch then pulls the image over `0x35` via a `NotificationImageProvider`.
+- **Host work:**
+  - Capture D-Bus `hints` in `DbusNotificationMonitor` (today discarded at `:153`): `image-path` first, then
+    `image-data` (`iiibiiay`), then maybe `app_icon`.
+  - Keep a small disk cache keyed by item id, and implement the provider.
+  - Set the aspect-ratio attribute in `WatchNotifier`.
+  - Add a `notification.images` key, default off: bandwidth, and privacy (photos).
+
+### 4.5 Firmware update improvements, and one hazard
+
+- **Free with the bump:**
+  - CRC check against the `.pbz` manifest (`4224d7ba`).
+  - Watch-side resume on a manual re-run (`c9894f45`).
+- **Needs work: auto-resume on reconnect.** It needs the `updateFirmware(FoundUpdate)` path instead of
+  `sideloadFirmware(Path)`.
+- **⚠️ Downgrades (`2461f781`).**
+  - **What happens:** sideloading an *older* `.pbz` on a dual-slot watch (obelix/getafix) reboots it into PRF
+    without transferring anything, and stoandl maps that to "reboot:" = success.
+  - **Then:** stoandl's own `needsUpdate` is true in PRF, so it offers the **latest** release and one tap
+    undoes the downgrade.
+  - **Fix:** a distinct status, remember the pending `.pbz`, suppress the latest-release offer while it is
+    pending, and re-sideload it in PRF.
+- **Optional anywhere: digest check.** The GitHub API returns `digest: sha256:…` per asset; verify downloads
+  with it. This needs no bump.
+- **eng-dash (`dash.repebble.com/api/ota/latest`).** An optional opt-in source that gives release notes and
+  staged rollout, but sends the watch serial.
+
+### 4.6 Also in the bump
+
+- **Zero code:**
+  - calendar reminders' Dismiss/Snooze menu (`d1cffc9e`) and re-sync-on-edit (`9672cdd0` + `5ee093d0`)
+  - PKJS timeline pins keeping all layout attributes (`e01bfa89`, `7aaea16`; this is what makes 4.38.1's larger
+    sports cards show anything)
+  - PPoG/protocol-runner no longer wedging on slow consumers (`29ffc7cf`)
+  - PutBytes race fix (`1a0e0b54`)
+- **Needs a `WatchConfig` knob:** calendar reminder vibe override (`77344fc2`).
+- **Dev connection:** `startDevConnection(forceLan)` could replace the `lanDevConnection` pin.
+- **QEMU emulator transport** (`38fd4c68`, `2b038eb1`, commonMain). v4.38.2 releases ship `qemu_*` images, and
+  the fw's serial carrier survived the NimBLE-everywhere change. A `stoandl qemu connect host:port` would give
+  **hardware-free testing in this BLE-less sandbox**: notifications, prefs, weather, PKJS.
+- **Reverse PPoG v2** (`45894a23`; fw ≥4.24.0, all Core boards on 4.38). The watch hosts PPoGATT, so BlueZ is
+  only a GATT client. That could retire the peripheral GATT app and its suspend/re-register wedge class for
+  Core watches. Experimental knob, heavy HW testing.
+
+---
+
+## 5. Host features independent of the bump
+
+### 5.1 `pebbleos-translations` language packs
+
+- **Why.** fw 4.38.0 removed every built-in non-English language. Translations now live in
+  `coredevices/pebbleos-translations`: 13 universal `.pbl` packs (ca, da, de, en_IL, en_SA, en_TW, es, fr, it,
+  nl, pl, pt, zh_CN) plus a `manifest.json` (schemaVersion 1; per locale: `version`, `url`, `sha256`, `size`,
+  `translatedStrings`, …). Upstream libpebble3 does not use it.
+- **Sketch.**
+  - Add a second catalog source behind the existing `language.download` opt-in.
+  - Fetch `github.com/coredevices/pebbleos-translations/releases/latest/download/manifest.json`; avoid the
+    rate-limited API.
+  - Cache it under XDG cache, and fall back to the bundled Rebble catalog offline.
+  - Prefer these packs for Core boards on fw ≥4.37.
+  - Verify sha256, then use the existing installer.
+  - Update detection must know the source: Rebble `de_DE` is v34, while these packs are v2.
+- **Unverified:** compatibility with classic or pre-4.37 firmware, so gate it by version until tested.
+  `language sideload <file>.pbl` already works today.
+- **Carry-forwards.** `uk_UA` isn't published there yet. Arabic UI is still only kaluaim's `ar_SA`: `en_SA` is
+  English UI with Arabic glyphs.
+
+### 5.2 Quick Launch actions
+
+- **The gap.** stoandl resolves quick-launch values only against the locker, so no *action* is selectable, and
+  the defaults render as raw UUIDs.
+- **Sketch.** A static name ↔ UUID table: Quiet Time, Backlight, Motion Backlight, Airplane Mode
+  (`SystemAppIDs.kt:27-30`), Timeline Past/Future (`:23-24`), Clear notifications
+  `d9c0d758-54bd-45b1-99ac-2a3a889350c9`, and Nothing `de6da17f-1a10-4725-adbb-1efc22e43f04` (fw ≥4.38.0).
+  Consult it in `resolveAppUuid`/`appName` (`PebbleIntegration.kt:1353-1357`) and list it in `allowed`.
+- **GUIs.** Add an "Actions" group, and label `off` honestly: it means "Unassigned", which opens the QL menu.
+- About 30 lines + the GUIs.
+
+### 5.3 Music
+
+- **Handle MPRIS `Seeked`.** Position emits no `PropertiesChanged`, so desktop seeks leave the watch's progress
+  wrong. The fw re-polls (`GetAllInfo`) only on connect.
+- **Seek instead of skip.** When a player can seek but not skip (podcasts, audiobooks), seek ±15 s. The watch's
+  FF/rewind icons (`skipSeeksWithinTrack`) need the bump.
+
+### 5.4 Health
+
+- **Health profile toggle.** Expose `hrm_activity` (`hrmActivityTrackingEnabled`) in `Get/SetHealthProfile`;
+  it drives 4.38's scene-adaptive activity HR.
+- **Live HR** via the watch's standard GATT Heart Rate service `0x180D`/`0x2A37`: 1 s notify, a per-device
+  on-watch permission prompt, HRM watches over BLE only. Implement BlueZ-direct from the daemon, or as a fork
+  `HrmWatcher` modelled on `BatteryWatcher`. Default off (battery).
+- **"Watch fully charged" desktop alert** (`alerts.battery_full`), from battery level. The GATT level is
+  BLE-only; Classic watches need the heartbeat SoC.
+
+---
+
+## Already handled: evidence
+
+- **Weather v3 on the new app.** `weather_db.h:18-33,200-202`: fw ≥4.34.0 parses v3 and v4 on purpose. v3 just
+  shows fewer fields.
+- **`hrmPreferences` migration (fw 4.38.0).** The fork writes the 3-byte record version-gated
+  (`HealthSettings.kt:88-92,249-261`).
+- **Screenshot colours (4.38.1).** A fw compositor-freeze/DMA fix; the wire is unchanged.
+- **GitHub release assets.** Still attached. eng-dash publishing (`b23a71ec`) was added *alongside*;
+  `getafix_evt` bundles were dropped (pre-production board).
+- **Long-track progress bar.** A fw 32-bit overflow; stoandl's µs → ms conversions are fine.
+- **Health on any Quick Launch.** It is a locker system app, so both GUIs list it.
+- **`.pbl` install flow.** Unchanged by the fw i18n rework (PutBytes FILE `lang`).
+- **Notification send/dismiss contract.** Unchanged upstream: `sendDeletions = false`, `insertOrReplace`,
+  action dispatch.
+- **Watch capability flags.** Unchanged v4.36.2 → v4.38.2. The fork lacks bits 17, 18 and 24, which arrive with
+  the bump.
+
+---
+
+## Environment: why the bump wasn't attempted, and the fix
+
+- **The symptom.** During review 5 the container hit `pids.max = 512`: 487 zombie `git` processes, all children
+  of PID 1.
+- **Why zombies pile up.** In this container **PID 1 is `claude` itself, and it never reaps orphaned
+  grandchildren**.
+- **Where they came from.** The two `blob:none` partial clones under `.cache` run a lazy `git fetch` on every
+  `git show` of an unfetched blob. Each fetch triggers auto-maintenance, which *detaches* by default and is
+  orphaned onto PID 1. The research agents ran hundreds of such commands.
+- **Effect.** Gradle (hundreds of threads) cannot start, and agents' shells fail with EAGAIN. Only a container
+  restart clears it.
+- **Fixes applied:**
+  - `gc.auto = 0`, `maintenance.auto = false` and `*.autoDetach = false` in both clones' `.git/config`.
+  - `git config --system {gc,maintenance}.autoDetach false` in `.container/Dockerfile`, so maintenance runs in
+    the foreground and is reaped by its parent.
+- **Longer term.** An init that reaps (for example `docker run --init`/tini as PID 1) would fix the whole class,
+  but the base image and entrypoint are outside this repo.
