@@ -97,9 +97,17 @@ class WatchPrefsControl(
                 allowed(pref),
                 if (pref.isDebugSetting) "debug" else "",
                 pref.displayName,
-                pref.description?.replace('\t', ' ') ?: "",
+                listOfNotNull(pref.description, DESCRIPTION_NOTES[pref.id]).joinToString(" ").replace('\t', ' '),
             ).joinToString("\t")
         }
+    }
+
+    private companion object {
+        /** What stoandl adds to libpebble3's description where the firmware changed what a pref does. */
+        val DESCRIPTION_NOTES = mapOf(
+            EnumWatchPref.TextSize.id to "From PebbleOS 4.38.1 the watch keeps its own system and notification " +
+                "text sizes, which the phone can't set: this only seeds them once, so set the size on the watch.",
+        )
     }
 
     // ---- parsing (string → typed WatchPreference) -------------------------------------------------

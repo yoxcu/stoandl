@@ -460,8 +460,12 @@ watch.lightAmbientThreshold = 200
 watch.clock24h = true
 watch.qlUp = Music
 watch.qlBack = off
-watch.textStyle = Larger
+watch.textStyle = Larger   # fw < 4.38.1, see below
 ```
+
+`textStyle` (Text Size) only works on firmware before PebbleOS 4.38.1. From 4.38.1 the watch keeps
+separate system and notification text sizes that the phone can't set, and `textStyle` only seeds them
+once, so a pin here does nothing: set the sizes on the watch.
 
 Values are parsed per the setting's type: booleans (`true`/`false`), numbers (validated against the
 setting's range), enums (by name — `stoandl settings` shows the choices), quick-launch (an app name/UUID, or

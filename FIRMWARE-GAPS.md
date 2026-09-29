@@ -146,6 +146,9 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
 - **`textStyle` (fw ≥4.38.1).** It is now only a one-shot seed; the real keys `systemTextSize` and
   `notifTextSize` are not phone-syncable. Reword `packaging/stoandl.conf.example:93` and the pref description.
   Raising the missing whitelist entries with PebbleOS is worth a short issue.
+  - **Done, to be tested (TESTING 5.27b).** `conf.example` and `docs/configuration.md` say `textStyle` works
+    only before 4.38.1, and `WatchPrefsControl` appends that to the pref's description (libpebble3 has none),
+    so `stoandl settings` and both GUIs show it. The PebbleOS issue is not filed.
 - **Dead backlight prefs.** `lightDynamicIntensity` and `dynBacklightMinThreshold` are rejected by every current
   fw, and each rejected row is resent on every connect (`BlobDB.kt:374-384`). Hide them with a small deny-list
   pre-bump, or just take the bump, which removes them. Drop the GUI section-rule special cases (`qml:75`,

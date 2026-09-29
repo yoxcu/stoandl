@@ -2,6 +2,8 @@ package de.yoxcu.stoandl.pebble
 
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
+import io.rebble.libpebblecommon.database.entity.EnumWatchPref
+import kotlinx.coroutines.flow.flowOf
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -36,10 +38,19 @@ class WatchPrefsControlTest {
         assertEquals(listOf("clock24h"), written.map { it.pref.id }, "the bad pin is skipped, the rest applied")
     }
 
+    /** fw 4.38.1 made `textStyle` a one-shot seed; libpebble3 has no description to say so. */
+    @Test
+    fun `the text size pref says it only seeds the watch from 4_38_1`() {
+        val row = control.list().single().split('\t')
+        assertEquals("textStyle", row[0])
+        assertContains(row[7], "4.38.1")
+    }
+
     private fun fakeLibPebble(): LibPebble =
         Proxy.newProxyInstance(LibPebble::class.java.classLoader, arrayOf(LibPebble::class.java)) { proxy, method, args ->
             when (method.name) {
                 "setWatchPref" -> written.add(args!![0] as WatchPreference<*>).let { null }
+                "getWatchPrefs" -> flowOf(listOf(WatchPreference(EnumWatchPref.TextSize, null)))
                 "toString" -> "fake LibPebble"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args?.firstOrNull()

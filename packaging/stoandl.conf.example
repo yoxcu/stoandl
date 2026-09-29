@@ -98,7 +98,7 @@ weather.interval = 30
 # watch.lightAmbientThreshold = 200
 # watch.clock24h = true
 # watch.qlUp = Music          # hold Up quick-launches Music (app name or UUID; "off" to clear)
-# watch.textStyle = Larger
+# watch.textStyle = Larger    # fw < 4.38.1 only; newer firmware keeps its text sizes on the watch
 # watch.dndWeekdayScheduleEnabled = true   # turns the Mon-Fri Quiet Time schedule on (off by default)
 # watch.dndWeekdaySchedule = 22:00-07:00   # its hours (HH:MM-HH:MM; end < start runs overnight)
 
