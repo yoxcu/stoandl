@@ -2,6 +2,8 @@
 #
 # Copy to ~/.config/stoandl/stoandl.conf (or $XDG_CONFIG_HOME/stoandl/stoandl.conf)
 # and restart the service:  systemctl --user restart stoandl
+# The service allows 5 starts in 5 minutes (manual restarts count). A 6th restart leaves it stopped
+# until:  systemctl --user reset-failed stoandl && systemctl --user start stoandl
 #
 # Syntax: `key = value`, `#` starts a comment. List values are comma-separated.
 

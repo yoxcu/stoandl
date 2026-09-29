@@ -16,6 +16,14 @@ done
 DROPIN=/usr/lib/systemd/user/stoandl.service.d/debug.conf
 DEBUG_DROPIN='[Service]\nEnvironment=STOANDL_LOG=DEBUG\n'
 
+# Service (re)start, also shared by both paths. `restart`, not `enable --now`: --now only starts a
+# stopped unit, so a running daemon kept the old JAR. reset-failed first: the unit stops restarting
+# after 5 starts in 5 minutes (StartLimitBurst), and installing a fix is when that should be cleared.
+START_SERVICE='systemctl --user daemon-reload
+systemctl --user reset-failed stoandl 2>/dev/null || true
+systemctl --user enable stoandl
+systemctl --user restart stoandl'
+
 # clean first so build/libs holds only the freshly built jar. Without it, jars from
 # previous builds linger and the selection below can grab a stale one.
 #
@@ -62,8 +70,7 @@ sudo rm -f "$DROPIN"
 EOF
     fi
     cat >> "$SCRIPT" << EOF
-systemctl --user daemon-reload
-systemctl --user enable --now stoandl
+$START_SERVICE
 rm -rf $TMP
 EOF
 
@@ -90,8 +97,7 @@ else
         sudo rm -f "$DROPIN"
     fi
 
-    systemctl --user daemon-reload
-    systemctl --user enable --now stoandl
+    eval "$START_SERVICE"
 
     echo "Installed $JAR"
     echo "Service status:"

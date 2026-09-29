@@ -2,15 +2,27 @@
 Description=Stoandl — Pebble companion daemon for Linux
 After=bluetooth.target network-online.target
 Wants=bluetooth.target
+# Stop restarting after 5 starts within 5 minutes. A crash that recurs on every start (e.g. ~11 s in)
+# never trips systemd's default limit (5 starts in 10 s) with RestartSec=5, so it looped forever.
+# The window runs on CLOCK_MONOTONIC, i.e. awake time: on a phone that suspends, 5 minutes of it can
+# span hours, so sporadic crashes add up too. Manual (re)starts count as well, and a refused `restart`
+# has already stopped the daemon, which then stays down. Clear the limit with
+# `systemctl --user reset-failed stoandl` (install.sh does that for you).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 # Requires a JDK 25 runtime (libpebble3's BT Classic transport uses java.lang.foreign).
 # --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning; never
 # --enable-preview (FFM is final on 22+, that flag would fail on a release JDK).
-ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -jar /usr/lib/stoandl/stoandl.jar
+# -XX:ErrorFile puts a JVM crash report (native + Java stacks) next to /tmp/stoandl.log instead of the
+# working directory ($HOME). %%p is the JVM's pid placeholder, escaped from systemd's %p specifier.
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -XX:ErrorFile=/tmp/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
 Restart=on-failure
 RestartSec=5
+# No core dumps: a JVM core is ~80 MB per crash, and the crash report above already has the stacks.
+LimitCORE=0
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 
 [Install]

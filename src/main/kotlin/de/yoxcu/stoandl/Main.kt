@@ -2228,9 +2228,9 @@ private fun ctlLogs(rest: List<String>) {
 
 /**
  * Assemble a support bundle (a `.tar.gz`) for sharing with a maintainer. Resilient: it always
- * gathers the host-side pieces it can read directly — the daemon log and the (secret-redacted)
- * config — even with no daemon or watch, and folds in the watch's firmware logs + metadata (and,
- * with `--coredump`, a coredump) when the daemon and a watch are reachable. What's missing is noted
+ * gathers the host-side pieces it can read directly — the daemon log, JVM crash reports and the
+ * (secret-redacted) config — even with no daemon or watch, and folds in the watch's firmware logs +
+ * metadata (and, with `--coredump`, a coredump) when the daemon and a watch are reachable. What's missing is noted
  * in `bundle-notes.txt` inside the archive rather than aborting.
  */
 private fun ctlSupport(rest: List<String>) {
@@ -2299,6 +2299,19 @@ private fun ctlSupport(rest: List<String>) {
         note("daemon log: none found at /tmp/stoandl*.log")
     }
 
+    // JVM crash reports: the shipped services point -XX:ErrorFile at /tmp/stoandl-hs_err_pid<pid>.log.
+    // Newest 5 only — a crash loop writes one per start until the unit's start limit stops it.
+    val crashReports = (logDir.listFiles { f ->
+        f.isFile && Regex("""stoandl-hs_err_pid\d+\.log""").matches(f.name)
+    } ?: emptyArray()).sortedByDescending { it.lastModified() }.take(5)
+    if (crashReports.isNotEmpty()) {
+        val dest = File(bundleDir, "crash-reports").apply { mkdirs() }
+        val copied = crashReports.count { runCatching { it.copyTo(File(dest, it.name), overwrite = true) }.isSuccess }
+        note("JVM crash reports: $copied file(s)")
+    } else {
+        note("JVM crash reports: none at /tmp/stoandl-hs_err_pid*.log")
+    }
+
     // stoandl.conf — included with secrets redacted (CalDAV passwords, credentials in URLs).
     val confFile = de.yoxcu.stoandl.config.StoandlConfig.configFile()
     if (confFile.isFile) {
@@ -2329,7 +2342,7 @@ private fun ctlSupport(rest: List<String>) {
     }
     println()
     println("Wrote ${out.path} (${humanSize(out.length())})")
-    println("Review it before sharing — config secrets are redacted, but watch logs may contain personal data.")
+    println("Review it before sharing — config secrets are redacted, but watch logs and crash reports may contain personal data.")
 }
 
 /**

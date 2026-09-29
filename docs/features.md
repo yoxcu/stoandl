@@ -442,7 +442,9 @@ stoandl support --coredump      # also pull a coredump off the watch, if it has 
 
 `stoandl logs` dumps the connected watch's firmware log (multi-generation `=== Generation: N ===`
 blocks). `stoandl support` builds a resilient `.tar.gz` bug-report bundle: watch logs + watch info +
-(opt-in `--coredump`) a coredump, plus the daemon log (`/tmp/stoandl*.log`), the stoandl version, and
+(opt-in `--coredump`) a coredump, plus the daemon log (`/tmp/stoandl*.log`), the newest 5 JVM crash
+reports (`/tmp/stoandl-hs_err_pid*.log`, where the shipped services put them; to be tested,
+[TESTING.md §5.32f](../TESTING.md)), the stoandl version, and
 your `stoandl.conf` **with secrets redacted** (CalDAV passwords and any credentials/tokens in URLs →
 `***`). It degrades gracefully — with no watch (or no daemon) it still produces a bundle and notes in
 `bundle-notes.txt` which pieces were omitted rather than failing. Wiring-only: libpebble3 already had

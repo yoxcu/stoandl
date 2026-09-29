@@ -4,16 +4,26 @@ description="Pebble companion daemon for Linux"
 
 : "${STOANDL_USER:=user}"
 : "${STOANDL_DBUS_SESSION_BUS_ADDRESS:=unix:path=/run/user/1000/bus}"
+# No core dumps: a JVM core is ~80 MB per crash, and the crash report (see -XX:ErrorFile below)
+# already has the stacks. Override in /etc/conf.d/stoandl.
+: "${rc_ulimit:=-c 0}"
 
 # JDK 25 runtime: libpebble3's BT Classic transport uses java.lang.foreign (final on 22+).
 _java="/usr/lib/jvm/java-25-openjdk/bin/java"
 
 command="$_java"
 # --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning (never
-# --enable-preview). JVM flags must precede -jar.
-command_args="--enable-native-access=ALL-UNNAMED -jar /usr/share/java/stoandl/stoandl.jar"
+# --enable-preview). -XX:ErrorFile puts a JVM crash report (native + Java stacks) next to
+# /tmp/stoandl.log; %p is the JVM's pid placeholder. JVM flags must precede -jar.
+command_args="--enable-native-access=ALL-UNNAMED -XX:ErrorFile=/tmp/stoandl-hs_err_pid%p.log -jar /usr/share/java/stoandl/stoandl.jar"
 command_user="$STOANDL_USER"
-command_background=true
+# Respawn the daemon when it dies (the systemd unit's Restart=on-failure), but give up after about 5
+# crashes within 5 minutes (the unit's StartLimitBurst=5), so a crash that recurs on every start can't
+# loop forever. `rc-service stoandl restart` starts a fresh count.
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=4
+respawn_period=300
 pidfile="/run/$RC_SVCNAME.pid"
 output_log="/var/log/$RC_SVCNAME.log"
 error_log="/var/log/$RC_SVCNAME.log"
@@ -24,4 +34,9 @@ export DBUS_SESSION_BUS_ADDRESS="$STOANDL_DBUS_SESSION_BUS_ADDRESS"
 depend() {
 	need bluetooth dbus
 	after net
+}
+
+start_pre() {
+	# The log is opened after the switch to $command_user, so it must exist and belong to that user.
+	checkpath -f -o "$command_user" -m 0600 "$output_log"
 }

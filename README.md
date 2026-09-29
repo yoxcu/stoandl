@@ -199,3 +199,18 @@ Then reproduce the problem and grab `/tmp/stoandl.log`. `stoandl support` packag
 with watch info and a **secret-redacted** copy of your config into a `.tar.gz` ready to attach — see
 [the support bundle](docs/features.md#watch-logs--support-bundle). Review the archive before sharing:
 the watch logs can still contain personal data.
+
+**If the daemon crashes** (the JVM itself, not a Kotlin exception), the crash report with the native
+and Java stacks is `/tmp/stoandl-hs_err_pid<pid>.log`. `stoandl support` includes it; /tmp is
+cleared at reboot, so build the bundle before rebooting. The shipped services write no core dumps
+(a JVM core is ~80 MB). They restart the daemon after a crash but give up after 5 starts in
+5 minutes, so a crash that recurs on every start can't loop forever. systemd counts those 5 minutes in
+awake time, so on a phone that suspends the window can span hours and sporadic crashes add up too.
+Manual restarts count towards the limit. A 6th `systemctl --user restart` inside the window stops the
+daemon and then refuses to start it again. After a crash loop (or 5 quick restarts), clear the limit
+before starting again:
+
+```sh
+systemctl --user reset-failed stoandl && systemctl --user start stoandl   # install.sh does this
+rc-service stoandl restart                                                 # OpenRC
+```

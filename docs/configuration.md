@@ -24,6 +24,10 @@ subsystem — no restart. Three keys are the exception because they decide start
 restart** below, the GUI says so on the row, and `stoandl daemon` prints `(restart)` next to them.
 [docs/settings-parity.md](settings-parity.md) records why, per key.
 
+The service allows 5 starts within 5 minutes, and manual restarts count towards that. A 6th restart
+inside the window leaves the daemon stopped. `systemctl --user reset-failed stoandl` clears the limit
+(see [README → Logging & reporting bugs](../README.md#logging--reporting-bugs)).
+
 Syntax is `key = value`, `#` starts a comment, and list values are comma-separated. A starter file
 is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.example).
 
