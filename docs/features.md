@@ -138,6 +138,15 @@ while the watch still holds its side, stoandl forgets the now-unusable watch and
 half-removed bond can't be restored, so unpair it on the watch too and `stoandl watch pair` again.
 (To forget a watch cleanly, use `stoandl watch unpair`, not `bluetoothctl`.)
 
+stoandl never deletes a pairing just because the watch failed to connect, for example while Bluetooth
+restarts or the adapter is reloaded; the watch simply reconnects afterwards. It acts only on BlueZ's
+own evidence, the two cases above: repeated authentication-failure disconnects (the **Re-pair**
+notification deletes nothing until you tap it), or a pairing already gone on this computer.
+`bluetoothctl remove` deletes BlueZ's record of the watch too, so that "pairing removed" notice only
+comes once BlueZ sees the watch again. These alerts stay on the desktop; they are not sent to a watch.
+_Implemented — to be tested: the failure-count "stale-bond reaper" that deleted a good bond after an
+adapter reload is gone ([TESTING.md §5.32c](../TESTING.md))._
+
 ### Automatic reconnect
 
 Bonded reconnect after a watch disconnect, daemon restart, or coming back into range. Reconnection is

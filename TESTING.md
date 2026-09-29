@@ -168,6 +168,10 @@ bluetoothctl remove <MAC>     # external bond loss; the watch is NOT touched
 - Must **not** fire for a healthy watch merely out of range (its bond is intact →
   `isBonded` stays true), nor transiently during `systemctl restart bluetooth`
   (BlueZ reloads bonds within the grace).
+- ⚠️ **Changed since this was verified:** d4aae65 made the host-bond-lost path fire
+  only when BlueZ has a device object for the watch *with* `Paired: no`.
+  `bluetoothctl remove` deletes the object, so there is no alert until BlueZ sees
+  the watch again. Run 5.32c6 instead, which covers that.
 
 ### 3g. Idle radio is quiet (scan-gate) — VERIFIED (GNOME)
 
@@ -1560,6 +1564,35 @@ connection's own handshake to catch up.
 Handoff #9 also reported one notification the watch acknowledged but neither showed nor vibrated for
 (test 1b). It was not investigated (likely watch-side). If it recurs during these tests, note the time
 and run `stoandl support` right away.
+
+### 5.32c Bond safety: an adapter reload or bluetoothd restart never deletes a bond (handoff #3)  ⚠️ UNVERIFIED
+
+The failure-count stale-bond reaper is gone. It deleted the Time 2's bond 0.1 s after the watch had
+reconnected from an `hci_uart` reload, because it still counted failures from while the adapter was
+absent. Bonds are now changed only on BlueZ's own evidence:
+- repeated `Reason.Authentication` disconnects: a notification with **Re-pair**; nothing is deleted until
+  you tap it;
+- a device object that is present with `Paired: no`: the host bond is already gone, so stoandl forgets
+  the watch and notifies. `bluetoothctl remove` deletes the object itself, so this waits until BlueZ sees
+  the watch again (see c6).
+
+**Prerequisite:** the daemon on the phone, watch connected; `tail -f /tmp/stoandl.log`. After every test
+below except c5/c6, run:
+
+```sh
+grep -E "Stale-bond reaper|Removed stale BlueZ bond|Host bond lost|Broken-bond detector" /tmp/stoandl.log   # no NEW lines
+bluetoothctl info <MAC> | grep -E "Paired|Bonded|Trusted"                                            # all "yes"
+```
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32c1 | hci_uart reload (the op6 failure) | daemon running, watch connected: `sudo rmmod hci_uart`, wait ~60 s, `sudo modprobe hci_uart` (with the Mode A/B parameter), then `sudo systemctl restart bootmac@bluetooth` if the controller stays unconfigured | While the adapter is gone: repeated `failed to connect: Failed(reason=FailedToConnect)`, which is expected and harmless. After `BlueZ adapter powered on — re-registering GATT application` / `Bluetooth re-enabled — resuming`: `connect() starting` → `connected and services resolved` → watch connected. No new bond lines; `bluetoothctl info` still `Paired: yes`; `stoandl watch list` shows it connected; a `notify-send` test reaches the watch. It is still connected 10 min later, with no "Pebble pairing removed" / "Pebble won't stay connected" notification. |
+| 5.32c2 | bluetoothd restart | `sudo systemctl restart bluetooth` three times, ~1 min apart | Reconnects each time within ~10 s; bond untouched; no new bond lines. |
+| 5.32c3 | Long absence, watch away when the adapter returns | put the watch in airplane mode; `sudo rmmod hci_uart`, wait 5 min, bring the adapter back; 2 min later take the watch out of airplane mode | No bond lines at any point (not at the adapter's return, not in the 2 min without the watch); the watch reconnects when airplane mode is off; bond untouched. |
+| 5.32c4 | rfkill | `rfkill block bluetooth`, wait 2 min, `rfkill unblock bluetooth` | Same as c2. |
+| 5.32c5 | Regression: unpaired on the watch still detected | forget the phone in the watch's Bluetooth settings (as in 3e) | Within ~25 s: `Broken-bond detector: …` and a "Pebble won't stay connected" notification with **Re-pair**. **Before** tapping it, `bluetoothctl info <MAC>` still shows `Paired: yes` (stoandl deleted nothing on its own). Tap **Re-pair** with the watch in pairing mode (or run `stoandl watch repair "<name>"`) → it re-pairs and data flows. Needs BlueZ ≥ 5.83 (pmOS: 5.87). |
+| 5.32c6 | Regression: host-side removal still handled | watch nearby and still holding its bond: `bluetoothctl remove <MAC>` (as in 3f) | **First, no alert.** `remove` deletes BlueZ's device object, and stoandl treats a missing object as "away" (it scans only in a pairing window). Expect only `failed to connect … FailedToConnect` retries; the watch is still in `stoandl watch list`; no bond lines. **Then make BlueZ see the watch again:** `bluetoothctl scan le` for ~15 s, then `scan off`. Once `bluetoothctl info <MAC>` lists the device again with `Paired: no`, within ~30 s: `Host bond lost for <name> …`, a "Pebble pairing removed" notification with **Pair**, and the watch is forgotten (`stoandl watch list`). If the object never comes back (e.g. the watch isn't advertising), no notification follows. That is a known gap from the present-object gate (d4aae65), not a regression of #3; recover with `stoandl watch unpair "<name>"`, unpair on the watch, then `stoandl watch pair`. |
+| 5.32c7 | Two watches (if available) | two bonded watches, `connection.autoswitch` on; repeat c1 | Whichever watch reconnects, both bonds stay intact (`bluetoothctl info` for each); no new bond lines. |
 
 ---
 

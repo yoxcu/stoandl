@@ -40,8 +40,8 @@ notification.catch_up_minutes = 10
 # *watch* notification with an Update button -- one switch per event, not two.
 alerts.enabled = true
 # Per-event, under the master switch above.
-# A watch that lost its pairing, keeps connecting-then-dropping, or is nearby but no longer paired
-# with this host. Each alert carries the action that fixes it (Pair / Re-pair).
+# A watch that keeps connecting-then-dropping (unpaired on the watch), or whose pairing was removed
+# on this host. Each alert carries the action that fixes it (Re-pair / Pair).
 alerts.pairing = true
 # Another process is running Bluetooth discovery and monopolising the adapter's scanner, which blocks
 # the watch from reconnecting (usually an open Bluetooth settings or pairing window).

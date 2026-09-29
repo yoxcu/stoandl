@@ -50,8 +50,8 @@ data class StoandlConfig(
      *  refine it. The firmware-update alert has its own, older key ([firmwareNotify]) because it also
      *  drives a *watch* notification with an Update button — it is NOT gated by this. */
     val alertsEnabled: Boolean,
-    /** Alert when a watch loses its pairing, keeps connecting-then-dropping, or is nearby but no longer
-     *  paired with this host. Each carries the action that fixes it (Pair / Re-pair). On by default —
+    /** Alert when a watch keeps connecting-then-dropping (unpaired on the watch) or its pairing was
+     *  removed on this host. Each carries the action that fixes it (Re-pair / Pair). On by default —
      *  without it a watch can silently stop reconnecting forever. */
     val alertsPairing: Boolean,
     /** Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which

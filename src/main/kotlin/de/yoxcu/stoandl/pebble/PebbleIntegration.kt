@@ -191,20 +191,13 @@ private class PairingGate {
 // watchdog: a process restart can't fix a wedged bluetoothd anyway (we're a --user service; the only
 // real remedy is `systemctl restart bluetooth` or an adapter reset), and the empirical record showed
 // such restarts looping uselessly against an out-of-range watch. Genuine crashes are still caught by
-// systemd Restart=on-failure; stale bonds are handled by the reaper below.
+// systemd Restart=on-failure; a bond the watch no longer honours is handled by the broken-bond
+// detector (startChurnDetector) — see its KDoc for why a connect-failure count never deletes a bond.
 
-// Stale-bond reaper: a bonded watch that is in range but keeps failing to connect (the watch no
-// longer honours BlueZ's bond — wiped, re-paired elsewhere, or a phantom object). Acts only on
-// FailedToConnect (link established/attempted then rejected = watch present); ConnectTimeout
-// (out of range) is ignored, so an away watch is never disturbed.
 // BT Classic: how long a handed-off connect attempt suppresses a re-attempt for the same MAC. Long
 // enough that requestConnection()'s async arm-up isn't retried while still in progress, short enough
 // that a failed attempt is retried within one pairing window rather than skipped until a restart.
 private val CLASSIC_RETRY_GRACE = 30.seconds
-
-private val REAPER_INTERVAL = 30.seconds
-private const val STALE_FAILS_THRESHOLD = 5      // consecutive present-but-failed connects before clearing
-private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto re-pair before forgetting
 
 // How often to check whether an external process's Bluetooth discovery is blocking reconnection.
 private val DISCOVERY_WARN_INTERVAL = 60.seconds
@@ -545,7 +538,6 @@ class PebbleIntegration(
         startAutoConnect()
         startWristFollower()
         startClassicWatch()
-        startStaleBondReaper()
         startDiscoveryInterferenceWarning()
         startNotificationActionListener()
         startChurnDetector()
@@ -646,7 +638,7 @@ class PebbleIntegration(
     /** Discover + connect classic Pebbles. The connector auto-pairs (during a pairing window) if needed. */
     private fun startClassicDiscovery() {
         // BR/EDR inquiry is ONLY needed to find a NEW watch's MAC — so, like the BLE scan, run it only
-        // while a pairing window is open (`stoandl pair`). A KNOWN/bonded classic watch needs no scan:
+        // while a pairing window is open (`stoandl watch pair`). A KNOWN/bonded classic watch needs no scan:
         // it's loaded from the DB and WatchManager reconnects it via the connector paging its fixed MAC
         // (no advertising, no discovery). Inquiry is power/airtime-heavy, so we never leave it running.
         scope.launch {
@@ -667,13 +659,13 @@ class PebbleIntegration(
             }
         }
         // For each discovered classic Pebble: a BONDED one auto-connects; an UNBONDED one is only paired
-        // when a pairing window is open (`stoandl pair`) — honoring the same flow as BLE, so we never pop
+        // when a pairing window is open (`stoandl watch pair`) — honoring the same flow as BLE, so we never pop
         // an unsolicited pairing prompt on the watch. Pairing is a blocking ~10s Device1.Pair (confirm the
         // code on the watch) done OUTSIDE the connect attempt so it doesn't race the connection timeout.
         // mac → when we last handed this watch to the connector. This must NOT be a plain "already
         // attempted" set: requestConnection() is async, so the device is not yet Connecting on the next
         // watches emission and an unguarded retry would spin — but a permanent entry silently skips the
-        // watch for the daemon's whole lifetime, so one failed attempt made every later `stoandl pair`
+        // watch for the daemon's whole lifetime, so one failed attempt made every later `stoandl watch pair`
         // a no-op that logged nothing (only a daemon restart cleared it). Entries expire after
         // CLASSIC_RETRY_GRACE, and are dropped outright once the watch actually connects.
         val attemptedAt = ConcurrentHashMap<String, Long>()
@@ -711,7 +703,7 @@ class PebbleIntegration(
                     // Unbonded — wait for an explicit pairing window.
                     if (!pairingGate.isOpen()) {
                         if (hinted.add(mac)) {
-                            log.info { "BT Classic: discovered unpaired Pebble $mac — run 'stoandl pair' (then confirm the code on the watch) to pair it" }
+                            log.info { "BT Classic: discovered unpaired Pebble $mac — run 'stoandl watch pair' (then confirm the code on the watch) to pair it" }
                         }
                         return@launch
                     }
@@ -786,69 +778,6 @@ class PebbleIntegration(
                     libPebble.stopBleScan()
                 }
                 delay(tick)
-            }
-        }
-    }
-
-    /**
-     * Stale-bond reaper — one mechanism for the whole "BlueZ holds a bond the watch no longer
-     * honours" family (wiped watch, re-paired-to-another-host watch, phantom device object), instead
-     * of matching individual BlueZ error strings.
-     *
-     * A bonded watch that is *in range but persistently failing to connect* has a stale bond. The
-     * signal is [ConnectionFailureReason.FailedToConnect] — the link established (or the phantom
-     * "doesn't exist" object, which the connector maps to the same reason) then the watch rejected
-     * us. We clear the bond ([removeBluezBond]) and let libpebble3 attempt a fresh pairing, which
-     * auto-heals a wiped+pairable watch. If it still hasn't connected after [REPAIR_GRACE], the watch
-     * won't re-pair with us (it's bonded elsewhere), so we [KnownPebbleDevice.forget] it and notify —
-     * stopping the reconnect storm and the futile watchdog restarts.
-     *
-     * Out-of-range watches fail with [ConnectionFailureReason.ConnectTimeout], never FailedToConnect,
-     * so an away (but still-wanted) watch's bond is never touched.
-     */
-    private fun startStaleBondReaper() {
-        val clearedAt = ConcurrentHashMap<String, Long>() // identifier -> when we removed its bond
-        scope.launch(Dispatchers.IO) {
-            while (true) {
-                delay(REAPER_INTERVAL)
-                if (!(libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value)) continue
-                val devices = libPebble.watches.value
-                val now = System.currentTimeMillis()
-                for (d in devices.filterIsInstance<KnownPebbleDevice>()) {
-                    val key = d.identifier.asString
-                    if (d is ConnectedPebbleDevice) { clearedAt.remove(key); continue }
-                    val id = d.identifier as? PebbleBleIdentifier ?: continue
-                    val cleared = clearedAt[key]
-                    if (cleared != null) {
-                        // Phase 2: bond already cleared and it still hasn't reconnected — the watch
-                        // won't re-pair with us (bonded elsewhere). Forget + notify, stop storming.
-                        if (now - cleared >= REPAIR_GRACE.inWholeMilliseconds) {
-                            log.info { "Stale-bond reaper: ${d.displayName()} did not re-pair within ${REPAIR_GRACE.inWholeSeconds}s — forgetting" }
-                            bluezObjectPath(key)?.let { removeBluezBond(it) } // ensure bond gone (usually already)
-                            d.forget()
-                            if (alertsAllow { it.alertsPairing }) {
-                                sendDesktopNotification(
-                                    "Pebble unpaired",
-                                    "${d.displayName()} is nearby but no longer paired with this device. " +
-                                        "Run 'stoandl pair' to use it here.",
-                                )
-                            }
-                            clearedAt.remove(key)
-                        }
-                        continue
-                    }
-                    val info = d.connectionFailureInfo ?: continue
-                    if (info.reason == ConnectionFailureReason.FailedToConnect &&
-                        info.times >= STALE_FAILS_THRESHOLD && isBonded(id)
-                    ) {
-                        // Phase 1: bonded + in range + persistently rejecting us → stale bond. Clear it
-                        // and let libpebble3 try a fresh pairing (auto-heals a wiped, pairable watch).
-                        val path = bluezObjectPath(key) ?: continue
-                        log.info { "Stale-bond reaper: ${d.displayName()} present but failing (${info.times}x ${info.reason}) — clearing stale bond" }
-                        if (removeBluezBond(path)) clearedAt[key] = now
-                    }
-                }
-                clearedAt.keys.retainAll(devices.map { it.identifier.asString }.toSet())
             }
         }
     }
@@ -955,21 +884,46 @@ class PebbleIntegration(
     }
 
     /**
-     * Watches for the two broken-bond directions, both INVISIBLE to libpebble's normal device state:
+     * The one place stoandl reacts to a bond that no longer works. Watches for the two broken-bond
+     * directions, both INVISIBLE to libpebble's normal device state:
      *
-     * 1. Unpaired ON THE WATCH (host still bonded): the still-Trusted bond makes BlueZ reconnect then
-     *    immediately disconnect with an authentication failure (the watch rejects the bond), every few
-     *    seconds — INVISIBLE to libPebble.watches. BlueZ reports each as a `org.bluez.Device1.Disconnected`
-     *    signal with reason `org.bluez.Reason.Authentication`; an out-of-range drop instead carries
-     *    `org.bluez.Reason.Timeout` and is ignored. After [BROKEN_BOND_FLAPS] auth-failure disconnects
-     *    within [BROKEN_BOND_WINDOW] for a known not-fully-connected watch, NOTIFY with a one-tap Re-pair
-     *    action. Never auto-forgets here — the user may just re-pair — and a watch that reaches a full
-     *    session (ConnectedPebbleDevice) has its count cleared. Requires BlueZ >= 5.83 for the signal.
+     * 1. Unpaired ON THE WATCH (host still bonded; also a wiped watch): the still-Trusted bond makes
+     *    BlueZ reconnect then immediately disconnect with an authentication failure (the watch rejects
+     *    the bond), every few seconds — INVISIBLE to libPebble.watches. BlueZ reports each as a
+     *    `org.bluez.Device1.Disconnected` signal with reason `org.bluez.Reason.Authentication`; an
+     *    out-of-range drop instead carries `org.bluez.Reason.Timeout` and is ignored. After
+     *    [BROKEN_BOND_FLAPS] auth-failure disconnects within [BROKEN_BOND_WINDOW] for a known
+     *    not-fully-connected watch, NOTIFY with a one-tap Re-pair action. Never auto-forgets here — the
+     *    user may just re-pair — and a watch that reaches a full session (ConnectedPebbleDevice) has its
+     *    count cleared. Requires BlueZ >= 5.83 for the signal; older BlueZ gets no watch-side detection.
      *
-     * 2. Pairing removed ON THE HOST (e.g. `bluetoothctl remove`): `isBonded` goes false. The watch can
-     *    NEVER reconnect without a fresh pair, so after [HOST_BOND_LOST_GRACE] (and not mid-pairing) we
-     *    DO forget it — stopping libpebble's futile connect loop — and notify the user to unpair on the
-     *    watch + re-pair. Safe to forget because, unlike (1), the bond is already gone, not maybe-good.
+     * 2. Pairing removed ON THE HOST (e.g. `bluetoothctl remove`): the device object is present but
+     *    reports Paired=false ([bluezBondGenuinelyRemoved]; an ABSENT object is "away", not removed). The
+     *    watch can NEVER reconnect without a fresh pair, so after [HOST_BOND_LOST_GRACE] (and not
+     *    mid-pairing) we DO forget it — stopping libpebble's futile connect loop — and notify the user to
+     *    unpair on the watch + re-pair. Safe to forget because, unlike (1), the bond is already gone, not
+     *    maybe-good. `bluetoothctl remove` deletes the object itself, though, so this fires only once
+     *    BlueZ re-creates it (a discovery scan — ours runs only in a pairing window — or another
+     *    client's). Until then the watch sits in a FailedToConnect retry loop with no alert — a
+     *    known gap, accepted over forgetting a watch whose object is merely absent.
+     *
+     * Rules. Deleting a good bond is far worse than reacting slowly to a dead one (the user must then
+     * unpair on the watch too), so:
+     * - A bond is NEVER deleted because connecting failed. libpebble3's `connectionFailureInfo` is not a
+     *   bond signal: an away watch never fails at all (the standing Device1.Connect just keeps arming),
+     *   and [ConnectionFailureReason.FailedToConnect] only means the device object was missing or
+     *   unreadable — adapter absent or unconfigured (hci_uart reload, pmOS bootmac), bluetoothd
+     *   restarting, a dead D-Bus client — never "the watch rejected the bond". The count also lives
+     *   until the next full session, so it can't tell "failed while the adapter was gone" from "failing
+     *   now". A watch that rejects the bond never reaches that counter at all (it churns below
+     *   libpebble, see 1). The former stale-bond reaper keyed off that count and removed a good bond
+     *   0.1 s after the watch had reconnected from an adapter reload; it was removed for that reason.
+     * - Watch-side loss (1) only notifies. The bond is deleted only when the user taps Re-pair (or runs
+     *   `stoandl watch repair`) — that is the "clear pairing" action.
+     * - Host-side loss (2) forgets on its own, but only once BlueZ itself no longer holds the bond (and
+     *   has an object for the watch again), so nothing that works is deleted.
+     * - Adapter away and back (rfkill, `systemctl restart bluetooth`, hci_uart reload): the device objects
+     *   vanish (neither signal can fire) and come back still Paired, so neither path acts.
      */
     private fun startChurnDetector() {
         val drops = ConcurrentHashMap<String, MutableList<Long>>() // device object path -> drop timestamps
@@ -1038,15 +992,15 @@ class PebbleIntegration(
                         notifiedAt.remove(path)
                     }
                     for ((path, w) in watchByPath) {
-                        // The OTHER direction: the host has NO BlueZ pairing for this known watch (isBonded
-                        // checks Device1.Paired; false also when `bluetoothctl remove` deleted the object).
-                        // It can't reconnect without a fresh pair, so once that's held past the grace (and
-                        // we're not mid-pairing, when the bond is briefly absent by design) forget it — which
-                        // stops libpebble's futile connect loop — and tell the user how to bring it back.
+                        // The OTHER direction: the host has NO BlueZ pairing for this known watch (its
+                        // Device1 object reports Paired=false). It can't reconnect without a fresh pair, so
+                        // once that's held past the grace (and we're not mid-pairing, when the bond is
+                        // briefly absent by design) forget it — which stops libpebble's futile connect
+                        // loop — and tell the user how to bring it back.
                         val id = w.identifier as? PebbleBleIdentifier
                         // Only forget on a CONFIRMED host-side removal (device present + Paired=false),
-                        // not when isBonded merely threw because the BLE object is transiently absent
-                        // (rotating RPA, or a Classic-driven watch) — that's away, not unpaired.
+                        // not when the BLE object is merely absent (rotating RPA, a Classic-driven watch,
+                        // adapter away, or `bluetoothctl remove` until BlueZ re-creates it) — that's away.
                         if (id != null && !pairingGate.isOpen() &&
                             bluezObjectPath(id.asString)?.let { bluezBondGenuinelyRemoved(it) } == true) {
                             val since = unbondedSince.getOrPut(path) { now }
@@ -1098,7 +1052,7 @@ class PebbleIntegration(
         return sendActionableNotification(
             "Pebble won't stay connected",
             "$name keeps connecting then dropping without finishing — if you unpaired it on the watch, " +
-                "tap Re-pair (or run 'stoandl repair $name') and put the watch in pairing mode.",
+                "tap Re-pair (or run: stoandl watch repair \"$name\") and put the watch in pairing mode.",
             actionLabel = "Re-pair",
             replacesId = replacesId,
         ) { repairByName(name) }
@@ -1106,7 +1060,7 @@ class PebbleIntegration(
 
     /** Host has no BlueZ pairing for this watch (e.g. `bluetoothctl remove`). We've already forgotten it
      *  (it could never reconnect as-is); tell the user the one path back. The watch still holds its own
-     *  bond, so it must be unpaired there first — only then does Pair (or 'stoandl pair') take. */
+     *  bond, so it must be unpaired there first — only then does Pair (or 'stoandl watch pair') take. */
     private fun notifyHostBondLost(device: KnownPebbleDevice) {
         val name = device.displayName()
         log.warn {
@@ -1117,7 +1071,7 @@ class PebbleIntegration(
         sendActionableNotification(
             "Pebble pairing removed",
             "$name's pairing was removed on this computer. To reconnect, unpair it on the watch " +
-                "(Settings → Bluetooth), then tap Pair (or run 'stoandl pair').",
+                "(Settings → Bluetooth), then tap Pair (or run: stoandl watch pair).",
             actionLabel = "Pair",
         ) { openPairingWindow() }
     }
@@ -1165,7 +1119,7 @@ class PebbleIntegration(
         openPairingWindow()
     }
 
-    /** Opens the pairing window (the same gate 'stoandl pair' uses) so a watch in pairing mode re-pairs. */
+    /** Opens the pairing window (the same gate 'stoandl watch pair' uses) so a watch in pairing mode re-pairs. */
     private fun openPairingWindow() {
         pairingGate.open()
         pairingState.set("pending:")
@@ -2383,7 +2337,7 @@ private fun variantValue(v: Any?): Any? = unwrapVariant(v)
  * Bluetooth does NOT help: bonds live in /var/lib/bluetooth and survive a BT restart. The only fix
  * is to delete BlueZ's side of the bond so the next pairing runs a genuine SMP exchange.
  *
- * Called at the start of an explicit `stoandl pair`, where a non-connected bonded Pebble can only be
+ * Called at the start of an explicit `stoandl watch pair`, where a non-connected bonded Pebble can only be
  * a leftover. Connected devices are never touched. Returns the display names of the bonds cleared.
  */
 private fun clearStalePebbleBonds(): List<String> {
@@ -3599,7 +3553,7 @@ private class StoandlControlImpl(
         // NB: 'pair' deliberately does NOT touch existing known watches or their bonds — that would
         // break multi-watch (it'd nuke a second watch that's merely out of range). It just opens the
         // pairing window to discover + pair whatever watch is in pairing mode. To re-pair a specific
-        // known-but-broken watch (e.g. one unpaired on the watch), use 'stoandl repair <name>', which
+        // known-but-broken watch (e.g. one unpaired on the watch), use 'stoandl watch repair <name>', which
         // forgets only that watch first. The broken-bond detector triggers the same targeted recovery
         // automatically + offers a one-tap re-pair notification.
         log.info { "Pairing mode opened (${PAIRING_WINDOW_MS / 1000}s window)" }
@@ -3729,7 +3683,7 @@ private class StoandlControlImpl(
             else -> { d.forget(); false }
         }
         // A deliberate unpair: log it plainly (removeBluezBond's own line reads "stale", which fits the
-        // reaper/repair paths but not a user-driven unpair). Only for genuinely-bonded watches so a
+        // repair/host-bond-lost paths but not a user-driven unpair). Only for genuinely-bonded watches so a
         // blanket `unpair` over wedged/non-bonded entries stays quiet.
         if (wasBonded) log.info { "Unpaired ${d.displayName()} — forgot it and cleared its BlueZ bond" }
         return wasBonded
@@ -3758,7 +3712,7 @@ private class StoandlControlImpl(
     override fun Repair(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
-        if (known.isEmpty()) return "error:No known watches — use 'stoandl pair' to add one"
+        if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
         // Substring match (case-insensitive) so 'repair B349' matches "Pebble B349" — no need to type
         // (and shell-escape) the full name. Prefer an exact match if one exists; else require a unique
         // substring hit so we never re-pair the wrong watch.
@@ -3782,7 +3736,7 @@ private class StoandlControlImpl(
     override fun Connect(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
-        if (known.isEmpty()) return "error:No known watches — use 'stoandl pair' to add one"
+        if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
         // Same exact-then-unique-substring match as repair/unpair.
         val match = when (val m = matchOneWatch(known, watch)) {
             is WatchMatch.One -> m.device
@@ -3838,7 +3792,7 @@ private class StoandlControlImpl(
     override fun SetWatchNickname(query: String, nickname: String): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
-        if (known.isEmpty()) return "notfound:No known watches — use 'stoandl pair' to add one"
+        if (known.isEmpty()) return "notfound:No known watches — use 'stoandl watch pair' to add one"
         val match = when (val m = matchOneWatch(known, query)) {
             is WatchMatch.One -> m.device
             is WatchMatch.Error -> return m.message.replaceFirst("error:", "notfound:")

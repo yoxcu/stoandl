@@ -50,7 +50,7 @@ the condition is still logged at WARN, so a muted alert never hides a diagnosis.
 | Key | Kind | GUI | Applies | Why | Default |
 | --- | --- | --- | --- | --- | --- |
 | `alerts.enabled` | toggle | ✓ | live | read per alert via `alertsAllow` | `true` |
-| `alerts.pairing` | toggle | ✓ | live | ” — gates "won't stay connected" / "pairing removed" / "Pebble unpaired" | `true` |
+| `alerts.pairing` | toggle | ✓ | live | ” — gates "won't stay connected" / "pairing removed" | `true` |
 | `alerts.bluetooth` | toggle | ✓ | live | ” — gates "blocked by a Bluetooth scan" | `true` |
 | `alerts.extensions` | toggle | ✓ | live | ” — gates "extension needs setup" | `true` |
 
@@ -189,7 +189,6 @@ that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex 
 | Firmware update available | watch **and** desktop | no (own path, so the Update button works) | `firmware.notify` + a source enabled |
 | "Pebble won't stay connected" (broken bond) | desktop, with Re-pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Pebble pairing removed" (host bond lost) | desktop, with Pair | n/a | `alerts.enabled` + `alerts.pairing` |
-| "Pebble unpaired" (stale-bond reaper) | desktop | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Blocked by a Bluetooth scan" | desktop | n/a | `alerts.enabled` + `alerts.bluetooth` |
 | "<extension> needs setup" | desktop | n/a | `alerts.enabled` + `alerts.extensions` |
 | Incoming/missed call | watch (native call screen) | no — telephony has its own path | `call.dialer_apps` suppresses the duplicate app notification |
@@ -197,7 +196,7 @@ that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex 
 | Weather / calendar pins | watch timeline | no — pins are not notifications | `weather.pins`, `calendar.enabled` |
 
 **Thresholds.** None of these events is user-threshold-based: the two internal thresholds (the
-stale-bond failure count, and the tick count before the Bluetooth-blocked warning) are debounce
+broken-bond flap count, and the tick count before the Bluetooth-blocked warning) are debounce
 constants, not policy — exposing them would be a knob with no right answer. There is no
 battery-level alert today, which is the one event where a threshold *would* be meaningful; see
 [FIRMWARE-GAPS.md](../FIRMWARE-GAPS.md).

@@ -244,8 +244,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Master switch for the desktop alerts stoandl raises about itself (pairing, Bluetooth, " +
             "extensions). Forwarded app notifications are unaffected.") { it.alertsEnabled },
     toggle("alerts.pairing", G_ALERTS, "Pairing problems",
-        "Alert when a watch loses its pairing, keeps dropping the link, or is nearby but no longer " +
-            "paired — each with the action that fixes it") { it.alertsPairing },
+        "Alert when a watch keeps dropping the link (unpaired on the watch) or its pairing was " +
+            "removed on this computer — each with the action that fixes it") { it.alertsPairing },
     toggle("alerts.bluetooth", G_ALERTS, "Bluetooth blocked",
         "Alert when another app's Bluetooth scan is monopolising the adapter and blocking reconnects") { it.alertsBluetooth },
     toggle("alerts.extensions", G_ALERTS, "Extension problems",
