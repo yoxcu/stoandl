@@ -233,7 +233,9 @@ itself.
 ### 3.5 Toolchain
 
 - **Gradle version.** Upstream's wrapper is Gradle 9.6.1; stoandl's is 8.14.2, and an included build runs on
-  the root's Gradle. First try Kotlin 2.4.10 on Gradle 8.14.2 with AGP 9 kept unapplied by the gate.
+  the root's Gradle. First try Kotlin 2.4.10 on Gradle 8.14.2 with AGP 9 kept unapplied by the gate. (Done:
+  it configures. The wrapper moves to 8.14.4, the minimum KGP 2.5 will accept, which also clears KGP 2.4's
+  "deprecated Gradle version" warning.)
 - **If that doesn't configure,** do the deferred Gradle 9 bump in the same change: shadow plugin →
   `com.gradleup.shadow`, then APKBUILD, CI and `install.sh`. Upside: Gradle ≥9.1 runs on JDK 25, which ends the
   dual-JDK build.
