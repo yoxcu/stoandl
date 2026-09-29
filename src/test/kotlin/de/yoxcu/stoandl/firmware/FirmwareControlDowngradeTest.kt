@@ -17,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.io.files.Path
@@ -106,12 +107,22 @@ class FirmwareControlDowngradeTest {
         watches.value = emptyList()
         watches.value = listOf(watch(DUAL_SLOT_4_38))
         awaitUntil { control.update().startsWith("disabled:") }
+        // Said as a terminal failure, not a plain `idle:` a client following `prf` would wait out, and
+        // on the FirmwareProgress flow as well.
+        awaitUntil { control.status().startsWith("failed:") }
+        assertTrue("v4.37.0" in control.status(), control.status())
+        withTimeout(5.seconds) { control.statusFlow().first { it.startsWith("failed:") } }
 
         // A later, unrelated recovery visit must not flash the old .pbz.
         watches.value = emptyList()
         watches.value = listOf(watch(RECOVERY, recovery = true))
         delay(200)
         assertEquals(listOf("normal ${pbz.path}"), flashed)
+
+        // The next flash clears the note.
+        watches.value = listOf(watch(DUAL_SLOT_4_38))
+        control.sideload(pbz.path)
+        assertEquals("idle:", control.status())
     }
 
     private suspend fun awaitUntil(condition: suspend () -> Boolean) = withTimeout(5.seconds) {
