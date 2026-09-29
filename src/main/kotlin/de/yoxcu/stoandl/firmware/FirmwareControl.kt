@@ -371,6 +371,9 @@ class FirmwareControl(
      */
     private suspend fun sendUpdateNotification(info: CheckResult.Update) {
         val lp = libPebbleRef.get() ?: return
+        val languageNote = if (dropsBuiltInLanguages(info.board, info.current, info.latest)) {
+            " It removes the built-in translations: a watch not in English needs a language pack afterwards."
+        } else ""
         val notif = buildTimelineNotification(
             // Same parent the desktop notifications use, so the watch round-trips our Update action.
             parentId = SystemAppIDs.ANDROID_NOTIFICATIONS_UUID,
@@ -378,7 +381,7 @@ class FirmwareControl(
         ) {
             attributes {
                 title { "Firmware update" }
-                body { "${info.latest} is available (you're on ${info.current}). Choose Update to install it." }
+                body { "${info.latest} is available (you're on ${info.current}). Choose Update to install it.$languageNote" }
                 subtitle { "stoandl" }
                 tinyIcon { TimelineIcon.NotificationFlag }
             }
@@ -405,7 +408,7 @@ class FirmwareControl(
         notifyDesktop?.invoke(
             "Firmware update available",
             "${info.latest} is available — you're on ${info.current}. " +
-                "Click Update to install, or run: stoandl firmware update",
+                "Click Update to install, or run: stoandl firmware update.$languageNote",
             "Update",
         ) {
             scope.launch {
@@ -429,6 +432,25 @@ class FirmwareControl(
             val tag = FirmwareTag.parse(candidate) ?: return true
             return tag.compareNumbers(FirmwareTag.of(running)) > 0
         }
+
+        /**
+         * Whether flashing [latest] over [current] on [board] drops the watch's built-in translations:
+         * PebbleOS removed German, French, Italian, Spanish, Portuguese, Dutch, Catalan and Polish in
+         * 4.38.0 (on asterix, the Pebble 2 Duo, already in 4.37.0). A watch using one falls back to
+         * English and needs a language pack ([BUILT_IN_LANGUAGES_NOTE]).
+         */
+        fun dropsBuiltInLanguages(board: String, current: String, latest: String): Boolean {
+            val from = FirmwareTag.parse(current) ?: return false
+            val to = FirmwareTag.parse(latest) ?: return false
+            val removedIn = FirmwareTag(listOf(4, if (board.startsWith("asterix")) 37 else 38, 0, 0), null)
+            return from.compareNumbers(removedIn) < 0 && to.compareNumbers(removedIn) >= 0
+        }
+
+        const val BUILT_IN_LANGUAGES_NOTE =
+            "Note: this firmware no longer has the built-in German, French, Italian, Spanish, Portuguese, " +
+                "Dutch, Catalan and Polish. A watch using one of them falls back to English; install a language " +
+                "pack afterwards, e.g. from https://github.com/coredevices/pebbleos-translations/releases with " +
+                "'stoandl language sideload <file.pbl>'."
 
         /** The human-readable PebbleOS changelog page, appended to [check]'s `ok:` records as the
          *  "What's new" link for the GUI's firmware banner. There is no per-release URL source, so this

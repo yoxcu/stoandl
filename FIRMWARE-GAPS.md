@@ -155,6 +155,9 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   `settings.rs:53`).
 - **Built-in languages removed (fw ≥4.38.0).** Add a line to the `firmware update` flow and docs: users of
   built-in de/fr/it/es/pt/nl/ca/pl need a pack afterwards. The real fix is §5.1.
+  - **Done, to be tested (TESTING 5.11h).** When an update crosses 4.38.0 (4.37.0 on asterix),
+    `firmware check`/`update` print the note and the watch and desktop update notifications add a sentence;
+    `docs/configuration.md` has it under Firmware updates and Language packs. The GUIs don't show it yet.
 
 ---
 

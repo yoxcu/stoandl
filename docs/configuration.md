@@ -552,6 +552,13 @@ also decides language-pack boards); if the chosen source ships nothing for the b
 reports "no firmware published for board". A watch booted into recovery (PRF) is always offered a
 reflash so it can leave recovery.
 
+> **Languages (PebbleOS 4.38).** PebbleOS 4.38.0 (4.37.0 on the Pebble 2 Duo) removed the built-in
+> German, French, Italian, Spanish, Portuguese, Dutch, Catalan and Polish translations. A watch using
+> one falls back to English after the update and needs a [language pack](#language-packs), e.g. from
+> [pebbleos-translations](https://github.com/coredevices/pebbleos-translations/releases) with
+> `stoandl language sideload <file.pbl>`. `firmware check`/`update` and the update notification say so
+> when an update crosses that release.
+
 > **Risk note.** Flashing firmware is the highest-risk operation stoandl performs. It's mitigated by
 > the pre-flash safety checks and by Pebble's recovery (PRF) firmware — a failed flash drops the watch
 > to recovery rather than bricking it — but flash on charger, keep the watch in range, and prefer a
@@ -601,6 +608,12 @@ boards it covers — so you can browse what's available before pairing. This fal
 
 Boards are matched the way the official app does: **Core devices (Pebble 2 Duo / Pebble Time 2) share the
 Diorite (`silk`) packs**, classic Pebbles use their own board revision (a Time Steel → `snowy_s3`, etc.).
+
+From PebbleOS 4.38.0 (4.37.0 on the Pebble 2 Duo) the firmware has no built-in translations left, so a
+non-English Core watch needs a pack after updating. The bundled catalog doesn't have the current
+PebbleOS packs yet: take them from
+[pebbleos-translations](https://github.com/coredevices/pebbleos-translations/releases) and use
+`stoandl language sideload`.
 
 ### Local sideload (no config, no network)
 

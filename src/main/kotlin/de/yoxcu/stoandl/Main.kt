@@ -23,6 +23,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
+import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
 import de.yoxcu.stoandl.pebble.VIBE_PRESETS
 import io.rebble.libpebblecommon.timeline.TimelineColor
@@ -834,6 +835,7 @@ private fun ctlFirmware(rest: List<String>) {
                         val f = body.split('\t')
                         println("Updating ${f.getOrElse(0) { "watch" }}: " +
                             "${f.getOrElse(1) { "?" }} → ${f.getOrElse(2) { "?" }} (${f.getOrElse(3) { "firmware" }})")
+                        printLanguageNote(f.getOrElse(0) { "" }, f.getOrElse(1) { "" }, f.getOrElse(2) { "" })
                         pollFirmwareStatus(control)
                     }
                     "uptodate", "noasset" -> println(body)
@@ -889,6 +891,7 @@ private fun printFirmwareCheck(resp: String) {
             if (newer == "yes") println("→ Update available ($asset). Run: stoandl firmware update")
             else println("→ Up to date.")
             if (changelog.isNotEmpty()) println("What's new:        $changelog")
+            if (newer == "yes") printLanguageNote(board, current, latest)
         }
         "noasset" -> {
             val f = body.split('\t')
@@ -899,6 +902,11 @@ private fun printFirmwareCheck(resp: String) {
         }
         else -> handleStatusResponse(resp) // disabled / notready / error
     }
+}
+
+/** Warn before (and while) updating across the PebbleOS release that removed the built-in translations. */
+private fun printLanguageNote(board: String, current: String, latest: String) {
+    if (FirmwareControl.dropsBuiltInLanguages(board, current, latest)) println(FirmwareControl.BUILT_IN_LANGUAGES_NOTE)
 }
 
 private fun printFirmwareStatusOnce(resp: String) {
