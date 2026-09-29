@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl
 
 import co.touchlab.kermit.Logger
+import de.yoxcu.stoandl.battery.HeartbeatLayouts
 import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
@@ -1278,6 +1279,7 @@ private fun ctlBattery(rest: List<String>) {
         "heartbeat" -> batteryHeartbeat(rest.drop(1))
         else -> {
             System.err.println("Usage: stoandl watch battery [history|insights|activity|power|heartbeat] [--watch <name>] [--since <dur>]")
+            System.err.println("       heartbeat [--limit <n>] [--raw] [--all]   (--all = every metric of the newest record)")
             System.exit(1)
         }
     }
@@ -1427,11 +1429,14 @@ private fun batteryPower(args: List<String>) {
 /** Dump the captured analytics heartbeats — offline, reading the per-serial NDJSON under
  *  `<configDir>/battery/heartbeat/` directly (no daemon). Useful to confirm B decodes on the actual
  *  hardware; `--raw` shows the raw blob (base64) so an undecodable firmware layout can be sent upstream
- *  to finalize the offsets. */
+ *  to finalize the offsets; `--all` decodes and prints **every** metric of the newest record (all 92 in
+ *  the current layout — see docs/heartbeat-metrics.md), which is the same data the GUI's
+ *  Debug → Heartbeat page shows. */
 private fun batteryHeartbeat(args: List<String>) {
     val watch = flagValue(args, "--watch")
     val limit = flagValue(args, "--limit")?.toIntOrNull()?.takeIf { it > 0 } ?: 10
     val raw = args.contains("--raw")
+    val all = args.contains("--all")
     val dir = File(configDir(), "battery/heartbeat")
     val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".ndjson") }
         ?.filter { watch == null || it.name.removeSuffix(".ndjson").contains(watch, ignoreCase = true) }
@@ -1442,9 +1447,30 @@ private fun batteryHeartbeat(args: List<String>) {
         return
     }
     files.forEach { file ->
-        val all = file.readLines().filter { it.isNotBlank() }
-        println("== ${file.name.removeSuffix(".ndjson")} (${all.size} record${if (all.size == 1) "" else "s"}, showing last ${minOf(limit, all.size)}) ==")
-        all.takeLast(limit).forEach { line ->
+        val rows = file.readLines().filter { it.isNotBlank() }
+        if (all) {
+            // Full metric dump of the newest record — the same view as the GUI's Debug → Heartbeat.
+            println("== ${file.name.removeSuffix(".ndjson")} (${rows.size} record${if (rows.size == 1) "" else "s"}, newest decoded in full) ==")
+            val o = runCatching { Json.parseToJsonElement(rows.last()).jsonObject }.getOrNull() ?: return@forEach
+            val blob = o["raw"]?.jsonPrimitive?.content
+                ?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() } ?: ByteArray(0)
+            val metrics = HeartbeatLayouts.decodeAll(blob)
+            if (metrics.isEmpty()) {
+                println("  Layout ${blob.size}B/v${if (blob.isNotEmpty()) blob[0].toInt() and 0xFF else -1} is not in the verified table —")
+                println("  no metrics decoded (raw is kept; see tools/hb_relayout_probe.py).")
+                return@forEach
+            }
+            metrics.forEach { m ->
+                val v = m.text ?: m.value?.let { d ->
+                    if (d == Math.floor(d) && !d.isInfinite()) d.toLong().toString()
+                    else String.format(java.util.Locale.ROOT, "%.2f", d)
+                } ?: ""
+                println("  %-48s %s".format(m.name, v))
+            }
+            return@forEach
+        }
+        println("== ${file.name.removeSuffix(".ndjson")} (${rows.size} record${if (rows.size == 1) "" else "s"}, showing last ${minOf(limit, rows.size)}) ==")
+        rows.takeLast(limit).forEach { line ->
             val o = runCatching { Json.parseToJsonElement(line).jsonObject }.getOrNull() ?: return@forEach
             fun s(k: String) = o[k]?.jsonPrimitive?.content
             val decoded = s("decoded") == "true"

@@ -122,6 +122,8 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `BatteryInsights` | `(s) → s` | Derived insights for the GUI Battery card. `ok:` + 12 tab fields (see below), `unknown:<name>` (too little data), or `notready:`. | `watch battery insights` |
 | `BatteryActivity` | `(s,x) → s` | Per-interval drop + notification counts for `(watch, sinceEpoch)`. `ok:` + newline-joined `ts\tdrop\tnotif\tnotifDnd` records (see below); `notready:` when capture is off. | `watch battery activity` |
 | `BatteryPower` | `(s,x) → s` | Estimated battery-drain attribution for `(watch, sinceEpoch)` (heartbeat only). `ok:` + newline-joined `category\testDrainPct\tsharePct` slices, largest first (empty body for a GATT-only watch); `notready:`. | `watch battery power` |
+| `HeartbeatInfo` | `(s) → s` | Header of the newest captured analytics heartbeat for `watch`. `ok:watchTs\trx\tsize\tversion\tbuildId\tfw\tknown\tmetricCount` (`known` 1/0 — see below); `unknown:<label>`; `notready:`. | `watch battery heartbeat` |
+| `HeartbeatMetrics` | `(s) → as` | **Every** metric of that newest heartbeat, one `name\tvalue\ttext\traw` record each (92 in the current firmware layout). Empty when the watch has no heartbeat or its layout is unverified. | `watch battery heartbeat --all` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
 | `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
 | `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. | (polled by `watch pair`/`watch repair`; the CLI prompts y/N on `confirm:`) |
@@ -165,6 +167,15 @@ on-time weight, so `estDrainPct` is a percent of battery (slices sum to the wind
 the window has no measured discharge to anchor to) and `sharePct` is the slice's share of it. A modeled
 **estimate**, not measured energy — the record has no per-subsystem mAh. Powers the GUI's "what drew
 power" pie. See [battery-insights.md](battery-insights.md).
+
+`HeartbeatInfo` / `HeartbeatMetrics` back the GUI's **Debug → Heartbeat** page: the raw analytics record
+the watch emits hourly, decoded in full. `HeartbeatMetrics` records are
+`name \t value \t text \t raw` — `value` is already scale-divided (empty for string metrics), `text` is
+set only for string metrics (`fw_version`, `watchface_name`, `watchface_uuid`), and `raw` is the
+undivided wire integer. `HeartbeatInfo.known` is 0 when the firmware's `(size, version)` is not one
+stoandl has verified against PebbleOS's `analytics.def`; the record is still captured raw, but **no
+metrics are emitted rather than guessed ones** — the page should say so. Metric names, offsets per
+layout, and what each is good for: [heartbeat-metrics.md](heartbeat-metrics.md).
 
 ### Apps & watchfaces (`stoandl apps`, `stoandl config`)
 

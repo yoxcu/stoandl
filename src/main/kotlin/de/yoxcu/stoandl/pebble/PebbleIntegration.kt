@@ -186,6 +186,11 @@ private class PairingGate {
 // longer honours BlueZ's bond — wiped, re-paired elsewhere, or a phantom object). Acts only on
 // FailedToConnect (link established/attempted then rejected = watch present); ConnectTimeout
 // (out of range) is ignored, so an away watch is never disturbed.
+// BT Classic: how long a handed-off connect attempt suppresses a re-attempt for the same MAC. Long
+// enough that requestConnection()'s async arm-up isn't retried while still in progress, short enough
+// that a failed attempt is retried within one pairing window rather than skipped until a restart.
+private val CLASSIC_RETRY_GRACE = 30.seconds
+
 private val REAPER_INTERVAL = 30.seconds
 private const val STALE_FAILS_THRESHOLD = 5      // consecutive present-but-failed connects before clearing
 private val REPAIR_GRACE = 90.seconds            // after clearing, allow auto re-pair before forgetting
@@ -598,18 +603,39 @@ class PebbleIntegration(
         // when a pairing window is open (`stoandl pair`) — honoring the same flow as BLE, so we never pop
         // an unsolicited pairing prompt on the watch. Pairing is a blocking ~10s Device1.Pair (confirm the
         // code on the watch) done OUTSIDE the connect attempt so it doesn't race the connection timeout.
-        val connecting = ConcurrentHashMap.newKeySet<String>()
+        // mac → when we last handed this watch to the connector. This must NOT be a plain "already
+        // attempted" set: requestConnection() is async, so the device is not yet Connecting on the next
+        // watches emission and an unguarded retry would spin — but a permanent entry silently skips the
+        // watch for the daemon's whole lifetime, so one failed attempt made every later `stoandl pair`
+        // a no-op that logged nothing (only a daemon restart cleared it). Entries expire after
+        // CLASSIC_RETRY_GRACE, and are dropped outright once the watch actually connects.
+        val attemptedAt = ConcurrentHashMap<String, Long>()
         val pairingInFlight = ConcurrentHashMap.newKeySet<String>()
         val hinted = ConcurrentHashMap.newKeySet<String>()
+        // Claim the right to attempt [mac] unless a previous attempt is still inside the grace.
+        fun claimAttempt(mac: String): Boolean {
+            val now = System.currentTimeMillis()
+            var claimed = false
+            attemptedAt.compute(mac) { _, prev ->
+                if (prev != null && now - prev < CLASSIC_RETRY_GRACE.inWholeMilliseconds) prev
+                else now.also { claimed = true }
+            }
+            return claimed
+        }
         libPebble.watches.onEach { devices ->
             for (d in devices) {
                 val id = d.identifier as? PebbleBtClassicIdentifier ?: continue
-                if (d is ConnectedPebbleDevice || d is ConnectingPebbleDevice) continue
                 val mac = id.macAddress
-                if (connecting.contains(mac)) continue
+                // Connected → the attempt succeeded; forget it so a later link drop retries immediately.
+                if (d is ConnectedPebbleDevice) { attemptedAt.remove(mac); continue }
+                if (d is ConnectingPebbleDevice) continue
+                // Cheap pre-check so a still-grace-bound watch costs no coroutine + D-Bus round-trip on
+                // every watches emission; claimAttempt() re-checks atomically before acting.
+                val last = attemptedAt[mac]
+                if (last != null && System.currentTimeMillis() - last < CLASSIC_RETRY_GRACE.inWholeMilliseconds) continue
                 scope.launch {
                     if (withContext(Dispatchers.IO) { isBondedClassic(id) }) {
-                        if (connecting.add(mac)) {
+                        if (claimAttempt(mac)) {
                             log.info { "BT Classic: connecting $mac" }
                             watchConnector.requestConnection(id)
                         }
@@ -635,7 +661,7 @@ class PebbleIntegration(
                     }
                     if (paired) {
                         hinted.remove(mac)
-                        if (connecting.add(mac)) {
+                        if (claimAttempt(mac)) {
                             log.info { "BT Classic: connecting $mac" }
                             watchConnector.requestConnection(id)
                         }
@@ -1678,9 +1704,11 @@ class PebbleIntegration(
      * TOP of the poll methods — clients still re-fetch via the matching method (the source of truth) and
      * keep a slow fallback poll, since the daemon isn't D-Bus-activated and a late client can miss a
      * signal. Collectors run on the daemon [scope]; started after [registerControlService] so the object
-     * is exported. Emits are best-effort. The watch/locker pokes `drop(1)` the initial state (the client
-     * fetches once on connect, so the first emission would be a redundant poke); FirmwareProgress doesn't
-     * drop — a fresh subscriber wants the current phase (and clients ignore `idle`/`notready`).
+     * is exported. Emits are best-effort. WatchesChanged `drop(1)`s the initial state (the client fetches
+     * once on connect, and a missed watch poke is caught by the GUI's 20s watch poll); LockerChanged does
+     * NOT drop, because nothing re-polls the locker, so the initial emission is a client's only recovery
+     * from having fetched before the locker flow produced anything. FirmwareProgress doesn't drop either —
+     * a fresh subscriber wants the current phase (and clients ignore `idle`/`notready`).
      */
     private fun startSignalEmitters() {
         fun emit(signal: DBusSignal) {
@@ -1726,11 +1754,18 @@ class PebbleIntegration(
             .launchIn(scope)
 
         // LockerChanged: poke when apps/faces are added/removed or the active watchface changes.
+        // NO drop(1) here (unlike WatchesChanged): the bus name is taken by registerControlService()
+        // one step before this, so a client that re-fetches the instant it sees us appear can read the
+        // locker before the backing flow has produced anything. Dropping the first emission then
+        // discards the ONLY poke that would correct that client's empty snapshot, and — unlike the
+        // watch list, which the GUI backs with a 20s safety poll — nothing re-fetches the locker on a
+        // timer, so an Apps & Faces screen that loaded empty stayed empty until the GUI restarted.
+        // distinctUntilChanged() still collapses repeats, so the cost is one extra poke per daemon
+        // lifetime and clients treat their own re-fetch as authoritative anyway.
         combine(libPebble.getAllLockerUuids(), libPebble.activeWatchface) { uuids, active ->
             "${uuids.sortedBy { it.toString() }.joinToString(",")}|${active?.properties?.id}"
         }
             .distinctUntilChanged()
-            .drop(1)
             .onEach { emit(StoandlControl.LockerChanged(STOANDL_OBJECT_PATH)) }
             .launchIn(scope)
 
@@ -1756,6 +1791,9 @@ class PebbleIntegration(
     }
 
     private fun startAutoConnect() {
+        // Name suffixes we've already reported as "deferred to Classic", so the notice logs once per
+        // watch instead of on every watches emission.
+        val classicDeferred = ConcurrentHashMap.newKeySet<String>()
         libPebble.watches.onEach { devices ->
             for (device in devices.filterIsInstance<BleDiscoveredPebbleDevice>()) {
                 // Dual-mode pick: if this same watch is reachable over BT Classic (a classic Pebble with
@@ -1767,7 +1805,16 @@ class PebbleIntegration(
                         it.identifier is PebbleBtClassicIdentifier &&
                             it.name.substringAfterLast(' ').equals(bleSuffix, ignoreCase = true)
                     }
-                ) continue
+                ) {
+                    // Say so once per watch: this deferral is only correct while the Classic path is
+                    // actually progressing, so if Classic is wedged an otherwise silent log would show
+                    // BOTH transports declining to act and no reason for either.
+                    if (classicDeferred.add(bleSuffix)) {
+                        log.info { "Skipping BLE ${device.identifier}: same watch is on BT Classic — Classic claims it" }
+                    }
+                    continue
+                }
+                bleSuffix?.let(classicDeferred::remove)
                 val failures = device.connectionFailureInfo
                 if (failures != null && failures.times >= MAX_CONNECTION_ATTEMPTS) {
                     log.warn { "Giving up on ${device.identifier} after ${failures.times} attempts (${failures.reason})" }
@@ -2598,6 +2645,27 @@ private class StoandlControlImpl(
                 String.format(Locale.ROOT, "%.1f", it.sharePct)
         }
         return "ok:$body"
+    }
+
+    override fun HeartbeatInfo(watch: String): String {
+        val hb = heartbeatStoreRef.get() ?: return "notready:battery capture disabled"
+        val (name, serial) = resolveWatch(watch)
+        val label = name.ifBlank { watch.ifBlank { "watch" } }
+        val d = (if (serial != null) hb.latestDump(serial) else null) ?: return "unknown:$label"
+        return "ok:${d.watchTs}\t${d.rx}\t${d.size}\t${d.version}\t${d.buildId}\t${d.fw}\t" +
+            "${if (d.known) 1 else 0}\t${d.metrics.size}"
+    }
+
+    override fun HeartbeatMetrics(watch: String): List<String> {
+        val hb = heartbeatStoreRef.get() ?: return emptyList()
+        val (_, serial) = resolveWatch(watch)
+        val d = (if (serial != null) hb.latestDump(serial) else null) ?: return emptyList()
+        return d.metrics.map { m ->
+            val value = m.value?.let { fmtNum(it) } ?: ""
+            // Tabs/newlines would corrupt the record framing; the string metrics are watch-authored.
+            val text = m.text?.replace('\t', ' ')?.replace('\n', ' ') ?: ""
+            "${m.name}\t$value\t$text\t${m.raw?.toString() ?: ""}"
+        }
     }
 
     private data class BatteryActivityRow(val ts: Long, val drop: Double, val notif: Long, val notifDnd: Long)

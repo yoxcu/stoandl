@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -35,7 +36,7 @@ private val log = KotlinLogging.logger {}
  *                                     voltage:u32 @114 (÷scale @118 =1000, → volts)
  *                                     voltage_delta:i32 @120 (÷scale @124 =1000)
  *                                     tte_s:u32 @126 | charge_time_ms:u32 @130 | discharge_ms:u32 @134
- *     total sizeof = 523 B (== one uploadAnalyticsHeartbeat payload).
+ *     total sizeof = 523 B before 2026-07-14, 527 B after (== one uploadAnalyticsHeartbeat payload).
  *
  * The same record also carries per-subsystem on-time timers, CPU residency/per-task CPU %, and event
  * counters (notifications, etc.). Those are decoded on demand by [decodeActivity] (for the drop /
@@ -43,12 +44,13 @@ private val log = KotlinLogging.logger {}
  * 91-metric layout; the offsets used live in that method.
  *
  * The blob layout is firmware-version-specific (any reordered/added metric in `analytics.def` shifts
- * every offset, and the version byte does not necessarily change). So decoding is **strictly guarded**:
- * we decode only when `size == 523 && version == 1`, the on-wire scale fields match the compile-time
- * constants, and the values are physically plausible. On any mismatch we still persist the **raw**
- * blob (base64) + header so the exact firmware build can be identified and the offsets finalized from a
- * hardware dump — we never emit a guessed value. Every record (decoded or not) keeps its raw bytes, so
- * the file is a lossless local capture of the analytics heartbeat.
+ * every offset after it, and the version byte does not necessarily change). So decoding is **strictly
+ * guarded**: we decode only when `(size, version)` names a layout we have actually verified against
+ * `analytics.def` (see `HeartbeatLayouts.LAYOUTS`), the on-wire scale fields match the compile-time constants, and the
+ * values are physically plausible. On any mismatch we still persist the **raw** blob (base64) + header
+ * so the exact firmware build can be identified and the offsets finalized later — we never emit a
+ * guessed value. Every record (decoded or not) keeps its raw bytes, so the file is a lossless local
+ * capture, and adding a layout to `HeartbeatLayouts` retroactively recovers every record already on disk.
  *
  * Layout: one append-only NDJSON file per watch, keyed by serial:
  *
@@ -113,10 +115,24 @@ class HeartbeatStore(
         runCatching { pruneFile(key) }.onFailure { log.debug(it) { "heartbeat prune failed" } }
     }
 
-    /** Decode the battery block, or null when the layout isn't trusted (see class docs). */
+    /**
+     * Decode the battery block, or null when the layout isn't trusted (see class docs).
+     *
+     * The battery block has sat at the same offsets in **every** layout ever observed, because it
+     * is near the front of `analytics.def` and metrics have only ever been added behind it. It is
+     * also *self-describing*: each scaled metric carries its scale as a `u16` immediately after
+     * the value, so the block validates itself in place.
+     *
+     * So when `(size, version)` is a layout we know, the normal guard applies. When it is NOT
+     * known, we do not give up — that is what left records stranded when the record grew on
+     * 2026-07-14, and it made insights silently replay a stale decode for days. Instead we require
+     * the block to prove itself: BOTH scale pairs must equal their compile-time constants
+     * (100/100 and 1000/1000), soc and voltage must be physically plausible, and charge+discharge
+     * must add up to roughly the one-hour reporting interval. Passing seven independent structural
+     * constraints at once is verification, not a guess; failing any one of them still refuses.
+     */
     private fun decode(p: ByteArray, rx: Long): BatterySnapshot? {
-        if (p.size != NATIVE_HB_SIZE) return null
-        if ((p[0].toInt() and 0xFF) != NATIVE_HB_VERSION) return null
+        if (p.size < BATTERY_BLOCK_END) return null
         // Wire scale fields must match the compile-time constants (a mismatch signals layout drift).
         if (p.u16le(106) != 100 || p.u16le(118) != 1000) return null
         val soc = p.u32le(102) / 100.0
@@ -124,6 +140,20 @@ class HeartbeatStore(
         if (soc !in 0.0..100.0) return null
         if (voltage !in VOLT_MIN..VOLT_MAX) return null
         val chargeMs = p.u32le(130)
+        val dischargeMs = p.u32le(134)
+        if (HeartbeatLayouts.of(p) == null) {
+            // Unknown layout: only accept on the stricter self-validation described above.
+            if (p.u16le(112) != 100 || p.u16le(124) != 1000) return null
+            if (chargeMs + dischargeMs !in INTERVAL_MIN_MS..INTERVAL_MAX_MS) return null
+            val key = p.size to (p[0].toInt() and 0xFF)
+            if (warnedUnknown.add(key)) {
+                log.info {
+                    "analytics heartbeat layout ${key.first}B/v${key.second} is not in the verified table; " +
+                        "the battery block validated structurally so insights still work, but the " +
+                        "power/activity view needs its offsets confirmed (tools/hb_relayout_probe.py)"
+                }
+            }
+        }
         return BatterySnapshot(
             watchTs = p.u64le(1),
             socPct = soc,
@@ -131,7 +161,7 @@ class HeartbeatStore(
             voltageDelta = p.i32le(120) / 1000.0,
             tteSeconds = p.u32le(126),
             chargeMs = chargeMs,
-            dischargeMs = p.u32le(134),
+            dischargeMs = dischargeMs,
             charging = chargeMs > 0,
             rxTs = rx,
         )
@@ -139,10 +169,9 @@ class HeartbeatStore(
 
     /** Decode the richer subsystem-activity + event-counter fields (drop / power / notifications), or null
      *  when the layout isn't trusted. Same trust gate as [decode] plus the CPU-percent scale field; every
-     *  value read here lives in the same guarded 523-byte record, so it backfills from the stored raw. */
+     *  value read here lives in the same guarded record, so it backfills from the stored raw. */
     private fun decodeActivity(p: ByteArray): HeartbeatActivity? {
-        if (p.size != NATIVE_HB_SIZE) return null
-        if ((p[0].toInt() and 0xFF) != NATIVE_HB_VERSION) return null
+        val layout = HeartbeatLayouts.of(p) ?: return null
         if (p.u16le(106) != 100 || p.u16le(118) != 1000) return null
         if (p.u16le(202) != 100) return null // cpu_running_pct scale — a mismatch signals layout drift
         val soc = p.u32le(102) / 100.0
@@ -165,7 +194,7 @@ class HeartbeatStore(
             hrmMs = p.u32le(174),
             phoneCallMs = p.u32le(314),
             watchfaceMs = p.u32le(326),
-            btConnectedMs = p.u32le(515),
+            btConnectedMs = p.u32le(layout.off("connectivity_connected_time_ms") ?: return null),
             cpuRunningPct = pct(198),
             cpuAppPct = pct(244),
             cpuBtPct = pct(250) + pct(256) + pct(262), // bt_host + bt_controller + bt_hci
@@ -304,6 +333,35 @@ class HeartbeatStore(
 
     // ---- internals -----------------------------------------------------------------------------
 
+    /**
+     * The most recent stored record for [serialQuery], with **every** metric its layout defines
+     * decoded — the `Debug → Heartbeat` surface.
+     *
+     * Reads from the stored raw blob, so it shows the full 92-metric picture even for records that
+     * predate a layout being known (they decode as soon as the layout is added). Returns null when
+     * the watch has no records at all; a record whose layout is unknown comes back with
+     * [HeartbeatDump.known] false and no metrics, rather than guessed values.
+     */
+    fun latestDump(serialQuery: String): HeartbeatDump? {
+        val file = File(baseDir, "${resolveKey(serialQuery)}.ndjson")
+        if (!file.isFile) return null
+        val last = BatteryFileLocks.withLock(file) { file.readLines() }.lastOrNull { it.isNotBlank() } ?: return null
+        return runCatching {
+            val o = Json.parseToJsonElement(last).jsonObject
+            val raw = o["raw"]?.jsonPrimitive?.content?.let { Base64.getDecoder().decode(it) } ?: ByteArray(0)
+            HeartbeatDump(
+                watchTs = o["watch_ts"]?.jsonPrimitive?.long ?: 0L,
+                rx = o["rx"]?.jsonPrimitive?.long ?: 0L,
+                size = o["size"]?.jsonPrimitive?.int ?: raw.size,
+                version = o["version"]?.jsonPrimitive?.int ?: -1,
+                buildId = o["build_id"]?.jsonPrimitive?.content ?: "",
+                fw = o["fw"]?.jsonPrimitive?.content ?: "",
+                known = HeartbeatLayouts.of(raw) != null,
+                metrics = HeartbeatLayouts.decodeAll(raw),
+            )
+        }.getOrNull()
+    }
+
     private data class HbRow(
         val ts: Long, val soc: Double, val voltage: Double, val tteS: Long, val chargeMs: Long, val charging: Boolean,
     )
@@ -316,7 +374,20 @@ class HeartbeatStore(
             if (line.isEmpty()) return@mapNotNull null
             runCatching {
                 val o = Json.parseToJsonElement(line).jsonObject
-                if (o["decoded"]?.jsonPrimitive?.booleanOrNull != true) return@runCatching null
+                if (o["decoded"]?.jsonPrimitive?.booleanOrNull != true) {
+                    // Retroactive backfill. A row captured under a layout we did not trust yet was
+                    // written with decoded=false but KEPT its raw bytes (see [store]). Once that
+                    // layout is added to HeartbeatLayouts the record becomes readable, so decode it here
+                    // rather than leaving it stranded — no file rewrite, and every historical row
+                    // recovers the moment its layout is known.
+                    val b64 = o["raw"]?.jsonPrimitive?.content ?: return@runCatching null
+                    val snap = decode(Base64.getDecoder().decode(b64), o["rx"]?.jsonPrimitive?.long ?: 0L)
+                        ?: return@runCatching null
+                    return@runCatching HbRow(
+                        ts = snap.watchTs, soc = snap.socPct, voltage = snap.voltage,
+                        tteS = snap.tteSeconds, chargeMs = snap.chargeMs, charging = snap.charging,
+                    )
+                }
                 HbRow(
                     ts = o.getValue("watch_ts").jsonPrimitive.long,
                     soc = o.getValue("soc").jsonPrimitive.double,
@@ -402,11 +473,20 @@ class HeartbeatStore(
         private const val MA_BLE = 8.0        // BLE radio averaged over BT-stack active CPU time
         private const val MA_CPU = 12.0       // MCU running non-BT tasks, averaged over active CPU time
 
-        // native_heartbeat_record layout (coredevices/PebbleOS@main, PACKED little-endian).
-        private const val NATIVE_HB_VERSION = 1
-        private const val NATIVE_HB_SIZE = 523
+        // native_heartbeat_record layout (coredevices/PebbleOS, PACKED little-endian).
         private const val BUILD_ID_LEN = 20
         private const val HEADER_SIZE = 1 + 8 + BUILD_ID_LEN // 29
+
+        /** Exclusive end of the battery block: its last field is discharge_duration_ms u32 @134. */
+        private const val BATTERY_BLOCK_END = 138
+
+        /** One-hour reporting interval, with slack for a partial first record after boot. */
+        private const val INTERVAL_MIN_MS = 1_800_000L // 0.5 h
+        private const val INTERVAL_MAX_MS = 5_040_000L // 1.4 h
+
+        /** Remembers which unknown `(size, version)` pairs we have already logged about. */
+        private val warnedUnknown = java.util.concurrent.ConcurrentHashMap.newKeySet<Pair<Int, Int>>()
+
         private const val VOLT_MIN = 3.0 // plausible single-cell Li-ion range
         private const val VOLT_MAX = 4.5
 

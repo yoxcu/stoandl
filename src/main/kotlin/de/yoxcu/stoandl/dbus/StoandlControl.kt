@@ -222,6 +222,24 @@ interface StoandlControl : DBusInterface {
      *  disabled. */
     fun BatteryPower(watch: String, sinceEpoch: Long): String
 
+    /** Header of the most recent captured analytics heartbeat (the GUI's Debug → Heartbeat page).
+     *  [watch] selects a watch (empty = connected). Returns
+     *  `ok:<watchTs>\t<rx>\t<size>\t<version>\t<buildId>\t<fw>\t<known>\t<metricCount>` — `watchTs`/`rx`
+     *  are epoch seconds, `buildId` is the firmware's GNU build-id (hex; identifies the exact build and
+     *  is NOT a git SHA), and `known` is 1 when `(size, version)` names a layout stoandl has verified
+     *  (0 ⇒ the record was captured raw and no metrics can be decoded — see docs/heartbeat-metrics.md).
+     *  `unknown:<label>` when that watch has no captured heartbeat; `notready:<msg>` when battery
+     *  capture is disabled. */
+    fun HeartbeatInfo(watch: String): String
+
+    /** Every metric of the most recent captured analytics heartbeat, for the Debug → Heartbeat page.
+     *  [watch] selects a watch (empty = connected). One tab-separated record per metric:
+     *  `name\tvalue\ttext\traw` — `value` is already scale-divided (empty for string metrics), `text`
+     *  is set only for string metrics, and `raw` is the undivided wire integer (empty for strings).
+     *  Empty list when the watch has no heartbeat or its layout is unknown (see [HeartbeatInfo]);
+     *  stoandl never emits guessed values for an unrecognized layout. */
+    fun HeartbeatMetrics(watch: String): List<String>
+
     /** Structured details for the connected watch (the GUI's watch-details dialog). Returns
      *  `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync` — transport is
      *  the human label `Bluetooth LE`/`Bluetooth Classic`; code is the BLE-name suffix (empty if none);

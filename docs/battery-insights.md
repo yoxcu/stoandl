@@ -46,7 +46,7 @@ battery block:  soc_pct:u32 @102 (÷ scale:u16 @106 = 100  → percent)
                 voltage:u32 @114 (÷ scale @118 = 1000  → volts)
                 voltage_delta:i32 @120 (÷ scale @124 = 1000)
                 tte_s:u32 @126 | charge_time_ms:u32 @130 | discharge_duration_ms:u32 @134
-total sizeof = 523 B  (== one uploadAnalyticsHeartbeat payload)
+total sizeof = 523 B before 2026-07-14, 527 B after  (== one uploadAnalyticsHeartbeat payload)
 ```
 
 The same 523-byte record carries 91 analytics metrics in total (the battery block is 7 of them). The
@@ -64,20 +64,53 @@ event counts (u32):                 notification_received @302 | notification_re
                                     phone_call_incoming @310
 ```
 
-The full 91-metric layout is in `analytics.def`; see the `stoandl-heartbeat-record-layout` note for the
-complete offset map.
+The complete offset map for all 92 metrics — across every known layout, with notes on which are worth
+decoding next — is in **[heartbeat-metrics.md](heartbeat-metrics.md)**.
 
 ### Decode guard (defensive)
 
-The blob layout is firmware-version-specific: any reordered/added metric in `analytics.def` shifts
-every offset, and the header version byte does **not** necessarily change. So `HeartbeatStore` decodes
-only when the layout is trusted — `size == 523 && version == 1`, the on-wire scale fields equal the
-compile-time constants (100 / 1000), and the values are physically plausible (soc 0–100 %, voltage
-3.0–4.5 V). On any mismatch it **captures the raw blob** (base64) + header (version, `build_id`,
-timestamp) instead of emitting a guessed value, and logs a warning. Every record keeps its raw bytes,
-so the file is a lossless local capture — an unrecognized firmware build can be finalized from a
-`stoandl watch battery heartbeat --raw` dump against the DWARF layout tool
-(`tools/analytics_heartbeat_layout.py`) for that exact build.
+The blob layout is firmware-version-specific: any added metric in `analytics.def` shifts every offset
+**after it**, and the header version byte does **not** necessarily change. So `HeartbeatStore` decodes
+only when the layout is trusted — `(size, version)` names an entry in its `LAYOUTS` table, the on-wire
+scale fields equal the compile-time constants (100 / 1000), and the values are physically plausible
+(soc 0–100 %, voltage 3.0–4.5 V). On any mismatch it **captures the raw blob** (base64) + header
+(version, `build_id`, timestamp) instead of emitting a guessed value, and logs a warning. Every record
+keeps its raw bytes, so the file is a lossless local capture — an unrecognized firmware build can be
+finalized from a `stoandl watch battery heartbeat --raw` dump against the DWARF layout tool
+(`tools/analytics_heartbeat_layout.py`) for that exact build, or offline from records already on disk
+with `tools/hb_relayout_probe.py`.
+
+**Because the raw bytes are always kept, adding a layout is retroactive**: `readDecoded()` re-decodes
+any row stored with `decoded=false`, so records stranded by an unknown layout recover on the next read
+— no file rewrite or migration.
+
+Known layouts (each verified metric-by-metric by parsing `analytics.def` at that revision):
+
+| size | version | firmware | notes |
+| ---- | ------- | -------- | ----- |
+| 523 B | 1 | before 2026-07-14 | 91 metrics — the original reference layout |
+| 527 B | 1 | PebbleOS `31e3ea8e1` (2026-07-14) | inserted `UNSIGNED ppog_reversed` @467 (92 metrics). Of the 25 fields decoded, only `connectivity_connected_time_ms` moves: 515 → 519 |
+| 523 B | 2 | PebbleOS `5ef38b9e9` (2026-07-22) | removed a metric after @483 and bumped the version byte; back to 523 B. The @467 insertion and the post-@483 removal cancel, so **every field we read is at the same offset as in 523 B/v1** |
+
+⚠️ **523 B/v1 and 523 B/v2 are the same size with different tail layouts** — which is exactly why
+upstream bumped the version byte, and why `LAYOUTS` is keyed on `(size, version)` rather than size
+alone. Never decode one with the other's offsets.
+
+### Unknown layouts still yield battery insights
+
+A record whose `(size, version)` is not in the table is **not** discarded. The battery block sits near
+the front of `analytics.def` (metrics have only ever been appended behind it) and is *self-describing*:
+every scaled metric carries its `u16` scale immediately after the value. So `decode()` lets an unknown
+layout prove itself — both scale pairs must equal their compile-time constants (100/100, 1000/1000),
+soc and voltage must be physically plausible, and `charge_ms + discharge_ms` must be ≈ the one-hour
+reporting interval. Seven independent structural constraints holding at once is verification rather
+than a guess; failing any one still refuses and captures the raw blob. The event is logged once per
+unknown `(size, version)` at INFO.
+
+`decodeActivity()` deliberately does **not** do this: its fields extend past the region that moves
+(e.g. `connectivity_connected_time_ms`), so they cannot be validated in place. The power/activity view
+therefore stays strict and simply goes quiet until the layout is added — run
+`tools/hb_relayout_probe.py` to recover the offsets, then add the entry (history backfills itself).
 
 ## CLI
 
