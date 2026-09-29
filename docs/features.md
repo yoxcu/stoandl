@@ -68,6 +68,10 @@ Watchapp companion scripts run in GraalJS (XHR, AppMessage, webhooks). The JS br
 the watch connects and the app is launched — no command; it's part of running an app that ships a
 `pkjs/index.js`.
 
+_Implemented — to be tested ([TESTING.md §5.33f](../TESTING.md)):_ with the libpebble3 bump, watchapp JS
+reaches only an allow-list of host methods (before, any Java method), intercepted XHRs (timeline-pin
+apps) fire `onload`, and a reused `XMLHttpRequest` sends again.
+
 ### App configuration pages (Clay)
 
 Serve a PKJS app's config page via a local proxy, so you can change its settings from a browser.
@@ -88,6 +92,13 @@ stoandl settings set <id> <v>  # set one, e.g. settings set lightAmbientThreshol
 
 Or via `watch.<id>` config keys. See [configuration.md](configuration.md#watch-settings-advanced).
 _Hardware-verified._
+
+_Implemented — to be tested ([TESTING.md §5.33j](../TESTING.md), 5.27b):_ the libpebble3 bump brings the
+newer prefs: the Quiet Time weekday/weekend hours (`dndWeekdaySchedule`, a `HH:MM-HH:MM` window that
+needs its `…Enabled` switch on), `dndAutoDismiss`, `lightPreset`, `lightDynamicMode`, `unitsWind` and
+`language`; `langEnglish`, `lightDynamicIntensity` and `dynBacklightMinThreshold` are gone. The
+notification timeout can't be set below 15 s (shorter ones vanish without a vibe). From fw 4.38.1
+`textStyle` only seeds the watch's own text sizes, and its description says so.
 
 ### Bluetooth Classic transport
 
@@ -211,7 +222,9 @@ stoandl weather   # force a refresh now
 ```
 
 _Hardware-verified. (Watch firmware only surfaces the next ~2–3 days of timeline, so the furthest
-pins sync but may not display.)_ See [configuration.md](configuration.md#weather).
+pins sync but may not display.)_ Following the watch's units instead of the removed `weather.units`, and
+non-ASCII location names such as "München" on fw ≥ 4.34, are _to be tested_ ([TESTING.md §4.4–4.4c,
+§5.33i](../TESTING.md)). See [configuration.md](configuration.md#weather).
 
 ### Calendar sync / timeline pins
 
@@ -255,6 +268,9 @@ not done):_
   avoid a musl-breaking native `libecal` dep) is a possible future addition._
 - _Minor: calendar **color** is left default; a singly-**edited recurring occurrence** shows at its
   original time (detached `RECURRENCE-ID` overrides are skipped to avoid duplicates)._
+
+_Implemented — to be tested ([TESTING.md §5.56a, §5.33l](../TESTING.md)):_ all-day events are sent at
+UTC midnight of their date, which the watch expects (east of UTC they landed on the previous day), and with the libpebble3 bump a reminder offers Dismiss/Snooze on the watch.
 
 See [configuration.md](configuration.md#calendar).
 
@@ -324,7 +340,11 @@ to `~/.config/stoandl/health/` whenever new data lands (`health.export`, on by d
 `daily.ndjson`, `activities.ndjson`, and opt-in minute-level `samples/<date>.ndjson`
 (`health.export_samples`, off — high volume). Units are normalised for consumers (metres, kcal,
 minutes), and queries reuse libpebble3's own aggregation + sleep-grouping. Local-only, no egress.
-_**Hardware-verified.** [TESTING.md §5.21](../TESTING.md)._ See [configuration.md](configuration.md#health--activity).
+_**Hardware-verified.** [TESTING.md §5.21](../TESTING.md)._ _Implemented — to be tested
+([TESTING.md §5.219, 5.219d](../TESTING.md)):_ with the libpebble3 bump the v14 minute records of fw
+4.38.0/4.38.1 are no longer dropped and a workout's active and resting kcal are no longer swapped; a
+workout's distance is exported in metres (it was 1/100 of that). See
+[configuration.md](configuration.md#health--activity).
 
 ### Battery level read-out
 
@@ -533,10 +553,31 @@ _**Hardware-verified** — local `.pbz` sideload, the GitHub check/update flash,
 Update notification all flashed flawlessly. [TESTING.md §5.11](../TESTING.md)._ See
 [configuration.md](configuration.md#firmware-updates).
 
+_Implemented — to be tested ([TESTING.md §5.11e–5.11h](../TESTING.md)):_ "latest" is the highest GitHub
+release, so a backport marked latest (v4.27.3, v4.30.3) no longer hides the newest firmware or gets
+flashed onto a watch in recovery. Flashing an **older** `.pbz` onto a dual-slot Core watch goes through
+recovery: the watch reboots into PRF, and stoandl flashes the same file there when it reconnects (the
+CLI and both GUIs follow it; `firmware update` answers `busy:` meanwhile). An update that crosses 4.38.0
+(4.37.0 on a Pebble 2 Duo) says that the built-in translations go away and points to
+`stoandl language sideload`.
+
 ## Implemented — to be tested
 
 Implemented but not yet fully verified on hardware — each entry's note says what's confirmed and
 what's still pending. Test plan: [TESTING.md](../TESTING.md).
+
+### libpebble3 on current upstream
+
+The libpebble3 fork now sits on upstream `coredevices/libpebble3` `e6b5138e` (fork branch
+`stoandl-bump`), 518 commits newer than before. What it changes for stoandl users is noted under each
+feature above: the newer watch prefs and the Quiet Time hours, health v14 minute records and the
+workout kcal, the watch's sleep card, non-ASCII weather locations, calendar reminder Dismiss/Snooze,
+PKJS timeline pins and XHR fixes, and downgrades through recovery. The database moves from schema 38
+to 47 on the first start, one way, so take a `stoandl backup` before upgrading. BLE now registers
+its GATT application at the first connect instead of when Bluetooth comes up. Everything passes
+offline (the fork's 281 JVM tests, the daemon's tests, a boot smoke that migrates an old database);
+the hardware pass is _to be tested_ ([TESTING.md §5.33](../TESTING.md)). The fork branch becomes
+`stoandl` once it passes. Runbook and decisions: [FIRMWARE-GAPS.md §3](../FIRMWARE-GAPS.md).
 
 ### Phone call notifications
 
