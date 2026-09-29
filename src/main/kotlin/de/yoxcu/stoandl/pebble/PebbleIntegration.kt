@@ -405,7 +405,7 @@ class PebbleIntegration(
             holdLock = config.powerSleepGuard,
             maxHold = config.powerSleepGuardMaxMs.milliseconds,
             pendingWork = ::pendingWatchWork,
-            beforeSleep = ::applyDatalogPolicyBeforeSleep,
+            beforeSleep = ::beforeSleep,
         )
 
         // The single notification choke point + its action router (Phase 0 of the extension system):
@@ -1456,7 +1456,7 @@ class PebbleIntegration(
      * The flag lives in watch RAM (PebbleOS `s_sends_enabled_pp`) and survives a disconnect, so every fresh
      * connect sends the wanted state — also with the option off, so turning the option off (or stoandl
      * dying while paused) can't leave a watch that never sends its data again. Transitions are sampled every
-     * [SCREEN_POLL] while awake, and right before each suspend ([applyDatalogPolicyBeforeSleep]).
+     * [SCREEN_POLL] while awake, and right before each suspend ([beforeSleep]).
      */
     private fun startDatalogPolicy() {
         onFreshConnect { pushDatalogSendState(datalogSendWanted(), "watch connected", force = true) }
@@ -1472,9 +1472,16 @@ class PebbleIntegration(
 
     private fun datalogSendWanted(): Boolean = !(config.powerPauseDatalogScreenOff && ScreenState.isOn() == false)
 
-    /** SleepGuard hook: settle the datalog state before the suspend (a display that just went dark may not
-     *  have been sampled yet); the packet then drains like any other pending PPoG traffic. */
-    private suspend fun applyDatalogPolicyBeforeSleep() {
+    /** SleepGuard hook, run first on every PrepareForSleep(true):
+     *  - stop our own discovery (a pairing-window BLE scan / BR/EDR inquiry). The kernel pauses discovery
+     *    for the suspend but resumes it on wake, and with the link kept across suspend every advertising
+     *    report would be a wake; the scan loop restarts it only if the window is still open and the
+     *    display is on (the screen gate's 2 s tick could otherwise race a suspend right after display-off);
+     *  - settle the datalog state (a display that just went dark may not have been sampled yet); the packet
+     *    then drains like any other pending PPoG traffic. */
+    private suspend fun beforeSleep() {
+        if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+        if (libPebble.isScanningClassic.value) libPebble.stopClassicScan()
         if (config.powerPauseDatalogScreenOff) pushDatalogSendState(datalogSendWanted(), "before suspend")
     }
 
