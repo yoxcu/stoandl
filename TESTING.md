@@ -1443,6 +1443,9 @@ stopped at every PrepareForSleep and not restarted until the resume, so keep the
 pairing with the display off (5.32e). Optional:
 `ble.conn_params` (watch-managed idle set), `power.pause_datalog_screen_off`.
 
+The first on-device test (OnePlus 6, 2026-09-29) found nine problems ("handoff #1–#9" below); their
+fixes are tested in 5.32a–5.32h below the main table, one subsection per item.
+
 Off-device already done: a scratch harness (embedded dbus-java bus + fake `systemd-inhibit`) passes lock
 at start / instant release when idle / hold until pending clears / retry after refusals / cap + stuck
 breaker / re-acquire after external kill / release on stop and on `kill -9` of the JVM; libpebble3
@@ -1464,7 +1467,7 @@ now follow `STOANDL_LOG`.)
 | 5.325 | Weather on the wall clock | `weather.interval = 30`, phone mostly suspended for 2 h | `Weather updated` roughly every 30 min of **real** time (right after a wake), not every 30 min awake. A reconnect within 30 min logs `weather is N min old, not refetching`. |
 | 5.326 | Discovery warning: another app's discovery | Open the Plasma Bluetooth page, then turn the display off | One WARN `Bluetooth discovery is running while the display is off` (per display-off period). It has no key (`power.screen_gate` was removed; a leftover line in stoandl.conf is ignored) and never affects stoandl's own pairing-window scan: see 5.32e1–e3. |
 | 5.327 | Conn params (needs `ble.conn_params = 500,520,0,6000` + main.conf `MaxConnectionInterval=416`) | restart bluetooth + stoandl, let the watch connect | `watch-managed connection parameters: idle 500-520ms/…`, then `link parameters now interval 500.0ms…` (or 510/520) and after 60 s `link at idle parameters`. `btmon`: one `LE Connection Update Complete` with interval 400–416. If instead `link still at …` WARN: check main.conf and `/var/lib/bluetooth/<ad>/<watch>/info [ConnectionParameters]` (the LL trap). |
-| 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min, then on | `Watch datalog sends paused (display state|before suspend)` / `resumed (display state)`; no datalog wakes while paused; health data arrives after the display comes on (`stoandl health` / `health/daily.ndjson`). |
+| 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min, then on | `Watch datalog sends paused (display state\|before suspend)` / `resumed (display state)`; no datalog wakes while paused; health data arrives after the display comes on (`stoandl health` / `health/daily.ndjson`). |
 | 5.329 | Desktop regression | on a desktop without suspend | Only `Sleep guard on` at startup; nothing else changes. Without systemd-inhibit: `neither systemd-inhibit nor elogind-inhibit found` WARN, daemon otherwise normal. |
 
 **Open questions for hardware:** (a) how long a push-wake delivery really takes at 500 ms intervals
@@ -1646,6 +1649,12 @@ the test.
 | 5.32f5 | Crash loop gives up | phone awake; `systemctl --user reset-failed stoandl && systemctl --user restart stoandl`; then repeat f3's `kill -SEGV` each time the daemon is back, 5 times within 5 min | Kills 1–4 are each followed by a restart. After the 5th, the journal shows `Start request repeated too quickly` and `systemctl --user status stoandl` is `failed (Result: start-limit-hit)`. `systemctl --user reset-failed stoandl && systemctl --user start stoandl` brings it back. Afterwards, `rm /tmp/stoandl-hs_err_pid*.log`. |
 | 5.32f6 | Manual restarts vs. the limit | phone awake; `systemctl --user reset-failed stoandl`; `systemctl --user restart stoandl` 5 times quickly, then a 6th | The 6th restart stops the running daemon and then refuses to start it. It fails with `start … attempted too often` / start-limit-hit, and `systemctl --user status stoandl` shows `failed (Result: start-limit-hit)` with no java process left. `./install.sh`, or `reset-failed` + `start`, works immediately. Until then the GUI's "Start daemon" button can't start it. |
 | 5.32f7 | OpenRC (only on an OpenRC host) | install the `-openrc` subpackage, set `/etc/conf.d/stoandl`, `rc-service stoandl start`; `grep core /proc/<java pid>/limits`; `ls -l /var/log/stoandl.log`; then `kill -SEGV <java pid>` about 5 times within 5 min | `supervise-daemon stoandl` is the java process's parent, and java runs as `STOANDL_USER`. The core limit is `0`. `/var/log/stoandl.log` is owned by that user and filling. Each crash writes `/tmp/stoandl-hs_err_pid<pid>.log` and is respawned after ~5 s, until syslog shows `respawned "…java" too many times, exiting`. `rc-service stoandl restart` recovers. |
+
+### 5.32g Switching between Mode A and Mode B keeps the bond (handoff #8)  ⚠️ UNVERIFIED
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32g1 | Mode A ↔ B switch, with stoandl stopped **and** running | (a) Follow docs/deep-sleep.md "Switching between Mode A and Mode B" exactly, including the optional stop and start of stoandl: `rmmod`/`modprobe hci_uart qca_keep_links_on_suspend=1` → `systemctl restart bootmac@bluetooth` → wait for `bluetoothctl show` address + `Powered: yes`. (b) Switch back to `=0` the same way, but leave stoandl **running** throughout. | In both runs: `cat /sys/module/hci_uart/parameters/qca_keep_links_on_suspend` shows the new value. Note whether it prints `Y`/`N` or `1`/`0` and correct the doc's legend if needed. The watch reconnects on its own within ~1 min of `Powered: yes`, and `bluetoothctl info ED:86:0A:D4:B3:49` still shows `Paired: yes`/`Bonded: yes`. The log has no `Host bond lost for …` and no `Broken-bond detector:` line, and no desktop notification "Pebble pairing removed" or "Pebble won't stay connected" appears. In (b), while the adapter is gone, the log shows only repeated `failed to connect: …` lines. Also confirm the doc's claim once: skip the `bootmac@bluetooth` restart, and the controller has no public address and stays unusable until you run it. |
 
 ### 5.32h Reconnect latency after a drop / resume (handoff #9)  ⚠️ UNVERIFIED
 

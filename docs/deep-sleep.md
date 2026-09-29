@@ -2,11 +2,23 @@
 
 A Linux phone saves most of its battery by suspending whenever the screen is off (s2idle), waking
 only for a push message, a call or an alarm — a few seconds awake, then asleep again. stoandl has a
-few features for that kind of host. They are harmless on a desktop, and most are off unless you turn
-them on. The reference device is a OnePlus 6 on postmarketOS with Plasma Mobile ("Mode B" below).
+few features for that kind of host. They are harmless on a desktop, and the two that change how the
+watch keeps its link (connection parameters, datalog pause) are off unless you turn them on. The
+reference device is a OnePlus 6 on postmarketOS with Plasma Mobile ("Mode B" below).
 
-**Status:** implemented, compiles, unit/harness-tested off-device; **not yet verified on hardware**
-(see [TESTING.md §5.32](../TESTING.md)).
+**Status:** partially verified on hardware. First on-device test: OnePlus 6, postmarketOS, BlueZ 5.87,
+Pebble Time 2 (2026-09-29).
+
+- **Mode A:** verified that notifications reach the watch while the phone is awake, and that the sleep
+  guard holds its delay lock (`systemd-inhibit --list` shows `stoandl`, mode `delay`). A notification
+  that arrived *with* a push wake — posted while the link was still down from the suspend — was never
+  delivered in that test. This is addressed (**implemented, to be tested**): such a notification now
+  goes out once the watch reconnects, if that happens within `notification.catch_up_minutes` (default
+  10) — see [Mode A](#without-the-host-work-mode-a) below.
+- **Mode B:** not yet tested.
+
+Everything else on this page is unit/harness-tested off-device only. Test plan:
+[TESTING.md §5.32](../TESTING.md).
 
 postmarketOS and Alpine use musl. The SQLite driver bundled with stoandl is built for glibc, and
 older builds crash-loop right after the first pairing. stoandl now works around this automatically on
@@ -23,8 +35,13 @@ musl (**implemented, to be tested**). See [README → Requirements](../README.md
   go out during the wakes the phone has anyway (the push that carried the message). This needs kernel
   work on the host (see [Host prerequisites](#host-prerequisites-mode-b)); stoandl's part is below.
 
-stoandl talks to BLE-native watches (Pebble Time 2, Pebble 2) over BLE only — no Bluetooth Classic —
-so everything here is about one LE link.
+This page is about the LE link that BLE-native watches (Pebble Time 2, Pebble 2) use. Classic-era
+watches (Pebble Time / Time Steel) connect over Bluetooth Classic instead
+([configuration.md → Bluetooth Classic](configuration.md#bluetooth-classic)). For them, the wall-clock
+scheduling works the same way, and the BR/EDR inquiry follows the same pairing-window rules as the BLE
+scan. The sleep guard waits for their pending notification writes but not for the RFCOMM send queue. The
+connection-parameter settings are LE-only, and whether a Classic link survives a suspend (Mode B) is
+untested. All hardware testing so far used a BLE watch.
 
 ## What stoandl does
 
@@ -39,8 +56,11 @@ so everything here is about one LE link.
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
 
 Log lines to look for (`/tmp/stoandl.log`): `Sleep guard on`, `PrepareForSleep: held the suspend …`,
-`watch-managed connection parameters: idle …`, `link parameters now …`, `link at idle parameters`,
-`Watch datalog sends paused/resumed`. With `STOANDL_LOG=DEBUG` every suspend/resume is logged.
+`Notification catch-up: sending N unsent notification(s) created after …` (only when a reconnect has
+something to catch up on; the time is UTC), `connected and services resolved (N ms after connect())`
+(how long a reconnect took), `watch-managed connection parameters: idle …`,
+`link parameters now …`, `link at idle parameters`, `Watch datalog sends paused/resumed`. With
+`STOANDL_LOG=DEBUG` every suspend/resume is logged.
 
 ### Connection parameters — read this before turning them on
 
@@ -76,9 +96,50 @@ takes, besides the settings above:
 
 - kernel: the Bluetooth UART's runtime PM in system sleep (upstream `qcom_geni_serial` force suspend),
   a UART RX wake interrupt in the device tree, `hci_qca` keeping links across suspend (opt-in module
-  parameter) and reporting IBS wake indications as wakeup events;
+  parameter `hci_uart.qca_keep_links_on_suspend`) and reporting IBS wake indications as wakeup events;
 - powerdevil: treat a Bluetooth wake as a dark ("Network") wake, so the display stays off;
 - no Bluetooth settings page or other discovery session left open with the screen off.
 
-Without those, the settings here still help Mode A (the sleep guard delivers queued notifications
-before the phone sleeps; wall-clock scheduling keeps the weather fresh).
+### Switching between Mode A and Mode B
+
+`qca_keep_links_on_suspend` is read-only at runtime (mode 0444), so switching modes means reloading
+the Bluetooth driver. stoandl can keep running across the reload. While the adapter is gone it logs
+`failed to connect … FailedToConnect` every few seconds, which is harmless, and it reconnects on its
+own once the controller is configured again. It doesn't touch the pairing: a failed connect never
+deletes a bond. The first hardware test did lose a valid pairing here, through a check that has
+since been removed — **implemented, to be tested** ([TESTING.md §5.32c, §5.32g](../TESTING.md)). Stopping
+stoandl around the reload is optional; it only keeps those log lines out.
+
+```sh
+cat /sys/module/hci_uart/parameters/qca_keep_links_on_suspend   # current mode: Y or 1 = B, N or 0 = A
+systemctl --user stop stoandl                                   # optional, see above
+sudo rmmod hci_uart
+sudo modprobe hci_uart qca_keep_links_on_suspend=1              # 0 for Mode A
+sudo systemctl restart bootmac@bluetooth                        # postmarketOS only, see below
+bluetoothctl show                                               # wait for its address and "Powered: yes"
+systemctl --user start stoandl                                  # optional
+```
+
+On postmarketOS, `bootmac` sets the controller's public address only at boot. After a reload the
+controller stays unconfigured (no public address) and unusable until you restart
+`bootmac@bluetooth`. To pick a mode at boot, set the parameter in `/etc/modprobe.d/` (`options hci_uart
+qca_keep_links_on_suspend=1`) or on the kernel command line (`hci_uart.qca_keep_links_on_suspend=1`);
+neither has been tried yet.
+
+## Without the host work (Mode A)
+
+Without those, you're in Mode A. The settings here still help:
+
+- Wall-clock scheduling keeps weather, calendar and the firmware check on time across suspends.
+- The sleep guard holds a suspend until a notification that is already on its way to a connected watch
+  has arrived. It doesn't hold a suspend for a reconnect.
+- A notification that arrives with a push wake is posted while the link is still down from the
+  suspend. stoandl sends it once the watch has reconnected (in the first test, the link was back about
+  8 s after the wake; about 5 s of that was the connector noticing the link late, which is fixed —
+  **implemented, to be tested**, [TESTING.md §5.32h](../TESTING.md) — the ~2.9 s from the wake to the
+  reconnect attempt remain).
+  The catch-up is bounded, so a long disconnect doesn't replay old notifications. If the phone suspends
+  again before the reconnect completes, the notification goes out at the next connect, as long as that
+  falls within the catch-up window (`notification.catch_up_minutes`, default 10; 0 = off) — see
+  [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up).
+  **Implemented, to be tested** ([TESTING.md §5.32b](../TESTING.md)).

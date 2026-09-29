@@ -624,10 +624,14 @@ Design + wire protocol: [extensions.md](extensions.md).
 
 For a phone that suspends whenever the screen is off: a logind delay lock makes a suspend wait until
 a notification in flight has reached the watch; weather/calendar/firmware checks count real time and
-run right after a resume when overdue; pairing scans only run with the display on; optional slow,
-fixed BLE connection parameters (`ble.conn_params`) and a datalog pause while the display is off.
-Groundwork for keeping the watch link across suspend ("Mode B", needs host kernel work). _Built,
-compiles, harness-tested off-device; not yet run on hardware ([TESTING.md §5.32](../TESTING.md))._
+run right after a resume when overdue; pairing-window scans run with the display off too, but only
+while the phone is awake (stopped for every suspend); a reconnecting watch catches up on the
+notifications it missed ([below](#missed-notification-catch-up)); optional slow, fixed BLE connection
+parameters (`ble.conn_params`) and a datalog pause while the display is off. Groundwork for keeping
+the watch link across suspend ("Mode B", needs host kernel work). _Partially verified on hardware
+(OnePlus 6, postmarketOS, 2026-09-29): in Mode A, notifications while the phone is awake and the
+logind delay lock work. Delivery of notifications that arrive with a push wake (catch-up after
+reconnect) is fixed and to be tested. Mode B is untested ([TESTING.md §5.32](../TESTING.md))._
 Details: [deep-sleep.md](deep-sleep.md).
 
 Faster BLE reconnect: the BlueZ connector now notices a link that comes up while it waits to retry,
