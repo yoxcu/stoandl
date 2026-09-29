@@ -1529,11 +1529,17 @@ class PebbleIntegration(
      * connect sends the wanted state — also with the option off, so turning the option off (or stoandl
      * dying while paused) can't leave a watch that never sends its data again. Transitions are sampled every
      * [SCREEN_POLL] while awake, and right before each suspend ([beforeSleep]).
+     *
+     * The option is read live (Settings → Deep sleep applies it without a restart), so the poll always
+     * runs: turned on, the next tick pauses a dark display; turned off while paused, the next tick resumes
+     * the watch instead of leaving it paused until its next fresh connect. With the option off a tick
+     * reads no display state and sends nothing once the watch has the "enabled" state.
      */
     private fun startDatalogPolicy() {
         onFreshConnect { pushDatalogSendState(datalogSendWanted(), "watch connected", force = true) }
-        if (!config.powerPauseDatalogScreenOff) return
-        log.info { "Datalog sends paused while the display is off (power.pause_datalog_screen_off)" }
+        if (config.powerPauseDatalogScreenOff) {
+            log.info { "Datalog sends paused while the display is off (power.pause_datalog_screen_off)" }
+        }
         scope.launch {
             while (true) {
                 delay(SCREEN_POLL)
@@ -1565,9 +1571,11 @@ class PebbleIntegration(
             runCatching { w.sendPPMessage(DataLoggingOutgoingPacket.SetSendEnabled(enabled)) }
                 .onFailure { log.warn { "Datalog SetSendEnabled($enabled) to ${w.displayName()} failed: ${it.message}" } }
         }
-        val changed = datalogSendState != enabled
+        val previous = datalogSendState
         datalogSendState = enabled
-        if (config.powerPauseDatalogScreenOff && changed) {
+        // INFO for a real pause or resume: any change while the option is on, and the resume that follows
+        // turning it off while the watch was paused. The plain "enabled" of every fresh connect stays DEBUG.
+        if (previous != enabled && (config.powerPauseDatalogScreenOff || previous == false)) {
             log.info { "Watch datalog sends ${if (enabled) "resumed" else "paused"} ($why)" }
         } else {
             log.debug { "Watch datalog sends ${if (enabled) "enabled" else "disabled"} ($why)" }
