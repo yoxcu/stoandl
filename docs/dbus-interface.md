@@ -123,8 +123,8 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `BatteryInsights` | `(s) → s` | Derived insights for the GUI Battery card. `ok:` + 12 tab fields (see below), `unknown:<name>` (too little data), or `notready:`. | `watch battery insights` |
 | `BatteryActivity` | `(s,x) → s` | Per-interval drop + notification counts for `(watch, sinceEpoch)`. `ok:` + newline-joined `ts\tdrop\tnotif\tnotifDnd` records (see below); `notready:` when capture is off. | `watch battery activity` |
 | `BatteryPower` | `(s,x) → s` | Estimated battery-drain attribution for `(watch, sinceEpoch)` (heartbeat only). `ok:` + newline-joined `category\testDrainPct\tsharePct` slices, largest first (empty body for a GATT-only watch); `notready:`. | `watch battery power` |
-| `HeartbeatInfo` | `(s) → s` | Header of the newest captured analytics heartbeat for `watch`. `ok:watchTs\trx\tsize\tversion\tbuildId\tfw\tknown\tmetricCount` (`known` 1/0 — see below); `unknown:<label>`; `notready:`. | `watch battery heartbeat` |
-| `HeartbeatMetrics` | `(s) → as` | **Every** metric of that newest heartbeat, one `name\tvalue\ttext\traw` record each (92 in the current firmware layout). Empty when the watch has no heartbeat or its layout is unverified. | `watch battery heartbeat --all` |
+| `HeartbeatInfo` | `(s) → s` | Header of the newest captured analytics heartbeat for `watch` (connected watch; empty = the connected one). `ok:watchTs\trx\tsize\tversion\tbuildId\tfw\tknown\tmetricCount` (see below); `unknown:<label>` (watch not connected, or no heartbeat captured yet); `notready:` (`battery.heartbeat` off). | none (`watch battery heartbeat` reads the files offline) |
+| `HeartbeatMetrics` | `(s) → as` | **Every** metric of that newest heartbeat in wire order, one `name\tvalue\ttext\traw` record each (101 on fw ≥ 4.33). Empty whenever `HeartbeatInfo` is not `ok:` or says `known` 0. | none (`watch battery heartbeat --all` decodes the files offline) |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
 | `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. The window discovers whether or not the display is on (it is an explicit request), but only while the host is awake: discovery stops for every suspend. | `watch pair [--yes]` |
 | `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. `pending:` messages are progress (`Found <watch> — pairing...`, `Confirm code <NNNNNN> on the watch`) or why the window can't discover right now: `Discovery paused — Bluetooth is off. Turn it on to pair.` / `BLE scan paused — <watch> is connecting (a scan would disturb it).` / `Searching again — the phone slept, which pauses discovery. Keep it awake (e.g. the screen on) until the watch is found.` — show them as they change. | (polled by `watch pair`/`watch repair`, which print each new `pending:` message; on `confirm:` the CLI asks y/N when stdin is a terminal or holds a piped answer, and accepts by itself with `--yes` or with nothing to read an answer from) |
@@ -170,13 +170,25 @@ the window has no measured discharge to anchor to) and `sharePct` is the slice's
 power" pie. See [battery-insights.md](battery-insights.md).
 
 `HeartbeatInfo` / `HeartbeatMetrics` back the GUI's **Debug → Heartbeat** page: the raw analytics record
-the watch emits hourly, decoded in full. `HeartbeatMetrics` records are
-`name \t value \t text \t raw` — `value` is already scale-divided (empty for string metrics), `text` is
-set only for string metrics (`fw_version`, `watchface_name`, `watchface_uuid`), and `raw` is the
-undivided wire integer. `HeartbeatInfo.known` is 0 when the firmware's `(size, version)` is not one
-stoandl has verified against PebbleOS's `analytics.def`; the record is still captured raw, but **no
-metrics are emitted rather than guessed ones** — the page should say so. Metric names, offsets per
-layout, and what each is good for: [heartbeat-metrics.md](heartbeat-metrics.md).
+the watch emits hourly, decoded in full. Both look the watch up among the **connected** watches (its
+serial keys the store), so a disconnected watch reads as `unknown:` / empty.
+
+`HeartbeatInfo` fields: `watchTs` is the record's own timestamp and `rx` the host receive time (epoch
+seconds; `watchTs` is 0 when the record was too short to carry one); `size` is the record length in
+bytes and `version` its layout version byte; `buildId` is the firmware's GNU build-id (40 hex chars,
+**not** a git SHA; empty for a truncated record); `fw` is the firmware version libpebble3 reported when
+the record was captured (not the record's own `fw_version` metric); `known` is 1 when `(size, version)`
+is a released layout stoandl derives from PebbleOS's `analytics.def`, else 0 — the record is still
+captured raw, but **no metrics are emitted rather than guessed ones**, and the page should say so;
+`metricCount` is the number of `HeartbeatMetrics` records (0 when `known` is 0).
+
+`HeartbeatMetrics` records are `name \t value \t text \t raw`, in wire order: `value` is already
+scale-divided, printed as an integer when whole and with two decimals (`.` separator) otherwise, and
+empty for string metrics; `text` is set only for string metrics (`fw_version`, `watchface_name`,
+`watchface_uuid`; tabs and newlines replaced by spaces); `raw` is the undivided wire integer (negative
+for signed metrics such as `utc_offset_s` and `battery_temp_c`; empty for strings). Which metrics
+appear depends on the watch's firmware release. Metric names, offsets per layout, and what each is
+good for: [heartbeat-metrics.md](heartbeat-metrics.md).
 
 ### Apps & watchfaces (`stoandl apps`, `stoandl config`)
 
@@ -430,6 +442,8 @@ is down — and a reminder that **backup/restore are not daemon capabilities**:
   host and tars it. **There is no `SupportBundle` method.**
 - `calendar dump <file.ics|url>` — parses + expands recurrence in-process.
 - `datalog list|dump|tail` — reads `~/.config/stoandl/datalog/**/*.ndjson` directly.
+- `watch battery heartbeat [--raw] [--all]` — reads `~/.config/stoandl/battery/heartbeat/*.ndjson`
+  directly; `--all` decodes the newest record with the same table as `HeartbeatMetrics`.
 - `health` / `health [days]` / `health activities` / `health dump` — read
   `~/.config/stoandl/health/*.ndjson` directly (`health sync` and `health hr` call the daemon).
 - `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums + vibe presets.

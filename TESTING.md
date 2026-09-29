@@ -1268,17 +1268,19 @@ GATT level on change, used only when the heartbeat has no decoded data for a wat
 captured in the `WebServices.uploadAnalyticsHeartbeat` override that used to drop it. See
 [docs/battery-insights.md](docs/battery-insights.md).
 
-**The load-bearing unknown is B on real hardware:** the 523-byte struct layout + offsets are verified
-against `coredevices/PebbleOS@main` source but *not* against a live watch. The decoder is strictly gated
-(`size==523 && version==1` + scale/range checks) and **captures raw on any mismatch**, so a layout
-mismatch degrades to the GATT fallback rather than emitting garbage — but confirm it actually decodes.
+**The load-bearing unknown is B on real hardware:** the record layouts + offsets are derived from
+PebbleOS `analytics.def` at every release tag (15 layouts, 4.9.158 through the current **567 B /
+version 3** of fw ≥ 4.33) and unit-tested against that source, but *not* against a live watch. The
+decoder is strictly gated (`(size, version)` must be a released layout, + scale/range checks) and
+**captures raw on any mismatch**, so a layout mismatch degrades to the GATT fallback rather than
+emitting garbage — but confirm it actually decodes.
 
 **Prerequisites:** a connected Pebble on shipping (non-PRF) firmware; leave it connected **≥ ~1 hour** to
 receive at least one heartbeat (they're emitted hourly). For the charge tests, a charger.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.29a | Heartbeat arrives + decodes (**B**) | leave the watch connected ~1 h, then `stoandl watch battery heartbeat` | ≥1 record, each a `decoded` line: `<time>  <soc>%  <voltage>V [charging] [tte=…h]`. **No** `UNDECODED` lines. If UNDECODED: grab `stoandl watch battery heartbeat --raw`, note `size`/`version`/`build_id`, and finalize offsets against the firmware `tools/analytics_heartbeat_layout.py` for that build. |
+| 5.29a | Heartbeat arrives + decodes (**B**) | leave the watch connected ~1 h, then `stoandl watch battery heartbeat` | ≥1 record, each a `decoded` line: `<time>  <soc>%  <voltage>V [charging] [tte=…h]`. **No** `UNDECODED` lines. If UNDECODED: grab `stoandl watch battery heartbeat --raw`, note `size`/`version`/`build_id` and the watch's firmware, and add that release's layout with `tools/hb_layouts_from_source.py` (§5.29M). |
 | 5.29b | Decoded values are sane | inspect the 5.29a output vs the watch's own battery UI | `soc` ≈ the watch's displayed % (within a few %); `voltage` in ~3.6–4.3 V; the timestamps advance ~hourly. |
 | 5.29c | Insights (heartbeat source) | `stoandl watch battery insights` | `<name> — <soc>%`, a `Voltage: … V` line, `Time remaining: ~…h` (from the firmware's `tte`), 24h range, last-charged, charge cycles, and `(source: heartbeat, N samples)`. |
 | 5.29d | Charging is *measured* (**B**) | put the watch on the charger, wait for the next heartbeat (~1 h) or trigger one, then `battery insights` | `(charging)` shown; `charge_ms>0` on the heartbeat record (`battery heartbeat`). Unlike the GATT fallback this is measured, not inferred. |
@@ -1311,8 +1313,8 @@ to confirm on hardware, both **without a serial cable**:
    reweight, so this must be checked directly; and
 2. **the pie now looks right.**
 
-**Helper (offline, no daemon):** `tools/hb_offset_check.py` re-reads the raw 523-byte blobs stoandl already
-stored (`<config>/battery/heartbeat/<serial>.ndjson`, stdlib only) and prints `hrm@174` in ms and as a % of
+**Helper (offline, no daemon):** `tools/hb_offset_check.py` re-reads the raw blobs stoandl already
+stored (the 523, 527 and 567 B layouts of fw ≥ 4.20 — `hrm@174` in all of them) (`<config>/battery/heartbeat/<serial>.ndjson`, stdlib only) and prints `hrm@174` in ms and as a % of
 the hour. Run it on the host where the daemon captures, or copy the `.ndjson` over and point
 `STOANDL_HB_DIR` at it. `--scan` adds a u32 neighbour dump to hunt the real offset if @174 is wrong.
 
@@ -1337,6 +1339,34 @@ installed** (`./install.sh`, or `./install.sh --remote user@host`). Which watch 
 > (`analytics native metrics_dump` over serial/PULSE — needs a cable) is only needed if a–c are
 > inconclusive. `analytics heartbeat` on that same console force-emits a heartbeat immediately (skips the
 > ~1 h wait) — it lands on the datalog stoandl already ingests.
+
+### 5.29M Full heartbeat record: the fw ≥ 4.33 layout (567 B / v3) and every metric  ⚠️ UNVERIFIED
+
+Firmware 4.33.0 through 4.38.2 sends the heartbeat as **567 B / version 3** (ten metrics appended),
+which stoandl had no layout for: the battery block still decoded through the structural fallback, but
+the drain bars, the power pie and the notification overlay stayed **empty on every current firmware**.
+`HeartbeatLayout.kt` now carries every released layout, derived from PebbleOS `analytics.def` by
+`tools/hb_layouts_from_source.py` and checked by `HeartbeatLayoutTest`/`HeartbeatStoreTest` (a
+synthetic 567 B record decodes every metric at its source offset; unknown layouts are rejected).
+Records captured before the update are kept raw, so they **backfill** on the first read.
+
+**Prerequisites:** a watch on fw ≥ 4.33 (the Time 2 on 4.38.x), connected ≥ ~1 h with `battery.heartbeat`
+on; the new build installed. For M-f, a watch still on an older release, or old records on disk.
+
+| # | Test | Command / Steps | Expected |
+|---|------|-----------------|----------|
+| 5.29M-a | Layout is recognised | `stoandl watch battery heartbeat --all` | Header `(N records, newest decoded in full)`, then **101** `name value` lines, from `memory_pct_max` to `touch_gated_touchdown_count`. **Not** "Layout 567B/v3 is not in the verified table". The daemon log has **no** `layout 567B/v3 is not in the verified table` INFO line after the restart. |
+| 5.29M-b | Values are sane | inspect 5.29M-a | `fw_version` = the watch's firmware (e.g. `v4.38.2`); `battery_soc_pct` ≈ the watch's own %, `battery_voltage` 3.6–4.3; `battery_soc_pct_min` ≤ `battery_soc_pct`; `battery_temp_c` a plausible wrist temperature (~20–35) or 0; `uptime_s` grows between records; `utc_offset_s` = your UTC offset in seconds; `connectivity_connected_time_ms` ≤ `connectivity_expected_time_ms` ≤ ~3 600 000; `watchface_name` = the face on screen. |
+| 5.29M-c | Activity views light up | after ≥ 2 heartbeats, with a few notifications forwarded in between: `stoandl watch battery activity --since 24h` and `stoandl watch battery power --since 24h` | `activity` rows carry non-zero `notif` counts for the hours that had notifications (they used to be all 0 on this firmware); `power` prints a breakdown instead of nothing. GUI Battery page: drain bars, the "What drew power" donut and the notification bands all present. |
+| 5.29M-d | History backfills | compare `stoandl watch battery activity --since 7d` right after installing the new build | Hours captured **before** the update (while the layout was unknown) appear too — no gap at the update. |
+| 5.29M-e | HRM cross-check in one record | in 5.29M-a, read `settings_health_hrm_enabled` and `hrm_on_time_ms` | HR off (`settings_health_hrm_enabled 0`) ⇒ `hrm_on_time_ms` ≈ 0 in that same record. The cable-free HRM-offset check of §5.29L, without a second watch. |
+| 5.29M-f | Older releases still decode | with records from a pre-4.33 firmware on disk (or a watch on one): `stoandl watch battery heartbeat --all --watch <serial>` | The metric count matches that release (e.g. 92 for 527 B / v1 on 4.26–4.31, 91 for 523 B / v2 on 4.32); `battery_soc_pct` is sane — the battery block is read at that layout's own offsets. |
+| 5.29M-g | GUI Debug → Heartbeat page (Kirigami + GTK) | GUI: Settings → Debug → Heartbeat | Header shows size 567, version 3, the build-id and firmware, "known"; every metric listed, grouped by name prefix. New v3 prefixes (`unexpected`, `i2c`, `drv`) show as their own small groups. |
+
+> **Sandbox note:** `compileKotlin` + `test` green (the two heartbeat test classes: 12 tests). The layouts
+> were derived from `/home/vscode/.cache/pebbleos-src` (every release tag's `analytics.def`, no
+> `(size, version)` filled differently by two releases). No watch was available, so every row above is
+> a hardware item.
 
 ---
 

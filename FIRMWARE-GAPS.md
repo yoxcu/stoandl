@@ -41,30 +41,25 @@ The per-item dispositions live in [docs/pebbleos-changelog-review.md](docs/pebbl
 
 ### 1.1 Heartbeat record 567 B / v3 (fw ≥4.33.0)
 
-`df6d08bd` appended 10 metrics and bumped `NATIVE_HEARTBEAT_RECORD_VERSION` to 3 (native.c: 2 at v4.32.0, 3 at
-v4.33.0 and v4.38.2). `HeartbeatLayout.kt:180-183` whitelists only `(523,1)`, `(527,1)` and `(523,2)`, so
-`HeartbeatLayouts.of()` returns null and `decodeActivity()` returns null (`HeartbeatStore.kt:173-174`). The
-battery block survives through the structural fallback, so insights and history still work.
+Five commits (`df6d08bd` … `68415258`, all first released in v4.33.0) appended 10 metrics and bumped
+`NATIVE_HEARTBEAT_RECORD_VERSION` to 3 (native.c: 2 at v4.32.0, 3 at v4.33.0 through v4.38.2).
+`HeartbeatLayout.kt` whitelisted only `(523,1)`, `(527,1)` and `(523,2)`, so `HeartbeatLayouts.of()`
+returned null and `decodeActivity()` returned null. The battery block survived through the structural
+fallback, so insights and history kept working; the power pie, drain bars and notification overlay
+did not.
 
-**Fix.** Append these to `METRICS`, in `analytics.def` order:
-
-- `ble_conn_slave_lat0_time_ms` (TIMER)
-- `ble_conn_param_update_count` (U32)
-- `accel_stream_recovery_count` (U32)
-- `unexpected_reboot_count` (U32)
-- `battery_temp_c` (SCALED_I32)
-- `i2c_transfer_error_count` (U32)
-- `ble_conn_itvl_other_time_ms` (TIMER)
-- `drv_init_fail_flags` (U32)
-- `battery_soc_pct_min` (SCALED_U32)
-- `touch_gated_touchdown_count` (U32)
-
-Then add all 10 names to the omit sets of the three existing rows, and add
-`Layout(567, 3, omit = setOf("settings_power_mode"))`. The self-check walk gives 523 + 44 = 567. History
-backfills from the stored raw blobs. Bonus fields: `battery_temp_c` and `battery_soc_pct_min`. Update
-`docs/heartbeat-metrics.md` and the `battery-insights.md` layout tables.
-
-**Note:** `HeartbeatLayout.kt` is still uncommitted WIP on `feature/settings-parity`.
+**Done, to be tested (TESTING 5.29M).** The ten metrics are in `METRICS` in `analytics.def` order, and
+`Layout(567, 3)` walks to 567 B. Instead of per-row omit sets (every new metric would have to be added to
+every older row), each metric now carries the first release that emits it (`since`, plus `until` for
+`settings_power_mode`), and each layout row names its first release. `tools/hb_layouts_from_source.py` derives
+both from every PebbleOS release tag and prints the Kotlin lines. Walking every tag also turned up eleven
+older released layouts (310 … 515 B, all v1, 4.9.158 … 4.13.0) that had no row. They have rows now, which only
+works because `HeartbeatStore` now reads every field by name through the layout (before 4.13 even the battery
+block sat elsewhere). No two releases fill the same `(size, version)` differently. Unit tests
+(`HeartbeatLayoutTest`, `HeartbeatStoreTest`) check every layout's size, landmark offsets per layout from the
+source, a synthetic 567 B record end to end, and that unknown layouts are rejected. History backfills from the
+stored raw blobs. Bonus fields (`battery_temp_c`, `battery_soc_pct_min`, …) are in the full dump (`watch
+battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists them.
 
 ### 1.2 Health minute record v14 (fw 4.38.0/4.38.1), plus overlay bugs
 

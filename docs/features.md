@@ -360,20 +360,24 @@ stoandl watch battery power      # estimated usage share: what drew power (displ
 stoandl watch battery heartbeat  # the raw decoded heartbeat record
 ```
 
-Decoding is strictly version/size-gated against the firmware-verified 523-byte record layout and
-captures the raw blob on any mismatch, so a firmware layout change degrades to the BLE
-battery-level fallback rather than emitting garbage. The same 523-byte record carries 91 metrics (the
-battery block is 7); the rest — per-subsystem on-times (backlight, vibration, speaker, HRM), CPU
-run/stop + per-task residency, and event counters (notifications received) — are decoded on demand
-from the stored raw blob (so they **backfill across existing history**) to build three further views
-the official cloud screen showed: a per-hour **drain** bar, a **power-attribution** breakdown (an
-*estimate*: on-time × intensity, not measured mAh) and a **notification-density** overlay on the
-charge graph. Also surfaced in the GUI's **Battery** page and via the `battery.heartbeat` /
+Decoding is strictly gated on the record's `(size, version)` — every released layout, derived from
+PebbleOS `analytics.def`, up to the current 567 B / version 3 of fw ≥ 4.33 — and captures the raw blob
+on any mismatch, so a firmware layout change degrades to the BLE battery-level fallback rather than
+emitting garbage. The record carries 101 metrics on current firmware (the battery block is 7;
+`stoandl watch battery heartbeat --all` prints them all); the rest — per-subsystem on-times
+(backlight, vibration, speaker, HRM), CPU run/stop + per-task residency, and event counters
+(notifications received) — are decoded on demand from the stored raw blob (so they **backfill across
+existing history**) to build three further views the official cloud screen showed: a per-hour
+**drain** bar, a **power-attribution** breakdown (an *estimate*: on-time weighted by a modeled
+current and anchored to the measured drop, not metered mAh) and a **notification-density** overlay on
+the charge graph. Also surfaced in the GUI's **Battery** page and via the `battery.heartbeat` /
 `battery.history` / `battery.retention_days` config keys (on by default, local-only, no egress).
 Because the heartbeat rides the datalog service rather than GATT, it also works over **Bluetooth
 Classic** and backfills across disconnects.
 
-_**Hardware-verified.** [TESTING.md §5.29](../TESTING.md)._ See [battery-insights.md](battery-insights.md).
+_**Hardware-verified.** [TESTING.md §5.29](../TESTING.md)._ The fw ≥ 4.33 layout (567 B / v3), without
+which the three views were empty on current firmware, is _to be tested_ (§5.29M). See
+[battery-insights.md](battery-insights.md).
 
 ### Developer connection
 
