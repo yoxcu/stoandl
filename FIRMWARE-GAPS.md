@@ -131,6 +131,11 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
 - **Notification timeout.** A `notifWindowTimeout` below 15 s makes the notification vanish and cancels the
   vibe on every released fw; the fw clamp `2782836` is only on `main`. Enforce a 15 000 ms minimum in
   `WatchPrefsControl` (the fork's min is 0 at `WatchPrefEntity.kt:533`). The bump brings upstream `912fde2c`.
+  - **Done with the bump.** libpebble3 `e6b5138e` has `NotificationTimeoutMs.min = 15 s` (`912fde2c`), and
+    `WatchPrefsControl` range-checks every number pref against the pref's own bounds, so the floor has one
+    source. `WatchPrefsControlTest` pins it for `settings set` and for `watch.*` pins. A value below 15 s
+    already stored on a watch is not rewritten: `stoandl settings` shows it next to the `15000..600000 ms`
+    range, and setting any valid value replaces it.
 - **All-day events.** `ICalParser.kt:177` uses `atStartOfDay(ZoneId.systemDefault())`. The fw applies
   `time_local_to_utc` to all-day timestamps (`item.c`), so anchor to **UTC midnight**. Absolute-time VALARMs
   on all-day events (`:203-206`) need the same compensation.
