@@ -3,10 +3,11 @@
 
 Why this exists
 ---------------
-`HeartbeatStore` decodes the analytics heartbeat only when `size == 523` (NATIVE_HB_SIZE) —
-deliberately, so we never emit a guessed value. When PebbleOS grows the record (e.g. a
-firmware update starts emitting 527 B), every record turns UNDECODED, new battery samples
-stop landing, and `watch battery insights` silently replays the last good decode.
+`HeartbeatStore` decodes the analytics heartbeat fully only when its `(size, version)` is a
+released layout in `HeartbeatLayouts` — deliberately, so we never emit a guessed value. The
+layouts come from PebbleOS source (`tools/hb_layouts_from_source.py`). When a firmware changes
+the record and that source is not at hand, this tool finds where the battery block went (and
+where the bytes were inserted) from the records already captured.
 
 The store keeps the *raw* blob of every record (decoded or not), so the new layout can be
 recovered offline — no watch, no serial console, no firmware source (the record's 20-byte

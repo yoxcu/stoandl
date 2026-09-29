@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Offline HRM / power-draw offset check for the analytics native_heartbeat_record.
 
-No watch, daemon, or serial cable needed: it re-reads the *raw* 523-byte blobs stoandl already
-captured under <config>/battery/heartbeat/<serial>.ndjson and prints the power-relevant fields —
+No watch, daemon, or serial cable needed: it re-reads the *raw* blobs stoandl already captured
+under <config>/battery/heartbeat/<serial>.ndjson and prints the power-relevant fields —
 crucially `hrm@174` (the heart-rate on-time offset under test) in ms and as a % of the hour.
 
 Why: the reworked "what drew power" pie weights on-time by an estimated current, which would *mask* a
@@ -23,10 +23,10 @@ import base64, glob, json, os, struct, sys
 u32 = lambda b, o: struct.unpack_from("<I", b, o)[0]
 u16 = lambda b, o: struct.unpack_from("<H", b, o)[0]
 
-# Offsets verified against coredevices/PebbleOS@main (native.c + analytics.def); see
-# docs/battery-insights.md and the stoandl-heartbeat-record-layout note.
+# Offsets from PebbleOS analytics.def (tools/hb_layouts_from_source.py). hrm@174, backlight@138 and
+# cpu_running@198 hold in every layout since fw 4.20: 523 B/v1, 527 B/v1, 523 B/v2 and 567 B/v3.
 HRM_OFF = 174
-SIZE = 523
+SIZES = (523, 527, 567)
 
 
 def store_dir():
@@ -55,8 +55,8 @@ def main():
             continue
         for r in dec[-8:]:
             b = base64.b64decode(r["raw"])
-            if len(b) != SIZE:
-                print(f"  ts={r.get('watch_ts')} size={len(b)} (not {SIZE} — skip)")
+            if len(b) not in SIZES:
+                print(f"  ts={r.get('watch_ts')} size={len(b)} (not a fw >= 4.20 layout — skip)")
                 continue
             interval = u32(b, 130) + u32(b, 134)          # charge_ms + discharge_ms
             drop = u32(b, 108) / (u16(b, 112) or 1)       # firmware's own soc_pct_drop
@@ -67,7 +67,7 @@ def main():
                   f"backlight@138={u32(b,138)}ms cpu_run@198={u32(b,198)/(u16(b,202) or 1):.1f}%")
         if scan:
             b = base64.b64decode(dec[-1]["raw"])
-            if len(b) == SIZE:
+            if len(b) in SIZES:
                 print("  u32-LE neighbour scan of the last record (offset=value), hunting a plausible ms on-time:")
                 for o in range(130, 331, 4):
                     v = u32(b, o)
