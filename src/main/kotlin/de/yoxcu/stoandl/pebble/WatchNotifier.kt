@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.types.UInt32
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -125,6 +126,20 @@ class WatchNotifier(
 ) {
     private val log = KotlinLogging.logger {}
 
+    // For the sleep guard (power/SleepGuard): pushes currently between entry and the libpebble3 insert,
+    // and when the last insert happened — libpebble3's BlobDB picks the new row up through a Room flow a
+    // moment later, and only from then on does it show up in WatchLinkActivity.
+    private val inFlight = AtomicInteger(0)
+    @Volatile private var lastQueuedAtMs = 0L
+
+    /** Why a suspend should wait for this stage, or null: a push in progress, or one queued within
+     *  [pickupGraceMs] (not yet visible to libpebble3's BlobDB bookkeeping). */
+    fun pendingDescription(pickupGraceMs: Long): String? = when {
+        inFlight.get() > 0 -> "notification being built"
+        System.currentTimeMillis() - lastQueuedAtMs < pickupGraceMs -> "notification just queued"
+        else -> null
+    }
+
     /**
      * Build, mute-check, style, send, and route a notification on behalf of [ownerId] (with the
      * owner-opaque [ownerToken] recorded for the action callbacks). Returns the watch item UUID, or
@@ -132,6 +147,15 @@ class WatchNotifier(
      * (named… , reply, Mute, Dismiss) is mirrored into the [NotifRoute] so action ids line up.
      */
     suspend fun push(req: NotifRequest, ownerId: String, ownerToken: String?): Uuid? {
+        inFlight.incrementAndGet()
+        try {
+            return pushInternal(req, ownerId, ownerToken)
+        } finally {
+            inFlight.decrementAndGet()
+        }
+    }
+
+    private suspend fun pushInternal(req: NotifRequest, ownerId: String, ownerToken: String?): Uuid? {
         val cfg = configStore.current()
         // Global filters first: an `allow` match whitelists the notification (bypasses block filters, the
         // master forwarding switch AND per-app mute); a `block` match drops it. Then the master switch.
@@ -237,6 +261,7 @@ class WatchNotifier(
         }
         try {
             lp.sendNotification(notif)
+            lastQueuedAtMs = System.currentTimeMillis()
         } catch (e: Exception) {
             log.warn(e) { "Failed to send notification from ${req.appName} to watch" }
             routeTable.remove(notif.itemId)

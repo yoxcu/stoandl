@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.config
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.rebble.libpebblecommon.BleConnParamSet
 import java.io.File
 
 private val log = KotlinLogging.logger {}
@@ -203,6 +204,36 @@ data class StoandlConfig(
      *  single paired watch. On by default; turn off to pin the connection to the last-chosen watch
      *  (use `stoandl watch connect <name>` to move it). */
     val connectionAutoswitch: Boolean,
+    /** LE connection parameters the watch should use while idle (`ble.conn_params = min_ms,max_ms,
+     *  latency,supervision_ms`). Null (the default, `off`) keeps libpebble3's upstream behaviour: the
+     *  phone claims to manage the parameters and never changes them, so the link keeps whatever it had
+     *  at connect (often the watch's 15 ms bulk set). Set, the watch manages them with this set in all
+     *  three of its response-time slots, so it converges once and never asks again — each request needs
+     *  the host, i.e. a wake on a sleeping phone. On Linux the host must allow the interval:
+     *  `/etc/bluetooth/main.conf [LE] MaxConnectionInterval` ≥ max_ms / 1.25. Startup-only. */
+    val bleConnParams: BleConnParamSet?,
+    /** Optional fast set (`ble.conn_params_fast`) used during the connect handshake and bulk transfers
+     *  (firmware, language pack, app install, big syncs), then back to [bleConnParams]. Off by default:
+     *  on the Linux LL path a link dropped while fast is re-created fast and can't go slow again unless
+     *  the kernel carries the "K5" fix (see docs/deep-sleep.md). Only used with [bleConnParams]. */
+    val bleConnParamsFast: BleConnParamSet?,
+    /** Hold a logind *delay* inhibitor so a suspend waits (up to [powerSleepGuardMaxMs]) until watch
+     *  traffic in flight — typically the notification a push wake just produced — has reached the watch.
+     *  Also drives the suspend-aware (wall-clock) scheduling of weather/calendar/firmware checks. On by
+     *  default; harmless on desktops (released within milliseconds when nothing is pending). */
+    val powerSleepGuard: Boolean,
+    /** Longest a suspend is held for pending watch traffic, in ms (logind's own cap is
+     *  `InhibitDelayMaxSec`, 5 s by default). */
+    val powerSleepGuardMaxMs: Long,
+    /** Run the pairing-window BLE scan / BR/EDR inquiry only while the display is on (DRM DPMS). A scan
+     *  makes the controller report every nearby advertiser — with the link kept across suspend that is a
+     *  wake per report. On by default; no effect on machines without a readable DRM display state. */
+    val powerScreenGate: Boolean,
+    /** Pause the watch's datalog sends (health data, app datalog) while the display is off, resume when
+     *  it comes on (DataLogging SetSendEnabled). Saves the ~4 watch-initiated wakes per hour of the
+     *  15-minute datalog flush on a phone that keeps the link across suspend; health data then arrives
+     *  in bursts when the phone is used. Off by default. */
+    val powerPauseDatalogScreenOff: Boolean,
     /** Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time. [DndSyncMode.OFF]
      *  by default — it actively changes state on both the host and the watch, so it's opt-in (it never
      *  touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property)
@@ -248,6 +279,7 @@ data class StoandlConfig(
         private const val DEFAULT_FIRMWARE_COHORTS_URL = "https://cohorts.rebble.io"
         private const val DEFAULT_HEALTH_EXPORT_DAYS = 30
         private const val DEFAULT_BATTERY_RETENTION_DAYS = 90
+        private const val DEFAULT_SLEEP_GUARD_MAX_MS = 3000L
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
 
@@ -303,6 +335,12 @@ data class StoandlConfig(
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
             classicDiscover = true,
             connectionAutoswitch = true,
+            bleConnParams = null,
+            bleConnParamsFast = null,
+            powerSleepGuard = true,
+            powerSleepGuardMaxMs = DEFAULT_SLEEP_GUARD_MAX_MS,
+            powerScreenGate = true,
+            powerPauseDatalogScreenOff = false,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
             extensionConfig = emptyMap(),
@@ -401,6 +439,13 @@ data class StoandlConfig(
                 // read an absent key as false and contradict defaults(), conf.example and the docs.
                 classicDiscover = map["classic.discover"]?.let { parseBool(it) } ?: true,
                 connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
+                bleConnParams = parseConnParams("ble.conn_params", map["ble.conn_params"]),
+                bleConnParamsFast = parseConnParams("ble.conn_params_fast", map["ble.conn_params_fast"]),
+                powerSleepGuard = map["power.sleep_guard"]?.let { parseBool(it) } ?: true,
+                powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
+                    ?.coerceIn(0L, 4500L) ?: DEFAULT_SLEEP_GUARD_MAX_MS,
+                powerScreenGate = map["power.screen_gate"]?.let { parseBool(it) } ?: true,
+                powerPauseDatalogScreenOff = parseBool(map["power.pause_datalog_screen_off"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
                 batteryHistory = map["battery.history"]?.let { parseBool(it) } ?: true,
@@ -436,6 +481,10 @@ data class StoandlConfig(
                     (if (cfg.batteryHistory || cfg.batteryHeartbeat) " (retention=${cfg.batteryRetentionDays}d)" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
                     (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
+                    (cfg.bleConnParams?.let { ", bleConnParams=$it" + (cfg.bleConnParamsFast?.let { f -> " (fast $f)" } ?: "") } ?: "") +
+                    (if (!cfg.powerSleepGuard) ", sleepGuard=off" else if (cfg.powerSleepGuardMaxMs != DEFAULT_SLEEP_GUARD_MAX_MS) ", sleepGuardMaxMs=${cfg.powerSleepGuardMaxMs}" else "") +
+                    (if (!cfg.powerScreenGate) ", screenGate=off" else "") +
+                    (if (cfg.powerPauseDatalogScreenOff) ", pauseDatalogScreenOff=true" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
                     (if (!cfg.alertsEnabled) ", alerts=off"
                      else listOfNotNull(
@@ -481,6 +530,33 @@ data class StoandlConfig(
             } else {
                 CalDavAccount(id, url, parts.getOrElse(2) { "" }.trim())
             }
+        }
+
+        /** Parse `min_ms,max_ms,latency,supervision_ms` (e.g. `500,520,0,6000`); empty/`off` = not set.
+         *  A malformed or out-of-range set is dropped with a warning (the watch or the Linux host would
+         *  refuse it anyway), falling back to "not set". */
+        private fun parseConnParams(key: String, raw: String?): BleConnParamSet? {
+            val v = raw?.trim().orEmpty()
+            if (v.isEmpty() || v.lowercase() in setOf("off", "false", "no", "none")) return null
+            val parts = v.split(',').map { it.trim() }
+            val set = if (parts.size == 4) {
+                val min = parts[0].toDoubleOrNull()
+                val max = parts[1].toDoubleOrNull()
+                val latency = parts[2].toIntOrNull()
+                val supervision = parts[3].toIntOrNull()
+                if (min != null && max != null && latency != null && supervision != null) {
+                    BleConnParamSet(min, max, latency, supervision)
+                } else null
+            } else null
+            if (set == null) {
+                log.warn { "Ignoring malformed $key '$raw' (expected min_ms,max_ms,latency,supervision_ms, e.g. 500,520,0,6000)" }
+                return null
+            }
+            set.validate()?.let { problem ->
+                log.warn { "Ignoring $key '$raw': $problem" }
+                return null
+            }
+            return set
         }
 
         private fun parseBool(raw: String?): Boolean =

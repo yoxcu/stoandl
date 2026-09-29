@@ -15,6 +15,10 @@ import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.notification.NotificationFilters
+import de.yoxcu.stoandl.power.NoWakeups
+import de.yoxcu.stoandl.power.ScreenState
+import de.yoxcu.stoandl.power.SleepGuard
+import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
@@ -49,6 +53,7 @@ import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
+import io.rebble.libpebblecommon.BleConnParams
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
@@ -74,6 +79,7 @@ import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.bt.createBondClassic
 import io.rebble.libpebblecommon.connection.bt.isBondedClassic
 import io.rebble.libpebblecommon.connection.WatchConnector
+import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
@@ -87,6 +93,7 @@ import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
+import io.rebble.libpebblecommon.packets.DataLoggingOutgoingPacket
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.metadata.supportsHrm
 import io.rebble.libpebblecommon.services.DailySleep
@@ -136,6 +143,7 @@ import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
@@ -241,6 +249,16 @@ private val WRIST_OP_GRACE = 2.minutes
 // to outlast a `systemctl restart bluetooth` (BlueZ reloads bonds from disk in a few seconds).
 private val HOST_BOND_LOST_GRACE = 10.seconds
 
+// Sleep guard (power/SleepGuard): after WatchNotifier queues a notification, libpebble3's BlobDB picks
+// the new row up through a Room flow a moment later; until then it isn't visible in WatchLinkActivity,
+// so a notification queued this recently still counts as pending for a suspend.
+private const val NOTIFICATION_PICKUP_GRACE_MS = 1_000L
+// On-connect health request: skipped when the last one is this recent (a reconnect after a short drop;
+// on a live link the watch's own 15-minute datalog flushes keep the data coming anyway).
+private val HEALTH_RECONNECT_MIN_AGE = 15.minutes
+// Datalog pause (power.pause_datalog_screen_off): how often the display state is sampled while awake.
+private val SCREEN_POLL = 5.seconds
+
 private val log = KotlinLogging.logger {}
 
 class PebbleIntegration(
@@ -332,6 +350,14 @@ class PebbleIntegration(
     // notification id → callback to run when the user taps it (org.freedesktop.Notifications.ActionInvoked).
     @Volatile private var notifConn: DBusConnection? = null
     private val notificationActions = ConcurrentHashMap<UInt32, () -> Unit>()
+    // Suspend awareness — logind delay lock around watch deliveries + the resume signal the wall-clock
+    // schedulers ride on; see [SleepGuard]. Built in init() right after Koin (before the syncers that
+    // take its resume signal), started once libPebble is up.
+    private var sleepGuard: SleepGuard? = null
+    private lateinit var linkActivity: WatchLinkActivity
+    @Volatile private var lastHealthRequestMs = 0L
+    // Datalog send state last pushed to the connected watch (null = none yet); see startDatalogPolicy.
+    @Volatile private var datalogSendState: Boolean? = null
 
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer.
@@ -352,8 +378,14 @@ class PebbleIntegration(
         // The LibPebble-, Ble- and WatchConfigFlow are all pinned to this one flow in the override module
         // below so a persisted Java Preferences value (LibPebbleConfigHolder loads storage over our
         // default) can't undo them.
+        // connectionParams (ble.conn_params / ble.conn_params_fast, startup-only): null keeps libpebble3's
+        // upstream "phone manages the LE parameters" write; see libpebble3 ConnectionParams.
         val libPebbleConfig = LibPebbleConfig(
-            bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
+            bleConfig = BleConfig(
+                legacyReversedPPoG = false,
+                useReversedPpogV2 = false,
+                connectionParams = config.bleConnParams?.let { BleConnParams(idle = it, fast = config.bleConnParamsFast) },
+            ),
             watchConfig = WatchConfig(lanDevConnection = true),
         )
         val pinnedConfig = MutableStateFlow(libPebbleConfig)
@@ -365,6 +397,15 @@ class PebbleIntegration(
             proxyTokenProvider = MutableStateFlow(null),
             transcriptionProvider = NoOpTranscriptionProvider,
             injectedPKJSHttpInterceptors = InjectedPKJSHttpInterceptors(emptyList()),
+        )
+        linkActivity = koin.get()
+        sleepGuard = SleepGuard(
+            scope = scope,
+            linkActivity = linkActivity,
+            holdLock = config.powerSleepGuard,
+            maxHold = config.powerSleepGuardMaxMs.milliseconds,
+            pendingWork = ::pendingWatchWork,
+            beforeSleep = ::applyDatalogPolicyBeforeSleep,
         )
 
         // The single notification choke point + its action router (Phase 0 of the extension system):
@@ -487,6 +528,7 @@ class PebbleIntegration(
         watchConnector = koin.get()
         watchBluetoothPowerState()
         libPebble.init()
+        sleepGuard?.start()
         startScanLoop()
         startAutoConnect()
         startWristFollower()
@@ -500,6 +542,7 @@ class PebbleIntegration(
         startCallMonitor()
         applyWeather()
         startWatchPrefsSync()
+        startDatalogPolicy()
         applyDnd()
         // User extensions (companion apps): host-side child processes that drive watch notifications
         // (and reply/actions / watchapp AppMessages) over stdio JSON-RPC. They push through the same
@@ -563,6 +606,8 @@ class PebbleIntegration(
         }
         // Tear down the BlueZ pairing agent registered in init() (no-op if it never registered).
         pairingAgent.unregister()
+        // Drop the logind delay lock now rather than when the JVM's pipes close.
+        sleepGuard?.stop()
     }
 
     /**
@@ -598,7 +643,7 @@ class PebbleIntegration(
                 val classicConnected = libPebble.watches.value.any {
                     it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
                 }
-                if (btOn && pairingGate.isOpen() && !classicConnected) {
+                if (btOn && pairingGate.isOpen() && !classicConnected && screenAllowsScans()) {
                     if (!libPebble.isScanningClassic.value) {
                         log.info { "BT Classic: discovering (BR/EDR inquiry — pairing window open)" }
                         libPebble.startClassicScan()
@@ -717,7 +762,11 @@ class PebbleIntegration(
                 val connectInFlight = devices.any {
                     it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                 }
-                val wantScan = pairingGate.isOpen() && !connectInFlight
+                // …and only while the display is on (power.screen_gate): a scan makes the controller report
+                // every nearby advertiser, which on a phone keeping the watch link across suspend is a wake
+                // per report. Pairing needs the user at the screen anyway; the scan resumes if the window
+                // is still open when the display comes back.
+                val wantScan = pairingGate.isOpen() && !connectInFlight && screenAllowsScans()
                 if (wantScan && !libPebble.isScanningBle.value) {
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
@@ -837,13 +886,30 @@ class PebbleIntegration(
             val ticksToWarn = (DISCOVERY_WARN_GRACE / DISCOVERY_WARN_INTERVAL).toInt().coerceAtLeast(1)
             var warned = false
             var blockedTicks = 0
+            var warnedScreenOff = false
             try {
                 while (true) {
                     delay(DISCOVERY_WARN_INTERVAL)
                     val devices = libPebble.watches.value
+                    val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                    // Deep-sleep hosts (power.screen_gate): a discovery session left open while the display
+                    // is off makes the controller report every advertiser nearby — with the watch link kept
+                    // across suspend, each report wakes the phone. We can't stop another client's scan;
+                    // say so once per display-off period.
+                    if (config.powerScreenGate && ScreenState.isOn() == false) {
+                        if (!warnedScreenOff && btOn && externalDiscoveryActive()) {
+                            warnedScreenOff = true
+                            log.warn {
+                                "Bluetooth discovery is running while the display is off (another process holds " +
+                                    "Adapter1.Discovering) — on a phone that keeps the watch link across suspend " +
+                                    "every advertising report wakes it. Close the Bluetooth settings/pairing window."
+                            }
+                        }
+                    } else {
+                        warnedScreenOff = false
+                    }
                     if (devices.any { it is ConnectedPebbleDevice }) { warned = false; blockedTicks = 0; continue }
                     val haveBonded = devices.filterIsInstance<KnownPebbleDevice>().any { it !is ConnectedPebbleDevice }
-                    val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                     if (haveBonded && btOn && externalDiscoveryActive()) {
                         blockedTicks++
                         if (!warned && blockedTicks >= ticksToWarn) {
@@ -1297,6 +1363,7 @@ class PebbleIntegration(
             extraLocations = extraLocations,
             weatherPins = config.weatherPins,
             onSynced = { stampSync("weather") },
+            wakeups = wakeups(),
         )
         ws.start()
         weatherSyncRef.set(ws)
@@ -1319,6 +1386,7 @@ class PebbleIntegration(
             watchDirs = ::calendarWatchDirs,
             isEnabled = { config.calendarEnabled },
             onSync = { stampSync("calendar") },
+            wakeups = wakeups(),
         )
 
     /** Assemble the calendar sources from the CURRENT config (read live, so source CRUD takes effect on
@@ -1357,6 +1425,73 @@ class PebbleIntegration(
             .distinctUntilChanged()
             .onEach { connected -> if (connected) action() }
             .launchIn(scope)
+
+    /** Resume signal for the wall-clock schedulers (weather, calendar, firmware check); see [SleepGuard]. */
+    private fun wakeups(): Flow<Unit> = sleepGuard?.resumed ?: NoWakeups
+
+    /** What a suspend should still wait for — polled by [SleepGuard] after logind's PrepareForSleep(true).
+     *  Null when nothing is owed to or awaited from the watch. */
+    private fun pendingWatchWork(): String? {
+        val parts = buildList {
+            if (::watchNotifier.isInitialized) watchNotifier.pendingDescription(NOTIFICATION_PICKUP_GRACE_MS)?.let(::add)
+            if (linkActivity.busy.value) add(linkActivity.summary())
+            val negotiating = libPebbleRef.get()?.watches?.value
+                ?.any { it is ConnectingPebbleDevice && it.negotiating } == true
+            if (negotiating) add("watch negotiating")
+        }
+        return if (parts.isEmpty()) null else parts.joinToString("; ")
+    }
+
+    /** Pairing-window scans run only while the display is on (`power.screen_gate`); unknown counts as on. */
+    private fun screenAllowsScans(): Boolean = !config.powerScreenGate || ScreenState.isOn() != false
+
+    /**
+     * Datalog send policy (DataLogging SetSendEnabled, 0x8B). With `power.pause_datalog_screen_off` the
+     * watch's datalog sends — health data and custom-app datalog — are paused while the display is off
+     * and resumed when it comes on: on a phone that keeps the watch link across suspend that removes the
+     * ~4 watch-initiated wakes per hour of PebbleOS's 15-minute datalog flush (the watch spools meanwhile).
+     *
+     * The flag lives in watch RAM (PebbleOS `s_sends_enabled_pp`) and survives a disconnect, so every fresh
+     * connect sends the wanted state — also with the option off, so turning the option off (or stoandl
+     * dying while paused) can't leave a watch that never sends its data again. Transitions are sampled every
+     * [SCREEN_POLL] while awake, and right before each suspend ([applyDatalogPolicyBeforeSleep]).
+     */
+    private fun startDatalogPolicy() {
+        onFreshConnect { pushDatalogSendState(datalogSendWanted(), "watch connected", force = true) }
+        if (!config.powerPauseDatalogScreenOff) return
+        log.info { "Datalog sends paused while the display is off (power.pause_datalog_screen_off)" }
+        scope.launch {
+            while (true) {
+                delay(SCREEN_POLL)
+                pushDatalogSendState(datalogSendWanted(), "display state")
+            }
+        }
+    }
+
+    private fun datalogSendWanted(): Boolean = !(config.powerPauseDatalogScreenOff && ScreenState.isOn() == false)
+
+    /** SleepGuard hook: settle the datalog state before the suspend (a display that just went dark may not
+     *  have been sampled yet); the packet then drains like any other pending PPoG traffic. */
+    private suspend fun applyDatalogPolicyBeforeSleep() {
+        if (config.powerPauseDatalogScreenOff) pushDatalogSendState(datalogSendWanted(), "before suspend")
+    }
+
+    private suspend fun pushDatalogSendState(enabled: Boolean, why: String, force: Boolean = false) {
+        if (!force && datalogSendState == enabled) return
+        val watches = libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>()
+        if (watches.isEmpty()) return
+        watches.forEach { w ->
+            runCatching { w.sendPPMessage(DataLoggingOutgoingPacket.SetSendEnabled(enabled)) }
+                .onFailure { log.warn { "Datalog SetSendEnabled($enabled) to ${w.displayName()} failed: ${it.message}" } }
+        }
+        val changed = datalogSendState != enabled
+        datalogSendState = enabled
+        if (config.powerPauseDatalogScreenOff && changed) {
+            log.info { "Watch datalog sends ${if (enabled) "resumed" else "paused"} ($why)" }
+        } else {
+            log.debug { "Watch datalog sends ${if (enabled) "enabled" else "disabled"} ($why)" }
+        }
+    }
 
     private fun startWatchPrefsSync() {
         // Always build the control (the `settings` / `settings set` CLI works even with nothing in the config).
@@ -1452,10 +1587,11 @@ class PebbleIntegration(
         }
         // Check on each fresh connect…
         onFreshConnect { if (shouldNotify()) scope.launch { firmwareControl.maybeNotify(dailyMs) } }
-        // …and re-check daily while a watch stays connected.
+        // …and re-check daily while a watch stays connected (wall-clock: on a phone suspended most of the
+        // day a monotonic delay would stretch "daily" to about a week).
         scope.launch {
             while (true) {
-                delay(dailyMs)
+                delayWallClock(1.days, wakeups())
                 if (shouldNotify() && libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
                     firmwareControl.maybeNotify(dailyMs)
                 }
@@ -1508,7 +1644,16 @@ class PebbleIntegration(
             return
         }
         log.info { "Health sync on (request steps/sleep/HR/workouts from the watch on each connect)" }
-        healthRequestJob = onFreshConnect { libPebble.requestHealthData(fullSync = false) }
+        healthRequestJob = onFreshConnect {
+            // A reconnect after a short drop doesn't need another request (see HEALTH_RECONNECT_MIN_AGE).
+            val now = System.currentTimeMillis()
+            if (now - lastHealthRequestMs < HEALTH_RECONNECT_MIN_AGE.inWholeMilliseconds) {
+                log.info { "Health: last request ${(now - lastHealthRequestMs) / 60_000} min ago — not re-requesting on this connect" }
+            } else {
+                lastHealthRequestMs = now
+                libPebble.requestHealthData(fullSync = false)
+            }
+        }
     }
 
     /** (Re)start or stop battery-insights capture against the current config. Idempotent: rebuilds the
