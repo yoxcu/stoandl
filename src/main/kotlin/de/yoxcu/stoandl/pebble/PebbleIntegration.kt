@@ -87,6 +87,7 @@ import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
+import io.rebble.libpebblecommon.database.dao.HealthSettingsEntryRealDao
 import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
 import io.rebble.libpebblecommon.database.dao.TimelineNotificationRealDao
 import io.rebble.libpebblecommon.database.entity.MuteState
@@ -174,6 +175,8 @@ import io.rebble.libpebblecommon.util.SystemGeolocation
 import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
+// libpebble3's HealthParams BlobDB key for the watch's metric/imperial units (the firmware's own name).
+private const val UNITS_DISTANCE_KEY = "unitsDistance"
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
 // A monitored window (Pair/Repair) resolves this long after its gate closes, so a bond already under way
 // when discovery stops is still reported as paired.
@@ -287,6 +290,7 @@ class PebbleIntegration(
     private val serviceConn: DBusConnection,
 ) {
     private lateinit var libPebble: LibPebble
+    private lateinit var healthSettingsDao: HealthSettingsEntryRealDao
     private lateinit var watchConnector: WatchConnector
     private lateinit var firmwareControl: FirmwareControl
     private lateinit var languageControl: LanguageControl
@@ -554,6 +558,7 @@ class PebbleIntegration(
 
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
+        healthSettingsDao = koin.get()
         firmwareControl = FirmwareControl(libPebbleRef, scope, { config }, notifyDesktop = { summary, body, label, onAction ->
             // Desktop-only (not bridged to the watch): the watch gets a direct notif too.
             sendActionableNotification(summary, body, label, onInvoke = onAction)
@@ -1436,6 +1441,21 @@ class PebbleIntegration(
         }
     }
 
+    /**
+     * Weather goes out in the watch's units (`unitsDistance`), but that row reaches the watch only once
+     * something has written it, and libpebble3 reads a missing row as metric while the watch keeps its
+     * factory default (miles). So write the host's value once, when libpebble3 has no row yet — never
+     * over one: its timestamp is what lets a units change made on the watch win. (Re-stamping it on every
+     * weather start or reconfigure made such a change look stale, pushed the host's old value back over
+     * it, and re-sent the row each time.)
+     */
+    private suspend fun seedWatchUnits() {
+        if (healthSettingsDao.getEntryFlow(UNITS_DISTANCE_KEY).first() != null) return
+        val imperial = libPebble.healthSettings.first().imperialUnits
+        libPebble.updateImperialUnits(imperial)
+        log.info { "Watch units: none stored yet — wrote ${if (imperial) "imperial" else "metric"} so weather and the watch agree" }
+    }
+
     /** (Re)start or stop weather sync against the current config — at boot and on SetSyncEnabled/SetConfig.
      *  Idempotent: stops any running instance, then starts a fresh one when `weather.enabled` is on and a
      *  source is configured. A weather.* config change re-runs this (rebuilds with the new locations/pins/etc). */
@@ -1473,6 +1493,9 @@ class PebbleIntegration(
             onSynced = { stampSync("weather") },
             wakeups = wakeups(),
         )
+        scope.launch {
+            runCatching { seedWatchUnits() }.onFailure { log.warn { "Could not sync the watch's units: ${it.message}" } }
+        }
         ws.start()
         weatherSyncRef.set(ws)
         log.info {

@@ -141,13 +141,6 @@ class WeatherSync(
             }
             .launchIn(scope)
 
-        // The units row reaches the watch only once something has written it, and libpebble3 reads an
-        // unwritten row as metric while the watch keeps its own default (Miles). Write the host value
-        // so both sides agree even when no health profile was ever set.
-        scope.launch {
-            runCatching { libPebble.updateImperialUnits(libPebble.healthSettings.first().imperialUnits) }
-                .onFailure { log.warn { "Could not sync the watch's units: ${it.message}" } }
-        }
         // A units change (`stoandl health profile set units …`) re-fetches in the new unit right away.
         libPebble.healthSettings
             .map { it.imperialUnits }

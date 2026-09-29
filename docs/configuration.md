@@ -206,8 +206,9 @@ metric/imperial choice that also sets the Health app's distances. Change it with
 `stoandl health profile set units imperial` (or `metric`); weather refreshes in the new unit straight
 away. They have to be one setting: from PebbleOS 4.37 the watch converts its weather-warning
 thresholds to °F when its units are imperial, so °C readings on an imperial watch warned "Below
-freezing" on a warm day. stoandl writes its units to the watch when weather starts, so a watch still on
-its factory default (miles) follows the host too. A `weather.units` line left over from an older
+freezing" on a warm day. The first time weather starts, stoandl writes its units to the watch if none were
+ever stored, so a watch still on its factory default (miles) follows the host too; a units row that
+exists (set from the host or on the watch) is never overwritten. A `weather.units` line left over from an older
 stoandl is ignored (the daemon logs a warning).
 
 Data comes from [Open-Meteo](https://open-meteo.com/) — a free, no-API-key, no-account provider, which
