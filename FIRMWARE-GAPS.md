@@ -249,10 +249,14 @@ itself.
 TESTING §5.23b, plus these rows:
 
 - BLE reconnect, suspend/resume and first pair
+- BLE daemon restart **while the watch stays linked** (lazy GATT registration: the PPoG service then appears
+  mid-link, and the watch gets a Service Changed): the forward handshake completes within 20 s, no
+  `negotiation timed out`
 - Classic
-- PKJS: `Pebble JS Bridge initialized.`, Clay, AppMessage, XHR
+- PKJS: `Pebble JS Bridge initialized.`, Clay, AppMessage, XHR, and a timeline-pin app (its XHR to the timeline
+  API is intercepted; its `onload` must fire)
 - datalog §5.8
-- firmware §5.11
+- firmware §5.11, including the downgrade through recovery (5.11e)
 - weather, music and calendar
 
 **Handle §4.5 (downgrade → PRF) before shipping.** Only then promote to `stoandl`, update `.gitmodules`, and
