@@ -56,6 +56,8 @@ Pebble watch over BLE/PPoG
 
 - `KermitSlf4jWriter` bridges libpebble3's Kermit logger into SLF4J/Logback. Tag names are cleaned: strips `/{...}` and `-{...}` device-path suffixes, and also plain app-name suffixes (`RhinoJsRunner-Hooky` → `RhinoJsRunner`) so logback entries match without knowing the app name.
 
+- `power/` makes the daemon suspend-aware for phones that deep-sleep (see [docs/deep-sleep.md](docs/deep-sleep.md)): `SleepGuard` holds a logind *delay* lock (a `systemd-inhibit … cat` child — dbus-java's native transport can't receive logind's fd) and drains pending watch traffic (libpebble3 `WatchLinkActivity`) on `PrepareForSleep(true)`; periodic work uses `delayWallClock()` (monotonic `delay()` stops while suspended) and re-checks on `SleepGuard.resumed`. Never use a *block* lock for routine work — it makes a one-shot `systemctl suspend` fail.
+
 - Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO: startup, scan, watch connected, notifications, PKJS lifecycle. Set `STOANDL_LOG=DEBUG` (env var or `-DSTOANDL_LOG=DEBUG` JVM flag) for full BLE/protocol packet traces.
 
 ## libpebble3 submodule

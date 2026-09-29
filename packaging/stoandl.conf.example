@@ -300,6 +300,28 @@ classic.discover = true
 # `stoandl watch connect <name>`).
 connection.autoswitch = true
 
+# ── Phones that deep-sleep (suspend whenever the screen is off) ───────────────────────────────────
+# See docs/deep-sleep.md. Harmless on a desktop; the first three are on by default.
+#
+# Hold a logind delay lock so a suspend waits (at most power.sleep_guard_max_ms) until watch traffic in
+# flight — typically the notification a push wake just produced — has reached the watch.
+power.sleep_guard = true
+power.sleep_guard_max_ms = 3000
+# Run the pairing-window BLE scan / BR/EDR inquiry only while the display is on.
+power.screen_gate = true
+# Pause the watch's datalog (health data, flushed every 15 min) while the display is off; it arrives
+# when the phone is used again. Saves ~4 wakes/h on a phone that keeps the watch link across suspend.
+power.pause_datalog_screen_off = false
+#
+# LE connection parameters the watch keeps while idle: min_ms,max_ms,latency,supervision_ms. Off = the
+# upstream behaviour (the link keeps whatever it had at connect, often 15 ms). 500,520,0,6000 suits a
+# sleeping phone; it needs /etc/bluetooth/main.conf [LE] MaxConnectionInterval=416 — read
+# docs/deep-sleep.md first (the Linux "LL trap"). Watch buttons react up to one interval later.
+# ble.conn_params = 500,520,0,6000
+# Optional fast set during the connect handshake and bulk transfers. Only with the K5 kernel fix (or a
+# watch that uses L2CAP signalling) — see docs/deep-sleep.md.
+# ble.conn_params_fast = 15,15,0,6000
+
 # ── Do Not Disturb ↔ Quiet Time ──────────────────────────────────────────────────────────────────
 # Mirror the desktop's "Do Not Disturb" toggle and the watch's manual Quiet Time so enabling one
 # enables the other. The host backend is auto-detected: GNOME/Phosh (the show-banners GSettings) or

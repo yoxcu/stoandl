@@ -1422,6 +1422,44 @@ under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test
 
 ---
 
+## 5.32 Phones that deep-sleep (sleep guard, wall-clock sync, screen gate, conn params)  ⚠️ UNVERIFIED (needs a phone that suspends + a watch)
+
+See [docs/deep-sleep.md](docs/deep-sleep.md). The sleep guard holds a logind **delay** lock
+(`systemd-inhibit --who=stoandl --mode=delay … cat` child) and, on `PrepareForSleep(true)`, waits up to
+`power.sleep_guard_max_ms` while libpebble3's `WatchLinkActivity` (PPoG backlog + unattempted BlobDB
+records), a notification being built/just queued, or a negotiation is pending. Weather/calendar/firmware
+checks use the wall clock and re-check on every resume. Pairing scans need the display on. Optional:
+`ble.conn_params` (watch-managed idle set), `power.pause_datalog_screen_off`.
+
+Off-device already done: a scratch harness (embedded dbus-java bus + fake `systemd-inhibit`) passes lock
+at start / instant release when idle / hold until pending clears / retry after refusals / cap + stuck
+breaker / re-acquire after external kill / release on stop and on `kill -9` of the JVM; libpebble3
+`ConnectionParamsTest` + `WatchLinkActivityTest` green.
+
+**Prerequisite:** the daemon on the phone, watch connected; `tail -f /tmp/stoandl.log`; for the suspend
+tests a way to suspend with the screen off (`systemctl suspend`, or the phone's own autosuspend). With
+`STOANDL_LOG=DEBUG` every suspend/resume is logged.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.320 | Lock taken | start the daemon; `systemd-inhibit --list` | Log `Sleep guard on: logind delay lock …`; the list shows `stoandl … sleep … delay`. |
+| 5.321 | Idle suspend not delayed | nothing pending; `systemctl suspend`, wake it | Suspend proceeds at once; DEBUG `PrepareForSleep: nothing pending`; after resume the lock is back in `systemd-inhibit --list` within ~2 s (logind refuses it for a moment — DEBUG `delay lock refused` then taken). |
+| 5.322 | Delivery before sleep | send a notification (e.g. `notify-send test`) and suspend within 1 s | Log `PrepareForSleep: held the suspend N ms until the watch traffic was done (…)` with N ≲ 1500; the notification is on the watch **before** the phone sleeps (with Mode B: no extra wake for it). |
+| 5.323 | Cap | watch out of range but "connected" state stale, or pull the watch's battery mid-delivery | `still pending after 3000 ms (…) — letting the system sleep`; the 4th identical one is ignored (DEBUG `ignoring`). |
+| 5.324 | Lock dies with the daemon | `kill -9` the stoandl JVM; `systemd-inhibit --list` | No `stoandl` entry left (cat got EOF). Restart: lock back. |
+| 5.325 | Weather on the wall clock | `weather.interval = 30`, phone mostly suspended for 2 h | `Weather updated` roughly every 30 min of **real** time (right after a wake), not every 30 min awake. A reconnect within 30 min logs `weather is N min old, not refetching`. |
+| 5.326 | Screen gate | `stoandl watch pair`, then turn the display off | `Starting BLE scan` stops; `btmgmt`/`bluetoothctl show` → `Discovering: no` within ~2 s; display on again (window still open) → scan resumes. Open the Plasma Bluetooth page, turn the display off → one WARN `Bluetooth discovery is running while the display is off`. |
+| 5.327 | Conn params (needs `ble.conn_params = 500,520,0,6000` + main.conf `MaxConnectionInterval=416`) | restart bluetooth + stoandl, let the watch connect | `watch-managed connection parameters: idle 500-520ms/…`, then `link parameters now interval 500.0ms…` (or 510/520) and after 60 s `link at idle parameters`. `btmon`: one `LE Connection Update Complete` with interval 400–416. If instead `link still at …` WARN: check main.conf and `/var/lib/bluetooth/<ad>/<watch>/info [ConnectionParameters]` (the LL trap). |
+| 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min, then on | `Watch datalog sends paused (display state|before suspend)` / `resumed (display state)`; no datalog wakes while paused; health data arrives after the display comes on (`stoandl health` / `health/daily.ndjson`). |
+| 5.329 | Desktop regression | on a desktop without suspend | Only `Sleep guard on` at startup; nothing else changes. Without systemd-inhibit: `neither systemd-inhibit nor elogind-inhibit found` WARN, daemon otherwise normal. |
+
+**Open questions for hardware:** (a) how long a push-wake delivery really takes at 500 ms intervals
+(the 3 s cap vs. the phone's own fast-resuspend delay); (b) whether the WCN3990 keeps the LE link
+through s2idle with the Mode B kernel patches; (c) LL vs L2CAP parameter-update path of the Time 2
+(btmon) — decides whether `ble.conn_params_fast` is safe without K5.
+
+---
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

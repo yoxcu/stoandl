@@ -592,6 +592,16 @@ _Find-my-phone (Ring + Stop) is hardware-verified ([TESTING.md §5.26](../TESTIN
 notification core and install/hotplug paths are built + smoke-tested but not yet run on hardware._
 Design + wire protocol: [extensions.md](extensions.md).
 
+### Phones that deep-sleep (suspend-aware daemon)
+
+For a phone that suspends whenever the screen is off: a logind delay lock makes a suspend wait until
+a notification in flight has reached the watch; weather/calendar/firmware checks count real time and
+run right after a resume when overdue; pairing scans only run with the display on; optional slow,
+fixed BLE connection parameters (`ble.conn_params`) and a datalog pause while the display is off.
+Groundwork for keeping the watch link across suspend ("Mode B", needs host kernel work). _Built,
+compiles, harness-tested off-device; not yet run on hardware ([TESTING.md §5.32](../TESTING.md))._
+Details: [deep-sleep.md](deep-sleep.md).
+
 ### Multiple concurrent Pebble watches
 
 `libPebble.watches` is a `List<PebbleDevice>`; scan, auto-connect, notifications, and calls all iterate
