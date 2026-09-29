@@ -214,7 +214,8 @@ is an app name / `off` / a raw uuid; `allowed` is the literal `off|<app name or 
 by app name), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
 **`schedule`** (the Quiet Time weekday/weekend hours: `current`/`default` are a 24 h `HH:MM-HH:MM`
 window in the watch's local time, where an end before the start runs overnight; `allowed` is the
-literal `HH:MM-HH:MM`). **The `allowed` option list is pipe-(`|`)-separated** for
+literal `HH:MM-HH:MM`. The hours alone do nothing: the matching `bool` pref
+`dndWeekdayScheduleEnabled`/`dndWeekendScheduleEnabled`, off by default, turns the schedule on). **The `allowed` option list is pipe-(`|`)-separated** for
 `enum`/`quicklaunch`/`color` (a display name can contain a comma), so split on `|`, not `,`.
 `SetWatchPref` parses the value per type and accepts an enum display-name-or-constant, a color
 preset-name-or-hex, a quick-launch app-name-or-uuid-or-`off`, and a schedule `HH:MM-HH:MM`.
