@@ -1729,6 +1729,35 @@ SleepGuard's `resumed`. Then run:
 
 ---
 
+## 5.33 libpebble3 on upstream `e6b5138e` (fork branch `stoandl-bump`)  ⚠️ UNVERIFIED (needs a watch; a classic watch and PKJS apps for some rows)
+
+The fork moved from its old base `e4180ffc` onto upstream `coredevices/libpebble3` `e6b5138e`
+(518 upstream commits; [FIRMWARE-GAPS.md §3](FIRMWARE-GAPS.md)). The submodule follows fork branch
+`stoandl-bump`; it becomes `stoandl` once this pass is green. Offline everything passes: the fork's
+jvmTest (PPoG, the whole Koin graph, PKJS on GraalJS, notification catch-up), the daemon tests, and a
+no-watch boot smoke that also migrated a v38 database to v47. These rows need hardware.
+
+**Before upgrading:** `stoandl backup`. Room goes from schema 38 to 47 on the first start, one way: an
+older jar wipes `libpebble3.db` (destructive downgrade). **Rollback:** stop the daemon, install the
+older jar, `stoandl restore` that backup.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.33a | Upgrade in place | install over an existing setup, restart, let the watch connect | No Room, SQLite or Koin errors in the log; the watch connects without a re-pair. `stoandl apps list` shows the same locker (the 39→40 migration re-syncs the whole locker once); `stoandl notif list` keeps its mutes. |
+| 5.33b | Restart with the watch still linked | watch connected, `systemctl --user restart stoandl`; repeat 3× | GATT registration is lazy now (upstream's): `BlueZ GATT application registered` comes at the first connect, possibly while bluetoothd has already re-linked the watch, which then gets a Service Changed. Pass: `StartNotify on PPoG characteristic` and a delivered test notification within 20 s of `connect() starting`; no `negotiation timed out`. |
+| 5.33c | First pair | `stoandl watch unpair <name>`, forget the phone on the watch, `stoandl watch pair` | Pairs and connects as in 5.32e; a test notification arrives. |
+| 5.33d | Suspend, resume, out of range | desktop suspend/resume; phone Mode A (5.32h2); walk out of range and back | The link comes back each time without a daemon restart, and notifications follow. |
+| 5.33e | Classic watch | a bonded Time Steel: restart the daemon; then open a pairing window (`stoandl watch pair`) | Reconnects over RFCOMM as in §5.22. During the window the bonded classic watch stays in `stoandl watch list`: the fork's extra Classic branch in the device factory was dropped as redundant (it had hidden known classic watches during an inquiry). |
+| 5.33f | PKJS | the §5.23a rows, plus an app that reuses one `XMLHttpRequest`, and a timeline-pin app (its XHR to the timeline API is intercepted) | `Pebble JS Bridge initialized.`; the reused XHR's second request completes; the intercepted XHR's `onload` fires and the pin appears. No `TypeError` from a call into the host (`Pebble`, XHR, `localStorage`): watchapp JS now reaches only an allow-list of host methods (before, any Java method, `Runtime.exec` included). |
+| 5.33g | Datalog | §5.8 with the test watchapp | Records arrive as before. Batches come from upstream's `thirdPartyEvents` now: malformed ones are dropped, and health tags are consumed only for the system app. |
+| 5.33h | Firmware | §5.11, including 5.11e–5.11h | As there. |
+| 5.33i | Weather, non-ASCII name | `weather.locations = München:48.137:11.575`, `stoandl weather`, on fw ≥ 4.34 | The Weather app shows München with fresh data. The record's string length now counts UTF-8 bytes (upstream `cf8f33e4`); before, the watch rejected such a record and kept the old data. |
+| 5.33j | New watch prefs | `stoandl settings dnd`, `stoandl settings light`, `stoandl settings language` | Listed: `dndWeekdaySchedule`/`dndWeekendSchedule` (type `schedule`, `00:00-06:00`) and their `…Enabled` bools, `dndAutoDismiss` (fw ≥ 4.37), `lightPreset`, `lightDynamicMode`, `language`. Gone: `langEnglish`, `lightDynamicIntensity`, `dynBacklightMinThreshold`. `settings set dndWeekdaySchedule 22:30-07:00` plus `settings set dndWeekdayScheduleEnabled true` puts the watch in Quiet Time at 22:30 on a weekday. A `watch.langEnglish` line left in stoandl.conf logs `Unknown watch pref 'langEnglish' in config — ignoring`. **Record:** does a `lightPreset` written from the host apply its backlight bundle, or only store the value? |
+| 5.33k | Health | 5.219 and 5.219d; after a synced night, the watch's sleep card | The sleep card shows plausible typical bedtime and wake times (upstream `7de45f8a`/`42cbc5a4`; before, epoch seconds and zero typicals). |
+| 5.33l | Quick wired-feature pass | 5.239 (battery, screenshot, language list, music from the watch), plus a calendar reminder | Each still works. A calendar reminder now offers Dismiss/Snooze on the watch (upstream `d1cffc9e`). |
+
+---
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

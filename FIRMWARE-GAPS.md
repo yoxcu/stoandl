@@ -10,6 +10,12 @@ The per-item dispositions live in [docs/pebbleos-changelog-review.md](docs/pebbl
 
 Each item says whether it is implemented. Everything implemented is _TBT_ on hardware until its TESTING row passes.
 
+**Status (2026-09-29).** The libpebble3 bump (§3) is done on fork branch `stoandl-bump`, on upstream `e6b5138e`
+(`433fef18` plus the ar_SA pack). It brought every upstream commit §2 lists. The §1 host fixes and the §4.5
+downgrade handling are implemented too. None of it has run on a watch yet: the bump's hardware pass is
+[TESTING §5.33](TESTING.md), and each item below names its own rows. Still open: the fork-only VibeScore patch
+(§2), §4 apart from §4.1 and §4.5, and §5 apart from the languages note.
+
 ## Sources and method
 
 - **Changelog.** The Notion changelog carries notes only for **v4.38.1** in this window. v4.37.0, v4.38.0,
@@ -24,16 +30,16 @@ Each item says whether it is implemented. Everything implemented is _TBT_ on har
 
 ## 0. Priorities
 
-| # | What | Why first | Effort | Needs bump? |
-| --- | --- | --- | --- | --- |
-| 1 | Cherry-pick upstream `90b9caa3` (health parser) into the fork | Data loss: fw 4.38.0/4.38.1 minute records drop **all** steps and HR. A future fw will likely send v14 again, and then it loses everything on every watch | trivial | no |
-| 2 | Heartbeat `(567, 3)` layout row | Battery insights' power pie, drain bars and notification overlay have been **dark since fw 4.33** | trivial | no |
-| 3 | Weather: UTF-8 string length (`cf8f33e4`) + units from `unitsDistance` | Non-ASCII locations never update; warnings say "Below freezing" on warm days | trivial + small | no |
-| 4 | Firmware "latest" = max semver | A backport release can hide newer fw, and a PRF watch would flash the backport | small | no |
-| 5 | Small correctness fixes: notification timeout ≥15 s, all-day at UTC midnight, session distance ×100, sleep-card cherry-picks, `textStyle` docs | Each is a wrong result in a shipped feature | trivial each | no |
-| 6 | libpebble3 bump to `433fef18` (§3) | Unlocks notification images, album art, weather v4, new prefs, QEMU testing, firmware resume/CRC | 4–6 d + 1–2 d HW | — |
-| 7 | Host features independent of the bump (§5) | `pebbleos-translations` packs (4.38 removed built-in languages), Quick Launch actions, MPRIS seek | small each | no |
-| 8 | Features on top of the bump (§4) | New prefs → weather v4 → album art → notification images, by value for effort | 0.5–3 d each | yes |
+| # | What | Why first | Effort | Needs bump? | Status |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Cherry-pick upstream `90b9caa3` (health parser) into the fork | Data loss: fw 4.38.0/4.38.1 minute records drop **all** steps and HR. A future fw will likely send v14 again, and then it loses everything on every watch | trivial | no | Done with the bump; TBT 5.219 |
+| 2 | Heartbeat `(567, 3)` layout row | Battery insights' power pie, drain bars and notification overlay have been **dark since fw 4.33** | trivial | no | Done; TBT 5.29M |
+| 3 | Weather: UTF-8 string length (`cf8f33e4`) + units from `unitsDistance` | Non-ASCII locations never update; warnings say "Below freezing" on warm days | trivial + small | no | Done (UTF-8 with the bump); TBT 4.4–4.4c, 5.33i |
+| 4 | Firmware "latest" = max semver | A backport release can hide newer fw, and a PRF watch would flash the backport | small | no | Done; TBT 5.11f, 5.11g |
+| 5 | Small correctness fixes: notification timeout ≥15 s, all-day at UTC midnight, session distance ×100, sleep-card cherry-picks, `textStyle` docs | Each is a wrong result in a shipped feature | trivial each | no | Done (sleep card and timeout floor with the bump); TBT 5.219d, 5.56a, 5.27b, 5.33k |
+| 6 | libpebble3 bump to `433fef18` (§3) | Unlocks notification images, album art, weather v4, new prefs, QEMU testing, firmware resume/CRC | 4–6 d + 1–2 d HW | — | Done on fork branch `stoandl-bump` (`e6b5138e`); hardware pass TESTING §5.33, then promote |
+| 7 | Host features independent of the bump (§5) | `pebbleos-translations` packs (4.38 removed built-in languages), Quick Launch actions, MPRIS seek | small each | no | Open, except the 4.38 languages note (§1.6) |
+| 8 | Features on top of the bump (§4) | New prefs → weather v4 → album art → notification images, by value for effort | 0.5–3 d each | yes | Open, except the schedule pref (§4.1) and downgrades (§4.5) |
 
 ---
 
@@ -74,6 +80,8 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   from the DB over `health.export_days`: until those days age out, the file mixes old rows (`active_kcal`
   = the resting value) with new ones. `daily.ndjson` is unaffected (minute data). Release-note it (TESTING
   5.219); a one-off swap of the old rows is possible but needs a reliable "done" marker.
+- **Done with the bump, to be tested (TESTING 5.219).** `90b9caa3` is in `stoandl-bump`. The old overlay
+  rows are not rewritten (release note).
 - **Not fixed upstream: session distance.** The overlay distance is `distance_meters` on the wire, but it is
   stored as `distanceCm`, and `HealthExporter.kt:120` divides by 100. Change that line to
   `put("distance_m", s.distanceCm)`. Line `:165` is minute-level and really is cm, so it is fine. Past NDJSON
@@ -83,6 +91,7 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
     `docs/configuration.md` says so.
 - **Sleep card.** Cherry-pick `7de45f8a` then `42cbc5a4`. Fork `HealthStatsSync.kt:107-113` writes epoch
   seconds into the watch's bedtime/wake fields, and `:155-158` writes zero typicals.
+  - **Done with the bump, to be tested (TESTING 5.33k).** Both are in `stoandl-bump`.
 - **HW check.** After moving the watch to 4.38.2, see whether the next sync backfills the 4.38.0/4.38.1 gap
   (`MAX(timestamp)` did not advance).
 
@@ -95,6 +104,8 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   the record `E_INVALID_ARGUMENT`. The row stays dirty with no error surfaced.
 - **Fix.** Cherry-pick upstream `cf8f33e4` (helper `serializedWeatherStringsLength()`). Independently, make the
   `else` phrase ASCII ("Unknown").
+- **Done with the bump, to be tested (TESTING 5.33i).** `cf8f33e4` is in `stoandl-bump`. With the length in
+  UTF-8 bytes the "—" phrase is valid, so it stays.
 
 ### 1.4 Weather: warning thresholds follow the watch's `unitsDistance` (fw ≥4.37.0)
 
@@ -108,7 +119,8 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   `healthSettings.imperialUnits` on every sync and re-fetches when it changes. It also writes that value to
   the watch when weather starts: libpebble3 syncs the units row only once something has written it, and
   reads an unwritten row as metric while the watch stays on Miles. `weather.units` is gone from config,
-  schema and docs; a leftover line is ignored with a warning. The GUI mock still serves the key.
+  schema and docs; a leftover line is ignored with a warning. The GUIs render the schema, so they drop the
+  combo on their own; only stoandl-gui's mock daemon lists it by hand.
 
 ### 1.5 Firmware check: backports hijack "latest"
 
@@ -153,17 +165,24 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   fw, and each rejected row is resent on every connect (`BlobDB.kt:374-384`). Hide them with a small deny-list
   pre-bump, or just take the bump, which removes them. Drop the GUI section-rule special cases (`qml:75`,
   `settings.rs:53`).
+  - **Done with the bump.** `e6b5138e` has neither pref (nor `langEnglish`, now the `language` enum). Both GUIs
+    dropped their special cases (stoandl-gui `9f2d2d6`).
 - **Built-in languages removed (fw ≥4.38.0).** Add a line to the `firmware update` flow and docs: users of
   built-in de/fr/it/es/pt/nl/ca/pl need a pack afterwards. The real fix is §5.1.
   - **Done, to be tested (TESTING 5.11h).** When an update crosses 4.38.0 (4.37.0 on asterix),
     `firmware check`/`update` print the note and the watch and desktop update notifications add a sentence;
-    `docs/configuration.md` has it under Firmware updates and Language packs. The GUIs don't show it yet.
+    `docs/configuration.md` has it under Firmware updates and Language packs. The GUIs don't show it (as of
+    stoandl-gui `b44470d`); they could derive it from the `CheckFirmware` `ok:` record (board, current,
+    latest) with the same rule.
 
 ---
 
 ## 2. Fork cherry-picks: no full bump needed
 
 These are commonMain, self-contained, and a safer interim than the 517-commit bump.
+
+**Superseded by the bump (§3):** every upstream commit below, and the `WatchPrefEntity.kt` diff, came with
+`e6b5138e`. The fork-only VibeScore 15-20 / `dndTouchBacklight` patch is not done.
 
 | Commit(s) | Fixes | Notes |
 | --- | --- | --- |
@@ -177,12 +196,30 @@ These are commonMain, self-contained, and a safer interim than the 517-commit bu
 
 ## 3. The libpebble3 bump to upstream `433fef18`: runbook
 
-**Status: not attempted.** The overnight session was asked to try it, but the container had run out of process
-slots before the first build (see Environment below). Everything here comes from a read-only analysis:
-`git merge-tree` plus a probe rebase in a scratch clone.
+**Status: done on fork branch `stoandl-bump`, pending the hardware pass (§3.6).**
 
-**Cost:** about 4–6 engineering days plus 1–2 days of hardware testing, for a bump that ships no feature by
-itself.
+- **Target.** Upstream `e6b5138e`, which is `433fef18` plus one commit (the ar_SA language pack).
+- **Fork history.** The end state was resolved once as a merge, compile-fixed and tested, then rebuilt as a
+  linear history on `e6b5138e`: the 42 pre-squashed fork commits, nine "adapt to upstream" commits, the two
+  deep-sleep commits and 11 `fix(bump)`/test commits. Its tree equals the merge's. Five commits from the
+  deep-sleep work followed (notification catch-up, re-arm settle).
+- **Daemon.** stoandl `ae965a4` moves the gitlink and adapts to the API drift (§3.4) in one commit, so every
+  main commit builds. `.gitmodules` follows `stoandl-bump`.
+- **Verified offline.** The fork's jvmTest (281 tests, one existing `@Ignore`), including a new
+  `KoinGraphTest` and `GraalJsRunnerTest`; the daemon's tests; and a no-watch boot smoke on a private bus,
+  which also migrated a v38 database to v47. The fat JAR keeps `Multi-Release: true` and the merged
+  `META-INF/services`.
+- **Where it differs from the runbook below:** GATT registration stays lazy (§3.3), the connect-time
+  `PPoGReset` write is dropped (§3.3), the fork's extra Classic branch in `PebbleDeviceFactory` is dropped
+  as redundant (it hid known classic watches during an inquiry), `:androidApp` is left out rather than gated, and
+  the Android gate is "standalone build, SDK present and Gradle ≥ 9.5" (AGP 9.3.1's minimum).
+- **Found on the way and fixed.** The PKJS runtime handed watchapp JS `HostAccess.ALL` (reaching
+  `Runtime.exec`); it has an allow-list now. Intercepted XHRs never fired `onload` (`Event is not defined`), a
+  reused `XMLHttpRequest` never sent again, and `console.trace` threw.
+
+**Cost (estimate before starting):** about 4–6 engineering days plus 1–2 days of hardware testing, for a bump
+that ships no feature by itself. What follows is the runbook as written before the bump, from `git
+merge-tree` plus a probe rebase; it stays as the map for the next one.
 
 ### 3.1 Before starting
 
@@ -222,8 +259,12 @@ itself.
   `registerDevice`), and the merge adopts that silently. The watch is sensitive to when the PPoG service appears
   (see fork `3ae71cb0`). Keep eager `addServices` on JVM, and HW-test daemon-restart → reconnect and first
   pair.
+  - **Decided otherwise: lazy is kept.** The app is registered before our first `Connect()`, not before the
+    link: a Trusted watch may already be re-linked by bluetoothd after a daemon restart, so eager registration
+    had the same mid-link exposure, only in a narrower window. TESTING 5.33b tests it.
 - **`PPoGReset` is gone upstream.** The connect-time reset-characteristic write disappears with the rebase.
-  HW-test the forward handshake.
+  HW-test the forward handshake. (It was a no-op on stoandl hardware: `requestedPpogResetViaCharacteristic`
+  was false in all 226 log entries.)
 - **PKJS.** `JsRunner.signalConfigMessage(requestId, json)` is new and abstract; implement it as a JS eval with
   JSON-encoded args. `PrivatePKJSInterface` needs `pluginRegistry` (inject it via `PKJSModule.jvm.kt`). Port
   upstream's `startup.js` config-message/plugin hooks.
@@ -232,7 +273,9 @@ itself.
   `single<NotificationImageProvider> { NoNotificationImages() }`. Upstream's JVM module is `TODO()`, so nothing
   upstream catches this. Add a test that resolves the whole Koin graph.
 
-### 3.4 Daemon API drift (one behaviour-neutral commit)
+### 3.4 Daemon API drift (one commit)
+
+Not behaviour-neutral: `sideloadFirmware` now takes the PRF route for a downgrade, which §4.5 handles.
 
 - **`PebbleIntegration.kt:353`.** Change to `BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false)`.
   Also **pin `LibPebbleConfigFlow`**: upstream `PebbleBle` reads `libPebbleConfigFlow.value.bleConfig`, not
@@ -269,21 +312,13 @@ itself.
 
 ### 3.6 Hardware regression pass (before promoting)
 
-TESTING §5.23b, plus these rows:
+The rows are [TESTING §5.33](TESTING.md): upgrade in place (Room 38 → 47), a daemon restart while the watch
+stays linked (lazy GATT registration), first pair, suspend/resume and range, Classic, PKJS (Clay, AppMessage,
+XHR, a timeline-pin app), datalog, firmware including the downgrade through recovery, weather, the new
+prefs, health and a quick pass over the rest. §4.5 (downgrade → PRF) is handled.
 
-- BLE reconnect, suspend/resume and first pair
-- BLE daemon restart **while the watch stays linked** (lazy GATT registration: the PPoG service then appears
-  mid-link, and the watch gets a Service Changed): the forward handshake completes within 20 s, no
-  `negotiation timed out`
-- Classic
-- PKJS: `Pebble JS Bridge initialized.`, Clay, AppMessage, XHR, and a timeline-pin app (its XHR to the timeline
-  API is intercepted; its `onload` must fire)
-- datalog §5.8
-- firmware §5.11, including the downgrade through recovery (5.11e)
-- weather, music and calendar
-
-**Handle §4.5 (downgrade → PRF) before shipping.** Only then promote to `stoandl`, update `.gitmodules`, and
-push both repos.
+Once they pass: promote `stoandl-bump` to `stoandl`, point `.gitmodules` back at `stoandl`, and push both
+repos, the fork first (the APKBUILD and CI fetch libpebble3 by commit from GitHub).
 
 ### 3.7 Afterwards
 
@@ -302,6 +337,9 @@ Extra Large text, notification text size and the new vibe patterns are **not** i
   toggles, `musicShowAlbumArt`, `lightPreset`, `lightDynamicMode`, `unitsWind`, `language`.
 - **Needs work: the `schedule` type.** It needs a time-range widget in the Kirigami page and GTK
   `settings.rs`. Until then both show a read-only fallback row.
+  - **Done, to be tested (TESTING 5.33j).** The daemon lists and sets it (type `schedule`, `HH:MM-HH:MM`,
+    `settings set` and `watch.*`). Both GUIs edit it as a validated text row under its `…Enabled` switch
+    (stoandl-gui `9f2d2d6`).
 - **Optional polish:**
   - Show the schedule hours only while their toggle is on.
   - Hide the preset-managed backlight prefs unless `lightPreset = Advanced` (upstream app `0d3c8a93`).
@@ -380,14 +418,17 @@ meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
   - **Implemented with the bump (daemon), to be tested (TESTING 5.11e):** `FirmwareStatus` reports
     `prf:<version>`, `FirmwareControl` re-sideloads the `.pbz` when that watch reconnects in PRF,
     `UpdateFirmware` answers `busy:` and `maybeNotify` stays quiet meanwhile, and the CLI follows the flash
-    across the reconnect. Still open: both GUIs map any post-activity disconnect to success and know no
-    `prf` phase.
+    across the reconnect. Both GUIs follow the `prf` phase through the reconnect and show "Rebooting into
+    recovery to downgrade…" (stoandl-gui `017a83f`).
 - **Optional anywhere: digest check.** The GitHub API returns `digest: sha256:…` per asset; verify downloads
   with it. This needs no bump.
 - **eng-dash (`dash.repebble.com/api/ota/latest`).** An optional opt-in source that gives release notes and
   staged rollout, but sends the watch serial.
 
 ### 4.6 Also in the bump
+
+All of these are in `stoandl-bump`. The zero-code ones need nothing from stoandl (TESTING §5.33 covers the
+ones a user sees); the others still need stoandl work.
 
 - **Zero code:**
   - calendar reminders' Dismiss/Snooze menu (`d1cffc9e`) and re-sync-on-edit (`9672cdd0` + `5ee093d0`)
