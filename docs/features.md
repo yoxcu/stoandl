@@ -113,6 +113,10 @@ native blob and is pending re-test on the phone. One glibc-built native library 
 SQLite JNI library, which on musl is handled by `SqliteNative` (see
 [musl: bundled SQLite](#musl-postmarketos--alpine-bundled-sqlite))._
 
+_Fixed 2026-09-29: when a config file existed but omitted `classic.discover`, Classic discovery was off
+(an absent key was read as `false`), so a Time / Time Steel never showed up in `watch pair`. An absent
+key now means on. To be tested ([TESTING.md §5.32d](../TESTING.md))._
+
 See [devices.md](devices.md) for how to enable and use it, and
 [configuration.md](configuration.md#bluetooth-classic) for the config keys.
 

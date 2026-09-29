@@ -1594,6 +1594,14 @@ bluetoothctl info <MAC> | grep -E "Paired|Bonded|Trusted"                       
 | 5.32c6 | Regression: host-side removal still handled | watch nearby and still holding its bond: `bluetoothctl remove <MAC>` (as in 3f) | **First, no alert.** `remove` deletes BlueZ's device object, and stoandl treats a missing object as "away" (it scans only in a pairing window). Expect only `failed to connect … FailedToConnect` retries; the watch is still in `stoandl watch list`; no bond lines. **Then make BlueZ see the watch again:** `bluetoothctl scan le` for ~15 s, then `scan off`. Once `bluetoothctl info <MAC>` lists the device again with `Paired: no`, within ~30 s: `Host bond lost for <name> …`, a "Pebble pairing removed" notification with **Pair**, and the watch is forgotten (`stoandl watch list`). If the object never comes back (e.g. the watch isn't advertising), no notification follows. That is a known gap from the present-object gate (d4aae65), not a regression of #3; recover with `stoandl watch unpair "<name>"`, unpair on the watch, then `stoandl watch pair`. |
 | 5.32c7 | Two watches (if available) | two bonded watches, `connection.autoswitch` on; repeat c1 | Whichever watch reconnects, both bonds stay intact (`bluetoothctl info` for each); no new bond lines. |
 
+### 5.32d `classic.discover` defaults on with a config file (handoff #4)  ⚠️ UNVERIFIED
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32d1 | `classic.discover` defaults on with a config file | `~/.config/stoandl/stoandl.conf` exists but has **no** `classic.discover` line (`grep classic.discover ~/.config/stoandl/stoandl.conf` prints nothing); `systemctl --user restart stoandl` | The `Config loaded from …` line contains `classicDiscover=true`; a few seconds later: `BT Classic: discovering classic Pebbles (BR/EDR inquiry)`. |
+| 5.32d2 | Explicit off still works | add `classic.discover = false`, restart | No `classicDiscover=true` in `Config loaded`, no `BT Classic:` lines; `stoandl watch pair` logs only BLE scan lines. Remove the line again. |
+| 5.32d3 | Time Steel pairs over Classic | Time 2 stays bonded (not in pairing mode); on the Time Steel, forget the phone and open its pairing screen; run `stoandl watch pair` in an interactive terminal (`ssh -t` when remote) | `BT Classic: discovering (BR/EDR inquiry — pairing window open)` appears and the Time Steel's BR/EDR address `B0:B4:48:B6:1E:81` shows up. When the CLI prints `Pairing code: … Accept? [y/N]`, check that it matches the code on the watch, answer `y`, then confirm on the watch. With `--yes`, or over ssh without `-t`, the CLI accepts on its own and says so. Then `BT Classic: connecting B0:B4:48:B6:1E:81`; `stoandl watch list` lists it; `notify-send test` reaches it. |
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)
