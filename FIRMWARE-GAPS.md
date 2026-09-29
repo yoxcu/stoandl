@@ -74,7 +74,11 @@ backfills from the stored raw blobs. Bonus fields: `battery_temp_c` and `battery
   cleanly) accepts `version > 13 && sampleSize >= 16`, skips the extra bytes, and fixes `VERSION_FW_4_1`
   8 → 12.
 - **Overlay kcal.** The same commit fixes the swapped active/resting kcal in activity overlays
-  (`HealthDataParser.kt:205-208`) and adds the fw's bit-0 compatibility gate.
+  (`HealthDataParser.kt:205-208`) and adds the fw's bit-0 compatibility gate. Nothing rewrites the
+  `OverlayDataEntity` rows ingested before the bump, and `HealthExporter` re-projects `activities.ndjson`
+  from the DB over `health.export_days`: until those days age out, the file mixes old rows (`active_kcal`
+  = the resting value) with new ones. `daily.ndjson` is unaffected (minute data). Release-note it (TESTING
+  5.219); a one-off swap of the old rows is possible but needs a reliable "done" marker.
 - **Not fixed upstream: session distance.** The overlay distance is `distance_meters` on the wire, but it is
   stored as `distanceCm`, and `HealthExporter.kt:120` divides by 100. Change that line to
   `put("distance_m", s.distanceCm)`. Line `:165` is minute-level and really is cm, so it is fine. Past NDJSON
