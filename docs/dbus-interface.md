@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 75 methods below **plus 7 signals** (`WatchesChanged`,
+> A live introspection should show the 90 methods below **plus 7 signals** (`WatchesChanged`,
 > `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`,
 > `CalendarsChanged`) and no properties.
 
@@ -31,7 +31,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 75 |
+| **Methods** | 90 |
 | **Signals** | **7** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `CalendarsChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -41,15 +41,15 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### Six signals augment polling; no properties
+### Seven signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` now emits **six D-Bus signals** as a reactive layer **on top of** the
+`de.yoxcu.stoandl.Control` now emits **seven D-Bus signals** as a reactive layer **on top of** the
 poll methods — they do not replace them:
 
 | Signal | D-Bus sig | Meaning | Client reaction |
 |---|---|---|---|
 | `WatchesChanged` | *(none)* | a known watch's set / connection-state / battery / transport changed | re-call `ListWatches` |
-| `FirmwareProgress` | `sis` | firmware-flash `phase` + `percent` (0–100 while `inprogress`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
+| `FirmwareProgress` | `sis` | firmware-flash `phase` (the `FirmwareStatus` kinds, `prf` included) + `percent` (0–100 while `inprogress`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `LockerChanged` | *(none)* | the locker (installed apps/faces) or the active watchface changed — incl. from the watch or another client | re-call `ListApps` |
 | `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
@@ -80,13 +80,14 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Only four types appear across the 71 methods (the `FirmwareProgress` signal adds a fifth, `i`):
+Six types appear across the 90 methods and the signals:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
 | `String` | `s` | string |
 | `Boolean` | `b` | boolean |
-| `Int` | `i` | signed 32-bit int (only the `FirmwareProgress` signal's `percent`) |
+| `Int` | `i` | signed 32-bit int (`SetAppOrder`'s position, the health `offset`, the progress signals' `percent`) |
+| `Long` | `x` | signed 64-bit int (only the `sinceEpoch` of `BatteryHistory`/`BatteryActivity`/`BatteryPower`) |
 | `List<String>` | `as` | array of strings (one per record; fields tab-separated) |
 | `Unit` / no return | *(empty)* | no out-arg (only `WebviewClose`) |
 
@@ -476,7 +477,7 @@ or egress concerns).
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in
 > `WatchNotifier.push()`). **Quiet-hours was dropped** as redundant with `dnd.sync`.
 >
-> **Reactive signals landed** (the "Six signals augment polling" section above): `WatchesChanged`,
+> **Reactive signals landed** (the "Seven signals augment polling" section above): `WatchesChanged`,
 > `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged` —
 > so the Watch, firmware/language-progress, Apps and Plugins screens update without polling (polling kept
 > as the fallback), and **per-service `lastSync` is now a real relative age** for weather/calendar/health.

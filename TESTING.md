@@ -1443,8 +1443,9 @@ six keys that persisted but did nothing until a restart.
 
 Verified in the sandbox at the milestone (no watch needed): both front-ends report `general loaded 45
 keys in 14 groups` under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test`
-19/19 and `cargo test` 22/22 pass. The deep-sleep keys (§5.32) joined the schema afterwards: 51 keys in
-15 groups, eight of them restart-only. Everything below needs the real daemon.
+19/19 and `cargo test` 22/22 pass. The deep-sleep keys (§5.32) joined the schema afterwards and
+`weather.units` left it (4.4c): 50 keys in 15 groups, eight of them restart-only. Everything below needs
+the real daemon.
 
 | # | What | How | Expect |
 |---|------|-----|--------|

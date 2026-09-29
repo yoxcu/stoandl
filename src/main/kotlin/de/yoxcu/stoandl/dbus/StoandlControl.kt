@@ -536,8 +536,9 @@ interface StoandlControl : DBusInterface {
     class WatchesChanged(path: String) : DBusSignal(path)
 
     /** Firmware-flash progress. [phase] is the status kind (`downloading`/`waiting`/`inprogress`/
-     *  `reboot`/`failed`/`idle`/`notready` — same vocabulary as [FirmwareStatus]); [percent] is 0–100
-     *  while `inprogress`, else `-1`; [detail] is the asset name / failure reason (empty while inprogress).
+     *  `reboot`/`prf`/`failed`/`idle`/`notready` — same vocabulary as [FirmwareStatus]); [percent] is
+     *  0–100 while `inprogress`, else `-1`; [detail] is the asset name / downgrade version / failure
+     *  reason (empty while inprogress).
      *  Emitted on every phase change and every percentage tick. */
     class FirmwareProgress(path: String, val phase: String, val percent: Int, val detail: String) :
         DBusSignal(path, phase, percent, detail)
