@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.calendar
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.calendar.CalendarEvent
+import io.rebble.libpebblecommon.calendar.NewCalendarEvent
 import io.rebble.libpebblecommon.calendar.SystemCalendar
 import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import kotlinx.coroutines.Dispatchers
@@ -153,6 +154,12 @@ class LinuxSystemCalendar(
     override fun hasPermission(): Boolean = true
 
     override fun supportsPinActions(): Boolean = false // no write-back (no CalDAV PUT / RSVP) yet
+
+    // Read-only for the same reason: creating an event would need a CalDAV PUT or an .ics write (upstream's
+    // only caller is the Core app's assistant). Null = "creation failed" / no default calendar.
+    override suspend fun createEvent(calendarId: String, event: NewCalendarEvent): String? = null
+
+    override suspend fun defaultCalendarPlatformId(): String? = null
 
     /** Periodic re-sync. Delays first — PhoneCalendarSyncer.init() already does an immediate sync.
      *  Keyed on [tickInterval], so changing `calendar.sync_interval` cancels the pending delay and

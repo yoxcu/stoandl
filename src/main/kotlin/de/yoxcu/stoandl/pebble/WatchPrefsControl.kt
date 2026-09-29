@@ -10,7 +10,9 @@ import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.NumberWatchPref
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
+import io.rebble.libpebblecommon.database.entity.QuietTimeSchedule
 import io.rebble.libpebblecommon.database.entity.RgbColorWatchPref
+import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefEnum
 import kotlinx.coroutines.flow.first
@@ -23,7 +25,7 @@ private val log = KotlinLogging.logger {}
 /**
  * Drives the watch's "advanced settings" (the WatchPrefs BlobDB) that the official companion app
  * exposes but the watch itself doesn't — quick-launch button mappings, ambient-light threshold,
- * backlight, vibration patterns, etc. libpebble3 enumerates every pref ([WatchPref.enumeratePrefs])
+ * backlight, vibration patterns, Quiet Time schedules, etc. libpebble3 enumerates every pref ([WatchPref.enumeratePrefs])
  * and syncs a written value to the watch; this maps stoandl's string config/CLI values onto the
  * correct typed [WatchPreference] and applies them via [LibPebble.setWatchPref].
  *
@@ -108,6 +110,7 @@ class WatchPrefsControl(
         is EnumWatchPref -> WatchPreference(pref, parseEnum(pref, raw))
         is QuicklaunchWatchPref -> WatchPreference(pref, parseQuickLaunch(raw))
         is RgbColorWatchPref -> WatchPreference(pref, parseColor(pref, raw))
+        is ScheduleWatchPref -> WatchPreference(pref, parseSchedule(pref, raw))
     }
 
     private fun parseBool(raw: String): Boolean = when (raw.trim().lowercase()) {
@@ -156,6 +159,11 @@ class WatchPrefsControl(
         return v and 0x00FFFFFFu
     }
 
+    /** A daily `HH:MM-HH:MM` window; an end before the start runs overnight (e.g. `22:00-07:00`). */
+    private fun parseSchedule(pref: ScheduleWatchPref, raw: String): QuietTimeSchedule =
+        QuietTimeSchedule.parse(raw)
+            ?: throw IllegalArgumentException("'$raw' is not a time window (HH:MM-HH:MM, 24 h) for ${pref.id}")
+
     // ---- display ---------------------------------------------------------------------------------
 
     private fun typeName(pref: WatchPref<*>): String = when (pref) {
@@ -164,6 +172,7 @@ class WatchPrefsControl(
         is EnumWatchPref -> "enum"
         is QuicklaunchWatchPref -> "quicklaunch"
         is RgbColorWatchPref -> "color"
+        is ScheduleWatchPref -> "schedule"
     }
 
     private fun allowed(pref: WatchPref<*>): String = when (pref) {
@@ -175,6 +184,7 @@ class WatchPrefsControl(
         is EnumWatchPref -> pref.options.joinToString("|") { it.displayName }
         is QuicklaunchWatchPref -> "off|<app name or uuid>"
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
+        is ScheduleWatchPref -> "HH:MM-HH:MM"
     }
 
     private fun format(pref: WatchPref<*>, value: Any?): String = when (pref) {
@@ -186,5 +196,6 @@ class WatchPrefsControl(
             if (!it.enabled || u == null) "off" else (appName(u) ?: u.toString())
         } ?: "off"
         is RgbColorWatchPref -> (value as? UInt)?.let { "0x" + it.toString(16).padStart(6, '0').uppercase() } ?: "?"
+        is ScheduleWatchPref -> (value as? QuietTimeSchedule)?.encode() ?: "?"
     }
 }

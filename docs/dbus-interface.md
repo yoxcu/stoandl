@@ -211,10 +211,13 @@ description` (`flags` carries `debug` for advanced settings). `type` ∈ **`bool
 is `min..max[ unit]`), **`enum`** (`current` + `allowed` are **display names** like `Standard - Low`,
 not the Kotlin constant — round-trip-safe, `SetWatchPref` accepts either), **`quicklaunch`** (`current`
 is an app name / `off` / a raw uuid; `allowed` is the literal `off|<app name or uuid>` — pick the target
-by app name), and **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`).
-**The `allowed` option list is pipe-(`|`)-separated** for `enum`/`quicklaunch`/`color` (a display name
-can contain a comma), so split on `|`, not `,`. `SetWatchPref` parses the value per type and accepts an
-enum display-name-or-constant, a color preset-name-or-hex, and a quick-launch app-name-or-uuid-or-`off`.
+by app name), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
+**`schedule`** (the Quiet Time weekday/weekend hours: `current`/`default` are a 24 h `HH:MM-HH:MM`
+window in the watch's local time, where an end before the start runs overnight; `allowed` is the
+literal `HH:MM-HH:MM`). **The `allowed` option list is pipe-(`|`)-separated** for
+`enum`/`quicklaunch`/`color` (a display name can contain a comma), so split on `|`, not `,`.
+`SetWatchPref` parses the value per type and accepts an enum display-name-or-constant, a color
+preset-name-or-hex, a quick-launch app-name-or-uuid-or-`off`, and a schedule `HH:MM-HH:MM`.
 
 ### Notifications (per-app + filters) (`stoandl notif`)
 

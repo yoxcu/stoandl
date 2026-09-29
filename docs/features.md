@@ -437,8 +437,9 @@ stoandl datalog dump <uuid> <tag>   # print a stream
 stoandl datalog tail <uuid> <tag>   # follow a stream live
 ```
 
-Reads the files directly — no daemon needed. The receive plumbing was already in libpebble3; a small
-fork hook (`Datalogging.records`) surfaces custom-app frames that were otherwise dropped. Local-only
+Reads the files directly — no daemon needed. The receive plumbing is libpebble3's, which emits
+custom-app frames on `Datalogging.thirdPartyEvents`; a small fork patch adds each batch's item type,
+which the decoding needs. Local-only
 (no egress) but writes app-supplied data to disk, so off by default (`datalog.enabled`). A throwaway
 test watchapp lives in [`testing/datalogtest/`](../testing/datalogtest). _Hardware-verified.
 [TESTING.md §5.8](../TESTING.md)._

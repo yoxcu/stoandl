@@ -1,7 +1,7 @@
 [submodule "libs/libpebble3"]
 	path = libs/libpebble3
 	url = https://github.com/yoxcu/libpebble3.git
-	branch = stoandl-rebased
+	branch = stoandl-bump
 [submodule "examples/extensions/findphone"]
 	path = examples/extensions/findphone
 	url = https://github.com/yoxcu/findphone.git

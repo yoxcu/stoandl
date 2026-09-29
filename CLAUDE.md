@@ -43,7 +43,7 @@ PebbleIntegration / DbusNotificationListenerConnection
     ▼
 libpebble3 (composite build submodule: libs/libpebble3, stoandl branch)
     ▼
-BlueZ GATT server (reversedPPoG=false: phone acts as BLE peripheral)
+BlueZ GATT server (forward PPoG: phone acts as BLE peripheral)
     ▼
 Pebble watch over BLE/PPoG
 ```
@@ -52,7 +52,7 @@ Pebble watch over BLE/PPoG
 
 - `monitorNotifications()` (`DbusNotificationMonitor.kt`) uses `DBusMonitoring.BecomeMonitor` — the notification is a *passive copy*; the original still reaches the system notification daemon (dunst, mako, etc.). After `BecomeMonitor` succeeds, the writer on `TransportConnection` is replaced with a no-op via reflection to prevent dbus-java's auto-reply from closing the monitor connection.
 
-- `PebbleIntegration.kt` initializes Koin (libpebble3's DI), then overrides two bindings: `NotificationListenerConnection` (swapped for `DbusNotificationListenerConnection` which bridges the D-Bus `Flow`) and `BleConfigFlow` (pinned to `reversedPPoG=false` so no persisted Java Preferences can override it).
+- `PebbleIntegration.kt` initializes Koin (libpebble3's DI), then overrides two bindings: `NotificationListenerConnection` (swapped for `DbusNotificationListenerConnection` which bridges the D-Bus `Flow`) and `LibPebbleConfigFlow`/`BleConfigFlow` (pinned to forward PPoG, `legacyReversedPPoG=false` + `useReversedPpogV2=false`, so no persisted Java Preferences can override it; upstream `PebbleBle` picks the transport from `LibPebbleConfigFlow`).
 
 - `KermitSlf4jWriter` bridges libpebble3's Kermit logger into SLF4J/Logback. Tag names are cleaned: strips `/{...}` and `-{...}` device-path suffixes, and also plain app-name suffixes (`RhinoJsRunner-Hooky` → `RhinoJsRunner`) so logback entries match without knowing the app name.
 

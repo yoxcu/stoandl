@@ -61,6 +61,7 @@ import io.rebble.libpebblecommon.music.PlaybackState
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
+import io.rebble.libpebblecommon.LibPebbleConfigFlow
 import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.AppContext
@@ -344,15 +345,18 @@ class PebbleIntegration(
             onConfirm = ::onPairingConfirm,
         )
 
-        // reversedPPoG=false → the phone acts as the BLE peripheral. lanDevConnection=true → the
+        // legacyReversedPPoG=false + useReversedPpogV2=false → ignore any reversed PPoG service the watch
+        // advertises; the phone hosts forward PPoG as the BLE peripheral. lanDevConnection=true → the
         // developer connection (started on demand) uses the LAN WebSocket server on port 9000 rather
         // than the CloudPebble proxy (stoandl has no Rebble token, so the proxy can't authenticate).
-        // Both the Ble- and WatchConfigFlow are pinned in the override module below so a persisted
-        // Java Preferences value (LibPebbleConfigHolder loads storage over our default) can't undo them.
+        // The LibPebble-, Ble- and WatchConfigFlow are all pinned to this one flow in the override module
+        // below so a persisted Java Preferences value (LibPebbleConfigHolder loads storage over our
+        // default) can't undo them.
         val libPebbleConfig = LibPebbleConfig(
-            bleConfig = BleConfig(reversedPPoG = false),
+            bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
             watchConfig = WatchConfig(lanDevConnection = true),
         )
+        val pinnedConfig = MutableStateFlow(libPebbleConfig)
         val koin = initKoin(
             defaultConfig = libPebbleConfig,
             webServices = StoandlWebServices(heartbeatStoreRef),
@@ -396,8 +400,8 @@ class PebbleIntegration(
         val calendarSync = buildCalendarSync()
         calendarSyncRef.set(calendarSync)
 
-        // Override modules: use our DBus notification bridge, and pin Ble-/WatchConfigFlow so any
-        // persisted Java Preferences value cannot override reversedPPoG=false / lanDevConnection=true.
+        // Override modules: use our DBus notification bridge, and pin LibPebble-/Ble-/WatchConfigFlow so
+        // any persisted Java Preferences value cannot override forward PPoG / lanDevConnection=true.
         koin.loadModules(listOf(module {
             single<NotificationListenerConnection> {
                 DbusNotificationListenerConnection(
@@ -412,10 +416,14 @@ class PebbleIntegration(
             // write-back). Overrides the JVM module's PlatformConfig(syncNotificationApps = false),
             // which otherwise keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
             if (config.notificationSyncToWatch) single { PlatformConfig(syncNotificationApps = true) }
-            single { BleConfigFlow(MutableStateFlow(libPebbleConfig)) }
+            // Pin the transport to forward PPoG. PebbleBle picks the transport from LibPebbleConfigFlow;
+            // PPoG and ConnectionParams read BleConfigFlow. Pinning only the latter would leave the
+            // transport choice to the storage-backed LibPebbleConfigHolder.
+            single { LibPebbleConfigFlow(pinnedConfig) }
+            single { BleConfigFlow(pinnedConfig) }
             // Pin lanDevConnection=true so the developer connection uses the LAN server (port 9000),
             // not the CloudPebble proxy. Overrides the JVM module's storage-backed WatchConfigFlow.
-            single { WatchConfigFlow(MutableStateFlow(libPebbleConfig)) }
+            single { WatchConfigFlow(pinnedConfig) }
             // Route every watch-side notification action to whoever sent it (desktop bridge or an
             // extension) via the shared routeTable: Dismiss marks the item read + closes the originating
             // desktop notification over D-Bus / fires the extension's onDismiss; the "Mute" action mutes
@@ -500,8 +508,8 @@ class PebbleIntegration(
         extensionManager.start()
         startFirmwareNotifier()
         startDeveloperAutostart()
-        // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. The fork re-emits
-        // them on Datalogging.records; without a subscriber they're simply dropped (as before).
+        // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. libpebble3 emits
+        // them on Datalogging.thirdPartyEvents; without a subscriber they're simply dropped (as before).
         if (config.datalog) {
             DatalogStore(koin.get(), scope).start()
         } else {
@@ -2064,7 +2072,9 @@ private class StoandlWebServices(
     override suspend fun fetchLocker() = null
     // "removed from remote" is trivially true, so Locker.removeApp() proceeds to delete the local entry.
     override suspend fun removeFromLocker(id: Uuid) = true
-    override suspend fun checkForFirmwareUpdate(watch: WatchInfo) =
+    // Firmware checks are FirmwareControl's (opt-in, own sources); libpebble3's own check always finds
+    // nothing, so there is no cached result for `force` to bypass.
+    override suspend fun checkForFirmwareUpdate(watch: WatchInfo, force: Boolean) =
         io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult.FoundNoUpdate
     override fun uploadMemfaultChunk(chunk: ByteArray, watchInfo: WatchInfo) {}
     override fun uploadAnalyticsHeartbeat(payload: ByteArray, watchInfo: WatchInfo) {

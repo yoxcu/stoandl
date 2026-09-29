@@ -1,6 +1,6 @@
 plugins {
-    kotlin("jvm") version "2.3.10"
-    kotlin("plugin.serialization") version "2.3.10"
+    kotlin("jvm") version "2.4.10"
+    kotlin("plugin.serialization") version "2.4.10"
     application
     id("com.github.johnrengelman.shadow") version "8.1.1"
 }
@@ -36,27 +36,27 @@ dependencies {
     implementation("com.coredevices:libpebble3:composite")
 
     // Koin DI (needed because libpebble3 exposes it as implementation, not api)
-    implementation("io.insert-koin:koin-core:4.1.1")
+    implementation("io.insert-koin:koin-core:4.2.2")
 
     // Ktor HTTP client engine for JVM (libpebble3 uses Ktor but only adds engine in jvmTest).
     // Also used by the weather sync to query Open-Meteo.
-    implementation("io.ktor:ktor-client-cio:3.4.0")
+    implementation("io.ktor:ktor-client-cio:3.5.1")
 
     // JSON parsing for the Open-Meteo weather response (version matches libpebble3's catalog).
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
     // iCalendar parsing + RRULE recurrence expansion for calendar sync (pure-JVM, BSD-3, java.time).
     implementation("org.mnode.ical4j:ical4j:4.1.1")
 
     // DBus — listen to org.freedesktop.Notifications on the session bus
-    implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.8.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.9.1")
 
     implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
     implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
 
-    implementation("co.touchlab:kermit:2.0.8")
+    implementation("co.touchlab:kermit:2.1.0")
 
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")

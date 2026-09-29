@@ -157,7 +157,7 @@ Not gaps — each has a richer surface that a flat key/value row cannot express.
 | Key(s) | Surface | GUI |
 | --- | --- | --- |
 | `calendar.ics_paths`, `calendar.ical_urls`, `calendar.caldav` | `AddCalendarSource`/`UpdateCalendarSource`/`RemoveCalendarSource` — CalDAV passwords are write-only and live in the keyring, never in config | Settings → Calendars |
-| `watch.<prefId>` | `ListWatchPrefs`/`SetWatchPref` — typed per pref (bool/number/enum/quicklaunch/colour) with the allowed set read off the watch | Settings → Watch settings |
+| `watch.<prefId>` | `ListWatchPrefs`/`SetWatchPref` — typed per pref (bool/number/enum/quicklaunch/colour/schedule) with the allowed set read off the watch | Settings → Watch settings |
 | `extensions.enabled`, `extension.<name>.<key>` | `ExtEnable`/`ExtDisable`, `ExtConfigSchema`/`ExtGetConfig`/`ExtSetConfig` — each extension ships its own typed schema | Apps → Extensions |
 | `notification.forward`, `weather.enabled`, `calendar.enabled` | `GetSyncStatus`/`SetSyncEnabled` — three of the six master switches, which also report availability and last-sync. (The other three — `music.enabled`, `health.sync`, `dnd.sync` — **are** in the schema as well; see [§5](#5-redundancy-noted).) | Settings → Sync (and the Alerts screen for forwarding) |
 

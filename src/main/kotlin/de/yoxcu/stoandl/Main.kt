@@ -689,7 +689,7 @@ private fun healthSync() {
     }
 }
 
-private fun healthHr() = withControl { control ->
+private fun healthHr(): Unit = withControl { control ->
     val resp = try { control.HeartRate() } catch (e: Exception) {
         System.err.println("Error: ${e.message}"); System.exit(1); return
     }
@@ -1181,7 +1181,7 @@ private fun ctlWatch(rest: List<String>) {
 }
 
 /** Show the app/watchface currently on the watch's screen (distinct from the default watchface). */
-private fun watchRunning() = withControl { control ->
+private fun watchRunning(): Unit = withControl { control ->
     val resp = try { control.RunningApp() } catch (e: Exception) {
         System.err.println("Error: ${e.message}"); System.exit(1); return
     }
@@ -1236,7 +1236,7 @@ private fun watchConnect(name: String?) {
     }
 }
 
-private fun watchPair() = withControl { control ->
+private fun watchPair(): Unit = withControl { control ->
     try {
         val startResp = try { control.Pair() } catch (e: Exception) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
@@ -1285,7 +1285,7 @@ private fun ctlBattery(rest: List<String>) {
     }
 }
 
-private fun watchBattery() = withControl { control ->
+private fun watchBattery(): Unit = withControl { control ->
     val resp = try { control.Battery() } catch (e: Exception) {
         System.err.println("Error: ${e.message}"); System.exit(1); return
     }
@@ -1512,7 +1512,7 @@ private fun ctlSettings(rest: List<String>) {
     }
 }
 
-private fun settingsList(filter: String?) = withControl { control ->
+private fun settingsList(filter: String?): Unit = withControl { control ->
     val records = try { control.ListWatchPrefs() } catch (e: Exception) {
         System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
     }

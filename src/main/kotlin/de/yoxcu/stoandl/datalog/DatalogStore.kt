@@ -4,10 +4,11 @@ package de.yoxcu.stoandl.datalog
 
 import de.yoxcu.stoandl.util.toNdjson
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.rebble.libpebblecommon.datalogging.DataLogRecord
 import io.rebble.libpebblecommon.datalogging.Datalogging
+import io.rebble.libpebblecommon.datalogging.ThirdPartyDatalogEvent
 import io.rebble.libpebblecommon.packets.DataItemType
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.serialization.json.JsonObject
@@ -21,9 +22,15 @@ private val log = KotlinLogging.logger {}
 /**
  * Persists datalog frames from custom watchapps (the PebbleKit "DataLogging" surface) to disk.
  *
- * libpebble3 already handles the protocol — ACK/NACK, session tracking, health/system tags. The
- * only gap is that frames from *custom* apps (arbitrary UUID + tag) had nowhere to go; the fork
- * now re-emits them on [Datalogging.records] and this subscriber is their sink.
+ * libpebble3 already handles the protocol — ACK/NACK, session tracking, the system app's health /
+ * Memfault / analytics tags — and emits every batch of any other app (arbitrary UUID + tag, even a
+ * tag number the system app uses for health) on [Datalogging.thirdPartyEvents] as a
+ * [ThirdPartyDatalogEvent.Batch]; the fork adds its `itemType`. This subscriber is their sink; it
+ * ignores `Finished` (a session's file simply stops growing).
+ *
+ * Only whole batches arrive: libpebble3 drops a malformed one (item size 0, or a payload that isn't a
+ * whole number of items), and while this sink is 256 events behind it drops each *new* batch. Both
+ * are logged as warnings (tag `Datalogging`); the watch has already been ACKed, so that data is gone.
  *
  * Layout: one append-only NDJSON file per `(app UUID, tag)`:
  *
@@ -46,13 +53,14 @@ class DatalogStore(
     private val baseDir: File = defaultDir(),
 ) {
     fun start() {
-        datalogging.records
-            .onEach { record -> runCatching { append(record) }.onFailure { log.warn(it) { "datalog write failed" } } }
+        datalogging.thirdPartyEvents
+            .filterIsInstance<ThirdPartyDatalogEvent.Batch>()
+            .onEach { batch -> runCatching { append(batch) }.onFailure { log.warn(it) { "datalog write failed" } } }
             .launchIn(scope)
         log.info { "Datalog capture enabled → ${baseDir.path}" }
     }
 
-    private fun append(r: DataLogRecord) {
+    private fun append(r: ThirdPartyDatalogEvent.Batch) {
         val dir = File(baseDir, r.uuid.toString())
         dir.mkdirs()
         val file = File(dir, "${r.tag}.ndjson")
@@ -62,7 +70,7 @@ class DatalogStore(
         log.debug { "datalog ${r.uuid} tag=${r.tag} +${r.data.size}B type=${r.itemType} (${r.itemsLeft} left)" }
     }
 
-    private fun line(r: DataLogRecord, item: ByteArray, rx: Long): JsonObject = buildJsonObject {
+    private fun line(r: ThirdPartyDatalogEvent.Batch, item: ByteArray, rx: Long): JsonObject = buildJsonObject {
         put("rx", rx)
         put("session_ts", r.timestamp.toLong())
         put("type", r.itemType.name)
@@ -77,8 +85,9 @@ class DatalogStore(
     companion object {
         fun defaultDir(): File = File(de.yoxcu.stoandl.config.StoandlConfig.configDir(), "datalog")
 
-        /** Split a SendDataItems payload into fixed [itemSize] chunks; a non-multiple tail is kept
-         *  as a final short item rather than dropped (so nothing is silently lost). */
+        /** Split a SendDataItems payload into fixed [itemSize] chunks. A [ThirdPartyDatalogEvent.Batch]
+         *  is always whole items; a non-multiple tail would still be kept as a final short item rather
+         *  than dropped (so nothing is silently lost). */
         internal fun splitItems(data: ByteArray, itemSize: Int): List<ByteArray> {
             if (itemSize <= 0 || itemSize >= data.size) return listOf(data)
             val out = ArrayList<ByteArray>(data.size / itemSize + 1)
