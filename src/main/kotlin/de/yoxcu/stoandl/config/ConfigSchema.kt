@@ -374,7 +374,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
             "push wake produced) has reached the watch. Never makes a suspend fail; harmless on a desktop.",
         apply = ConfigApply.RESTART) { it.powerSleepGuard },
     int("power.sleep_guard_max_ms", G_SLEEP, "Longest hold per suspend",
-        "How long a suspend waits at most for pending watch traffic (logind's own cap is 5 s)",
+        "How long a suspend waits at most for pending watch traffic (logind's own cap is 5 s). 0 doesn't " +
+            "wait; stoandl still stops its own discovery before every suspend.",
         min = 0, max = 4500, unit = "ms", apply = ConfigApply.RESTART) { it.powerSleepGuardMaxMs.toIntClamped() },
     toggle("power.pause_datalog_screen_off", G_SLEEP, "Pause datalog while the display is off",
         "The watch holds back its health data (flushed every 15 min) until the display is on again: " +

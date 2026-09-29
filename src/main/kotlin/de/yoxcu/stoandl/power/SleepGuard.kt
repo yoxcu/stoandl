@@ -71,7 +71,9 @@ class SleepGuard(
     /** What is still pending towards the watch, or null when nothing is (polled while draining). */
     private val pendingWork: () -> String?,
     /** Runs first on every PrepareForSleep(true), before the drain (e.g. a last watch message whose
-     *  delivery the drain then waits for). Errors are logged, never block the suspend. */
+     *  delivery the drain then waits for). Errors are logged, never block the suspend. Bounded by
+     *  [maxHold] but never below [BEFORE_SLEEP_MIN], so `power.sleep_guard_max_ms = 0` ("don't wait for
+     *  watch traffic") still runs it. */
     private val beforeSleep: (suspend () -> Unit)? = null,
 ) {
     private val _resumed = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -154,7 +156,8 @@ class SleepGuard(
         val t0 = TimeSource.Monotonic.markNow()
         linkActivity.setHostSuspending(true)
         beforeSleep?.let { hook ->
-            runCatching { withTimeoutOrNull(maxHold) { hook() } }
+            // withTimeoutOrNull(0) returns without running the block at all.
+            runCatching { withTimeoutOrNull(maxHold.coerceAtLeast(BEFORE_SLEEP_MIN)) { hook() } }
                 .onFailure { log.warn { "before-sleep hook failed: ${it.message}" } }
         }
         val awakeFor = resumedAt?.elapsedNow()
@@ -249,6 +252,9 @@ class SleepGuard(
 
     private companion object {
         private val DRAIN_POLL = 50.milliseconds
+        // The before-sleep hook's floor: it stops our own discovery (non-suspending calls) and may queue
+        // one watch message, both far quicker than this.
+        private val BEFORE_SLEEP_MIN = 500.milliseconds
         private val ACQUIRE_SETTLE = 300.milliseconds
         private val ACQUIRE_BACKOFF = 300.milliseconds
         private const val ACQUIRE_ATTEMPTS = 8
