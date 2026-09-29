@@ -33,6 +33,10 @@
          surfaces each captured custom-watchapp frame (otherwise the parent pins it to INFO). -->
     <logger name="de.yoxcu.stoandl.datalog" level="${logLevel}"/>
 
+    <!-- Suspend/resume (SleepGuard: `resumed`, `PrepareForSleep: nothing pending`, delay-lock retries) —
+         honor STOANDL_LOG, or the parent's INFO pin hides the lines TESTING.md §5.32 times against. -->
+    <logger name="de.yoxcu.stoandl.power" level="${logLevel}"/>
+
     <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
     <logger name="PrivatePKJSInterface" level="INFO"/>
     <logger name="CompanionAppLifecycleManager" level="INFO"/>
@@ -47,6 +51,9 @@
     <logger name="BluezGattServer" level="${logLevel}"/>
     <logger name="GattServerManager" level="${logLevel}"/>
     <logger name="PebbleBle" level="${logLevel}"/>
+    <!-- Reconnect arming at DEBUG: why each Device1.Connect() ended ("Connect() returned" /
+         "Connect() pending/failed, tolerating: …") and each re-arm. Connect/drop lines stay INFO. -->
+    <logger name="BluezGattConnector" level="${logLevel}"/>
     <logger name="PebbleConnector" level="${logLevel}"/>
     <logger name="PairingJvm" level="${logLevel}"/>
     <!-- Decoded Pebble-protocol packet traces (inbound + outbound) — DEBUG-only firehose,

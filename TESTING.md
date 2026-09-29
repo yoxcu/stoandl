@@ -91,6 +91,10 @@ its airplane mode, or `bluetoothctl disconnect <MAC>`.
   `StartNotify on PPoG`; a test notification reaches the watch.
 - Repeat 5–10× (airplane toggles are easiest). Must NOT see
   `Already connecting (this is a bug)`.
+- Note: for an in-range `bluetoothctl disconnect`, builds before 2026-09-29 only
+  logged `connected and services resolved` ≥5 s after `connect() starting`
+  (the connector noticed the link at the end of its retry wait). The line now
+  carries the time (`(N ms after connect())`); see 5.32h1.
 
 ### 3b. No competing discovery (the real "won't reconnect" cause) — VERIFIED (GNOME)
 
@@ -1446,7 +1450,9 @@ breaker / re-acquire after external kill / release on stop and on `kill -9` of t
 
 **Prerequisite:** the daemon on the phone, watch connected; `tail -f /tmp/stoandl.log`; for the suspend
 tests a way to suspend with the screen off (`systemctl suspend`, or the phone's own autosuspend). With
-`STOANDL_LOG=DEBUG` every suspend/resume is logged.
+`STOANDL_LOG=DEBUG` every suspend/resume is logged. (Builds before 2026-09-29 pinned the
+`de.yoxcu.stoandl.power` logger to INFO, so the DEBUG lines 5.321/5.323 expect never appeared; they
+now follow `STOANDL_LOG`.)
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
@@ -1640,6 +1646,36 @@ the test.
 | 5.32f5 | Crash loop gives up | phone awake; `systemctl --user reset-failed stoandl && systemctl --user restart stoandl`; then repeat f3's `kill -SEGV` each time the daemon is back, 5 times within 5 min | Kills 1–4 are each followed by a restart. After the 5th, the journal shows `Start request repeated too quickly` and `systemctl --user status stoandl` is `failed (Result: start-limit-hit)`. `systemctl --user reset-failed stoandl && systemctl --user start stoandl` brings it back. Afterwards, `rm /tmp/stoandl-hs_err_pid*.log`. |
 | 5.32f6 | Manual restarts vs. the limit | phone awake; `systemctl --user reset-failed stoandl`; `systemctl --user restart stoandl` 5 times quickly, then a 6th | The 6th restart stops the running daemon and then refuses to start it. It fails with `start … attempted too often` / start-limit-hit, and `systemctl --user status stoandl` shows `failed (Result: start-limit-hit)` with no java process left. `./install.sh`, or `reset-failed` + `start`, works immediately. Until then the GUI's "Start daemon" button can't start it. |
 | 5.32f7 | OpenRC (only on an OpenRC host) | install the `-openrc` subpackage, set `/etc/conf.d/stoandl`, `rc-service stoandl start`; `grep core /proc/<java pid>/limits`; `ls -l /var/log/stoandl.log`; then `kill -SEGV <java pid>` about 5 times within 5 min | `supervise-daemon stoandl` is the java process's parent, and java runs as `STOANDL_USER`. The core limit is `0`. `/var/log/stoandl.log` is owned by that user and filling. Each crash writes `/tmp/stoandl-hs_err_pid<pid>.log` and is respawned after ~5 s, until syslog shows `respawned "…java" too many times, exiting`. `rc-service stoandl restart` recovers. |
+
+### 5.32h Reconnect latency after a drop / resume (handoff #9)  ⚠️ UNVERIFIED
+
+Until now a reconnect was usually noticed only when the BlueZ connector's 5 s retry wait
+(`RETRY_BACKOFF`) ended. The first `Device1.Connect()` of a reconnect ends quickly while GATT is still
+resolving. The link then came up during the wait, but the daemon only saw it when the wait ran out.
+- Phone after a resume (2026-09-29): 5.05 s (`connect() starting` 15:26:36.98 → `connected and services
+  resolved` 42.03).
+- Desktop (2026-07-23 log): none of 230 reconnects came in under 5 s. Most took 5.1–5.7 s, some ~10.5 s.
+- op6 bond-loss timeline: the watch had already subscribed to PPoG (`StartNotify on PPoG
+  characteristic`, 15:32:24.99) 2.03 s before the daemon logged the link (15:32:27.019).
+
+The connector now wakes as soon as the link resolves. The INFO line shows the time:
+`connected and services resolved (N ms after connect())`.
+
+**Not changed:** the ≈2.9 s from resume to `connect() starting`. That is ~0.3 s for bluetoothd to
+deliver the suspend-time drop after thaw, plus libpebble3's 2.5 s `WatchManager` settle
+(`delayBleDisconnections`). Whether to skip that settle after a `Suspend` drop is decided by h2.
+
+**Prerequisite:** `STOANDL_LOG=DEBUG`. It now also shows the `BluezGattConnector` arming lines and
+SleepGuard's `resumed`. Then run:
+`tail -f /tmp/stoandl.log | grep -E "resumed|link dropped|connect\(\) starting|connected and services resolved|Connect\(\) (returned|pending)|re-arming|Bluetooth (disabled|re-enabled)|forcing reconnect"`
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32h1 | In-range reconnect (any host, desktop is fine) | Watch connected and in range. Run `bluetoothctl disconnect <watch MAC>` and leave the watch where it is. Wait for the reconnect. Repeat 5×. | Each time: `link dropped` → ~2.5 s → `connect() starting` → `connected and services resolved (N ms after connect())`. **Pass:** N < 5000 every time, and not clustered at 5.0–5.7 s / ~10.5 s. Record each N; well under 5 s is expected. Link time was never measured before, so N < 2000 is something to note, not a requirement. There will be one or two `Connect()` DEBUG lines between the two INFO lines. Record the **first** one after `connect() starting`: `Connect() returned`, or `Connect() pending/failed, tolerating: <msg>` (also record `<msg>`). A second `Connect() returned` right next to the success line is the harmless re-issue after the early wake. A test notification still reaches the watch afterwards. No `TimeoutInitializingPpog` / negotiation timeout right after the reconnect. |
+| 5.32h1b | Watch-side drop (optional) | Turn the watch's airplane mode on for ~10 s, then off. Note the moment you switch it off. | Don't judge N here: the connector starts ~2.5 s after the drop while the watch is still away, so N includes the rest of the airplane time. Instead time it from switching airplane mode off to `connected and services resolved`. Expected: well under 5 s. Record it. |
+| 5.32h2 | Mode A resume (phone) | Watch connected. Screen off; let the phone suspend ≥ 1 min. Wake it with a push (send a Matrix message) or the power button. | Record these timestamps: the journal's resume time (e.g. the kernel's `PM: suspend exit`; use it as the reference, like the baseline did), `resumed`, `link dropped, reason: Suspend`, `connect() starting`, and `connected and services resolved (N ms …)`. `resumed` may come **after** the drop: logind sends PrepareForSleep(false) only once the sleep job and its hooks finish, but bluetoothd delivers the drop right after thaw. Expected: resume → `connect() starting` still ≈ 2.9 s (unchanged). N well under 5000 (before: 5.05 s). Resume → resolved ≈ 2.9 s + N, well under the 2026-09-29 baseline of 7.9 s (34.1 → 42.03). **Also record** whether `Bluetooth disabled — pausing` / `Bluetooth re-enabled — resuming` appear between the resume and `connect() starting`. This decides the follow-up that would also skip the 2.5 s settle after a Suspend drop. |
+| 5.32h3 | No faster retry loop while away | Walk out of range (or turn on watch airplane mode) for ≥ 3 min, then return. | While away: a single `connect() starting` at INFO. DEBUG `waiting up to 5s for it to resolve before re-arming` never more often than every 5 s (no tight loop). On return: `connected and services resolved (N ms …)` within seconds of the watch advertising. No `forcing reconnect to re-resolve GATT` unless the link really stalled. |
+| 5.32h4 | Stuck-resolve pacing unchanged (opportunistic) | Only if a log shows `connected but services unresolved for 4 cycles — forcing reconnect to re-resolve GATT`. | It comes ≈ 15–18 s after `connect() starting`, as before this change (2026-07-23 log: 16.0–17.5 s). The stuck check runs before each 5 s wait, so the 4th sighting is 3 waits after the first, plus the Connect() attempts. A stuck link never resolves, so each wait still lasts the full 5 s. It comes later only if the watch was away first (Connect() pending). |
 
 ---
 

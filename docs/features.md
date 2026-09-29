@@ -630,6 +630,14 @@ Groundwork for keeping the watch link across suspend ("Mode B", needs host kerne
 compiles, harness-tested off-device; not yet run on hardware ([TESTING.md §5.32](../TESTING.md))._
 Details: [deep-sleep.md](deep-sleep.md).
 
+Faster BLE reconnect: the BlueZ connector now notices a link that comes up while it waits to retry,
+instead of only when its 5 s wait ends. Before, a reconnect was usually noticed only at the end of that
+wait: 5.05 s after `connect() starting` after a resume on the phone, and 5.1–5.7 s (sometimes ~10.5 s)
+on the desktop. After a Mode A resume the watch should be back about 5 s sooner. The ~2.9 s from resume
+to `connect() starting` is unchanged: bluetoothd's drop delivery plus libpebble3's 2.5 s reconnect
+settle. The log line `connected and services resolved (N ms after connect())` shows the time. _To be
+tested ([TESTING.md §5.32h](../TESTING.md))._
+
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
