@@ -516,7 +516,7 @@ in `stoandl.conf`:
 |-----|---------|---------|
 | `firmware.github` | `false` | **Core devices** (Pebble 2 Duo / Pebble Time 2): allow `check`/`update` to query GitHub releases and download firmware. |
 | `firmware.github_repo` | `coredevices/PebbleOS` | `owner/repo` whose releases publish `normal_<board>_<version>.pbz` bundles. |
-| `firmware.github_prereleases` | `false` | Consider pre-releases too (otherwise only the latest stable release). |
+| `firmware.github_prereleases` | `false` | Consider pre-releases too (otherwise only stable releases). |
 | `firmware.cohorts` | `false` | **Classic / Rebble watches** (Pebble Time / Time Steel / Time Round / Pebble 2): allow `check`/`update` to query Rebble's cohorts service. |
 | `firmware.cohorts_url` | `https://cohorts.rebble.io` | Base URL of the cohorts service — override only for a self-hosted/mirror instance. |
 | `firmware.notify` | `true` | When a source is on, notify you when newer firmware appears — on both the watch and your desktop (see below). |
@@ -535,6 +535,9 @@ actually changes, so reconnecting doesn't nag. Set `firmware.notify = false` to 
 No account or token is needed — both sources are public. **Core devices** (Pebble 2 Duo / Pebble
 Time 2) pull from GitHub: the watch's board revision (e.g. `obelix_pvt`) **exactly matches** the
 release asset `normal_<board>_<version>.pbz`, so the right bundle is picked with no mapping table.
+"Latest" is the highest version among the 30 most recent releases that ship a bundle for the board,
+not the release GitHub marks latest: PebbleOS publishes backports (v4.27.3, v4.9.142.4, …) after newer
+releases, and GitHub's mark follows the publish date.
 **Classic / Rebble watches** pull from Rebble's cohorts service (`GET /cohort?hardware=<board>&select=fw`,
 the same contract the classic Pebble app used) — the board is the same `WatchHardwarePlatform.revision`
 (e.g. `snowy_dvt`). stoandl routes to the right source via one shared `isCoreDevice()` partition (which

@@ -116,6 +116,12 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   config) that have a `normal_<board>` asset. `SEMVER` also truncates 4-part tags (`FirmwareControl.kt:366`).
 - **Tests.** Include the PRF case: `needsUpdate` returns true for `isRecovery` (`FirmwareControl.kt:289-290`),
   so a PRF watch would have flashed the backport.
+- **Done, to be tested (TESTING 5.11f, 5.11g).** `GithubFirmwareSource` reads `/releases?per_page=30` and
+  takes the highest `FirmwareTag` among non-draft releases (pre-releases per `firmware.github_prereleases`)
+  that ship a `normal_<board>` bundle; unversioned tags count only when no versioned release qualifies.
+  `FirmwareTag` keeps all four numeric parts, for the tag and for the running version, so a watch on
+  v4.9.142.3 is offered .4. `FirmwareLatestTest` covers the order, the backports, drafts, pre-releases,
+  the board filter and the PRF case.
 
 ### 1.6 Smaller ones
 

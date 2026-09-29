@@ -207,7 +207,8 @@ firmware.github = false
 # Defaults to the PebbleOS source.
 firmware.github_repo = coredevices/PebbleOS
 
-# Consider GitHub pre-releases too (otherwise only the latest stable release).
+# Consider GitHub pre-releases too (otherwise only stable releases). Either way the highest version
+# with a bundle for the watch's board wins, not the release GitHub marks "latest" (a backport can be).
 firmware.github_prereleases = false
 
 # Fetch firmware for classic / Rebble-generation watches from Rebble's cohorts service. This is the

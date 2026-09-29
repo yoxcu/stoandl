@@ -137,7 +137,7 @@ data class StoandlConfig(
     /** `owner/repo` whose GitHub releases publish per-board `normal_<board>_<version>.pbz` firmware
      *  bundles. Defaults to the PebbleOS source for Core devices. */
     val firmwareGithubRepo: String,
-    /** When true, consider GitHub pre-releases too (otherwise only the latest stable release). */
+    /** When true, consider GitHub pre-releases too (otherwise only stable releases). */
     val firmwareGithubPrereleases: Boolean,
     /** Allow `stoandl firmware check`/`update` to query Rebble's cohorts service for firmware images
      *  for classic / Rebble-generation Pebbles (original Pebble, Pebble Time / Time Steel, Time Round,

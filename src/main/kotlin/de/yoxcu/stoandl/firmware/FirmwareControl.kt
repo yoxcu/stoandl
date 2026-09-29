@@ -363,16 +363,6 @@ class FirmwareControl(
     }
 
     /**
-     * Whether to offer [candidate] over the [running] firmware. We offer when the watch is in recovery
-     * (PRF) — it needs a normal-firmware reflash to leave it, regardless of version — when we can't
-     * parse the candidate version (surface a downloadable build rather than silently hide it), or when
-     * it's a newer major.minor.patch. We compare only the numeric version (not the build timestamp), so
-     * a same-numbered re-spin isn't re-offered in a loop.
-     */
-    private fun needsUpdate(candidate: String, running: FirmwareVersion): Boolean =
-        running.isRecovery || parseSemver(candidate) == null || isNewer(candidate, running)
-
-    /**
      * Alert that newer firmware is available, with an "Update" action that flashes it. Posted on BOTH
      * surfaces, each with a working button, without double-notifying the watch:
      *  - a **direct watch** notification (Update button → flash, via a per-item action handler);
@@ -425,28 +415,20 @@ class FirmwareControl(
         }
     }
 
-    /** True if firmware [tag] (e.g. `v4.12.0`) is a newer major.minor.patch than the [running] version. */
-    private fun isNewer(tag: String, running: FirmwareVersion): Boolean {
-        val (maj, min, pat) = parseSemver(tag) ?: return false
-        val current = intArrayOf(running.major, running.minor, running.patch)
-        val candidate = intArrayOf(maj, min, pat)
-        for (i in 0..2) {
-            if (candidate[i] != current[i]) return candidate[i] > current[i]
-        }
-        return false
-    }
-
-    private fun parseSemver(s: String): Triple<Int, Int, Int>? {
-        val m = SEMVER.find(s) ?: return null
-        return Triple(
-            m.groupValues[1].toInt(),
-            m.groupValues[2].toInt(),
-            m.groupValues.getOrNull(3)?.toIntOrNull() ?: 0,
-        )
-    }
-
     companion object {
-        private val SEMVER = Regex("""v?(\d+)\.(\d+)(?:\.(\d+))?""")
+        /**
+         * Whether to offer [candidate] over the [running] firmware. We offer when the watch is in recovery
+         * (PRF) — it needs a normal-firmware reflash to leave it, regardless of version, which is why the
+         * sources must resolve the highest release rather than whatever GitHub marks latest — when we can't
+         * parse the candidate version (surface a downloadable build rather than silently hide it), or when
+         * its numeric version ([FirmwareTag], all four parts) is newer. The build timestamp and suffix are
+         * ignored, so a same-numbered re-spin isn't re-offered in a loop.
+         */
+        internal fun needsUpdate(candidate: String, running: FirmwareVersion): Boolean {
+            if (running.isRecovery) return true
+            val tag = FirmwareTag.parse(candidate) ?: return true
+            return tag.compareNumbers(FirmwareTag.of(running)) > 0
+        }
 
         /** The human-readable PebbleOS changelog page, appended to [check]'s `ok:` records as the
          *  "What's new" link for the GUI's firmware banner. There is no per-release URL source, so this

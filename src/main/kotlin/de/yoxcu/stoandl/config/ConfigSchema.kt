@@ -350,7 +350,7 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "owner/repo whose releases publish per-board normal_<board>_<version>.pbz bundles",
         placeholder = "coredevices/PebbleOS", validate = ::githubRepoValid) { it.firmwareGithubRepo },
     toggle("firmware.github_prereleases", G_FIRMWARE, "Include GitHub pre-releases",
-        "Consider pre-releases too, not just the latest stable release") { it.firmwareGithubPrereleases },
+        "Consider pre-releases too, not just stable releases") { it.firmwareGithubPrereleases },
     toggle("firmware.cohorts", G_FIRMWARE, "Firmware source: classic (Rebble)",
         "Check Rebble's cohorts for classic-Pebble firmware updates — opt-in network egress") { it.firmwareCohorts },
     text("firmware.cohorts_url", G_FIRMWARE, "Cohorts service URL",
