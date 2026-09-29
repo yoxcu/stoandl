@@ -70,6 +70,10 @@ fun main(args: Array<String>) {
     serviceConn.requestBusName(STOANDL_BUS_NAME)
     log.info { "D-Bus bus name acquired: $STOANDL_BUS_NAME" }
 
+    // Before anything opens libpebble3.db (pebble.init() → Koin): musl __isnan shim + a stable copy of
+    // the SQLite JNI library. After the bus name, so only one daemon at a time manages that cache.
+    SqliteNative.prepare()
+
     val pebble = PebbleIntegration(notificationBus, scope, serviceConn)
     pebble.init()
 

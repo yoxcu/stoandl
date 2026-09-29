@@ -8,6 +8,10 @@ them on. The reference device is a OnePlus 6 on postmarketOS with Plasma Mobile 
 **Status:** implemented, compiles, unit/harness-tested off-device; **not yet verified on hardware**
 (see [TESTING.md §5.32](../TESTING.md)).
 
+postmarketOS and Alpine use musl. The SQLite driver bundled with stoandl is built for glibc, and
+older builds crash-loop right after the first pairing. stoandl now works around this automatically on
+musl (**implemented, to be tested**). See [README → Requirements](../README.md#requirements).
+
 ## Two ways a watch can live with a sleeping phone
 
 - **Mode A — stock kernel.** Linux disconnects every Bluetooth link on each suspend

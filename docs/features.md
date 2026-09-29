@@ -108,9 +108,13 @@ paired (the BR/EDR inquiry only runs during a pairing window), so disable it wit
 classic.discover = false    # turn off classic-era Pebble discovery (on by default)
 ```
 
-_Hardware-verified on a Pebble Time Steel; the JNA→FFM rewrite that drops the last native blob (so it
-can run on musl) is pending re-test on the phone._ See [devices.md](devices.md) for how to enable and
-use it, and [configuration.md](configuration.md#bluetooth-classic) for the config keys.
+_Hardware-verified on a Pebble Time Steel. The JNA→FFM rewrite removes the Classic transport's own
+native blob and is pending re-test on the phone. One glibc-built native library remains: androidx's
+SQLite JNI library, which on musl is handled by `SqliteNative` (see
+[musl: bundled SQLite](#musl-postmarketos--alpine-bundled-sqlite))._
+
+See [devices.md](devices.md) for how to enable and use it, and
+[configuration.md](configuration.md#bluetooth-classic) for the config keys.
 
 ### BLE pairing / bonding
 
@@ -601,6 +605,20 @@ fixed BLE connection parameters (`ble.conn_params`) and a datalog pause while th
 Groundwork for keeping the watch link across suspend ("Mode B", needs host kernel work). _Built,
 compiles, harness-tested off-device; not yet run on hardware ([TESTING.md §5.32](../TESTING.md))._
 Details: [deep-sleep.md](deep-sleep.md).
+
+### musl (postmarketOS / Alpine): bundled SQLite
+
+libpebble3's SQLite driver ships a JNI library built for glibc that calls `__isnan`, which musl lacks.
+The JVM crashed at the first floating-point value in the database, which was the health sync right
+after pairing. On musl, stoandl now loads a tiny built-in `__isnan` shim
+([tools/isnan-shim](../tools/isnan-shim/)) into the global symbol namespace before the database opens,
+so no `LD_PRELOAD` is needed. If the cache can't hold it, a temp copy is loaded instead; only if that
+fails too is there an `SQLite: could not provide __isnan` ERROR, naming a ready `LD_PRELOAD` fix. The
+SQLite library is also extracted once to `~/.cache/stoandl/native/` instead of a new
+`/tmp/androidx_sqliteJni*.tmp` on every start. _Built; verified off-device on a real musl JVM (Alpine
+openjdk25: x86_64 natively, aarch64 under qemu-user). Without the fix it reproduces the phone's exact
+`avgFinalize+0xc4` crash; with it `AVG()` works and the daemon starts cleanly. Not yet run on the phone
+([TESTING.md §5.32a](../TESTING.md))._
 
 ### Multiple concurrent Pebble watches
 

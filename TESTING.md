@@ -1459,6 +1459,67 @@ tests a way to suspend with the screen off (`systemctl suspend`, or the phone's 
 through s2idle with the Mode B kernel patches; (c) LL vs L2CAP parameter-update path of the Time 2
 (btmon) — decides whether `ble.conn_params_fast` is safe without K5.
 
+### 5.32a musl: bundled SQLite `__isnan` shim + one cached JNI library (handoff #1, #9)  ⚠️ UNVERIFIED on the phone (needs a musl phone + a Time 2 with heart-rate data)
+
+androidx's bundled `libsqliteJni.so` is built for glibc and imports `__isnan`, which musl lacks. Before
+this fix the JVM crashed (SIGSEGV in `avgFinalize`) at the first floating-point SQL value, which was
+the health sync right after pairing.
+
+At startup on musl the daemon now loads a built-in `__isnan` shim with `RTLD_GLOBAL` before the
+database opens: from `~/.cache/stoandl/native/`, or, if that cache can't map libraries, from a
+throwaway copy in the temp dir. It also keeps one copy of the SQLite library in
+`~/.cache/stoandl/native/` instead of a new `/tmp/androidx_sqliteJni*.tmp` on every start.
+
+Off-device (2026-09-29): verified on a real musl JVM (Alpine 3.24 `openjdk25-jre-headless` 25.0.4,
+x86_64 natively and aarch64 under qemu-user) with the fat JAR. Without the fix a probe reproduces the
+phone's crash exactly (`avgFinalize+0xc4` on aarch64; `sqlite3AtoF` for a float literal). With it,
+`SELECT AVG(1.5)`, libpebble3's `HealthDao` `AVG(heartRate)` and the probe below work, the log lines and
+hashes below match, the fallbacks of a2–a3 behave as described, and the real daemon (bare `java -jar`)
+starts on musl through `libpebble3 initialized` with no restricted-method warning. That harness lives in
+the build sandbox, not in this repo.
+
+**Prerequisites:**
+- Alpine or postmarketOS phone with the new JAR installed.
+- **Remove the manual workaround**, or the built-in path is silently skipped: delete the
+  `Environment=LD_PRELOAD=…libisnan-shim.so` line (or its drop-in), run `systemctl --user daemon-reload`,
+  and check that `systemctl --user show stoandl -p Environment` shows no `LD_PRELOAD`.
+- Note the leftovers: `ls -l /tmp/androidx_sqliteJni*.tmp`.
+- **Probe** (rows a0–a3; these never open `libpebble3.db`). `tools/isnan-shim/MuslProbe.java` runs float
+  SQL through the same driver. The phone's JRE has no `javac`, so build the probe on the build host:
+  `javac --release 21 -cp build/libs/stoandl-*-all.jar -d probe tools/isnan-shim/MuslProbe.java`.
+  Then copy `probe/MuslProbe.class` to `~/probe/` on the phone.
+- Shell setup on the phone for the manual rows. Take `JAVA` and `JAR` from the unit's `ExecStart`
+  (`systemctl --user cat stoandl`). Alpine has no `java` on `PATH`.
+
+```sh
+JAVA=/usr/bin/java; JAR=/usr/lib/stoandl/stoandl.jar    # install.sh layout
+# APKBUILD package: JAVA=/usr/lib/jvm/java-25-openjdk/bin/java; JAR=/usr/share/java/stoandl/stoandl.jar
+systemctl --user stop stoandl        # the probe also writes /tmp/stoandl.log
+ulimit -c 0                          # a1 crashes on purpose: no core dump
+T=$(mktemp -d); C=$(mktemp -d)       # scratch temp dir + cache: nothing touches the real ones
+O="-XX:ErrorFile=$T/hs_err_pid%p.log -Djava.io.tmpdir=$T -cp $JAR:$HOME/probe"
+```
+
+The hashes below are for androidx `sqlite-bundled` 2.7.0 on aarch64. A libpebble3 bump that moves
+androidx changes the `sqliteJni-…` one. The probe prints its log lines to stdout.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32a0 | Float SQL through the driver (the handoff's `SELECT AVG(1.5)` criterion) | `XDG_CACHE_HOME=$C $JAVA --enable-native-access=ALL-UNNAMED $O MuslProbe` | In order: `SQLite: extracted de/yoxcu/stoandl/natives/linux-aarch64/libisnan-shim.so to $C/stoandl/native/isnan-shim-fd610617dfb2a0d1/libisnan-shim.so`; `SQLite: C library without __isnan (musl) — loaded the built-in shim $C/stoandl/native/isnan-shim-fd610617dfb2a0d1/libisnan-shim.so` (no `(a temp copy: …)` suffix); `SQLite: extracted natives/linux_arm64/libsqliteJni.so to $C/stoandl/native/sqliteJni-a7a0edd05547f3b6/libsqliteJni.so`; `SQLite: JNI library …`; then `MUSLPROBE OK avg=2.0 mul=3.0 round=2.6`. No ERROR. `ls $T` shows no `androidx_sqliteJni*.tmp`. |
+| 5.32a1 | Negative control: the crash is real | `$JAVA --enable-native-access=ALL-UNNAMED $O MuslProbe --no-prepare` | No `MUSLPROBE OK`: the JVM dies with SIGSEGV, and `$T/hs_err_pid*.log` shows a SQLite frame (`avgFinalize`, `sqlite3AtoF`, …). If it prints `MUSLPROBE OK` instead, something else already supplies `__isnan` (check `echo $LD_PRELOAD`), and a0 proved nothing. |
+| 5.32a2 | Cache that can't map libraries: temp-copy fallback, and the stale-copy sweep on that path | `touch -d '2020-01-01 00:00:00' $T/androidx_sqliteJni1.tmp`, then `XDG_CACHE_HOME=/proc/stoandl-test $JAVA --enable-native-access=ALL-UNNAMED $O MuslProbe` | INFO `SQLite: C library without __isnan (musl) — loaded the built-in shim $T/stoandl-isnan…/libisnan-shim.so (a temp copy: /proc/stoandl-test/stoandl/native is on a noexec mount)`. WARN `SQLite: /proc/stoandl-test/stoandl/native is on a noexec mount; the driver extracts its library to a temp file instead`. INFO `SQLite: removed 1 stale androidx_sqliteJni*.tmp copies from $T` (2 if a1's leftover is already over 10 min old). Then `MUSLPROBE OK …`. **No** ERROR. Afterwards `ls -d $T/stoandl-isnan*` finds nothing. |
+| 5.32a2b | Cache on a writable noexec mount (optional) | Pick a writable noexec mount (`findmnt -no OPTIONS /dev/shm` shows `noexec`; else another one). `XDG_CACHE_HOME=/dev/shm/stoandl-test $JAVA --enable-native-access=ALL-UNNAMED $O MuslProbe`; afterwards `rm -rf /dev/shm/stoandl-test` | INFO `… loaded the built-in shim $T/stoandl-isnan…/libisnan-shim.so (a temp copy: /dev/shm/stoandl-test/stoandl/native is on a noexec mount)`, then the noexec WARN and `MUSLPROBE OK …`. No ERROR, no SIGSEGV (an earlier build of the fix had no shim fallback and crashed here at `sqlite3AtoF`). |
+| 5.32a2c | No place for the shim at all: the guard ERROR | `XDG_CACHE_HOME=/proc/stoandl-test $JAVA --enable-native-access=ALL-UNNAMED $O -Djava.io.tmpdir=/proc/stoandl-test MuslProbe` | One ERROR `SQLite: could not provide __isnan (/proc/stoandl-test/stoandl/native is on a noexec mount; temp copy: java.nio.file.…Exception: /proc/stoandl-test…)`: the cause names the exception class. It goes on `… will crash (SIGSEGV in the SQLite JNI library, e.g. at avgFinalize or sqlite3AtoF) …` and gives the fix `… (unzip -p <jar> de/yoxcu/stoandl/natives/linux-aarch64/libisnan-shim.so > /path/to/libisnan-shim.so) and start stoandl with LD_PRELOAD=/path/to/libisnan-shim.so …`. The probe then fails with the driver's own Java exception (it can't extract SQLite to that tmpdir either), **not** with a SIGSEGV. |
+| 5.32a3 | FFM unusable: the ERROR names a ready fix, and following it downgrades to a WARN | (1) `XDG_CACHE_HOME=$C $JAVA --illegal-native-access=deny $O MuslProbe`<br>(2) `LD_PRELOAD=$C/stoandl/native/isnan-shim-fd610617dfb2a0d1/libisnan-shim.so XDG_CACHE_HOME=$C $JAVA --illegal-native-access=deny $O MuslProbe` | (1) ERROR `SQLite: could not provide __isnan (cannot check for or load it: java.lang.IllegalCallerException: Illegal native access …)`. Its fix is `LD_PRELOAD=$C/stoandl/native/isnan-shim-fd610617dfb2a0d1/libisnan-shim.so` plus a systemd drop-in line: no compiler, no `unzip`. Also WARN `SQLite: cannot load …libsqliteJni.so (java.lang.IllegalCallerException …)`. The probe then ends in a Java exception, because the driver's own library load is denied too. It must **not** end in a SIGSEGV. (2) No ERROR. WARN `SQLite: cannot check for __isnan (…); assuming LD_PRELOAD=… provides it`. Afterwards run `systemctl --user start stoandl`. |
+| 5.32a4 | The daemon loads the shim with no env | `rm -rf ~/.cache/stoandl/native; systemctl --user restart stoandl` | In order, before any libpebble3 lines: `SQLite: extracted …/libisnan-shim.so to ~/.cache/stoandl/native/isnan-shim-fd610617dfb2a0d1/libisnan-shim.so`, then `SQLite: C library without __isnan (musl) — loaded the built-in shim …`, then `SQLite: extracted natives/linux_arm64/libsqliteJni.so to …/sqliteJni-a7a0edd05547f3b6/libsqliteJni.so`, then `SQLite: JNI library …`. **No** `SQLite: could not provide __isnan` ERROR. |
+| 5.32a5 | The first real `AVG()` survives (handoff acceptance) | Use the Pebble Time 2 with HRM on and heart-rate samples from the last day. A watch without HR samples makes `AVG(heartRate)` (filtered on `heartRate > 0`) return NULL without ever reaching `__isnan`, so this row would pass without the fix. Needs `health.sync` and `health.export` on (the defaults). Let the watch connect; the health sync runs `HealthDao.getAverageHeartRate` on connect. Wait 2 min, then run `stoandl health`. | `systemctl --user show stoandl -p NRestarts` stays `0`. No new `/tmp/stoandl-hs_err_pid*.log`. `stoandl health` shows a **number** in AVGHR for today, not `-`. |
+| 5.32a6 | Soak | Leave it running for 1 h with notifications, a reconnect and a suspend/resume | Still `NRestarts=0`; no `hs_err` file. |
+| 5.32a7 | Extract once; interrupted-write leftovers are removed | `touch ~/.cache/stoandl/native/sqliteJni-a7a0edd05547f3b6/.libsqliteJni.so1.part`, then restart the daemon twice | No `SQLite: extracted` lines on either start, only the shim INFO line and `SQLite: JNI library …`. The `.part` file is gone. `ls ~/.cache/stoandl/native` shows exactly `isnan-shim-fd610617dfb2a0d1` and `sqliteJni-a7a0edd05547f3b6`. |
+| 5.32a8 | No temp copies (#9) | Restart once the old leftovers are over 10 min old. Then restart 3× more, including once after `kill -9` of the JVM. | The first start logs `SQLite: removed N stale androidx_sqliteJni*.tmp copies from /tmp`. After that, `ls /tmp/androidx_sqliteJni*.tmp` stays empty. |
+| 5.32a9 | A preloaded compat library still wins (optional) | Temporarily put the old `LD_PRELOAD=…libisnan-shim.so` back, run `daemon-reload` and restart | No `loaded the built-in shim` line (the preloaded `__isnan` is found first); the daemon is normal. Remove the preload again afterwards. |
+| 5.32a10 | Bare `java -jar` | `systemctl --user stop stoandl`; then `$JAVA -XX:ErrorFile=/tmp/stoandl-hs_err_pid%p.log -jar $JAR` (no `--enable-native-access`); Ctrl-C after startup; then `systemctl --user start stoandl` | No `WARNING: A restricted method …` lines on stderr: the fat JAR manifest carries `Enable-Native-Access: ALL-UNNAMED`. |
+| 5.32a11 | glibc desktop regression | Restart the daemon on a glibc desktop | No `__isnan` line at all, and no `isnan-shim-*` directory in `~/.cache/stoandl/native`. `SQLite: JNI library ~/.cache/stoandl/native/sqliteJni-3e196f4347987741/libsqliteJni.so` (x86_64, 2.7.0). Watch list, health and notifications work normally. No new `/tmp/androidx_sqliteJni*.tmp`. |
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)

@@ -72,8 +72,17 @@ enable the Bluetooth Classic transport.
 - D-Bus session bus with a notification daemon (dunst, mako, GNOME, etc.)
 
 > BLE is driven entirely through BlueZ over D-Bus, and the Bluetooth Classic transport reaches the
-> kernel via `java.lang.foreign` (no JNI/JNA) — so stoandl loads **no glibc-only native library at
-> runtime** and runs on **musl** (postmarketOS / Alpine) as well as glibc distros. (The fat JAR still
+> kernel via `java.lang.foreign` (no JNI/JNA) — so stoandl runs on **musl** (postmarketOS / Alpine)
+> as well as glibc distros. One native library does load at runtime: libpebble3's SQLite driver
+> (androidx `sqlite-bundled`) ships a JNI library built for glibc. On musl it lacks one glibc-only
+> symbol (`__isnan`), and the JVM crashed on the first query that touched a floating-point value —
+> right after the first pairing. stoandl now works around this automatically on musl
+> (**implemented — to be tested**, [TESTING.md §5.32a](TESTING.md)): at startup it loads a tiny
+> built-in `__isnan` shim ([tools/isnan-shim](tools/isnan-shim/)), and it keeps one copy of the
+> SQLite library in `~/.cache/stoandl/native/` instead of a new `/tmp/androidx_sqliteJni*.tmp` per
+> start. If the shim can't be loaded, the log has an `SQLite: could not provide __isnan` ERROR with the
+> manual fix: an `LD_PRELOAD` of the shim, naming the path of its cached copy or the `unzip` command
+> that extracts it from the JAR (no compiler needed). (The fat JAR still
 > *bundles* kable's btleplug/JNA blobs as an unused transitive dependency — kable's types back the
 > shared BLE abstraction, but its native backend is never instantiated on JVM/Linux, which uses
 > BlueZ.) BLE is verified end-to-end (pair, connect, notifications) on a glibc laptop and a OnePlus 6

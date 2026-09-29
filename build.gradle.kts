@@ -151,6 +151,10 @@ tasks.shadowJar {
         // Truffle's CheckMultiReleaseSupport throws "Multi-Release … lost" at Context.build() (PKJS
         // init). Re-declaring it makes the JVM load the versioned Truffle classes again.
         attributes["Multi-Release"] = "true"
+        // The manifest form of --enable-native-access=ALL-UNNAMED (JDK 22+, honoured for `java -jar`), so
+        // a bare `java -jar stoandl-*-all.jar` runs the FFM code (Classic transport, SqliteNative) and the
+        // SQLite driver's JNI load without restricted-method warnings too. The launchers keep the flag.
+        attributes["Enable-Native-Access"] = "ALL-UNNAMED"
     }
     mergeServiceFiles()
 }
