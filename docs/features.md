@@ -137,7 +137,11 @@ Headless BlueZ agent (Numeric Comparison / MITM / SC). When pairing, the watch s
 code**. Confirm it on the watch, and answer `y` when `stoandl watch pair` shows the same code; a piped
 answer (`echo y | stoandl watch pair`) counts too. With `--yes`, or with nothing to read an answer from
 (e.g. `ssh host stoandl watch pair` without `-t`), the CLI accepts it by itself and says so. Either way,
-the watch-side confirmation is the MITM check. Subsequent reconnects are automatic.
+the watch-side confirmation is the MITM check. Subsequent reconnects are automatic. stoandl's agent is the
+system's default one, so it refuses every other pairing: from anything that isn't a Pebble, and at any time
+no pairing window is open. It also authorises services (`AuthorizeService`) for Pebbles only, so a device
+you paired elsewhere and didn't mark trusted can't open a profile while stoandl runs (`bluetoothctl trust
+<mac>` fixes that).
 
 ```sh
 stoandl watch pair [--yes]        # pair a new watch (~2 min window; finds BLE and classic watches; --yes: don't ask for the code)

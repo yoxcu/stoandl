@@ -117,6 +117,14 @@ that can't be answered headlessly and we'd revisit.
 > answered via `ConfirmPairing` (the CLI asks y/N when stdin is a terminal, accepts by itself with
 > `--yes` or with nothing to read an answer from); any other pairing is still accepted, except a retry
 > of one the user just declined. The watch-side confirmation remains the MITM check.
+>
+> **Update 2026-09-30:** as the system's default agent it also answered every pairing and service
+> request a *remote* device started, and accepted them all — a nearby device that knew the adapter's
+> address could bond and then open a profile such as HID (the CVE-2023-45866 class). It now refuses by
+> default: Numeric Comparison, Just Works and legacy PIN pairing only for a Pebble libpebble3 has (known,
+> or found by the window's scan) and only while a pairing window is open, `AuthorizeService` only for
+> Pebbles, Passkey Entry never. The watch-side confirmation is the MITM check only because the other end
+> is then known to be a Pebble.
 
 ## Dead ends (do not revisit)
 

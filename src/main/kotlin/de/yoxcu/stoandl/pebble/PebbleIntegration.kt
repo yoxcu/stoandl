@@ -79,6 +79,7 @@ import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
+import io.rebble.libpebblecommon.connection.PebbleDevice
 import io.rebble.libpebblecommon.connection.bt.createBondClassic
 import io.rebble.libpebblecommon.connection.bt.isBondedClassic
 import io.rebble.libpebblecommon.connection.WatchConnector
@@ -189,29 +190,21 @@ private const val PAIRING_PAUSED_BLE_BUSY = "pending:BLE scan paused — "   // 
 private const val PAIRING_PAUSED_SLEPT =
     "pending:Searching again — the phone slept, which pauses discovery. Keep it awake (e.g. the screen on) until the watch is found."
 
-/** Allows pairing with unbonded watches only while the window is open. The window is only ever opened
- *  by an explicit, time-limited user request (Pair/Repair over D-Bus, a notification's Pair/Re-pair
- *  button), which is why its scans don't depend on the display (see [PebbleIntegration]'s scan loop). */
+/** Allows pairing with unbonded watches only while the window is open — the scans, and the pairing
+ *  agent's answers (see `mayPair`): outside a window every pairing request is refused. The window is
+ *  only ever opened by an explicit, time-limited user request (Pair/Repair over D-Bus, a notification's
+ *  Pair/Re-pair button), which is why its scans don't depend on the display (see [PebbleIntegration]'s
+ *  scan loop). */
 private class PairingGate {
     private val expiryMs = java.util.concurrent.atomic.AtomicLong(0L)
-    // BlueZ device path whose pairing the user declined (or let time out) in the last window; cleared by
-    // the next open(). See [refusesRetry].
-    private val declinedDevice = AtomicReference<String?>(null)
     // The host suspended (and resumed) while this window was open; cleared by the next open().
     private val slept = AtomicBoolean(false)
     fun open() {
-        declinedDevice.set(null)
         slept.set(false)
         expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS)
     }
     fun close() { expiryMs.set(0L) }
     fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.get()
-    fun markDeclined(device: String) { declinedDevice.set(device) }
-    /** A pairing request from [device] outside any window that retries one the user refused in the last
-     *  window. Backstop only: the decline also drops libpebble3's connection goal for the watch (see
-     *  `refusePairing`), which is what stops the retries; this keeps one that was already under way, or a
-     *  watch the path couldn't be matched to, from being bonded by the agent's outside-a-window accept. */
-    fun refusesRetry(device: String): Boolean = !isOpen() && declinedDevice.get() == device
     /** Called on every resume: remembers that this window's discovery was interrupted by a suspend. */
     fun noteResume() { if (isOpen()) slept.set(true) }
     fun sleptDuringWindow(): Boolean = slept.get()
@@ -388,15 +381,24 @@ class PebbleIntegration(
     @Volatile private var datalogSendState: Boolean? = null
 
     fun init() {
-        // Register the pairing agent before any connection so MITM pairing has an answerer.
+        // Register the pairing agent before any connection so MITM pairing has an answerer. It is the
+        // system's default agent, so it answers for every device: it lets only a Pebble bond, and only
+        // while a pairing window is open (mayPair), and authorises services only for Pebbles.
         //  - onConfirm: numeric-comparison decision (see onPairingConfirm) — block for the user on a
-        //    client-initiated window, auto-accept otherwise (but keep a just-declined pairing declined).
+        //    client-initiated window, accept on a notification's window.
+        //  - mayPair: Just Works (RequestAuthorization) and legacy PIN pairing.
         //  - onPairingCode: display-only passkey path — just surface the code.
         pairingAgent.register(
             onPairingCode = { code ->
                 if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
             },
             onConfirm = ::onPairingConfirm,
+            mayPair = { device -> mayPair(device, "pairing") },
+            mayUseService = { device, uuid ->
+                (pebbleAt(device) != null).also { ok ->
+                    if (!ok) log.info { "Refusing service $uuid for $device — not a Pebble stoandl knows" }
+                }
+            },
         )
 
         // legacyReversedPPoG=false + useReversedPpogV2=false → ignore any reversed PPoG service the watch
@@ -1161,20 +1163,16 @@ class PebbleIntegration(
         }
     }
 
-    /** BlueZ numeric-comparison callback (runs on the agent's dispatch thread). On a client-initiated
-     *  pairing window (Pair/Repair) we surface the code as `confirm:<code>` and block until the user
-     *  accepts/declines via [StoandlControl.ConfirmPairing] (or the timeout declines); otherwise
-     *  (notification re-pair / external pairing) we auto-accept and just surface the code for display.
-     *  A declined or timed-out answer stays final: [refusePairing] stops libpebble3 from retrying that
-     *  watch, and a retry already under way is refused ([PairingGate.refusesRetry]), so the agent never
-     *  overrides what the CLI/GUI answered. */
+    /** BlueZ numeric-comparison callback (runs on the agent's dispatch thread). Refused unless [mayPair].
+     *  On a client-initiated pairing window (Pair/Repair) we surface the code as `confirm:<code>` and block
+     *  until the user accepts/declines via [StoandlControl.ConfirmPairing] (or the timeout declines); on a
+     *  notification's re-pair window we accept and just surface the code for display. A declined or
+     *  timed-out answer stays final: [refusePairing] stops libpebble3 from retrying that watch, and a retry
+     *  once the window has closed is refused like any other pairing outside a window. */
     private fun onPairingConfirm(device: String, code: String): Boolean {
-        if (pairingGate.refusesRetry(device)) {
-            log.info { "Declining a retried pairing with $device — it was declined in the last pairing window (run 'stoandl watch pair' to pair it)" }
-            return false
-        }
-        if (!(pairingGate.isOpen() && requireConfirm.get())) {
-            if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
+        if (!mayPair(device, "pairing (code $code)")) return false
+        if (!requireConfirm.get()) {
+            pairingState.set("pending:Confirm code $code on the watch")
             return true
         }
         pairingState.set("confirm:$code")
@@ -1196,20 +1194,38 @@ class PebbleIntegration(
      *  window's requestConnection set the watch's connection goal, a failed pairing doesn't clear it
      *  (WatchManager's upstream "if only a scanresult, set goal = false" TODO), and startAutoConnect's
      *  give-up only sees watches that aren't connecting. So drop that goal (a watch known only from the
-     *  scan is then pruned by the next scan), and remember the path so a retry already under way is
-     *  refused too ([PairingGate.refusesRetry]). */
+     *  scan is then pruned by the next scan). A retry that reaches the agent after the window has closed
+     *  is refused by [mayPair]. */
     private fun refusePairing(device: String) {
-        pairingGate.markDeclined(device)
-        val watch = libPebble.watches.value.firstOrNull { d ->
+        val watch = pebbleAt(device) ?: return
+        log.info { "Pairing with ${watch.displayName()} declined — not retrying it (run 'stoandl watch pair' to pair it after all)" }
+        watchConnector.requestDisconnection(watch.identifier)
+    }
+
+    /** The Pebble libpebble3 has (known, or found by a pairing window's scan) at BlueZ device path
+     *  [device], or null for any other device. */
+    private fun pebbleAt(device: String): PebbleDevice? =
+        libPebbleRef.get()?.watches?.value?.firstOrNull { d ->
             when (val id = d.identifier) {
                 is PebbleBleIdentifier -> bluezObjectPath(id.asString) == device
                 is PebbleBtClassicIdentifier ->
                     device.endsWith("/dev_" + id.macAddress.replace(':', '_'), ignoreCase = true)
                 else -> false
             }
-        } ?: return
-        log.info { "Pairing with ${watch.displayName()} declined — not retrying it (run 'stoandl watch pair' to pair it after all)" }
-        watchConnector.requestDisconnection(watch.identifier)
+        }
+
+    /** Whether the pairing agent may let [device] bond: only a Pebble ([pebbleAt]) and only while a
+     *  pairing window is open. The agent is the system's default one, so without this any nearby device
+     *  that knows the adapter's address could bond at any time — and then, as a bonded device, open a
+     *  profile such as HID. */
+    private fun mayPair(device: String, what: String): Boolean {
+        val reason = when {
+            pebbleAt(device) == null -> "not a Pebble stoandl knows"
+            !pairingGate.isOpen() -> "no pairing window is open (run 'stoandl watch pair')"
+            else -> return true
+        }
+        log.info { "Refusing $what with $device — $reason" }
+        return false
     }
 
     /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and

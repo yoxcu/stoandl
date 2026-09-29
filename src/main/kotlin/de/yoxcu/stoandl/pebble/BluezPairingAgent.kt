@@ -42,29 +42,44 @@ interface BluezAgent1 : DBusInterface {
  * Newer watches request Bonding+MITM+SC, which yields Numeric Comparison. Without an agent BlueZ
  * has nothing to answer the confirmation, so [io.rebble.libpebblecommon...]'s `Pair()` times out
  * ("No reply within specified time") even though the watch shows its pairing popup. This agent is
- * registered as the system default agent (so it serves `Device1.Pair()` calls made on any
- * connection); the user confirms the matching code on the watch, which is the MITM check.
+ * registered as the system default agent, so it serves `Device1.Pair()` calls made on any connection
+ * — and also every pairing or service request a *remote* device starts. So it refuses by default:
+ * every answer is a callback the daemon decides, and a missing callback rejects.
  *
- * Confirmation (Numeric Comparison) is routed through [register]'s `onConfirm` callback with the
- * device's object path and the code: it returns true to accept (the method returns) or false to
- * decline (we throw, which BlueZ treats as a rejected pairing). The callback may block to wait for a
- * user decision; the daemon asks on a `stoandl watch pair`/`repair` or GUI pairing window (the CLI
- * accepts by itself with `--yes` or without a terminal) and otherwise accepts, unless the request
- * retries a pairing the user just declined. When `onConfirm` is null we auto-accept. The display-only
- * methods report their code via `onPairingCode` so the daemon can surface it.
+ *  - Numeric Comparison goes to `onConfirm` with the device's object path and the code: true accepts
+ *    (the method returns), false declines (we throw, which BlueZ treats as a rejected pairing). It may
+ *    block for a user decision; the daemon lets only a Pebble pair and only during a pairing window,
+ *    asks the user on a `stoandl watch pair`/`repair` or GUI window (the CLI accepts by itself with
+ *    `--yes` or without a terminal), and accepts on a notification's re-pair window. With a Pebble the
+ *    user also confirms the code on the watch, which is the MITM check; that check only exists when
+ *    the other end is a Pebble, hence the device check.
+ *  - Just Works (`RequestAuthorization`) and legacy PIN entry (`RequestPinCode`, answered "0000") go
+ *    to `mayPair`, with the same rule.
+ *  - `AuthorizeService` (a device that isn't Trusted opening a profile) goes to `mayUseService`: the
+ *    daemon allows Pebbles only. Without that, a device that managed to bond could open e.g. HID.
+ *  - Passkey Entry, where the phone would type the watch's passkey, can't be answered headlessly and
+ *    is always refused.
+ *
+ * The display-only methods report their code via `onPairingCode` so the daemon can surface it.
  */
 class BluezPairingAgent {
     private val log = KotlinLogging.logger {}
     private var conn: DBusConnection? = null
     @Volatile private var onPairingCode: ((String) -> Unit)? = null
     @Volatile private var onConfirm: ((device: String, code: String) -> Boolean)? = null
+    @Volatile private var mayPair: ((device: String) -> Boolean)? = null
+    @Volatile private var mayUseService: ((device: String, uuid: String) -> Boolean)? = null
 
     fun register(
         onPairingCode: ((String) -> Unit)? = null,
         onConfirm: ((device: String, code: String) -> Boolean)? = null,
+        mayPair: ((device: String) -> Boolean)? = null,
+        mayUseService: ((device: String, uuid: String) -> Boolean)? = null,
     ) {
         this.onPairingCode = onPairingCode
         this.onConfirm = onConfirm
+        this.mayPair = mayPair
+        this.mayUseService = mayUseService
         try {
             val c = DBusConnectionBuilder.forSystemBus().withShared(false).build()
             conn = c
@@ -106,20 +121,15 @@ class BluezPairingAgent {
             log.info { "Pairing agent released" }
         }
 
-        // Returning normally = accept. Throwing a DBus error = reject. Everything but RequestConfirmation
-        // (see onConfirm) is auto-accepted.
+        // Returning normally = accept. Throwing a DBus error = reject. Every decision is the daemon's
+        // (see the class doc); without a callback the answer is no.
 
         override fun RequestConfirmation(device: DBusPath, passkey: UInt32) {
             // Numeric Comparison (DisplayYesNo). onConfirm decides (and may block for a user answer);
             // returning normally accepts, throwing declines (BlueZ aborts the pairing).
             val code = "%06d".format(passkey.toLong())
-            val confirm = onConfirm
-            if (confirm == null) {
-                log.info { "RequestConfirmation($device) code=$code — auto-accepting (no confirmer wired)" }
-                return
-            }
             log.info { "RequestConfirmation($device) code=$code — deciding" }
-            if (!confirm(device.path, code)) {
+            if (onConfirm?.invoke(device.path, code) != true) {
                 log.info { "RequestConfirmation($device) code=$code — declined" }
                 throw DBusExecutionException("Pairing declined")
             }
@@ -127,11 +137,20 @@ class BluezPairingAgent {
         }
 
         override fun RequestAuthorization(device: DBusPath) {
-            log.info { "RequestAuthorization($device) — auto-accepting" }
+            // Just Works pairing started by the remote device.
+            if (mayPair?.invoke(device.path) != true) {
+                log.info { "RequestAuthorization($device) — refused" }
+                throw DBusExecutionException("Pairing refused")
+            }
+            log.info { "RequestAuthorization($device) — accepted" }
         }
 
         override fun AuthorizeService(device: DBusPath, uuid: String) {
-            log.info { "AuthorizeService($device, $uuid) — auto-accepting" }
+            if (mayUseService?.invoke(device.path, uuid) != true) {
+                log.info { "AuthorizeService($device, $uuid) — refused" }
+                throw DBusExecutionException("Service refused")
+            }
+            log.info { "AuthorizeService($device, $uuid) — accepted" }
         }
 
         override fun DisplayPasskey(device: DBusPath, passkey: UInt32, entered: UInt16) {
@@ -146,12 +165,18 @@ class BluezPairingAgent {
 
         override fun RequestPasskey(device: DBusPath): UInt32 {
             // Passkey Entry where the WATCH displays and the phone must type it — not answerable
-            // headlessly. Log loudly so we know this method was negotiated and can revisit.
-            log.warn { "RequestPasskey($device) called — cannot supply a watch-displayed passkey headlessly; returning 0 (pairing will likely fail)" }
-            return UInt32(0)
+            // headlessly (any fixed answer would pair a device that shows that passkey). Log loudly so
+            // we know this method was negotiated and can revisit.
+            log.warn { "RequestPasskey($device) called — cannot supply a watch-displayed passkey headlessly; refusing" }
+            throw DBusExecutionException("Passkey entry not supported")
         }
 
         override fun RequestPinCode(device: DBusPath): String {
+            // Legacy (pre-SSP) PIN entry: only "0000" can be offered headlessly.
+            if (mayPair?.invoke(device.path) != true) {
+                log.info { "RequestPinCode($device) — refused" }
+                throw DBusExecutionException("Pairing refused")
+            }
             log.warn { "RequestPinCode($device) called — legacy PIN entry not answerable headlessly; returning \"0000\"" }
             return "0000"
         }
