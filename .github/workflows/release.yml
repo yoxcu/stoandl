@@ -58,7 +58,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build shadowJar
+        # libpebble3 enables its Android targets only with an SDK *and* Gradle >= 9, so the runner
+        # image's exported ANDROID_HOME can't switch them on under Gradle 8.14. Unset it (and
+        # ANDROID_SDK_ROOT) anyway, so a later Gradle bump can't pull AGP into the JAR build.
         run: >-
+          env -u ANDROID_HOME -u ANDROID_SDK_ROOT
           ./gradlew --no-daemon shadowJar
           "-Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
 
