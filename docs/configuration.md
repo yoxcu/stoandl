@@ -390,7 +390,10 @@ calendar.sync_interval = 30
 
 Events are synced for a fixed window of **yesterday through 7 days ahead** (set by libpebble3's
 timeline). Recurring events (RRULE/RDATE, minus EXDATE) are expanded to individual pins; all-day
-events and per-event timezones are handled. stoandl re-reads on `calendar.sync_interval`, immediately
+events and per-event timezones are handled. All-day events go to the watch at UTC midnight of their
+date, the frame the watch expects (it applies its own timezone offset to all-day items), and a
+fixed-time alarm on one moves with them. `calendar dump` therefore prints an all-day date read in UTC.
+stoandl re-reads on `calendar.sync_interval`, immediately
 when a watched local `.ics` changes, and on demand:
 
 ```sh

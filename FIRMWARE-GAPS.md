@@ -131,6 +131,10 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
 - **All-day events.** `ICalParser.kt:177` uses `atStartOfDay(ZoneId.systemDefault())`. The fw applies
   `time_local_to_utc` to all-day timestamps (`item.c`), so anchor to **UTC midnight**. Absolute-time VALARMs
   on all-day events (`:203-206`) need the same compensation.
+  - **Done, to be tested (TESTING 5.56a).** `ICalParser` anchors dates to UTC midnight and moves an absolute
+    alarm on an all-day occurrence into that frame (its host-local wall-clock time, read as UTC); relative
+    alarms already were frame-independent. `ICalParserTest` covers both across host zones, and
+    `calendar dump` reads all-day dates in UTC.
 - **`textStyle` (fw ≥4.38.1).** It is now only a one-shot seed; the real keys `systemTextSize` and
   `notifTextSize` are not phone-syncable. Reword `packaging/stoandl.conf.example:93` and the pref description.
   Raising the missing whitelist entries with PebbleOS is worth a short issue.

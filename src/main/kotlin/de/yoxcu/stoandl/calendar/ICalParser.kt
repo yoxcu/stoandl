@@ -58,8 +58,19 @@ object ICalParser {
      * Parse [icalText] and expand every VEVENT occurrence intersecting [start]..[end] into
      * [CalendarEvent]s tagged with [calendarId]. Never throws: a malformed calendar logs a warning
      * and yields an empty list so one bad source can't break the sync.
+     *
+     * All-day occurrences start at **UTC midnight** of their date, not local midnight: the watch reads an
+     * all-day timestamp as local wall-clock time and applies the timezone offset itself (`item.c`,
+     * `time_local_to_utc`), like libpebble3's `anchorAllDayToUtc` for EventKit. [zone] is the host's
+     * zone, for floating times and for moving absolute alarms on all-day events into that frame.
      */
-    fun parse(icalText: String, calendarId: String, start: Instant, end: Instant): List<CalendarEvent> {
+    fun parse(
+        icalText: String,
+        calendarId: String,
+        start: Instant,
+        end: Instant,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): List<CalendarEvent> {
         val cal = try {
             CalendarBuilder().build(StringReader(icalText))
         } catch (e: Exception) {
@@ -117,8 +128,9 @@ object ICalParser {
             for (occ in occurrences) {
                 val st = occ.start ?: continue
                 val en = occ.end ?: st
-                val stJava = st.toJavaInstant()
-                val enJava = en.toJavaInstant()
+                val stJava = st.toJavaInstant(zone)
+                val enJava = en.toJavaInstant(zone)
+                val allDay = st is LocalDate
                 out += CalendarEvent(
                     id = "$uid@$st",
                     calendarId = calendarId,
@@ -127,10 +139,10 @@ object ICalParser {
                     location = location,
                     startTime = stJava.toKotlin(),
                     endTime = enJava.toKotlin(),
-                    allDay = st is LocalDate,
+                    allDay = allDay,
                     attendees = attendees,
                     recurs = recurs,
-                    reminders = triggers.mapNotNull { it.toReminder(stJava, enJava) }.distinct(),
+                    reminders = triggers.mapNotNull { it.toReminder(stJava, enJava, allDay, zone) }.distinct(),
                     availability = availability,
                     status = status,
                     baseEventId = uid,
@@ -168,13 +180,14 @@ private fun Instant.toQueryZdt(): ZonedDateTime =
 
 /** Collapse any java.time [Temporal] an occurrence may carry (Instant / Offset- / ZonedDateTime for
  *  timed events, LocalDateTime for floating, LocalDate for all-day) to a fixed java.time.Instant.
- *  Floating/date values are anchored to the daemon host's zone, matching how a desktop renders them. */
-private fun Temporal.toJavaInstant(): JInstant = when (this) {
+ *  Floating values are anchored to the host's [zone], matching how a desktop renders them. A date is
+ *  anchored to UTC midnight: the watch's all-day frame (see [ICalParser.parse]). */
+private fun Temporal.toJavaInstant(zone: ZoneId): JInstant = when (this) {
     is JInstant -> this
     is OffsetDateTime -> toInstant()
     is ZonedDateTime -> toInstant()
-    is LocalDateTime -> atZone(ZoneId.systemDefault()).toInstant()
-    is LocalDate -> atStartOfDay(ZoneId.systemDefault()).toInstant()
+    is LocalDateTime -> atZone(zone).toInstant()
+    is LocalDate -> atStartOfDay(ZoneOffset.UTC).toInstant()
     else -> JInstant.from(this)
 }
 
@@ -187,11 +200,14 @@ private fun JInstant.toKotlin(): Instant = Instant.fromEpochSeconds(epochSecond,
  * buzzes.
  */
 private sealed interface AlarmTrigger {
-    fun toReminder(occStart: JInstant, occEnd: JInstant): EventReminder?
+    /** [allDay] occurrences are in the watch's all-day frame (UTC midnight = local midnight); [zone] is
+     *  the host's zone, which the watch's own offset is assumed to match. */
+    fun toReminder(occStart: JInstant, occEnd: JInstant, allDay: Boolean, zone: ZoneId): EventReminder?
 
-    /** Relative offset (negative = before) from the occurrence start, or its end when [relatedToEnd]. */
+    /** Relative offset (negative = before) from the occurrence start, or its end when [relatedToEnd].
+     *  Frame-independent: the offset is the same whichever frame the occurrence is in. */
     data class Relative(val amount: TemporalAmount, val relatedToEnd: Boolean) : AlarmTrigger {
-        override fun toReminder(occStart: JInstant, occEnd: JInstant): EventReminder {
+        override fun toReminder(occStart: JInstant, occEnd: JInstant, allDay: Boolean, zone: ZoneId): EventReminder {
             val anchor = if (relatedToEnd) occEnd else occStart
             // Anchor via ZonedDateTime so week/day units in the duration resolve (Instant lacks them).
             val reminderAt = anchor.atZone(ZoneOffset.UTC).plus(amount).toInstant()
@@ -199,10 +215,14 @@ private sealed interface AlarmTrigger {
         }
     }
 
-    /** A fixed instant (meaningful for single events; best-effort for recurring ones). */
+    /** A fixed instant (meaningful for single events; best-effort for recurring ones). On an all-day
+     *  occurrence it moves into the all-day frame first (its local wall-clock time, read as UTC), or it
+     *  would fire off by the host's UTC offset. */
     data class Absolute(val instant: JInstant) : AlarmTrigger {
-        override fun toReminder(occStart: JInstant, occEnd: JInstant): EventReminder =
-            EventReminder(ChronoUnit.MINUTES.between(instant, occStart).toInt())
+        override fun toReminder(occStart: JInstant, occEnd: JInstant, allDay: Boolean, zone: ZoneId): EventReminder {
+            val at = if (allDay) instant.atZone(zone).toLocalDateTime().toInstant(ZoneOffset.UTC) else instant
+            return EventReminder(ChronoUnit.MINUTES.between(at, occStart).toInt())
+        }
     }
 }
 

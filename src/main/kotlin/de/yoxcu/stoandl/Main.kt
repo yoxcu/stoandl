@@ -31,6 +31,7 @@ import org.freedesktop.dbus.connections.impl.DBusConnection
 import java.io.File
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
@@ -477,7 +478,8 @@ private fun dumpCalendar(src: String) {
     }
     val zone = ZoneId.systemDefault()
     val dateTimeFmt = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd HH:mm").withZone(zone)
-    val dateFmt = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd").withZone(zone)
+    // All-day events start at UTC midnight of their date (the watch's all-day frame), so read the date in UTC.
+    val dateFmt = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd").withZone(ZoneOffset.UTC)
     println("${events.size} occurrence(s) in window (now-1d .. now+30d):")
     events.forEach { ev ->
         val at = java.time.Instant.ofEpochSecond(ev.startTime.epochSeconds)
