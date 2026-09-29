@@ -203,7 +203,8 @@ companion app: a **Sunrise** and a **Sunset** pin per day (today … +2 days) fo
 with the daytime/overnight halves split from Open-Meteo's hourly forecast. The primary follows
 GPS-then-first-location priority; other locations show in each pin's detail view. No libpebble3
 change — pins use the public `LibPebble` timeline API. Refreshes on an interval and on connect; on by
-default, `weather.pins = false` disables just the pins.
+default, `weather.pins = false` disables just the pins. Temperatures are in the watch's own units
+(`stoandl health profile set units metric|imperial`), which fw 4.37+ also uses for its weather warnings.
 
 ```sh
 stoandl weather   # force a refresh now

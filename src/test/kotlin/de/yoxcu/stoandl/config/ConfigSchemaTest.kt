@@ -51,15 +51,15 @@ class ConfigSchemaTest {
 
     @Test
     fun `combo accepts either the display label or the raw conf token`() {
-        val f = field("weather.units")
-        assertEquals("imperial", ok(f, "Imperial"))
-        assertEquals("imperial", ok(f, "imperial"))
-        assertEquals("imperial", ok(f, "IMPERIAL"))
-        assertEquals("metric", ok(f, "Metric"))
+        val f = field("music.volume")
+        assertEquals("player", ok(f, "Player"))
+        assertEquals("player", ok(f, "player"))
+        assertEquals("player", ok(f, "PLAYER"))
+        assertEquals("system", ok(f, "System"))
         // The message names the valid options, since that is what a CLI/GUI shows the user.
-        val msg = err(f, "kelvin")
-        assertContains(msg, "Metric")
-        assertContains(msg, "Imperial")
+        val msg = err(f, "headphones")
+        assertContains(msg, "System")
+        assertContains(msg, "Player")
     }
 
     @Test
@@ -173,9 +173,9 @@ class ConfigSchemaTest {
             cols,
         )
         // The first five columns are the original contract an older client reads positionally.
-        val combo = field("weather.units")
+        val combo = field("music.volume")
         val c = combo.schemaRow().split('\t')
-        assertEquals(listOf("weather.units", "combo", "Temperature units", "Metric,Imperial"), c.take(4))
+        assertEquals(listOf("music.volume", "combo", "Volume buttons", "System,Player"), c.take(4))
     }
 
     @Test
@@ -270,6 +270,16 @@ class ConfigSchemaTest {
         assertTrue(!applyGuiConfig(live.key, "true", conf).contains("restart"))
     }
 
+    /** `weather.units` was dropped (the watch's own units decide): a line left in a user's file must
+     *  still load, and the key must not come back as a GUI control. */
+    @Test
+    fun `a leftover weather_units line is ignored`(): Unit = withTempConf { conf ->
+        conf.writeText("weather.units = imperial\nweather.interval = 45\n")
+        assertEquals(45L, StoandlConfig.load(conf, logResult = false).weatherIntervalMinutes)
+        assertNull(guiConfigField("weather.units"))
+        assertTrue(applyGuiConfig("weather.units", "Imperial", conf).startsWith("notfound:"))
+    }
+
     @Test
     fun `unknown keys and invalid values are rejected, not written`(): Unit = withTempConf { conf ->
         assertTrue(applyGuiConfig("no.such.key", "true", conf).startsWith("notfound:"))
@@ -280,7 +290,7 @@ class ConfigSchemaTest {
     /** A rejected write must leave the file — and every other key — exactly as it was. */
     @Test
     fun `a rejected write does not touch the file`(): Unit = withTempConf { conf ->
-        conf.writeText("weather.units = imperial  # keep me\nweather.pins = false\n")
+        conf.writeText("music.volume = player  # keep me\nweather.pins = false\n")
         val before = conf.readText()
         assertTrue(applyGuiConfig("weather.locations", "Nowhere", conf).startsWith("error:"))
         assertEquals(before, conf.readText())
@@ -290,10 +300,10 @@ class ConfigSchemaTest {
      *  file is hand-edited as often as it is GUI-edited. */
     @Test
     fun `an existing key keeps its inline comment when rewritten`(): Unit = withTempConf { conf ->
-        conf.writeText("# header\nweather.units = metric  # my note\n")
-        assertTrue(applyGuiConfig("weather.units", "Imperial", conf).startsWith("ok:"))
+        conf.writeText("# header\nmusic.volume = system  # my note\n")
+        assertTrue(applyGuiConfig("music.volume", "Player", conf).startsWith("ok:"))
         val text = conf.readText()
-        assertContains(text, "weather.units = imperial")
+        assertContains(text, "music.volume = player")
         assertContains(text, "# my note")
         assertContains(text, "# header")
     }

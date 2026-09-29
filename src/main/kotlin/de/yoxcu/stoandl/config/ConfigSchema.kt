@@ -284,11 +284,6 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     text("weather.location_command", G_WEATHER, "Location command",
         "Run for the Command source; must print one Name:lat:lon line per location",
         placeholder = "/usr/local/bin/my-locations") { it.weatherLocationCommand },
-    combo("weather.units", G_WEATHER, "Temperature units",
-        "Unit sent to the watch's weather", choices = listOf(
-        ConfigChoice("Metric", "metric") { it.weatherUnits == StoandlConfig.WeatherUnits.METRIC },
-        ConfigChoice("Imperial", "imperial") { it.weatherUnits == StoandlConfig.WeatherUnits.IMPERIAL },
-    )),
     int("weather.interval", G_WEATHER, "Refresh interval",
         "How often weather is re-fetched", min = 5, max = 1440, unit = "min") {
         it.weatherIntervalMinutes.toIntClamped()

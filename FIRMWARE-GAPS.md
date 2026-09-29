@@ -8,7 +8,7 @@ The per-item dispositions live in [docs/pebbleos-changelog-review.md](docs/pebbl
 - The heartbeat layout was **not** handled (§1.1).
 - The weather v3 risk was a false alarm, but two *other* weather regressions are real (§1.3, §1.4).
 
-**Nothing in this file is implemented yet.** Everything is _TBT_ on hardware once implemented.
+Each item says whether it is implemented. Everything implemented is _TBT_ on hardware until its TESTING row passes.
 
 ## Sources and method
 
@@ -101,7 +101,11 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
 - **Fix, and a single-source-of-truth cleanup.** Read the unit from
   `libPebble.healthSettings.first().imperialUnits` (the value `stoandl health profile units` already writes),
   and drop `weather.units` from config, schema, GUI and docs. This is what upstream `e501ff12` did.
-- **Interim.** Until then, document that the two must match.
+- **Done, to be tested (TESTING 4.4-4.4c).** `WeatherSync` reads the unit from
+  `healthSettings.imperialUnits` on every sync and re-fetches when it changes. It also writes that value to
+  the watch when weather starts: libpebble3 syncs the units row only once something has written it, and
+  reads an unwritten row as metric while the watch stays on Miles. `weather.units` is gone from config,
+  schema and docs; a leftover line is ignored with a warning. The GUI mock still serves the key.
 
 ### 1.5 Firmware check: backports hijack "latest"
 

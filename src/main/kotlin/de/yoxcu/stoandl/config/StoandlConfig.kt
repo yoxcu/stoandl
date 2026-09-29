@@ -77,8 +77,6 @@ data class StoandlConfig(
     val weatherLocationSource: WeatherLocationSource,
     /** Command run for [WeatherLocationSource.COMMAND]; must print `Name:lat:lon` lines. */
     val weatherLocationCommand: String,
-    /** Temperature unit sent to the watch: [WeatherUnits.METRIC] (°C) or [WeatherUnits.IMPERIAL] (°F). */
-    val weatherUnits: WeatherUnits,
     /** How often weather is re-fetched, in minutes. */
     val weatherIntervalMinutes: Long,
     /** When true, add a GeoClue2-tracked "current location" weather entry alongside the fixed ones. */
@@ -257,8 +255,6 @@ data class StoandlConfig(
      *  The password is NOT in config — it lives in the system keyring (or the 0600 secrets file). */
     data class CalDavAccount(val id: String, val url: String, val username: String)
 
-    enum class WeatherUnits { METRIC, IMPERIAL }
-
     /** What the watch volume buttons drive: the system/master output, or the active player's own volume. */
     enum class MusicVolumeMode { SYSTEM, PLAYER }
 
@@ -302,7 +298,6 @@ data class StoandlConfig(
             weatherLocations = emptyList(),
             weatherLocationSource = WeatherLocationSource.MANUAL,
             weatherLocationCommand = "",
-            weatherUnits = WeatherUnits.METRIC,
             weatherIntervalMinutes = DEFAULT_WEATHER_INTERVAL_MINUTES,
             weatherGps = false,
             weatherGpsDesktopId = DEFAULT_GPS_DESKTOP_ID,
@@ -398,7 +393,6 @@ data class StoandlConfig(
                 weatherLocations = parseWeatherLocations(list("weather.locations")),
                 weatherLocationSource = parseLocationSource(map["weather.location_source"]),
                 weatherLocationCommand = map["weather.location_command"]?.trim().orEmpty(),
-                weatherUnits = parseWeatherUnits(map["weather.units"]),
                 weatherIntervalMinutes = map["weather.interval"]?.trim()?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_WEATHER_INTERVAL_MINUTES,
                 weatherGps = parseBool(map["weather.gps"]),
@@ -466,7 +460,7 @@ data class StoandlConfig(
                     "syncToWatch=${cfg.notificationSyncToWatch}, catchUp=${cfg.notificationCatchUpMinutes}min, " +
                     "dialerApps=${cfg.dialerApps}, vcardPaths=${cfg.vcardPaths}, " +
                     "weatherLocations=${cfg.weatherLocations.map { it.name }}, " +
-                    "weatherUnits=${cfg.weatherUnits}, weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
+                    "weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +
                     "weatherGps=${cfg.weatherGps}, weatherPins=${cfg.weatherPins}, weatherLocationSource=${cfg.weatherLocationSource}, " +
                     "geolocation=${cfg.geolocation}, " +
                     "watchPrefs=${cfg.watchPrefs.keys}, musicControl=${cfg.musicControl}, " +
@@ -496,6 +490,11 @@ data class StoandlConfig(
                          if (!cfg.alertsExtensions) "extensions" else null,
                      ).takeIf { it.isNotEmpty() }?.let { ", alerts muted: ${it.joinToString("/")}" }.orEmpty()) +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
+            }
+            // Dropped keys are ignored like any unknown one; this only says what replaced them.
+            if (logResult && "weather.units" in map) log.warn {
+                "weather.units is no longer read: weather follows the watch's units " +
+                    "(stoandl health profile set units metric|imperial). Remove the line from ${file.path}."
             }
             return cfg
         }
@@ -641,15 +640,6 @@ data class StoandlConfig(
                     WeatherLocationSource.MANUAL
                 }
             }
-
-        private fun parseWeatherUnits(raw: String?): WeatherUnits = when (raw?.trim()?.lowercase()) {
-            null, "", "metric", "celsius", "c" -> WeatherUnits.METRIC
-            "imperial", "fahrenheit", "f" -> WeatherUnits.IMPERIAL
-            else -> {
-                log.warn { "Unknown weather.units '$raw'; defaulting to metric" }
-                WeatherUnits.METRIC
-            }
-        }
 
         private fun expandTilde(p: String): String =
             if (p == "~" || p.startsWith("~/")) System.getProperty("user.home") + p.substring(1) else p

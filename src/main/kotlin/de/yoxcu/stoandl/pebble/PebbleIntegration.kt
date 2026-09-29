@@ -1404,7 +1404,7 @@ class PebbleIntegration(
 
     /** (Re)start or stop weather sync against the current config — at boot and on SetSyncEnabled/SetConfig.
      *  Idempotent: stops any running instance, then starts a fresh one when `weather.enabled` is on and a
-     *  source is configured. A weather.* config change re-runs this (rebuilds with the new units/pins/etc). */
+     *  source is configured. A weather.* config change re-runs this (rebuilds with the new locations/pins/etc). */
     private fun applyWeather() {
         weatherSyncRef.getAndSet(null)?.stop()
         val hasSource = config.weatherLocationSource != WeatherLocationSource.MANUAL
@@ -1430,7 +1430,6 @@ class PebbleIntegration(
             libPebble = libPebble,
             parentScope = scope,
             locations = config.weatherLocations,
-            units = config.weatherUnits,
             intervalMinutes = config.weatherIntervalMinutes,
             gps = gps,
             gpsFallbackName = config.weatherGpsName,
@@ -1446,7 +1445,7 @@ class PebbleIntegration(
             "Weather sync started: ${config.weatherLocations.size} manual location(s)" +
                 (if (hasSource) " + ${config.weatherLocationSource} source" else "") +
                 (if (config.weatherGps) " + GPS current location" else "") +
-                ", units=${config.weatherUnits}, every ${config.weatherIntervalMinutes}m" +
+                ", every ${config.weatherIntervalMinutes}m" +
                 (if (config.weatherPins) ", timeline pins on" else ", timeline pins off")
         }
     }

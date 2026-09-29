@@ -55,7 +55,6 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.locations` | list | _(empty)_ | Locations to fetch weather for, each as `Name:lat:lon` (e.g. `Berlin:52.52:13.405`). Merged with `weather.location_source`. |
 | `weather.location_source` | string | `manual` | Where extra locations come from: `manual` (only the list above), `gnome` (read GNOME/Phosh's weather GSettings), or `command` (run `weather.location_command`). |
 | `weather.location_command` | string | _(empty)_ | For `weather.location_source = command`: a shell command that prints `Name:lat:lon` lines. |
-| `weather.units` | string | `metric` | Temperature unit sent to the watch: `metric` (°C) or `imperial` (°F). |
 | `weather.interval` | number | `30` | Minutes between weather refreshes. |
 | `weather.gps` | bool | `false` | Add a GeoClue2-tracked **current location** entry (shown first on the watch) alongside the fixed locations. |
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
@@ -199,9 +198,17 @@ locations are fixed in the config rather than tracked — list one or more under
 
 ```
 weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278
-weather.units = metric
 weather.interval = 30
 ```
+
+**Units.** There is no weather unit setting: temperatures are sent in the watch's own units, the
+metric/imperial choice that also sets the Health app's distances. Change it with
+`stoandl health profile set units imperial` (or `metric`); weather refreshes in the new unit straight
+away. They have to be one setting: from PebbleOS 4.37 the watch converts its weather-warning
+thresholds to °F when its units are imperial, so °C readings on an imperial watch warned "Below
+freezing" on a warm day. stoandl writes its units to the watch when weather starts, so a watch still on
+its factory default (miles) follows the host too. A `weather.units` line left over from an older
+stoandl is ignored (the daemon logs a warning).
 
 Data comes from [Open-Meteo](https://open-meteo.com/) — a free, no-API-key, no-account provider, which
 fits stoandl's headless, sign-in-free model (unlike the official app's account-gated weather proxy). The

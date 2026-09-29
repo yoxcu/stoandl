@@ -74,7 +74,6 @@ All `weather.*` keys reconcile through `applyWeather()`, which tears down and re
 | `weather.locations` | list | ✓ | live | parsed with `StoandlConfig.parseWeatherLocations` — the very function that reads it back, so the GUI cannot persist entries the daemon would drop at load | _(empty)_ |
 | `weather.location_source` | combo | ✓ | live | Manual/GNOME/Command | `Manual` |
 | `weather.location_command` | text | ✓ | live | — | _(empty)_ |
-| `weather.units` | combo | ✓ | live | Metric/Imperial | `Metric` |
 | `weather.interval` | int | ✓ | live | 5–1440 min | `30` |
 | `weather.gps` | toggle | ✓ | live | — | `false` |
 | `weather.gps_name` | text | ✓ | live | — | `Current location` |

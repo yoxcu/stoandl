@@ -3,7 +3,6 @@
 package de.yoxcu.stoandl.weather
 
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
-import de.yoxcu.stoandl.config.StoandlConfig.WeatherUnits
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.delayWallClock
@@ -29,6 +28,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -64,12 +65,17 @@ private val WEATHER_RETRY_BACKOFF = listOf(30.seconds, 1.minutes, 5.minutes)
  *
  * This deliberately bypasses libpebble3's own `WeatherFetcher`, which depends on Core Devices' account-
  * gated weather proxy, GPS and a geocoder — none of which exist in stoandl's headless, account-free model.
+ *
+ * The temperature unit is not a weather setting: it is the watch's own metric/imperial units
+ * (`unitsDistance`, libpebble3's `healthSettings.imperialUnits`, set by `stoandl health profile set
+ * units`). From fw 4.37 the watch converts its weather-warning thresholds by that value, assuming the
+ * phone sent temperatures in it, so a separate unit here said "Below freezing" on warm days. Upstream
+ * libpebble3's weather did the same (e501ff12).
  */
 class WeatherSync(
     private val libPebble: LibPebble,
     parentScope: CoroutineScope,
     private val locations: List<WeatherLocation>,
-    private val units: WeatherUnits,
     private val intervalMinutes: Long,
     // When non-null, an additional "current location" entry is resolved from GeoClue each sync and
     // marked isCurrentLocation so the watch shows it prominently. [gpsFallbackName] labels it when
@@ -135,6 +141,30 @@ class WeatherSync(
             }
             .launchIn(scope)
 
+        // The units row reaches the watch only once something has written it, and libpebble3 reads an
+        // unwritten row as metric while the watch keeps its own default (Miles). Write the host value
+        // so both sides agree even when no health profile was ever set.
+        scope.launch {
+            runCatching { libPebble.updateImperialUnits(libPebble.healthSettings.first().imperialUnits) }
+                .onFailure { log.warn { "Could not sync the watch's units: ${it.message}" } }
+        }
+        // A units change (`stoandl health profile set units …`) re-fetches in the new unit right away.
+        libPebble.healthSettings
+            .map { it.imperialUnits }
+            .distinctUntilChanged()
+            .drop(1)
+            .onEach {
+                if (libPebble.watches.value.any { w -> w is ConnectedPebbleDevice }) {
+                    log.info { "Watch units changed — refreshing weather" }
+                    runCatching { syncNow() }.onFailure { e -> log.warn { "Weather sync after a units change failed: ${e.message}" } }
+                } else {
+                    // No watch to refresh now: make the next connect refetch instead of keeping data
+                    // that is still "fresh" but in the old unit.
+                    lastCompleteSyncMs = 0L
+                }
+            }
+            .launchIn(scope)
+
         // Periodic refresh so the Weather BlobDB stays current even across long connections. On a
         // failed/partial fetch, retry sooner with backoff instead of waiting the full interval.
         scope.launch {
@@ -181,6 +211,7 @@ class WeatherSync(
      */
     suspend fun syncNow(): Int = syncMutex.withLock {
         val tasks = mutableListOf<Deferred<LocationForecast>>()
+        val imperial = libPebble.healthSettings.first().imperialUnits
 
         // GPS current location first, so it sorts to the top of the watch's Weather app (and is the
         // primary location for timeline pins).
@@ -196,7 +227,7 @@ class WeatherSync(
                 } else {
                     val (lat, lon) = coords
                     val name = (if (reverseGeocodeEnabled) reverseGeocode(lat, lon) else null) ?: gpsFallbackName
-                    runCatching { fetchAt(currentLocationKey, name, lat, lon, isCurrentLocation = true) }
+                    runCatching { fetchAt(currentLocationKey, name, lat, lon, isCurrentLocation = true, imperial = imperial) }
                         .getOrElse {
                             log.warn { "Weather fetch failed for current location: ${it.message}" }
                             failedForecast(currentLocationKey, name, isCurrentLocation = true)
@@ -211,7 +242,7 @@ class WeatherSync(
         val fixed = (locations + deLocations).distinctBy { it.name.lowercase() }
         fixed.forEach { location ->
             tasks += scope.async {
-                runCatching { fetchAt(keyFor(location.name), location.name, location.latitude, location.longitude, false) }
+                runCatching { fetchAt(keyFor(location.name), location.name, location.latitude, location.longitude, isCurrentLocation = false, imperial = imperial) }
                     .getOrElse {
                         log.warn { "Weather fetch failed for ${location.name}: ${it.message}" }
                         failedForecast(keyFor(location.name), location.name, isCurrentLocation = false)
@@ -224,7 +255,7 @@ class WeatherSync(
         val populated = results.count { it.appData is WeatherLocationData.WeatherLocationDataPopulated }
         lastSyncOk = populated == results.size
         if (lastSyncOk) lastCompleteSyncMs = System.currentTimeMillis()
-        log.info { "Weather updated: $populated/${results.size} location(s) populated" }
+        log.info { "Weather updated: $populated/${results.size} location(s) populated (${if (imperial) "°F" else "°C"})" }
 
         if (weatherPins) {
             pinsCleared = false
@@ -246,8 +277,9 @@ class WeatherSync(
         latitude: Double,
         longitude: Double,
         isCurrentLocation: Boolean,
+        imperial: Boolean,
     ): LocationForecast {
-        val tempUnit = if (units == WeatherUnits.IMPERIAL) "fahrenheit" else "celsius"
+        val tempUnit = if (imperial) "fahrenheit" else "celsius"
         val response = client.get("https://api.open-meteo.com/v1/forecast") {
             parameter("latitude", latitude)
             parameter("longitude", longitude)

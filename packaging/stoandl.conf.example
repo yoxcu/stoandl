@@ -85,8 +85,8 @@ weather.location_source = manual
 # geocoder (needs curl + jq); swap Munich for your city (or splice it from KWeather's config):
 # weather.location_command = curl -s "https://geocoding-api.open-meteo.com/v1/search?name=Munich&count=1" | jq -r '.results[0] | "\(.name):\(.latitude):\(.longitude)"'
 
-# Temperature unit sent to the watch: metric (°C) or imperial (°F).
-weather.units = metric
+# The temperature unit is the watch's own metric/imperial units (it also sets the Health app's
+# distances and the Weather app's warning thresholds): `stoandl health profile set units imperial`.
 
 # Minutes between weather refreshes (also refreshes immediately when a watch connects).
 weather.interval = 30
