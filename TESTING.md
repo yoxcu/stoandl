@@ -1427,7 +1427,8 @@ under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test
 See [docs/deep-sleep.md](docs/deep-sleep.md). The sleep guard holds a logind **delay** lock
 (`systemd-inhibit --who=stoandl --mode=delay … cat` child) and, on `PrepareForSleep(true)`, waits up to
 `power.sleep_guard_max_ms` while libpebble3's `WatchLinkActivity` (PPoG backlog + unattempted BlobDB
-records), a notification being built/just queued, or a negotiation is pending. Weather/calendar/firmware
+records) or a notification being built/just queued is pending (not a reconnect handshake — see
+`pendingWatchWork()`). Weather/calendar/firmware
 checks use the wall clock and re-check on every resume. Pairing scans need the display on. Optional:
 `ble.conn_params` (watch-managed idle set), `power.pause_datalog_screen_off`.
 

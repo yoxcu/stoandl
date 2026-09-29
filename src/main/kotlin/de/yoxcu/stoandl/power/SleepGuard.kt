@@ -40,7 +40,7 @@ private const val LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
  *  1. tell libpebble3 the host is going down ([WatchLinkActivity.setHostSuspending] — a link boosted to
  *     fast connection parameters drops to its idle set, so it never sleeps fast);
  *  2. wait while watch traffic is still owed or awaited — the notification the push that woke us
- *     produced, a PPoG ACK, a negotiation in progress ([pendingWork]) — for at most [maxHold];
+ *     produced, a PPoG ACK ([pendingWork]) — for at most [maxHold];
  *  3. release the lock, so the suspend proceeds.
  * On `PrepareForSleep(false)` we clear the hint, emit [resumed] (overdue wall-clock work runs on it,
  * see [delayWallClock]) and take the lock again — logind refuses new delay locks for a moment right

@@ -1430,14 +1430,16 @@ class PebbleIntegration(
     private fun wakeups(): Flow<Unit> = sleepGuard?.resumed ?: NoWakeups
 
     /** What a suspend should still wait for — polled by [SleepGuard] after logind's PrepareForSleep(true).
-     *  Null when nothing is owed to or awaited from the watch. */
+     *  Null when nothing is owed to or awaited from the watch.
+     *
+     *  Deliberately NOT "a (re)connect/negotiation is in progress": on a kernel that drops every link at
+     *  suspend (Mode A) the watch reconnects after every wake, so holding each suspend for that handshake
+     *  would roughly double the phone's awake time for nothing — the link drops again right after. Real
+     *  deliveries still count: their PPoG packets and BlobDB records show up in [linkActivity]. */
     private fun pendingWatchWork(): String? {
         val parts = buildList {
             if (::watchNotifier.isInitialized) watchNotifier.pendingDescription(NOTIFICATION_PICKUP_GRACE_MS)?.let(::add)
             if (linkActivity.busy.value) add(linkActivity.summary())
-            val negotiating = libPebbleRef.get()?.watches?.value
-                ?.any { it is ConnectingPebbleDevice && it.negotiating } == true
-            if (negotiating) add("watch negotiating")
         }
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
