@@ -18,6 +18,7 @@ import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.ScreenState
 import de.yoxcu.stoandl.power.SleepGuard
+import de.yoxcu.stoandl.power.delayUntilWallClock
 import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.debug.DebugControl
@@ -173,6 +174,9 @@ import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
+// A monitored window (Pair/Repair) resolves this long after its gate closes, so a bond already under way
+// when discovery stops is still reported as paired.
+private const val PAIRING_MONITOR_GRACE_MS = 10_000L
 // How long the phone-side numeric-comparison confirmation waits for the user (ConfirmPairing) before
 // declining. BlueZ agent calls are user-interactive, so it tolerates this human-scale wait.
 private const val PAIRING_CONFIRM_TIMEOUT_MS = 60_000L
@@ -362,6 +366,7 @@ class PebbleIntegration(
     // Shared (mutable) with StoandlControlImpl, which flips it around the monitored window.
     private val requireConfirm = AtomicBoolean(false)
     // The in-flight monitored pairing's result, so a decline/timeout resolves PairStatus immediately.
+    // Also marks which monitor owns the window: only that one may end it (see openPairingWindowAndMonitor).
     private val pairingResult = AtomicReference<CompletableDeferred<String>?>(null)
     // Bond-state cache keyed by identifier.asString — avoids repeated BlueZ D-Bus round-trips.
     private val bondCache = ConcurrentHashMap<String, Boolean>()
@@ -1222,8 +1227,21 @@ class PebbleIntegration(
 
     /** Opens the pairing window (the same gate 'stoandl watch pair' uses) so a watch in pairing mode re-pairs. */
     private fun openPairingWindow() {
-        pairingGate.open()
-        pairingState.set("pending:")
+        synchronized(pairingGate) {
+            // A running `watch pair`/`repair` window already discovers and pairs, and asks the user to
+            // confirm: leave it in charge.
+            if (pairingGate.isOpen() && pairingResult.get() != null) {
+                log.info { "Pairing window already open (a 'watch pair' is running) — not opening another" }
+                return
+            }
+            // A monitored window whose gate has closed may still be in its grace: detach its monitor, so
+            // that its end neither closes this window nor declines a pairing in it, and decline what it
+            // left parked, as its end would have. This window auto-accepts.
+            if (pairingResult.getAndSet(null) != null) pairingConfirmation.decide(false)
+            requireConfirm.set(false)
+            pairingGate.open()
+            pairingState.set("pending:")
+        }
         log.info { "Pairing window opened via notification action (${PAIRING_WINDOW_MS / 1000}s)" }
     }
 
@@ -1935,7 +1953,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -2655,6 +2673,9 @@ private class StoandlControlImpl(
     // The live MPRIS bridge (built lazily on first connect), read by MusicStatus. A supplier because
     // it may still be null when this impl is constructed.
     private val musicControl: () -> MprisMusicControl?,
+    // Resume signal (SleepGuard.resumed): the pairing monitor's timeout runs on the wall clock, like the
+    // gate's, and is re-checked on every resume.
+    private val wakeups: () -> Flow<Unit>,
     // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -3666,10 +3687,18 @@ private class StoandlControlImpl(
         return "ok:Pairing started"
     }
 
+    // The monitor of the current Pair/Repair window; a new one cancels it (see openPairingWindowAndMonitor).
+    private var pairingMonitor: Job? = null
+
     /** Opens the pairing window and launches the monitor that resolves [pairingState] to `ok:`/`timeout:`
      *  when the watch connects or bonds. Shared by Pair() and Repair() — otherwise Repair would leave
      *  PairStatus() stuck on `pending:` and the CLI would hang until its own timeout even though the
-     *  watch re-paired fine. */
+     *  watch re-paired fine.
+     *
+     *  The monitor owns its window through [pairingResult]: a later Pair/Repair cancels it, and a window
+     *  the notification path opened detaches it, so a monitor never closes (or declines a pairing in) a
+     *  window it didn't open. Its timeout is wall-clock time, like the gate's and the CLI's: a phone that
+     *  sleeps through the window (monotonic time stops) must not keep the monitor alive past it. */
     private fun openPairingWindowAndMonitor(lp: LibPebble) {
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
         val alreadyBonded = lp.watches.value
@@ -3677,55 +3706,76 @@ private class StoandlControlImpl(
             .filter { isBonded(it) }
             .map { it.asString }
             .toSet()
-        pairingGate.open()
-        // With Bluetooth off, say so from the start: the scan loop is parked until it comes back (and then
-        // withdraws the note).
-        pairingState.set(if (btOn()) "pending:" else PAIRING_PAUSED_BT_OFF)
-        // Client-initiated pairing → require an explicit ConfirmPairing before bonding (see onPairingConfirm).
-        requireConfirm.set(true)
-        scope.launch {
-            val result = CompletableDeferred<String>()
+        val result = CompletableDeferred<String>()
+        synchronized(pairingGate) {
+            pairingMonitor?.cancel()
             pairingResult.set(result)
-            // Fast path: detect full connection via StateFlow collection.
-            val connectedJob = launch {
-                lp.watches.first { devices -> devices.any { it is ConnectedPebbleDevice } }
-                result.complete("ok:Paired and connected")
+            pairingGate.open()
+            val deadlineMs = System.currentTimeMillis() + PAIRING_WINDOW_MS + PAIRING_MONITOR_GRACE_MS
+            // With Bluetooth off, say so from the start: the scan loop is parked until it comes back (and
+            // then withdraws the note). A code the last window left waiting for an answer is this one's
+            // to answer.
+            pairingState.set(
+                pairingConfirmation.pendingCode()?.let { "confirm:$it" }
+                    ?: if (btOn()) "pending:" else PAIRING_PAUSED_BT_OFF,
+            )
+            // Client-initiated pairing → require an explicit ConfirmPairing before bonding (see onPairingConfirm).
+            requireConfirm.set(true)
+            pairingMonitor = launchPairingMonitor(lp, result, alreadyBonded, deadlineMs)
+        }
+    }
+
+    private fun launchPairingMonitor(
+        lp: LibPebble,
+        result: CompletableDeferred<String>,
+        alreadyBonded: Set<String>,
+        deadlineMs: Long,
+    ): Job = scope.launch {
+        // Fast path: detect full connection via StateFlow collection. Not while the user is still
+        // comparing a code: that is a new watch pairing, and a known watch reconnecting meanwhile
+        // must not end the window (whose end declines the comparison).
+        val connectedJob = launch {
+            lp.watches.first { devices ->
+                devices.any { it is ConnectedPebbleDevice } && !pairingState.get().startsWith("confirm:")
             }
-            // Bond-poll path: detect bonding every 2 s so we return as soon as the BLE bond
-            // completes, even if the PPoG negotiation is still in progress or keeps failing.
-            val bondedJob = launch {
-                while (!result.isCompleted) {
-                    delay(2_000)
-                    // Skip the poll while Bluetooth is off: BlueZ removes the device object when the
-                    // adapter is disabled, so isBonded() can only throw ("Method Get ... doesn't
-                    // exist") and would spam the log every 2 s for the whole pairing window. The
-                    // window stays open, so polling resumes once BT comes back.
-                    if (!btOn()) continue
-                    val newlyBonded = withContext(Dispatchers.IO) {
-                        lp.watches.value
-                            .mapNotNull { it.identifier as? PebbleBleIdentifier }
-                            .filter { it.asString !in alreadyBonded }
-                            .any { bleId -> isBonded(bleId).also { b -> if (b) bondCache[bleId.asString] = true } }
-                    }
-                    if (newlyBonded) result.complete("ok:Paired")
+            result.complete("ok:Paired and connected")
+        }
+        // Bond-poll path: detect bonding every 2 s so we return as soon as the BLE bond
+        // completes, even if the PPoG negotiation is still in progress or keeps failing.
+        val bondedJob = launch {
+            while (!result.isCompleted) {
+                delay(2_000)
+                // Skip the poll while Bluetooth is off: BlueZ removes the device object when the
+                // adapter is disabled, so isBonded() can only throw ("Method Get ... doesn't
+                // exist") and would spam the log every 2 s for the whole pairing window. The
+                // window stays open, so polling resumes once BT comes back.
+                if (!btOn()) continue
+                val newlyBonded = withContext(Dispatchers.IO) {
+                    lp.watches.value
+                        .mapNotNull { it.identifier as? PebbleBleIdentifier }
+                        .filter { it.asString !in alreadyBonded }
+                        .any { bleId -> isBonded(bleId).also { b -> if (b) bondCache[bleId.asString] = true } }
                 }
+                if (newlyBonded) result.complete("ok:Paired")
             }
-            // Overall timeout.
-            val timeoutJob = launch {
-                delay(PAIRING_WINDOW_MS + 10_000L)
-                result.complete("timeout:Pairing timed out")
-            }
-            val newState = result.await()
-            connectedJob.cancel()
-            bondedJob.cancel()
-            timeoutJob.cancel()
+        }
+        // Overall timeout: the gate's end plus the grace.
+        val timeoutJob = launch {
+            delayUntilWallClock(deadlineMs, wakeups())
+            result.complete("timeout:Pairing timed out")
+        }
+        val newState = result.await()
+        connectedJob.cancel()
+        bondedJob.cancel()
+        timeoutJob.cancel()
+        synchronized(pairingGate) {
+            if (!pairingResult.compareAndSet(result, null)) return@launch
             requireConfirm.set(false)
-            pairingResult.compareAndSet(result, null)
             pairingConfirmation.decide(false)  // unblock any still-parked agent (no-op if none)
             pairingState.set(newState)
             pairingGate.close()
-            log.info { "Pairing result: $newState" }
         }
+        log.info { "Pairing result: $newState" }
     }
 
     override fun PairStatus(): String =

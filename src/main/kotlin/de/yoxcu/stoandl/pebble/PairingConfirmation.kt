@@ -35,6 +35,9 @@ class PairingConfirmation {
         }
     }
 
+    /** The code still waiting for an answer, or null when none is. */
+    fun pendingCode(): String? = pending.get()?.code
+
     /** Resolve the outstanding decision. Returns false if none is pending. */
     fun decide(accept: Boolean): Boolean {
         val p = pending.get() ?: return false
