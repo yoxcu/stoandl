@@ -118,7 +118,7 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `BluetoothStatus` | `() → s` | Whether host Bluetooth is on/usable: `ok:on` / `ok:off`. Tracked from libpebble3's adapter state **and** `org.bluez.GattManager1` presence (so it catches rfkill/airplane-mode, which leave `Powered=true`). The daemon already detects and logs every transition; this method just exposes the state for polling. | *(GUI)* |
-| `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery`. | `watch list` (also bare `watch`) |
+| `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery\ttransport` (below). | `watch list` (also bare `watch`) |
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
 | `BatteryHistory` | `(s,x) → s` | Battery %-over-time series for `(watch, sinceEpoch)` (empty watch = connected). `ok:` + newline-joined `ts\tlevel\tsource\tvoltage` records (see below); `notready:` when capture is off. | `watch battery history` |
 | `BatteryInsights` | `(s) → s` | Derived insights for the GUI Battery card. `ok:` + 12 tab fields (see below), `unknown:<name>` (too little data), or `notready:`. | `watch battery insights` |
@@ -136,9 +136,13 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `WatchDetails` | `() → s` | Structured details for the connected watch: `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync`, or `notready:`. | *(GUI; no standalone verb — see `support`/`watch list`)* |
 | `SetWatchNickname` | `(s,s) → s` | Rename a known watch `(query, nickname)` (exact-then-unique-substring; nickname non-empty). `ok:`/`notfound:`/`error:`/`notready:`. | `watch rename <name> <new name>` |
 
-`ListWatches` record: `name \t state \t battery \t transport` — `state` ∈ `connected` | `connecting` |
-`disconnected`; `battery` is the 0–100 level for a connected watch, else empty; `transport` is
-`ble`/`classic` for a connected watch, else empty.
+`ListWatches` record: `name \t state \t battery \t transport` — `state` ∈ `connected` | `recovery` |
+`connecting` | `disconnected`; `battery` is the 0–100 level for a connected watch, else empty; `transport` is
+`ble`/`classic` for a connected watch, else empty. `recovery` is a watch connected in its recovery firmware
+(PRF): `SideloadFirmware`/`UpdateFirmware`/`FirmwareStatus`, `GetCoreDump`, `GatherLogs` and
+`WatchInfoText` work on it, every other watch method answers as if no watch were connected
+(`notready:`/`unknown:`). A client should offer only those tools for it — they are how a watch stuck in
+recovery gets flashed back.
 
 `WatchDetails` record (after `ok:`): `name \t code \t model \t platform \t transport \t firmware \t
 serial \t battery \t lastSync`. `code` is the BLE-advert-name suffix (may be empty); `model` is the
@@ -397,7 +401,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 
 | Method | Fields |
 |---|---|
-| `ListWatches` | `name` · `state`(connected/connecting/disconnected) · `battery`(0–100 or empty) · `transport`(ble/classic or empty) |
+| `ListWatches` | `name` · `state`(connected/recovery/connecting/disconnected) · `battery`(0–100 or empty) · `transport`(ble/classic or empty) |
 | `ListApps` | `uuid` · `type` · `order` · `flags`(⊆ active,sideloaded,config,system,synced) · `title` · `developer` · `version` |
 | `ListWatchPrefs` | `id` · `type` · `current` · `default` · `allowed` · `flags` · `name` · `description` |
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` · `accountId`(owning source id, `discover`, or empty) |

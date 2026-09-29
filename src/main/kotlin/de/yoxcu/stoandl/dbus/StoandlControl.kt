@@ -184,9 +184,10 @@ interface StoandlControl : DBusInterface {
     fun BluetoothStatus(): String
 
     /** List known watches, one per entry, tab-separated `name\tstate\tbattery\ttransport` (state:
-     *  connected / connecting / disconnected; battery is the 0–100 level for a connected watch, else
-     *  empty; transport is `ble`/`classic` for a connected watch, else empty). Empty list if none
-     *  are known. */
+     *  connected / recovery / connecting / disconnected; battery is the 0–100 level for a connected
+     *  watch, else empty; transport is `ble`/`classic` for a connected watch, else empty). `recovery` is
+     *  a watch connected in its recovery firmware (PRF): only the firmware, core-dump, logs and watch-info
+     *  methods work on it. Empty list if none are known. */
     fun ListWatches(): List<String>
 
     /** The connected watch's battery level. Status-prefixed: `ok:<name>\t<level>` (0–100),

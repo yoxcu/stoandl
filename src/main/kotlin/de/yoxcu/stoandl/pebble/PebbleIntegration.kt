@@ -57,7 +57,9 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConnParams
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
+import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
+import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.ConnectionFailureReason
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.bt.isBonded
@@ -2024,20 +2026,9 @@ class PebbleIntegration(
         }
 
         // WatchesChanged: poke when the watch list's name/state/battery/transport signature changes
-        // (mirrors the fields ListWatches returns, so any GUI-visible change re-fetches).
+        // (the records ListWatches returns, so any GUI-visible change re-fetches).
         libPebble.watches
-            .map { devices ->
-                devices.joinToString("\n") { d ->
-                    val state = when (d) {
-                        is ConnectedPebbleDevice -> "connected"
-                        is ConnectingPebbleDevice -> "connecting"
-                        else -> "disconnected"
-                    }
-                    val battery = (d as? ConnectedPebbleDevice)?.batteryLevel?.toString() ?: ""
-                    val transport = (d as? ConnectedPebbleDevice)?.let { if (it.usingBtClassic) "classic" else "ble" } ?: ""
-                    "${d.displayName()}\t$state\t$battery\t$transport"
-                }
-            }
+            .map { devices -> devices.joinToString("\n", transform = ::watchRecord) }
             .distinctUntilChanged()
             .drop(1)
             .onEach { emit(StoandlControl.WatchesChanged(STOANDL_OBJECT_PATH)) }
@@ -2546,6 +2537,26 @@ private fun clearStalePebbleBonds(): List<String> {
         conn.disconnect()
     }
     return removed
+}
+
+/**
+ * One `ListWatches` record, `name\tstate\tbattery\ttransport`; the WatchesChanged signal diffs the same
+ * records. `recovery` is a watch connected in its recovery firmware (PRF): reachable for a firmware flash,
+ * a core dump and logs (they take any [CommonConnectedDevice]), but not a [ConnectedPebbleDevice], so
+ * everything else treats it as absent. Battery and transport (`ActiveDevice.usingBtClassic`) are only
+ * known on a live link; empty otherwise.
+ */
+private fun watchRecord(d: PebbleDevice): String {
+    val state = when (d) {
+        is ConnectedPebbleDevice -> "connected"
+        is ConnectedPebbleDeviceInRecovery -> "recovery"
+        is ConnectingPebbleDevice -> "connecting"
+        else -> "disconnected"
+    }
+    val live = d as? CommonConnectedDevice
+    val battery = live?.batteryLevel?.toString() ?: ""
+    val transport = live?.let { if (it.usingBtClassic) "classic" else "ble" } ?: ""
+    return "${d.displayName()}\t$state\t$battery\t$transport"
 }
 
 /** Extracts /org/bluez/hciN/dev_XX… from a PebbleBleIdentifier asString ({"object_path":"…"}). */
@@ -3955,19 +3966,7 @@ private class StoandlControlImpl(
 
     override fun ListWatches(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
-        return lp.watches.value.filterIsInstance<KnownPebbleDevice>().map { d ->
-            val state = when (d) {
-                is ConnectedPebbleDevice -> "connected"
-                is ConnectingPebbleDevice -> "connecting"
-                else -> "disconnected"
-            }
-            // batteryLevel is only meaningful (and reachable) on a live connection.
-            val battery = (d as? ConnectedPebbleDevice)?.batteryLevel?.toString() ?: ""
-            // Transport (ble|classic) is only known for a live connection (ActiveDevice.usingBtClassic);
-            // empty for connecting/disconnected — matches the GUI contract.
-            val transport = (d as? ConnectedPebbleDevice)?.let { if (it.usingBtClassic) "classic" else "ble" } ?: ""
-            "${d.displayName()}\t$state\t$battery\t$transport"
-        }
+        return lp.watches.value.filterIsInstance<KnownPebbleDevice>().map(::watchRecord)
     }
 
     override fun WatchDetails(): String {
