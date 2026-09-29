@@ -606,6 +606,18 @@ Groundwork for keeping the watch link across suspend ("Mode B", needs host kerne
 compiles, harness-tested off-device; not yet run on hardware ([TESTING.md §5.32](../TESTING.md))._
 Details: [deep-sleep.md](deep-sleep.md).
 
+### Missed-notification catch-up
+
+A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
+push wakes on a phone that drops the link on suspend, and a watch that was out of range. It is bounded
+by `notification.catch_up_minutes` (default 10; 0 = upstream behaviour), and never reaches back past the
+daemon's start or the watch's pairing. Nothing the watch already has is re-sent, and stoandl's own
+alerts about a watch that can't connect stay on the desktop. Implemented in the libpebble3 fork
+(`NotificationCatchUp`, `NotificationConfig.missedNotificationCatchUpMs`, default 0 there); the fork's
+jvmTest covers the threshold rule. See
+[configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up).
+_Implemented — to be tested ([TESTING.md §5.32b](../TESTING.md))._
+
 ### musl (postmarketOS / Alpine): bundled SQLite
 
 libpebble3's SQLite driver ships a JNI library built for glibc that calls `__isnan`, which musl lacks.

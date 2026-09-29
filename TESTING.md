@@ -1520,6 +1520,47 @@ androidx changes the `sqliteJni-…` one. The probe prints its log lines to stdo
 | 5.32a10 | Bare `java -jar` | `systemctl --user stop stoandl`; then `$JAVA -XX:ErrorFile=/tmp/stoandl-hs_err_pid%p.log -jar $JAR` (no `--enable-native-access`); Ctrl-C after startup; then `systemctl --user start stoandl` | No `WARNING: A restricted method …` lines on stderr: the fat JAR manifest carries `Enable-Native-Access: ALL-UNNAMED`. |
 | 5.32a11 | glibc desktop regression | Restart the daemon on a glibc desktop | No `__isnan` line at all, and no `isnan-shim-*` directory in `~/.cache/stoandl/native`. `SQLite: JNI library ~/.cache/stoandl/native/sqliteJni-3e196f4347987741/libsqliteJni.so` (x86_64, 2.7.0). Watch list, health and notifications work normally. No new `/tmp/androidx_sqliteJni*.tmp`. |
 
+### 5.32b Notification catch-up (handoff #2)  ⚠️ UNVERIFIED
+
+After a reconnect, the watch also gets the notifications it hasn't received from the last
+`notification.catch_up_minutes` (default 10). Two limits apply: nothing from before the daemon started,
+and nothing from before the watch's pairing or unfaithful reset. The pairing/reset limit is recorded as
+soon as that connection begins, so it still applies if that connection drops during its handshake. This
+is implemented in libpebble3 `NotificationCatchUp`, which sets the notification DB's `onlyInsertAfter`
+threshold for each connection. Tested off-device: the fork jvmTest `NotificationCatchUpTest` (7 tests,
+green) covers the threshold rule, including a fresh-start connection that drops before syncing.
+stoandl's own alerts about a watch that can't connect are desktop-only, so they are never caught up.
+
+**Prerequisite:** watch paired and connected, and `tail -f /tmp/stoandl.log` running.
+- The window in effect: with a `stoandl.conf`, the startup line `Config loaded … catchUp=10min` shows it.
+  Without one, the log says `No config file at …; using defaults` and the default of 10 applies.
+- Proof of delivery is the watch itself. With `STOANDL_LOG=DEBUG`, a BlobDB `insert: Notification …` line
+  after the reconnect also proves it.
+- The INFO line `Notification catch-up: sending N unsent notification(s) created after <UTC>` appears only
+  on a reconnect that has something to catch up on. The DEBUG line `Notification catch-up: threshold …`
+  appears on every connection.
+- To disconnect the watch, use a Mode A suspend, airplane mode on the watch, or walk out of range.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.32b1 | Mode A push wake (the original failure) | Mode A (`qca_keep_links_on_suspend = 0`), watch connected, screen off. Let the phone suspend, then send yourself a Matrix message (or any push). | `Notification queued for watch: <app> – <title>` is logged while the link is still down. After the reconnect: `Notification catch-up: sending 1 unsent notification(s) created after <UTC>` (at most 10 min back). The notification shows on the watch with its **original** time (DEBUG: `insert: Notification …`). If the phone starts to suspend while it is being sent: `PrepareForSleep: held the suspend N ms until the watch traffic was done (… blobdb:<watch>=…)`. If the phone suspends again before the reconnect completes, the notification arrives at the next wake (within 10 min) instead of being lost. |
+| 5.32b2 | Short disconnect | Airplane mode on the watch; `notify-send -a Test "missed" "while away"`; turn airplane mode off within 10 min. | `Notification catch-up: sending 1 unsent notification(s) …` on reconnect, then "missed" on the watch, timestamped when it was sent. |
+| 5.32b3 | No duplicates | After b2, toggle airplane mode on and off again. | Nothing is sent again: no second buzz and no `Notification catch-up: sending …` line on this reconnect. With DEBUG, no new `insert: Notification …` line for it; only the `threshold` DEBUG line appears. |
+| 5.32b4 | Window bound | Set `notification.catch_up_minutes = 2` and restart. Airplane on; notify **A**; wait 3 min; notify **B**; airplane off. | Only **B** arrives (`sending 1 unsent notification(s)`). **A** is older than the window and is not replayed. |
+| 5.32b5 | No replay of a previous run | Airplane on; notify **A**; `systemctl --user restart stoandl`. After `Notification monitor: BecomeMonitor active`, notify **B**; airplane off. | Only **B** arrives, because **A** predates the daemon start. (Don't go by `Config loaded`: it is logged before the monitor and the catch-up floor exist.) |
+| 5.32b6 | Fresh pairing starts clean | `stoandl watch unpair` (also unpair on the watch); notify **A**; `stoandl watch pair`. | **A** is not sent to the newly paired watch. On a later airplane toggle with a new notify **C**, **C** arrives, and the time in the catch-up line is not earlier than the pairing. |
+| 5.32b7 | Off = upstream | Set `notification.catch_up_minutes = 0` and restart; repeat b2. | "missed" never arrives and no `Notification catch-up: sending …` line is logged. |
+| 5.32b8 | Connectivity alerts stay on the desktop | Airplane on for the watch; open the phone's Bluetooth settings page (it starts discovery) and leave it open for more than 5 min until the desktop shows "Pebble blocked by a Bluetooth scan"; close the page; airplane off. | The alert is shown on the desktop only. After the reconnect the watch does not show it, and no catch-up line counts it. |
+
+If the catch-up line never appears on ordinary reconnects that should have something to send, check
+DEBUG for `unfaithful: wiping DBs on watch` on **every** connect. A watch that reports itself unfaithful
+each time is treated as a fresh start each time, which leaves only what was posted during that
+connection's own handshake to catch up.
+
+Handoff #9 also reported one notification the watch acknowledged but neither showed nor vibrated for
+(test 1b). It was not investigated (likely watch-side). If it recurs during these tests, note the time
+and run `stoandl support` right away.
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)

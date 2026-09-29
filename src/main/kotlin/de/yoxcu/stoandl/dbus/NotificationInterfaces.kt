@@ -14,7 +14,10 @@ private val notifLog = KotlinLogging.logger {}
  * App name for stoandl desktop notifications that must NOT be bridged to the watch. Used when a matching
  * *direct* watch notification is sent separately (e.g. firmware: a watch notif with a working Update
  * button + a desktop notif with its own button) — tagging the desktop one with this app name makes the
- * passive monitor skip it, so the alert shows once on each surface instead of twice on the watch.
+ * passive monitor skip it, so the alert shows once on each surface instead of twice on the watch. Also
+ * for host-side alerts with no use on the watch: ones with an action button (it only works on the host)
+ * and ones about a watch that can't connect — posted while it's away, a bridged copy would reach it via
+ * the notification catch-up (`notification.catch_up_minutes`) after it reconnects, stale.
  */
 const val STOANDL_DESKTOP_ONLY_APP = "stoandl-desktop"
 

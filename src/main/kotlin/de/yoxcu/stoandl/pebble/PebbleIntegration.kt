@@ -67,6 +67,8 @@ import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.LibPebbleConfigFlow
+import io.rebble.libpebblecommon.NotificationConfig
+import io.rebble.libpebblecommon.NotificationConfigFlow
 import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.AppContext
@@ -380,6 +382,10 @@ class PebbleIntegration(
         // default) can't undo them.
         // connectionParams (ble.conn_params / ble.conn_params_fast, startup-only): null keeps libpebble3's
         // upstream "phone manages the LE parameters" write; see libpebble3 ConnectionParams.
+        // missedNotificationCatchUpMs (notification.catch_up_minutes, startup-only; NotificationConfigFlow
+        // is pinned too): a reconnecting watch also gets the notifications posted while it was away — on
+        // a phone that drops the link on every suspend that's every push-wake notification (libpebble3
+        // NotificationCatchUp; 0 = upstream).
         val libPebbleConfig = LibPebbleConfig(
             bleConfig = BleConfig(
                 legacyReversedPPoG = false,
@@ -387,6 +393,9 @@ class PebbleIntegration(
                 connectionParams = config.bleConnParams?.let { BleConnParams(idle = it, fast = config.bleConnParamsFast) },
             ),
             watchConfig = WatchConfig(lanDevConnection = true),
+            notificationConfig = NotificationConfig(
+                missedNotificationCatchUpMs = config.notificationCatchUpMinutes.minutes.inWholeMilliseconds,
+            ),
         )
         val pinnedConfig = MutableStateFlow(libPebbleConfig)
         val koin = initKoin(
@@ -465,6 +474,9 @@ class PebbleIntegration(
             // Pin lanDevConnection=true so the developer connection uses the LAN server (port 9000),
             // not the CloudPebble proxy. Overrides the JVM module's storage-backed WatchConfigFlow.
             single { WatchConfigFlow(pinnedConfig) }
+            // Pin the notification catch-up window (notification.catch_up_minutes) the same way; the other
+            // NotificationConfig fields are libpebble3's defaults, which is all stoandl ever persisted.
+            single { NotificationConfigFlow(pinnedConfig) }
             // Route every watch-side notification action to whoever sent it (desktop bridge or an
             // extension) via the shared routeTable: Dismiss marks the item read + closes the originating
             // desktop notification over D-Bus / fires the extension's onDismiss; the "Mute" action mutes
@@ -515,8 +527,8 @@ class PebbleIntegration(
         libPebble = koin.get()
         libPebbleRef.set(libPebble)
         firmwareControl = FirmwareControl(libPebbleRef, scope, { config }, notifyDesktop = { summary, body, label, onAction ->
-            // STOANDL_DESKTOP_ONLY_APP → not bridged to the watch (the watch gets a direct notif too).
-            sendActionableNotification(summary, body, label, appName = STOANDL_DESKTOP_ONLY_APP, onInvoke = onAction)
+            // Desktop-only (not bridged to the watch): the watch gets a direct notif too.
+            sendActionableNotification(summary, body, label, onInvoke = onAction)
         })
         languageControl = LanguageControl(libPebbleRef) { config }
         screenshotControl = ScreenshotControl(libPebbleRef)
@@ -920,11 +932,14 @@ class PebbleIntegration(
                                     "so the watch cannot reconnect. Close it (e.g. an open Bluetooth settings " +
                                     "or pairing window) or stop the scan."
                             }
+                            // Desktop-only: it's posted while no watch is connected, so the notification
+                            // catch-up would put it on the watch, stale, once the scan is gone.
                             if (alertsAllow { it.alertsBluetooth }) {
                                 sendDesktopNotification(
                                     "Pebble blocked by a Bluetooth scan",
                                     "Another app is scanning for Bluetooth devices, which blocks your Pebble " +
                                         "from reconnecting. Close any open Bluetooth settings or pairing window.",
+                                    appName = STOANDL_DESKTOP_ONLY_APP,
                                 )
                             }
                         }
@@ -1204,27 +1219,32 @@ class PebbleIntegration(
     /**
      * Posts a desktop notification carrying a single action button; [onInvoke] runs when it's tapped.
      * timeout=0 so it persists until acted on/dismissed. Falls back to a plain notification if the
-     * action listener isn't up — the body's "run 'stoandl pair'" hint is then the recovery path.
+     * action listener isn't up — the body's "run: stoandl watch pair|repair" hint is then the recovery path.
+     * Always [STOANDL_DESKTOP_ONLY_APP]: the button only works on the host, the watch gets its own direct
+     * notification where it needs one (firmware), and the connectivity alerts (broken bond, pairing
+     * removed) are posted while that watch can't connect — bridged, the notification catch-up would put
+     * them on a watch after it reconnects, stale.
      */
     private fun sendActionableNotification(
         summary: String,
         body: String,
         actionLabel: String,
         replacesId: UInt32 = UInt32(0),
-        appName: String = "stoandl",
         onInvoke: () -> Unit,
     ): UInt32 {
-        val conn = notifConn ?: run { sendDesktopNotification(summary, body, appName); return UInt32(0) }
+        val conn = notifConn ?: run {
+            sendDesktopNotification(summary, body, STOANDL_DESKTOP_ONLY_APP); return UInt32(0)
+        }
         return try {
             val id = conn.getRemoteObject(
                 "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
                 FreedesktopNotifications::class.java,
-            ).Notify(appName, replacesId, "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
+            ).Notify(STOANDL_DESKTOP_ONLY_APP, replacesId, "phone", summary, body, listOf("repair", actionLabel), emptyMap(), 0)
             notificationActions[id] = onInvoke
             id
         } catch (e: Exception) {
             log.warn { "sendActionableNotification failed: ${e.message}" }
-            sendDesktopNotification(summary, body, appName)
+            sendDesktopNotification(summary, body, STOANDL_DESKTOP_ONLY_APP)
             UInt32(0)
         }
     }

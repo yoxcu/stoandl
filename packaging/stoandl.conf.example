@@ -22,6 +22,12 @@ notification.sync_to_watch = false
 # notification is dropped host-side (calls and firmware prompts use their own paths and still get through).
 # `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
 notification.forward = true
+# Minutes a reconnecting watch looks back for notifications it hasn't received — the ones posted while
+# it was disconnected (a phone that drops the Bluetooth link on every suspend and wakes for a push
+# message, a watch out of range). Never older than the daemon's start or the watch's pairing; what the
+# watch already has is not re-sent. 0 = only notifications posted after the connection came up (the
+# libpebble3 default). 0-1440; startup-only.
+notification.catch_up_minutes = 10
 
 # --- stoandl's own alerts -------------------------------------------------------------------------
 # The desktop alerts stoandl raises ABOUT ITSELF -- pairing trouble, another app's Bluetooth scan

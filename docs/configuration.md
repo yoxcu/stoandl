@@ -35,6 +35,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
 | `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
 | `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
+| `notification.catch_up_minutes` | number | `10` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
 | `alerts.enabled` | bool | `true` | Master switch for the desktop alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup) — as opposed to forwarded app notifications. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
 | `alerts.pairing` | bool | `true` | Alert when a watch loses its pairing, keeps connecting-then-dropping, or is nearby but no longer paired with this host — each with the action that fixes it. Without it a watch can silently stop reconnecting forever. |
 | `alerts.bluetooth` | bool | `true` | Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which blocks the watch from reconnecting. |
@@ -154,6 +155,36 @@ it always matches what the daemon accepts, and needs no daemon or watch.
 watch via libpebble3's `NotificationAppItem` BlobDB. It's off because current firmware has no per-app
 *settings menu* to surface them (muting is via the action menu above, which needs no sync). Kept as an
 opt-in for firmware that does. Watch-link only, no web egress.
+
+## Missed notifications (catch-up)
+
+libpebble3 sends a watch only the notifications created after its connection came up, so a reconnect
+never floods the watch. On its own that silently drops everything posted while the watch was away — and
+on a phone that loses the Bluetooth link on every suspend (see [deep-sleep.md](deep-sleep.md)) that is
+every notification a push message wakes it for, because it is posted a few seconds *before* the link is
+back.
+
+**`notification.catch_up_minutes`** (default `10`) makes a reconnecting watch also get the notifications
+it hasn't received that are at most that many minutes old. They keep their original time on the watch.
+The window bounds a long absence (out of range for an hour → only the last 10 minutes arrive), and it
+never reaches back past the daemon's start (no replay of a previous run) or the watch's pairing /
+factory reset (it starts clean). What the watch already has is not sent again — sync state is tracked
+per notification and watch. One an extension has withdrawn in the meantime (`closeNotification`) is
+not sent; stoandl doesn't see a desktop notification being dismissed on the host, so those still
+arrive. With two or more watches each one catches up on its own, so a watch you switch to also shows
+what the other one already did inside the window. `0` restores the upstream behaviour.
+
+If the phone suspends again before the watch has reconnected, the notification goes out on the next
+connection — if that is still inside the window. Raise the value if you prefer late delivery to none.
+Once the reconnected watch is syncing, the sleep guard (`power.sleep_guard`) holds a suspend until the
+caught-up notifications are sent (at most `power.sleep_guard_max_ms`); it doesn't hold one for the
+reconnect handshake itself.
+
+A reconnect that has something to catch up on logs `Notification catch-up: sending N unsent
+notification(s) created after …` (the time is UTC); a reconnect with nothing missed logs nothing.
+stoandl's own alerts about a watch that can't connect ("Pebble blocked by a Bluetooth scan", "Pebble
+won't stay connected", "Pebble pairing removed") stay on the desktop, so they don't turn up on the watch
+once it is back.
 
 ## Weather
 
