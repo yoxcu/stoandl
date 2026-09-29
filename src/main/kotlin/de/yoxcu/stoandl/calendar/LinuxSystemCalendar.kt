@@ -1,5 +1,7 @@
 package de.yoxcu.stoandl.calendar
 
+import de.yoxcu.stoandl.power.NoWakeups
+import de.yoxcu.stoandl.power.delayWallClock
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.calendar.CalendarEvent
 import io.rebble.libpebblecommon.calendar.NewCalendarEvent
@@ -8,7 +10,6 @@ import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +60,9 @@ class LinuxSystemCalendar(
     private val isEnabled: () -> Boolean = { true },
     // Invoked when the syncer reads events (a sync happened) — stamps the GetSyncStatus lastSync time.
     private val onSync: (() -> Unit)? = null,
+    // Resume signal (SleepGuard.resumed): the ticker counts wall-clock time and re-checks on resume, so
+    // the timeline window keeps rolling on a phone that is suspended most of the time.
+    private val wakeups: Flow<Unit> = NoWakeups,
 ) : SystemCalendar {
     @Volatile private var byPlatformId: Map<String, RawCalendar> = emptyMap()
     private val manualTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -163,12 +167,13 @@ class LinuxSystemCalendar(
 
     /** Periodic re-sync. Delays first — PhoneCalendarSyncer.init() already does an immediate sync.
      *  Keyed on [tickInterval], so changing `calendar.sync_interval` cancels the pending delay and
-     *  starts counting down the new one rather than serving out the old interval first. */
+     *  starts counting down the new one rather than serving out the old interval first.
+     *  Wall-clock based (see [delayWallClock]): monotonic `delay()` stops while the machine is suspended. */
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun ticker(): Flow<Unit> = tickInterval.flatMapLatest { minutes ->
         flow {
             while (true) {
-                delay(minutes.minutes)
+                delayWallClock(minutes.minutes, wakeups)
                 emit(Unit)
             }
         }

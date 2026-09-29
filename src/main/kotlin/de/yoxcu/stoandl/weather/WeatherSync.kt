@@ -5,6 +5,8 @@ package de.yoxcu.stoandl.weather
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherUnits
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
+import de.yoxcu.stoandl.power.NoWakeups
+import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.stoandlHttpClient
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -25,7 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -84,6 +86,10 @@ class WeatherSync(
     private val weatherPins: Boolean = true,
     // Invoked after a sync that populated at least one location — stamps the GetSyncStatus lastSync time.
     private val onSynced: (() -> Unit)? = null,
+    // Resume signal (SleepGuard.resumed): the refresh interval is wall-clock time, checked on every
+    // resume, so a phone that is suspended most of the time still refreshes on schedule (riding on a
+    // wake it has anyway) instead of after `interval` of *awake* time.
+    private val wakeups: Flow<Unit> = NoWakeups,
 ) {
     // Own child scope so the whole sync (on-connect trigger, periodic loop, in-flight fetches) can be
     // cancelled as a unit by [stop] when weather is turned off at runtime — without tearing the daemon
@@ -97,6 +103,8 @@ class WeatherSync(
     private val syncMutex = Mutex()
     // Whether the last sync populated every location; drives the periodic loop's retry backoff.
     @Volatile private var lastSyncOk = false
+    // Wall-clock time (ms) of the last sync that populated every location; 0 = none yet this run.
+    @Volatile private var lastCompleteSyncMs = 0L
 
     // Stable BlobDB key for the GPS-tracked current location (its coordinates change, but it is one entry).
     private val currentLocationKey = keyFor("stoandl::current-location")
@@ -113,8 +121,16 @@ class WeatherSync(
             .distinctUntilChanged()
             .onEach { connected ->
                 if (connected) {
-                    log.info { "Watch connected — refreshing weather" }
-                    runCatching { syncNow() }.onFailure { log.warn { "On-connect weather sync failed: ${it.message}" } }
+                    // A reconnect after a short drop (or a link the phone re-establishes after a wake)
+                    // needn't refetch: the watch keeps its Weather BlobDB records, and the periodic loop
+                    // below is still on schedule. Only fetch when the data is at least one interval old.
+                    val ageMs = System.currentTimeMillis() - lastCompleteSyncMs
+                    if (lastCompleteSyncMs != 0L && ageMs < intervalMinutes.minutes.inWholeMilliseconds) {
+                        log.info { "Watch connected — weather is ${ageMs / 60_000} min old, not refetching" }
+                    } else {
+                        log.info { "Watch connected — refreshing weather" }
+                        runCatching { syncNow() }.onFailure { log.warn { "On-connect weather sync failed: ${it.message}" } }
+                    }
                 }
             }
             .launchIn(scope)
@@ -129,7 +145,7 @@ class WeatherSync(
                 // The on-connect refresh above re-fetches the moment a watch returns.
                 if (libPebble.watches.value.none { it is ConnectedPebbleDevice }) {
                     failStreak = 0
-                    delay(intervalMinutes.minutes)
+                    delayWallClock(intervalMinutes.minutes, wakeups)
                     continue
                 }
                 runCatching { syncNow() }.onFailure { log.warn { "Periodic weather sync failed: ${it.message}" } }
@@ -142,7 +158,7 @@ class WeatherSync(
                     log.info { "Weather incomplete — retrying in $backoff" }
                     backoff
                 }
-                delay(wait)
+                delayWallClock(wait, wakeups)
             }
         }
     }
@@ -207,6 +223,7 @@ class WeatherSync(
         libPebble.updateWeatherData(results.map { it.appData })
         val populated = results.count { it.appData is WeatherLocationData.WeatherLocationDataPopulated }
         lastSyncOk = populated == results.size
+        if (lastSyncOk) lastCompleteSyncMs = System.currentTimeMillis()
         log.info { "Weather updated: $populated/${results.size} location(s) populated" }
 
         if (weatherPins) {
