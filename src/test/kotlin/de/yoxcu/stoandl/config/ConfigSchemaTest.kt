@@ -132,6 +132,35 @@ class ConfigSchemaTest {
         assertContains(err(url, ""), "empty")
     }
 
+    @Test
+    fun `connection parameters are validated with the decoder that reads them back`() {
+        val f = field("ble.conn_params")
+        assertEquals("500,520,0,6000", ok(f, "500,520,0,6000"))
+        assertEquals("7.5,15,0,2000", ok(f, " 7.5,15,0,2000 "))
+        // Empty and `off` both mean "the phone manages the parameters" (upstream behaviour).
+        assertEquals("", ok(f, ""))
+        assertEquals("off", ok(f, "off"))
+        assertContains(err(f, "500,520,0"), "min_ms,max_ms,latency,supervision_ms")
+        assertContains(err(f, "slow"), "min_ms,max_ms,latency,supervision_ms")
+        // Well-formed but refused by BleConnParamSet.validate(): load() would log and drop these.
+        assertContains(err(f, "500,400,0,6000"), "max interval")
+        assertContains(err(f, "500,520,0,1000"), "supervision")
+        assertContains(err(field("ble.conn_params_fast"), "5,15,0,2000"), "min interval")
+    }
+
+    /** The conn-params value is rendered from the decoded set, so it must come back in the form written —
+     *  `500`, not `500.0` — or the GUI would show a value the user never typed. */
+    @Test
+    fun `connection parameters read back the way they were written`(): Unit = withTempConf { conf ->
+        val f = field("ble.conn_params")
+        listOf("500,520,0,6000", "7.5,15,0,2000").forEach { v ->
+            assertTrue(applyGuiConfig(f.key, v, conf).startsWith("ok:"))
+            assertEquals(v, f.value(StoandlConfig.load(conf, logResult = false)))
+        }
+        assertTrue(applyGuiConfig(f.key, "off", conf).startsWith("ok:"))
+        assertEquals("", f.value(StoandlConfig.load(conf, logResult = false)))
+    }
+
     // --- wire format --------------------------------------------------------------------------
 
     @Test
@@ -286,6 +315,8 @@ class ConfigSchemaTest {
             "weather.locations" -> "Testville:1.5:2.5"
             "firmware.github_repo" -> "example/fork"
             "firmware.cohorts_url" -> "https://example.invalid"
+            "ble.conn_params" -> "500,520,0,6000"
+            "ble.conn_params_fast" -> "15,15,0,6000"
             else -> if (current == "zz-test") null else "zz-test"
         }
     }

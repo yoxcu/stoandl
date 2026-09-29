@@ -19,9 +19,11 @@ stoandl daemon set weather.interval 15
 ```
 
 Those go through the daemon, which validates the value, writes it, reloads, and re-applies the affected
-subsystem — no restart. Three keys are the exception because they decide startup wiring
-(`notification.sync_to_watch`, `classic.discover`, `datalog.enabled`); they are marked **Needs a daemon
-restart** below, the GUI says so on the row, and `stoandl daemon` prints `(restart)` next to them.
+subsystem — no restart. Eight keys are the exception because they decide startup wiring
+(`notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`,
+`power.sleep_guard`, `power.sleep_guard_max_ms`, `ble.conn_params`, `ble.conn_params_fast`); they are
+marked **Needs a daemon restart** below, the GUI says so on the row, and `stoandl daemon` prints
+`(restart)` next to them.
 [docs/settings-parity.md](settings-parity.md) records why, per key.
 
 The service allows 5 starts within 5 minutes, and manual restarts count towards that. A 6th restart
@@ -69,11 +71,11 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `calendar.enabled` | bool | `true` | Master switch for calendar sync, flipped live by the Sync screen (`SetSyncEnabled("calendar", …)`). Turning it off stops syncing and removes the watch's calendar pins until re-enabled. |
 | `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
-| `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). |
-| `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). |
+| `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). **Needs a daemon restart.** |
+| `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). **Needs a daemon restart.** |
 | `power.pause_datalog_screen_off` | bool | `false` | Pause the watch's datalog sends (health data, app datalog) while the display is off; resumed when it comes on. |
-| `ble.conn_params` | set | _(off)_ | `min_ms,max_ms,latency,supervision_ms` the watch keeps while idle (e.g. `500,520,0,6000`); off keeps the upstream "phone manages" write. Needs `MaxConnectionInterval` in BlueZ's `main.conf` — read [deep-sleep.md](deep-sleep.md#connection-parameters--read-this-before-turning-them-on). Startup-only. |
-| `ble.conn_params_fast` | set | _(off)_ | Optional fast set during the connect handshake and bulk transfers (e.g. `15,15,0,6000`). Only with the kernel "K5" fix — see deep-sleep.md. |
+| `ble.conn_params` | set | _(off)_ | `min_ms,max_ms,latency,supervision_ms` the watch keeps while idle (e.g. `500,520,0,6000`); off keeps the upstream "phone manages" write. Needs `MaxConnectionInterval` in BlueZ's `main.conf` — read [deep-sleep.md](deep-sleep.md#connection-parameters--read-this-before-turning-them-on). **Needs a daemon restart.** |
+| `ble.conn_params_fast` | set | _(off)_ | Optional fast set during the connect handshake and bulk transfers (e.g. `15,15,0,6000`). Only with the kernel "K5" fix — see deep-sleep.md. **Needs a daemon restart.** |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 
 ## Bluetooth Classic

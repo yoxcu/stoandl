@@ -456,7 +456,7 @@ or egress concerns).
 > `GetHealthSummary`/`GetHealthSeries` (Health screen), `ExtConfigSchema`/`ExtGetConfig`/`ExtSetConfig`
 > + `config`/`description` on `ExtList` (extension config), the `changelogUrl` on `CheckFirmware`, and
 > the full Settings/Sync write path: `GetConfig`/`GetConfigSchema` + `SetConfig` (live via the
-> `config/ConfigStore.kt` reload + re-reconcile, **except** the three keys the schema marks
+> `config/ConfigStore.kt` reload + re-reconcile, **except** the eight keys the schema marks
 > `apply=restart` — see [settings-parity.md](settings-parity.md)), `GetSyncStatus` (now **live** runtime
 > state) + `SetSyncEnabled` (runtime per-service on/off, full start *and* stop), and the notification
 > filters (`NotifListFilters`/`NotifAddFilter`/`NotifRemoveFilter`, a global allow/block list gated in

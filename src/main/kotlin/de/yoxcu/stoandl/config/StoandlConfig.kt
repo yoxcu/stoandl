@@ -538,9 +538,21 @@ data class StoandlConfig(
         /** Parse `min_ms,max_ms,latency,supervision_ms` (e.g. `500,520,0,6000`); empty/`off` = not set.
          *  A malformed or out-of-range set is dropped with a warning (the watch or the Linux host would
          *  refuse it anyway), falling back to "not set". */
-        private fun parseConnParams(key: String, raw: String?): BleConnParamSet? {
+        private fun parseConnParams(key: String, raw: String?): BleConnParamSet? =
+            decodeConnParams(raw).getOrElse { e ->
+                log.warn { "Ignoring $key '$raw': ${e.message}" }
+                null
+            }
+
+        /**
+         * Decode a `ble.conn_params` / `ble.conn_params_fast` value — `min_ms,max_ms,latency,supervision_ms`,
+         * or empty / `off` for none — into the set (null = off), or fail with the reason it can't be used.
+         * [load] and the Settings schema's validator share it, so a value the GUI accepts is one the daemon
+         * applies rather than logs and ignores.
+         */
+        internal fun decodeConnParams(raw: String?): Result<BleConnParamSet?> {
             val v = raw?.trim().orEmpty()
-            if (v.isEmpty() || v.lowercase() in setOf("off", "false", "no", "none")) return null
+            if (v.isEmpty() || v.lowercase() in setOf("off", "false", "no", "none")) return Result.success(null)
             val parts = v.split(',').map { it.trim() }
             val set = if (parts.size == 4) {
                 val min = parts[0].toDoubleOrNull()
@@ -552,14 +564,20 @@ data class StoandlConfig(
                 } else null
             } else null
             if (set == null) {
-                log.warn { "Ignoring malformed $key '$raw' (expected min_ms,max_ms,latency,supervision_ms, e.g. 500,520,0,6000)" }
-                return null
+                return Result.failure(
+                    IllegalArgumentException("expected min_ms,max_ms,latency,supervision_ms, e.g. 500,520,0,6000"),
+                )
             }
-            set.validate()?.let { problem ->
-                log.warn { "Ignoring $key '$raw': $problem" }
-                return null
-            }
-            return set
+            set.validate()?.let { problem -> return Result.failure(IllegalArgumentException(problem)) }
+            return Result.success(set)
+        }
+
+        /** [decodeConnParams]'s inverse: the `stoandl.conf` form of [set], empty for off. Whole milliseconds
+         *  are written without a trailing `.0`, so a value reads back the way it was entered. */
+        internal fun encodeConnParams(set: BleConnParamSet?): String {
+            if (set == null) return ""
+            fun ms(v: Double) = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
+            return "${ms(set.minIntervalMs)},${ms(set.maxIntervalMs)},${set.slaveLatency},${set.supervisionTimeoutMs}"
         }
 
         private fun parseBool(raw: String?): Boolean =

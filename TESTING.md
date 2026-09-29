@@ -1403,14 +1403,15 @@ from 23 keys / 2 widget kinds / 5 columns to 45 keys / 5 kinds (`toggle`, `combo
 `list`) / 11 columns, added the `alerts.*` family, added `stoandl daemon` as the CLI half, and fixed
 six keys that persisted but did nothing until a restart.
 
-Verified in the sandbox (no watch needed): both front-ends report `general loaded 45 keys in 14 groups`
-under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test` 19/19 and
-`cargo test` 22/22 pass. Everything below needs the real daemon.
+Verified in the sandbox at the milestone (no watch needed): both front-ends report `general loaded 45
+keys in 14 groups` under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test`
+19/19 and `cargo test` 22/22 pass. The deep-sleep keys (§5.32) joined the schema afterwards: 51 keys in
+15 groups, eight of them restart-only. Everything below needs the real daemon.
 
 | # | What | How | Expect |
 |---|------|-----|--------|
-| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 14 section headers; spin boxes with units for the 4 `int` keys; text fields with placeholders for the 8 `text` keys; comma lists for the 3 `list` keys. Nothing renders as a bare unlabelled text box. |
-| 5.31b | Restart marking | look at `notification.sync_to_watch`, `classic.discover`, `datalog.enabled` | Each row says "takes effect after restarting stoandl". No other row does. |
+| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 15 section headers (Deep sleep included); spin boxes with units for the 6 `int` keys; text fields with placeholders for the 9 `text` keys; comma lists for the 3 `list` keys. Nothing renders as a bare unlabelled text box. |
+| 5.31b | Restart marking | look at `notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms`, `ble.conn_params`, `ble.conn_params_fast` | Each row says "takes effect after restarting stoandl". No other row does (`power.pause_datalog_screen_off` applies live, see 5.328b). |
 | 5.31c | Validation surfaces | set `weather.interval` below its minimum via `stoandl daemon set weather.interval 1`; set `weather.locations` to `Nowhere` | `error:weather.interval must be at least 5`; `error:weather.locations: expected comma-separated Name:lat:lon entries`. `stoandl.conf` unchanged in both cases. |
 | 5.31d | Conf-breaking input | `stoandl daemon set weather.gps_name 'Home # 2'` | `error:… cannot contain '#'`. Then confirm `stoandl.conf` still parses (`stoandl daemon get weather.gps_name` returns the old value). |
 | 5.31e | CLI ↔ GUI round-trip | `stoandl daemon set weather.units Imperial`, then open the GUI page | Combo shows Imperial. Reverse: change it in the GUI, `stoandl daemon get weather.units` agrees. |
@@ -1422,10 +1423,11 @@ under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test
 | 5.31k | `alerts.*` gating | `stoandl daemon set alerts.bluetooth false`, then run `bluetoothctl scan on` from another terminal and leave a watch out of range | **No** "blocked by a Bluetooth scan" desktop popup, but the WARN line is still in `/tmp/stoandl.log`. Re-enable → popup returns. |
 | 5.31l | `alerts.enabled` master | set it false, then provoke any pairing alert (e.g. unpair on the watch) | No desktop popup for any `alerts.*` event. Firmware-update alerts are **unaffected** (they follow `firmware.notify`) — confirm that separately if a firmware update is pending. |
 | 5.31m | Send test from Alerts | GUI → Alerts → **Send test** | Notification arrives on the watch. Then mute all / pause forwarding and repeat: it must **not** arrive (the test deliberately goes through the same policy path), and the toast reports it. With no watch: "No watch connected". |
-| 5.31n | `stoandl daemon list` | run it | Every key grouped by section with its current value; `(restart)` next to exactly the three keys from 5.31b. |
+| 5.31n | `stoandl daemon list` | run it | Every key grouped by section with its current value; `(restart)` next to exactly the eight keys from 5.31b. |
 | 5.31p | **Extension config precedence flipped** | with an extension that has both `extension.<name>.<key>` in stoandl.conf and the same key in `<configDir>/ext/<name>/config`, restart the daemon | The **config file** value wins (previously stoandl.conf did), and the log carries `Extension '<name>': extension.<name>.<key> in stoandl.conf is now overridden by …/config`. Then set the key from the GUI and confirm it sticks. `cmd` must still be taken from stoandl.conf when set there. |
 | 5.31q | **Pinned watch pref no longer reverts** | put `watch.<id> = <value>` in stoandl.conf, then change that pref from the GUI, then disconnect + reconnect the watch | The GUI value survives the reconnect, and the `watch.<id>` line in stoandl.conf now reads the new value. A pref that is **not** pinned in stoandl.conf must **not** gain a line when changed from the GUI. |
 | 5.31r | Calendar interval restarts the countdown | with `calendar.sync_interval = 60`, `stoandl daemon set calendar.sync_interval 5` | The next re-sync comes ~5 min later, not up to 60. Then set an unrelated calendar key and confirm the countdown is **not** reset (StateFlow conflates the unchanged interval). |
+| 5.31s | Deep-sleep keys validate like the parser | `stoandl daemon set ble.conn_params 500,400,0,6000`; then `stoandl daemon set ble.conn_params 500,520,0,6000`; `stoandl daemon get ble.conn_params`; finally `stoandl daemon set ble.conn_params off` | First: `error:ble.conn_params: max interval 400.0ms < min 500.0ms`, `stoandl.conf` unchanged. Second: `ok:ble.conn_params = 500,520,0,6000 (restart stoandl to apply)`. `get` prints `500,520,0,6000` (no `.0`). After `off` the value is empty and a restart logs no `bleConnParams=` in `Config loaded`. |
 | 5.31o | Old-client compatibility | run an **older** GUI build against this daemon | Settings page still renders (it reads the first 5 columns and ignores the rest). This is the version-gating claim — worth one check before shipping. |
 
 ---

@@ -55,6 +55,12 @@ untested. All hardware testing so far used a BLE watch.
 | Slow, fixed connection parameters | `ble.conn_params`, `ble.conn_params_fast` | off | The watch keeps the link at your idle set (e.g. 500–520 ms, latency 0) and never asks to change it — every change request needs the phone, i.e. a wake. |
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
 
+Every key in this table is also in the GUI (Settings → Daemon configuration → Deep sleep, and
+Notifications for the catch-up) and in `stoandl daemon set <key> <value>`, which validates the value
+first (`ble.conn_params*` with the same check the daemon applies at startup). All of them except
+`power.pause_datalog_screen_off` take effect only after a daemon restart; the datalog pause applies at
+once.
+
 Log lines to look for (`/tmp/stoandl.log`): `Sleep guard on`, `PrepareForSleep: held the suspend …`,
 `Notification catch-up: sending N unsent notification(s) created after …` (only when a reconnect has
 something to catch up on; the time is UTC), `connected and services resolved (N ms after connect())`

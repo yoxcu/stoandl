@@ -8,8 +8,8 @@ Keep it in sync with `GUI_CONFIG_FIELDS` — `ConfigSchemaTest` enforces the mec
 exposed key round-trips through `StoandlConfig.load`, no duplicates, no framing characters), but the
 *Applies* column is prose and only a human can keep it honest.
 
-**Scope.** `stoandl.conf` has 52 top-level keys plus two prefix families (`watch.<prefId>`,
-`extension.<name>.<key>`). 45 are rendered by the schema-driven Settings page; the remaining ones are
+**Scope.** `stoandl.conf` has 58 top-level keys plus two prefix families (`watch.<prefId>`,
+`extension.<name>.<key>`). 51 are rendered by the schema-driven Settings page; the remaining ones are
 reachable through a **richer dedicated surface** and are listed in [§3](#3-keys-deliberately-not-in-the-schema).
 Nothing is unreachable.
 
@@ -39,6 +39,7 @@ the setting on the next read.
 | `notification.per_app` | toggle | ✓ | live | read per push in `WatchNotifier.push` | — | `true` |
 | `notification.default_mute` | combo | ✓ | live | read per newly-tracked app (was a startup snapshot; **fixed this session**) | one of never/always/weekdays/weekends | `Never` |
 | `notification.sync_to_watch` | toggle | ✓ | **restart** | decides a Koin binding (`PlatformConfig(syncNotificationApps=…)`) built once in `init()` | — | `false` |
+| `notification.catch_up_minutes` | int | ✓ | **restart** | part of the host-built `LibPebbleConfig` that `init()` pins into `NotificationConfigFlow` once | 0–1440 min | `10` |
 | `notification.forward` | toggle | Sync screen | live | read per push; `SetSyncEnabled("notifications", …)` | — | `true` |
 
 ### stoandl alerts — the daemon's own desktop alerts (new this session)
@@ -144,9 +145,23 @@ and the firmware sources are rebuilt per check (**fixed this session**).
 | `datalog.enabled` | toggle | ✓ | **restart** | `DatalogStore` is started (or not) once in `init()` | `false` |
 | `developer.autostart` | toggle | ✓ | live | the on-connect hook is always registered and the switch checked inside it (its *registration* used to be gated, so "on" needed a restart and "off" kept auto-starting — **fixed this session**) | `false` |
 
-**Three keys are restart-required** — `notification.sync_to_watch`, `classic.discover`,
-`datalog.enabled`. All three decide startup wiring (a DI binding, a transport, a subscriber) that cannot
-be rebuilt safely at runtime. Both front-ends now say so on the row.
+### Deep sleep
+
+The settings for phones that suspend whenever the display is off ([deep-sleep.md](deep-sleep.md)).
+
+| Key | Kind | GUI | Applies | Why | Validated | Default |
+| --- | --- | --- | --- | --- | --- | --- |
+| `power.sleep_guard` | toggle | ✓ | **restart** | `SleepGuard` takes or skips its logind delay lock once, at construction in `init()` | — | `true` |
+| `power.sleep_guard_max_ms` | int | ✓ | **restart** | handed to `SleepGuard` at construction | 0–4500 ms | `3000` |
+| `power.pause_datalog_screen_off` | toggle | ✓ | live | read per tick of the datalog poll and in the before-sleep hook; the poll always runs, so turning it off while the watch is paused resumes it within ~5 s | — | `false` |
+| `ble.conn_params` | text | ✓ | **restart** | part of the `BleConfig` in the `LibPebbleConfig` that `init()` pins | decoded with `StoandlConfig.decodeConnParams`, the function `load()` uses, including `BleConnParamSet.validate()`; empty or `off` = off | _(off)_ |
+| `ble.conn_params_fast` | text | ✓ | **restart** | ” (only used together with `ble.conn_params`) | ” | _(off)_ |
+
+**Eight keys are restart-required** — `notification.sync_to_watch`, `notification.catch_up_minutes`,
+`classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms`,
+`ble.conn_params`, `ble.conn_params_fast`. All of them decide startup wiring (a DI binding or the
+pinned `LibPebbleConfig`, a transport, a subscriber, the logind lock) that cannot be rebuilt safely at
+runtime. Both front-ends say so on the row.
 
 ---
 

@@ -199,6 +199,10 @@ private fun githubRepoValid(v: String): String? {
  *  field's own min/max, which is the only value it could write back anyway. */
 private fun Long.toIntClamped(): Int = coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
 
+/** `ble.conn_params*`, decoded with the very function that reads them back, so the GUI can't persist a
+ *  set the daemon would log and ignore at load (e.g. a supervision timeout the watch rejects). */
+private fun connParamsValid(v: String): String? = StoandlConfig.decodeConnParams(v).exceptionOrNull()?.message
+
 private fun httpUrlValid(v: String): String? {
     if (v.isEmpty()) return "cannot be empty"
     return if ((v.startsWith("http://") || v.startsWith("https://")) && !v.contains(' ')) null
@@ -218,6 +222,7 @@ private const val G_BATTERY = "Battery"
 private const val G_FIRMWARE = "Firmware"
 private const val G_LANGUAGE = "Language"
 private const val G_CONNECTION = "Connection"
+private const val G_SLEEP = "Deep sleep"
 private const val G_DND = "Do Not Disturb"
 private const val G_PRIVACY = "Privacy"
 private const val G_DEVELOPER = "Developer"
@@ -238,6 +243,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Push the per-app list and mute states to the watch's BlobDB. Current firmware surfaces no " +
             "per-app notification UI, so this normally changes nothing — mute is enforced host-side.",
         apply = ConfigApply.RESTART) { it.notificationSyncToWatch },
+    int("notification.catch_up_minutes", G_NOTIF, "Catch up after a disconnect",
+        "A reconnecting watch also gets the notifications it missed that are at most this old (never from " +
+            "before the daemon started or the watch was paired). 0 = only ones posted after it reconnected.",
+        min = 0, max = 1440, unit = "min", apply = ConfigApply.RESTART) { it.notificationCatchUpMinutes.toIntClamped() },
 
     // --- stoandl's own alerts ---
     toggle("alerts.enabled", G_ALERTS, "Alerts from stoandl",
@@ -363,6 +372,30 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         apply = ConfigApply.RESTART) { it.classicDiscover },
     toggle("connection.autoswitch", G_CONNECTION, "Auto-switch between watches",
         "With 2+ paired watches, connect whichever is in range — preferring the most recently used") { it.connectionAutoswitch },
+
+    // --- Deep sleep (phones that suspend whenever the display is off; see docs/deep-sleep.md) ---
+    toggle("power.sleep_guard", G_SLEEP, "Sleep guard",
+        "Hold a logind delay lock so a suspend waits until watch traffic in flight (the notification a " +
+            "push wake produced) has reached the watch. Never makes a suspend fail; harmless on a desktop.",
+        apply = ConfigApply.RESTART) { it.powerSleepGuard },
+    int("power.sleep_guard_max_ms", G_SLEEP, "Longest hold per suspend",
+        "How long a suspend waits at most for pending watch traffic (logind's own cap is 5 s)",
+        min = 0, max = 4500, unit = "ms", apply = ConfigApply.RESTART) { it.powerSleepGuardMaxMs.toIntClamped() },
+    toggle("power.pause_datalog_screen_off", G_SLEEP, "Pause datalog while the display is off",
+        "The watch holds back its health data (flushed every 15 min) until the display is on again: " +
+            "fewer wakes on a phone that keeps the watch link across suspend") { it.powerPauseDatalogScreenOff },
+    text("ble.conn_params", G_SLEEP, "Idle connection parameters",
+        "min_ms,max_ms,latency,supervision_ms the watch keeps while idle; empty or off = the phone manages " +
+            "them. Needs MaxConnectionInterval in BlueZ's main.conf: read docs/deep-sleep.md first.",
+        placeholder = "500,520,0,6000", apply = ConfigApply.RESTART, validate = ::connParamsValid) {
+        StoandlConfig.encodeConnParams(it.bleConnParams)
+    },
+    text("ble.conn_params_fast", G_SLEEP, "Fast connection parameters",
+        "Optional set for the connect handshake and bulk transfers; only used with the idle set. Needs " +
+            "the K5 kernel fix (docs/deep-sleep.md).",
+        placeholder = "15,15,0,6000", apply = ConfigApply.RESTART, validate = ::connParamsValid) {
+        StoandlConfig.encodeConnParams(it.bleConnParamsFast)
+    },
 
     // --- Do Not Disturb ---
     combo("dnd.sync", G_DND, "Do Not Disturb sync",
