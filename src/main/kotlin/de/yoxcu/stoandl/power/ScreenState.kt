@@ -8,9 +8,10 @@ import java.io.File
  * Plasma Mobile / KWin turn the DSI panel's DPMS off when the screen goes dark, and the OnePlus 6
  * wake-on-notification scripts use the same file to decide whether the user is looking.
  *
- * Used to keep radio-heavy, user-facing work — the pairing-window BLE scan and BR/EDR inquiry, which
- * make the controller report (and, with links kept across suspend, wake the host for) every nearby
- * advertiser — to times when someone is actually using the device.
+ * Used to hold back watch traffic nobody is looking at (`power.pause_datalog_screen_off`) and to warn
+ * about another app's Bluetooth discovery left running with the display off, which makes the controller
+ * report (and, with links kept across suspend, wake the host for) every nearby advertiser. stoandl's own
+ * pairing-window scans don't consult it: they are explicit requests.
  *
  * Returns null when it can't tell (no DRM device, a headless box, sysfs unreadable): callers treat
  * that as "on" so nothing is gated on machines without a local display.

@@ -11,8 +11,8 @@ import org.freedesktop.dbus.types.UInt16
 import org.freedesktop.dbus.types.UInt32
 
 private const val AGENT_PATH = "/io/stoandl/agent"
-// DisplayYesNo => MITM pairing resolves to Numeric Comparison: the watch shows a 6-digit number,
-// the user confirms it on the WATCH, and we auto-accept on the phone side (RequestConfirmation).
+// DisplayYesNo => MITM pairing resolves to Numeric Comparison: the watch shows a 6-digit number and
+// the user confirms it on the WATCH; the phone side (RequestConfirmation) is answered by `onConfirm`.
 private const val AGENT_CAPABILITY = "DisplayYesNo"
 
 @DBusInterfaceName("org.bluez.AgentManager1")
@@ -43,22 +43,25 @@ interface BluezAgent1 : DBusInterface {
  * has nothing to answer the confirmation, so [io.rebble.libpebblecommon...]'s `Pair()` times out
  * ("No reply within specified time") even though the watch shows its pairing popup. This agent is
  * registered as the system default agent (so it serves `Device1.Pair()` calls made on any
- * connection) and auto-accepts; the user only needs to confirm the matching code on the watch.
+ * connection); the user confirms the matching code on the watch, which is the MITM check.
  *
- * Confirmation (Numeric Comparison) is routed through [register]'s `onConfirm` callback: it returns
- * true to accept (the method returns) or false to decline (we throw, which BlueZ treats as a rejected
- * pairing). The callback may block to wait for a user decision. When `onConfirm` is null we auto-accept.
- * The display-only methods report their code via `onPairingCode` so the daemon can surface it.
+ * Confirmation (Numeric Comparison) is routed through [register]'s `onConfirm` callback with the
+ * device's object path and the code: it returns true to accept (the method returns) or false to
+ * decline (we throw, which BlueZ treats as a rejected pairing). The callback may block to wait for a
+ * user decision; the daemon asks on a `stoandl watch pair`/`repair` or GUI pairing window (the CLI
+ * accepts by itself with `--yes` or without a terminal) and otherwise accepts, unless the request
+ * retries a pairing the user just declined. When `onConfirm` is null we auto-accept. The display-only
+ * methods report their code via `onPairingCode` so the daemon can surface it.
  */
 class BluezPairingAgent {
     private val log = KotlinLogging.logger {}
     private var conn: DBusConnection? = null
     @Volatile private var onPairingCode: ((String) -> Unit)? = null
-    @Volatile private var onConfirm: ((String) -> Boolean)? = null
+    @Volatile private var onConfirm: ((device: String, code: String) -> Boolean)? = null
 
     fun register(
         onPairingCode: ((String) -> Unit)? = null,
-        onConfirm: ((String) -> Boolean)? = null,
+        onConfirm: ((device: String, code: String) -> Boolean)? = null,
     ) {
         this.onPairingCode = onPairingCode
         this.onConfirm = onConfirm
@@ -103,7 +106,8 @@ class BluezPairingAgent {
             log.info { "Pairing agent released" }
         }
 
-        // Returning normally = accept. Throwing a DBus error = reject. We auto-accept everything.
+        // Returning normally = accept. Throwing a DBus error = reject. Everything but RequestConfirmation
+        // (see onConfirm) is auto-accepted.
 
         override fun RequestConfirmation(device: DBusPath, passkey: UInt32) {
             // Numeric Comparison (DisplayYesNo). onConfirm decides (and may block for a user answer);
@@ -115,7 +119,7 @@ class BluezPairingAgent {
                 return
             }
             log.info { "RequestConfirmation($device) code=$code — deciding" }
-            if (!confirm(code)) {
+            if (!confirm(device.path, code)) {
                 log.info { "RequestConfirmation($device) code=$code — declined" }
                 throw DBusExecutionException("Pairing declined")
             }

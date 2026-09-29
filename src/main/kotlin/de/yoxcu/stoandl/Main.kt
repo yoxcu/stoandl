@@ -727,8 +727,9 @@ private fun humanSize(bytes: Long): String = when {
 }
 
 /** Polls PairStatus() until the pairing window resolves, printing pending messages as they change.
- *  Shared by the `pair` and `repair` commands (both open the same pairing window). */
-private fun pollPairStatus(control: StoandlControl) {
+ *  Shared by the `pair` and `repair` commands (both open the same pairing window); [assumeYes] is
+ *  their `--yes`. */
+private fun pollPairStatus(control: StoandlControl, assumeYes: Boolean) {
     var lastPendingMsg = ""
     var lastConfirmCode = ""
     val startMs = System.currentTimeMillis()
@@ -738,22 +739,20 @@ private fun pollPairStatus(control: StoandlControl) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         if (status.startsWith("confirm:")) {
-            // Numeric comparison: show the code and let the user accept/decline (it must match the
-            // code shown on the watch). One prompt per code; the daemon declines on its own timeout.
+            // Numeric comparison: the daemon waits for this side's answer (see confirmPairingCode). One
+            // answer per code; the daemon declines on its own timeout.
             val code = status.removePrefix("confirm:")
             if (code != lastConfirmCode) {
                 lastConfirmCode = code
-                print("Pairing code: $code — does it match the code on the watch? Accept? [y/N] ")
-                System.out.flush()
-                val accept = readlnOrNull()?.trim()?.lowercase() in setOf("y", "yes")
+                val accept = confirmPairingCode(code, assumeYes)
                 try { control.ConfirmPairing(accept) } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
             }
         } else if (status.startsWith("pending:")) {
-            // The daemon surfaces the numeric-comparison code (for the GUI to display so the user can
-            // verify it matches the watch). The CLI auto-accepts and the actual confirmation is on the
-            // watch, so don't echo a code the CLI can't act on — drop the digits, keep the instruction.
+            // `Confirm code <digits> on the watch` means this side has already accepted and only the watch
+            // has to confirm; the digits are there for the GUI to show. Don't echo a code the CLI can't act
+            // on — drop the digits, keep the instruction.
             val msg = status.removePrefix("pending:")
                 .replace(Regex("""Confirm code \d+ on the watch"""), "Confirm the pairing code on the watch")
             if (msg.isNotEmpty() && msg != lastPendingMsg) { println(msg); lastPendingMsg = msg }
@@ -765,6 +764,44 @@ private fun pollPairStatus(control: StoandlControl) {
         }
     }
 }
+
+/** This side's answer to a numeric-comparison [code] during `watch pair`/`repair`. When stdin is a
+ *  terminal the user compares it with the watch and answers y/N; an answer already piped in
+ *  (`echo n | stoandl watch pair`) counts the same, and Ctrl-D at the prompt declines like any answer
+ *  other than y. With `--yes` ([assumeYes]) or with nothing to read an answer from (`ssh host stoandl
+ *  watch pair` without -t, `< /dev/null`) it accepts and says so, rather than declining for want of a
+ *  keyboard: the same code is still confirmed on the watch, which is the MITM check — and it's what the
+ *  daemon's agent does for a pairing nobody is asked about. */
+private fun confirmPairingCode(code: String, assumeYes: Boolean): Boolean {
+    val interactive = !assumeYes && stdinIsTerminal()
+    // Not a terminal, but an answer is already waiting in the pipe or file: read it rather than guess.
+    // available() never blocks; an open but empty pipe (ssh without -t) reports 0.
+    val piped = !assumeYes && !interactive && runCatching { System.`in`.available() > 0 }.getOrDefault(false)
+    if (interactive || piped) {
+        print("Pairing code: $code — does it match the code on the watch? Accept? [y/N] ")
+        System.out.flush()
+        val answer = readlnOrNull()
+        if (answer == null) {
+            // Ctrl-D: someone at the prompt chose not to answer y.
+            println()
+            return false
+        }
+        if (piped) println(answer.trim()) // no terminal echoed it
+        return answer.trim().lowercase() in setOf("y", "yes")
+    }
+    val why = if (assumeYes) "--yes" else "stdin is not a terminal; use ssh -t to be asked"
+    println("Pairing code: $code — accepted on this side ($why). Confirm the same code on the watch.")
+    return true
+}
+
+/** Whether stdin is a terminal someone can answer on. System.console() alone also needs stdout to be
+ *  one (JDK 25 returns null otherwise), so `stoandl watch pair | tee pair.log` would never ask; on Linux
+ *  /proc/self/fd/0 names the tty stdin reads from. */
+private fun stdinIsTerminal(): Boolean =
+    System.console()?.isTerminal == true || runCatching {
+        val fd0 = java.nio.file.Files.readSymbolicLink(java.nio.file.Path.of("/proc/self/fd/0")).toString()
+        fd0.startsWith("/dev/pts/") || fd0.startsWith("/dev/tty")
+    }.getOrDefault(false)
 
 /** Dispatch `stoandl firmware ...`: a local `.pbz` path to flash, or `check`/`update`/`status`. */
 private fun ctlFirmware(rest: List<String>) {
@@ -1173,12 +1210,14 @@ private fun ctlDaemon(rest: List<String>) {
 // ---- watch group (list/connect/pair/unpair/repair/battery/find) --------------------------------
 
 private fun ctlWatch(rest: List<String>) {
+    // `--yes`/`-y` on pair/repair: accept the pairing code on this side without asking.
+    val assumeYes = rest.any { it == "--yes" || it == "-y" }
     when (rest.firstOrNull() ?: "list") {
         "list" -> watchList()
         "connect" -> watchConnect(rest.getOrNull(1))
-        "pair" -> watchPair()
+        "pair" -> watchPair(assumeYes)
         "unpair" -> watchUnpair(rest.getOrNull(1))
-        "repair" -> watchRepair(rest.getOrNull(1))
+        "repair" -> watchRepair(rest.drop(1).firstOrNull { !it.startsWith("-") }, assumeYes)
         "battery" -> ctlBattery(rest.drop(1))
         "find" -> watchFind()
         "ping" -> withControl { control ->
@@ -1188,7 +1227,7 @@ private fun ctlWatch(rest: List<String>) {
         "running" -> watchRunning()
         "rename", "nickname" -> watchRename(rest.getOrNull(1), rest.drop(2).joinToString(" "))
         else -> {
-            System.err.println("Usage: stoandl watch <list|connect <n>|pair|unpair [n]|repair <n>|rename <n> <name>|battery|find|ping|running>")
+            System.err.println("Usage: stoandl watch <list|connect <n>|pair [--yes]|unpair [n]|repair <n> [--yes]|rename <n> <name>|battery|find|ping|running>")
             System.exit(1)
         }
     }
@@ -1250,19 +1289,19 @@ private fun watchConnect(name: String?) {
     }
 }
 
-private fun watchPair(): Unit = withControl { control ->
+private fun watchPair(assumeYes: Boolean): Unit = withControl { control ->
     try {
         val startResp = try { control.Pair() } catch (e: Exception) {
             System.err.println("Error: ${e.message}"); System.exit(1); return
         }
         if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
         println("Searching for watch to pair (up to 2 minutes)...")
-        pollPairStatus(control)
+        pollPairStatus(control, assumeYes)
     } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
 }
 
-private fun watchRepair(name: String?) {
-    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch repair <name>"); System.exit(1); return }
+private fun watchRepair(name: String?, assumeYes: Boolean) {
+    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch repair <name> [--yes]"); System.exit(1); return }
     withControl { control ->
         try {
             val startResp = try { control.Repair(name) } catch (e: Exception) {
@@ -1270,7 +1309,7 @@ private fun watchRepair(name: String?) {
             }
             if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
             println(startResp.removePrefix("ok:"))
-            pollPairStatus(control)
+            pollPairStatus(control, assumeYes)
         } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
     }
 }

@@ -112,6 +112,12 @@ Wired into `PebbleIntegration.init()`. User confirms the matching code on the wa
 auto-accepts. If logs show `RequestPasskey` instead (watch-displays/phone-enters Passkey Entry),
 that can't be answered headlessly and we'd revisit.
 
+> **Update 2026-09-29:** `RequestConfirmation` is no longer blanket auto-accepted. It goes through the
+> daemon's `onConfirm` callback: on a `watch pair`/`repair` (or GUI) window the code is shown and
+> answered via `ConfirmPairing` (the CLI asks y/N when stdin is a terminal, accepts by itself with
+> `--yes` or with nothing to read an answer from); any other pairing is still accepted, except a retry
+> of one the user just declined. The watch-side confirmation remains the MITM check.
+
 ## Dead ends (do not revisit)
 
 - **Service Changed via reAddServices** (the kept experiment, see below): proven not to work for
@@ -125,7 +131,7 @@ that can't be answered headlessly and we'd revisit.
 ## Outcome & decisions
 
 - **BLE-native watches work (Time 2 confirmed).** The fix was a **headless BlueZ pairing agent**
-  (`BluezPairingAgent.kt`, `DisplayYesNo`, auto-confirm) — newer firmware needs Secure-Connections/MITM
+  (`BluezPairingAgent.kt`, `DisplayYesNo`, auto-confirm at the time — see the 2026-09-29 update above) — newer firmware needs Secure-Connections/MITM
   pairing, which timed out with no agent. With it: pair (confirm on watch) → PPoG → notifications, incl.
   bonded reconnect. Committed.
 - **Service-Changed experiment: reverted.** The grace-then-`reAddServices` attempt never helped (it

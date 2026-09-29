@@ -122,17 +122,26 @@ See [devices.md](devices.md) for how to enable and use it, and
 
 ### BLE pairing / bonding
 
-Headless auto-confirm BlueZ agent (Numeric Comparison / MITM / SC). On first connection the watch
-shows a **6-digit code**; stoandl auto-accepts on the Linux side — just confirm the code on the
-watch. Subsequent reconnects are automatic.
+Headless BlueZ agent (Numeric Comparison / MITM / SC). When pairing, the watch shows a **6-digit
+code**. Confirm it on the watch, and answer `y` when `stoandl watch pair` shows the same code; a piped
+answer (`echo y | stoandl watch pair`) counts too. With `--yes`, or with nothing to read an answer from
+(e.g. `ssh host stoandl watch pair` without `-t`), the CLI accepts it by itself and says so. Either way,
+the watch-side confirmation is the MITM check. Subsequent reconnects are automatic.
 
 ```sh
-stoandl watch pair            # pair a new watch (~2 min window; finds BLE and classic watches)
-stoandl watch list            # known watches, their connection state and battery level
-stoandl watch connect B349    # connect a specific known watch by name/substring (switches the active watch)
-stoandl watch repair B349     # re-pair ONE watch by name/substring (forgets just it, then pairs)
-stoandl watch unpair [name]   # forget watches on this host — all of them, or just the named one
+stoandl watch pair [--yes]        # pair a new watch (~2 min window; finds BLE and classic watches; --yes: don't ask for the code)
+stoandl watch list                # known watches, their connection state and battery level
+stoandl watch connect B349        # connect a specific known watch by name/substring (switches the active watch)
+stoandl watch repair B349 [--yes] # re-pair ONE watch by name/substring (forgets just it, then pairs)
+stoandl watch unpair [name]       # forget watches on this host — all of them, or just the named one
 ```
+
+_Implemented — to be tested ([TESTING.md §5.32e](../TESTING.md)):_ a pairing you decline (or leave
+unanswered for 60 s) ends the window and isn't retried: no further pairing requests reach the watch
+until you open the next pairing window. A pairing window also discovers with the display off
+(it's an explicit request), but only while the host is awake, so keep a phone that
+suspends with the display off awake while pairing. If the window can't discover, `watch pair` prints
+why (Bluetooth off, another watch connecting, the phone slept) instead of timing out silently.
 
 If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
 re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
@@ -655,8 +664,10 @@ Pebbles to verify. _To be tested._ Known gaps before multi-watch is fully usable
   the same application is untested._
 - _CLI commands (`launch`, `sideload`, `remove`, `settings`) target the single connected watch with no
   disambiguation flag (`--watch <name|address>`). With two watches the behaviour is unspecified._
-- _`stoandl watch pair` with a bonded-but-absent watch works — the absent watch is
-  `KnownPebbleDevice`, not `ConnectedPebbleDevice`, so the guard doesn't fire._
+- _`stoandl watch pair` for a second BLE watch while the paired one is armed but absent doesn't work.
+  The armed watch counts as connecting (`ConnectingKnownPebbleDevice`), so the BLE pairing scan stays
+  paused, and `watch pair` says `BLE scan paused — <watch> is connecting`. Unpair that watch first; a
+  classic watch still pairs via the BR/EDR inquiry._
 - _`stoandl watch pair` with a watch already **connected** is broken: the early-return guard exits
   immediately with "Watch already connected". Fixing it requires removing that guard and scoping the
   `connectedJob` to newly connected devices only._

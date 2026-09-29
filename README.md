@@ -143,9 +143,10 @@ Or with the fat JAR (here `java` must be JDK 25):
 java -jar build/libs/stoandl-*-all.jar
 ```
 
-On first connection the watch shows a **6-digit code**; confirm it on the watch and stoandl
-auto-accepts on the Linux side. See the [pairing feature](docs/features.md#ble-pairing--bonding) for
-`stoandl watch pair` and friends.
+When pairing (`stoandl watch pair`) the watch shows a **6-digit code**; confirm it on the watch and
+answer `y` when the CLI shows the same code (without a terminal, or with `--yes`, the CLI accepts it
+by itself). See the [pairing feature](docs/features.md#ble-pairing--bonding) for `stoandl watch pair`
+and friends.
 
 ## Install (systemd user service)
 

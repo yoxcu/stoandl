@@ -176,13 +176,41 @@ private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
 // How long the phone-side numeric-comparison confirmation waits for the user (ConfirmPairing) before
 // declining. BlueZ agent calls are user-interactive, so it tolerates this human-scale wait.
 private const val PAIRING_CONFIRM_TIMEOUT_MS = 60_000L
+// PairStatus notes shown in place of the bare `pending:` while an open pairing window can't discover
+// anything, so `watch pair` and the GUI say why instead of timing out silently (showPairingScanPause).
+private const val PAIRING_PAUSED_BT_OFF = "pending:Discovery paused — Bluetooth is off. Turn it on to pair."
+private const val PAIRING_PAUSED_BLE_BUSY = "pending:BLE scan paused — "   // + "<watch> is connecting …"
+// A host that suspends with the display off (a deep-sleeping phone) stops the window's discovery for every
+// suspend (beforeSleep) and, if it drops links at suspend, a pairing in progress with it.
+private const val PAIRING_PAUSED_SLEPT =
+    "pending:Searching again — the phone slept, which pauses discovery. Keep it awake (e.g. the screen on) until the watch is found."
 
-/** Allows pairing with unbonded watches only while the window is open. */
+/** Allows pairing with unbonded watches only while the window is open. The window is only ever opened
+ *  by an explicit, time-limited user request (Pair/Repair over D-Bus, a notification's Pair/Re-pair
+ *  button), which is why its scans don't depend on the display (see [PebbleIntegration]'s scan loop). */
 private class PairingGate {
     private val expiryMs = java.util.concurrent.atomic.AtomicLong(0L)
-    fun open() { expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS) }
+    // BlueZ device path whose pairing the user declined (or let time out) in the last window; cleared by
+    // the next open(). See [refusesRetry].
+    private val declinedDevice = AtomicReference<String?>(null)
+    // The host suspended (and resumed) while this window was open; cleared by the next open().
+    private val slept = AtomicBoolean(false)
+    fun open() {
+        declinedDevice.set(null)
+        slept.set(false)
+        expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS)
+    }
     fun close() { expiryMs.set(0L) }
     fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.get()
+    fun markDeclined(device: String) { declinedDevice.set(device) }
+    /** A pairing request from [device] outside any window that retries one the user refused in the last
+     *  window. Backstop only: the decline also drops libpebble3's connection goal for the watch (see
+     *  `refusePairing`), which is what stops the retries; this keeps one that was already under way, or a
+     *  watch the path couldn't be matched to, from being bonded by the agent's outside-a-window accept. */
+    fun refusesRetry(device: String): Boolean = !isOpen() && declinedDevice.get() == device
+    /** Called on every resume: remembers that this window's discovery was interrupted by a suspend. */
+    fun noteResume() { if (isOpen()) slept.set(true) }
+    fun sleptDuringWindow(): Boolean = slept.get()
 }
 
 // Reconnection is delegated to BlueZ's kernel background auto-connect (a bonded watch is marked
@@ -357,7 +385,7 @@ class PebbleIntegration(
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer.
         //  - onConfirm: numeric-comparison decision (see onPairingConfirm) — block for the user on a
-        //    client-initiated window, auto-accept otherwise.
+        //    client-initiated window, auto-accept otherwise (but keep a just-declined pairing declined).
         //  - onPairingCode: display-only passkey path — just surface the code.
         pairingAgent.register(
             onPairingCode = { code ->
@@ -641,13 +669,15 @@ class PebbleIntegration(
         // while a pairing window is open (`stoandl watch pair`). A KNOWN/bonded classic watch needs no scan:
         // it's loaded from the DB and WatchManager reconnects it via the connector paging its fixed MAC
         // (no advertising, no discovery). Inquiry is power/airtime-heavy, so we never leave it running.
+        // Like the BLE scan it ignores the display (see startScanLoop) and pauses from a PrepareForSleep
+        // until the resume (hostSuspending).
         scope.launch {
             while (true) {
                 val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                 val classicConnected = libPebble.watches.value.any {
                     it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
                 }
-                if (btOn && pairingGate.isOpen() && !classicConnected && screenAllowsScans()) {
+                if (btOn && pairingGate.isOpen() && !classicConnected && !linkActivity.hostSuspending.value) {
                     if (!libPebble.isScanningClassic.value) {
                         log.info { "BT Classic: discovering (BR/EDR inquiry — pairing window open)" }
                         libPebble.startClassicScan()
@@ -708,8 +738,8 @@ class PebbleIntegration(
                         return@launch
                     }
                     if (!pairingInFlight.add(mac)) return@launch
-                    // Report the found watch in `stoandl pair`, same as the BLE flow.
-                    if (pairingState.get() == "pending:") {
+                    // Report the found watch in `stoandl watch pair`, same as the BLE flow.
+                    if (pairingSearching()) {
                         val label = d.displayName().takeIf { it.isNotBlank() } ?: "Pebble"
                         pairingState.set("pending:Found $label — pairing...")
                     }
@@ -733,6 +763,9 @@ class PebbleIntegration(
     }
 
     private fun startScanLoop() {
+        // A suspend inside a pairing window paused its discovery (see beforeSleep): remember it, so the
+        // window's PairStatus says why nothing turned up yet (PAIRING_PAUSED_SLEPT).
+        wakeups().onEach { pairingGate.noteResume() }.launchIn(scope)
         scope.launch {
             // Wait for watchBluetoothPowerState() to complete its initial GetManagedObjects() check
             // before the first scan attempt so btAdapterPowered reflects reality from the start.
@@ -742,6 +775,7 @@ class PebbleIntegration(
             // PPoG handshake starves the watch's GATT traffic → the handshake times out and the link is
             // torn down — observed as ~33s connect/drop(reason Local) flapping).
             val tick = 2.seconds
+            var displayOffNoted = false // this window's "discovering with the display off" line is logged
             while (true) {
                 // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
                 // (covers rfkill / airplane mode where GattServerManager may still report Enabled).
@@ -749,9 +783,11 @@ class PebbleIntegration(
                 val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
                 if (!btOn) {
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                    if (pairingGate.isOpen()) showPairingScanPause(PAIRING_PAUSED_BT_OFF)
                     combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
                         bt.enabled() && powered
                     }.first { it }
+                    showPairingScanPause(null)
                     delay(2.seconds) // brief settle so BlueZ is ready before we scan
                     continue
                 }
@@ -766,21 +802,52 @@ class PebbleIntegration(
                 val connectInFlight = devices.any {
                     it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
                 }
-                // …and only while the display is on (power.screen_gate): a scan makes the controller report
-                // every nearby advertiser, which on a phone keeping the watch link across suspend is a wake
-                // per report. Pairing needs the user at the screen anyway; the scan resumes if the window
-                // is still open when the display comes back.
-                val wantScan = pairingGate.isOpen() && !connectInFlight && screenAllowsScans()
+                // The display doesn't matter: a pairing window is always an explicit, time-limited
+                // request — `watch pair` over ssh with the display off included — and closes on success,
+                // decline, timeout or expiry, taking the scan with it. It doesn't keep the host awake,
+                // though: beforeSleep() stops the scan on every PrepareForSleep (logind waits for that
+                // while the sleep guard holds its delay lock), and hostSuspending keeps this tick from
+                // restarting it before the resume. A phone that suspends with the display off therefore
+                // only discovers while something keeps it awake; PairStatus says so after such a suspend
+                // (PAIRING_PAUSED_SLEPT).
+                val windowOpen = pairingGate.isOpen()
+                val wantScan = windowOpen && !connectInFlight && !linkActivity.hostSuspending.value
                 if (wantScan && !libPebble.isScanningBle.value) {
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
                 } else if (!wantScan && libPebble.isScanningBle.value) {
                     libPebble.stopBleScan()
                 }
+                if (windowOpen) {
+                    showPairingScanPause(devices.firstOrNull { it is ConnectingPebbleDevice }?.let {
+                        "$PAIRING_PAUSED_BLE_BUSY${it.displayName()} is connecting (a scan would disturb it)."
+                    } ?: PAIRING_PAUSED_SLEPT.takeIf { pairingGate.sleptDuringWindow() })
+                    if (!displayOffNoted && ScreenState.isOn() == false) {
+                        displayOffNoted = true
+                        log.info {
+                            "Pairing window open with the display off — discovering anyway: it's an explicit, " +
+                                "time-limited pairing request"
+                        }
+                    }
+                } else {
+                    displayOffNoted = false
+                }
                 delay(tick)
             }
         }
     }
+
+    /** Say in PairStatus why the open pairing window can't discover ([note], a `pending:` string), or
+     *  withdraw such a note with null. Only replaces the bare `pending:` or an earlier note — never a
+     *  found watch, a code to confirm or a result — so it can't clobber real progress. */
+    private fun showPairingScanPause(note: String?) {
+        pairingState.updateAndGet { cur -> if (pairingSearching(cur)) (note ?: "pending:") else cur }
+    }
+
+    /** The pairing window is still searching: nothing found yet, possibly with a scan-pause note. */
+    private fun pairingSearching(state: String = pairingState.get()): Boolean =
+        state == "pending:" || state == PAIRING_PAUSED_BT_OFF || state == PAIRING_PAUSED_SLEPT ||
+            state.startsWith(PAIRING_PAUSED_BLE_BUSY)
 
     /**
      * Diagnostic: warn (once) when an *external* process is holding a *sustained* Bluetooth discovery
@@ -833,11 +900,11 @@ class PebbleIntegration(
                     delay(DISCOVERY_WARN_INTERVAL)
                     val devices = libPebble.watches.value
                     val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
-                    // Deep-sleep hosts (power.screen_gate): a discovery session left open while the display
-                    // is off makes the controller report every advertiser nearby — with the watch link kept
-                    // across suspend, each report wakes the phone. We can't stop another client's scan;
-                    // say so once per display-off period.
-                    if (config.powerScreenGate && ScreenState.isOn() == false) {
+                    // Deep-sleep hosts: a discovery session left open while the display is off makes the
+                    // controller report every advertiser nearby — with the watch link kept across suspend,
+                    // each report wakes the phone. We can't stop another client's scan; say so once per
+                    // display-off period. (Without a readable DRM display state isOn() is null: no warning.)
+                    if (ScreenState.isOn() == false) {
                         if (!warnedScreenOff && btOn && externalDiscoveryActive()) {
                             warnedScreenOff = true
                             log.warn {
@@ -1092,8 +1159,15 @@ class PebbleIntegration(
     /** BlueZ numeric-comparison callback (runs on the agent's dispatch thread). On a client-initiated
      *  pairing window (Pair/Repair) we surface the code as `confirm:<code>` and block until the user
      *  accepts/declines via [StoandlControl.ConfirmPairing] (or the timeout declines); otherwise
-     *  (notification re-pair / external pairing) we auto-accept and just surface the code for display. */
-    private fun onPairingConfirm(code: String): Boolean {
+     *  (notification re-pair / external pairing) we auto-accept and just surface the code for display.
+     *  A declined or timed-out answer stays final: [refusePairing] stops libpebble3 from retrying that
+     *  watch, and a retry already under way is refused ([PairingGate.refusesRetry]), so the agent never
+     *  overrides what the CLI/GUI answered. */
+    private fun onPairingConfirm(device: String, code: String): Boolean {
+        if (pairingGate.refusesRetry(device)) {
+            log.info { "Declining a retried pairing with $device — it was declined in the last pairing window (run 'stoandl watch pair' to pair it)" }
+            return false
+        }
         if (!(pairingGate.isOpen() && requireConfirm.get())) {
             if (pairingGate.isOpen()) pairingState.set("pending:Confirm code $code on the watch")
             return true
@@ -1101,9 +1175,36 @@ class PebbleIntegration(
         pairingState.set("confirm:$code")
         return when (pairingConfirmation.awaitDecision(code, PAIRING_CONFIRM_TIMEOUT_MS)) {
             PairingConfirmation.Decision.ACCEPT -> { pairingState.set("pending:Completing pairing…"); true }
-            PairingConfirmation.Decision.DECLINE -> { pairingResult.get()?.complete("error:Pairing declined"); false }
-            PairingConfirmation.Decision.TIMEOUT -> { pairingResult.get()?.complete("timeout:Pairing confirmation timed out"); false }
+            PairingConfirmation.Decision.DECLINE -> {
+                refusePairing(device)
+                pairingResult.get()?.complete("error:Pairing declined"); false
+            }
+            PairingConfirmation.Decision.TIMEOUT -> {
+                refusePairing(device)
+                pairingResult.get()?.complete("timeout:Pairing confirmation timed out"); false
+            }
         }
+    }
+
+    /** The user declined (or let time out) the pairing with BlueZ [device]. Left alone, libpebble3 would
+     *  retry it for as long as the daemon runs — a pairing request on the watch every few seconds: the
+     *  window's requestConnection set the watch's connection goal, a failed pairing doesn't clear it
+     *  (WatchManager's upstream "if only a scanresult, set goal = false" TODO), and startAutoConnect's
+     *  give-up only sees watches that aren't connecting. So drop that goal (a watch known only from the
+     *  scan is then pruned by the next scan), and remember the path so a retry already under way is
+     *  refused too ([PairingGate.refusesRetry]). */
+    private fun refusePairing(device: String) {
+        pairingGate.markDeclined(device)
+        val watch = libPebble.watches.value.firstOrNull { d ->
+            when (val id = d.identifier) {
+                is PebbleBleIdentifier -> bluezObjectPath(id.asString) == device
+                is PebbleBtClassicIdentifier ->
+                    device.endsWith("/dev_" + id.macAddress.replace(':', '_'), ignoreCase = true)
+                else -> false
+            }
+        } ?: return
+        log.info { "Pairing with ${watch.displayName()} declined — not retrying it (run 'stoandl watch pair' to pair it after all)" }
+        watchConnector.requestDisconnection(watch.identifier)
     }
 
     /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and
@@ -1418,9 +1519,6 @@ class PebbleIntegration(
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
 
-    /** Pairing-window scans run only while the display is on (`power.screen_gate`); unknown counts as on. */
-    private fun screenAllowsScans(): Boolean = !config.powerScreenGate || ScreenState.isOn() != false
-
     /**
      * Datalog send policy (DataLogging SetSendEnabled, 0x8B). With `power.pause_datalog_screen_off` the
      * watch's datalog sends — health data and custom-app datalog — are paused while the display is off
@@ -1449,8 +1547,8 @@ class PebbleIntegration(
     /** SleepGuard hook, run first on every PrepareForSleep(true):
      *  - stop our own discovery (a pairing-window BLE scan / BR/EDR inquiry). The kernel pauses discovery
      *    for the suspend but resumes it on wake, and with the link kept across suspend every advertising
-     *    report would be a wake; the scan loop restarts it only if the window is still open and the
-     *    display is on (the screen gate's 2 s tick could otherwise race a suspend right after display-off);
+     *    report would be a wake; the scan loops restart it only after the resume (they skip while
+     *    `hostSuspending`, so their 2 s tick can't race the suspend) and only if the window is still open;
      *  - settle the datalog state (a display that just went dark may not have been sampled yet); the packet
      *    then drains like any other pending PPoG traffic. */
     private suspend fun beforeSleep() {
@@ -1983,7 +2081,7 @@ class PebbleIntegration(
                 if (pairingGate.isOpen()) {
                     val bleId = device.identifier as? PebbleBleIdentifier
                     val likelyUnbonded = bleId == null || bondCache[bleId.asString] != true
-                    if (likelyUnbonded && pairingState.get() == "pending:") {
+                    if (likelyUnbonded && pairingSearching()) {
                         val label = device.displayName().takeIf { it.isNotBlank() } ?: "watch"
                         pairingState.set("pending:Found $label — pairing...")
                     }
@@ -3573,7 +3671,9 @@ private class StoandlControlImpl(
             .map { it.asString }
             .toSet()
         pairingGate.open()
-        pairingState.set("pending:")
+        // With Bluetooth off, say so from the start: the scan loop is parked until it comes back (and then
+        // withdraws the note).
+        pairingState.set(if (btOn()) "pending:" else PAIRING_PAUSED_BT_OFF)
         // Client-initiated pairing → require an explicit ConfirmPairing before bonding (see onPairingConfirm).
         requireConfirm.set(true)
         scope.launch {

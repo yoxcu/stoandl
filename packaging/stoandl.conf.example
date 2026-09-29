@@ -287,8 +287,9 @@ battery.retention_days = 90
 # Discover, pair and connect classic-era watches over a BR/EDR inquiry. On by default (experimental) —
 # it costs nothing when no classic watch is paired (the inquiry only runs while a pairing window is
 # open; a bonded watch reconnects by paging its fixed address). Set to false to disable. To pair a NEW
-# watch, run `stoandl watch pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH — same
-# flow as BLE; the RFCOMM channel is resolved via SDP. A bonded watch then reconnects on its own.
+# watch, run `stoandl watch pair` (opens a pairing window) and confirm the 6-digit code ON THE WATCH (and
+# in the CLI on a terminal) — same flow as BLE; the RFCOMM channel is resolved via SDP. A bonded watch
+# then reconnects on its own.
 classic.discover = true
 #
 # If auto-pairing doesn't yield a working BR/EDR bond on your dual-mode watch, pair it once by hand:
@@ -307,14 +308,12 @@ classic.discover = true
 connection.autoswitch = true
 
 # ── Phones that deep-sleep (suspend whenever the screen is off) ───────────────────────────────────
-# See docs/deep-sleep.md. Harmless on a desktop; the first three are on by default.
+# See docs/deep-sleep.md. Harmless on a desktop; the first two are on by default.
 #
 # Hold a logind delay lock so a suspend waits (at most power.sleep_guard_max_ms) until watch traffic in
 # flight — typically the notification a push wake just produced — has reached the watch.
 power.sleep_guard = true
 power.sleep_guard_max_ms = 3000
-# Run the pairing-window BLE scan / BR/EDR inquiry only while the display is on.
-power.screen_gate = true
 # Pause the watch's datalog (health data, flushed every 15 min) while the display is off; it arrives
 # when the phone is used again. Saves ~4 wakes/h on a phone that keeps the watch link across suspend.
 power.pause_datalog_screen_off = false

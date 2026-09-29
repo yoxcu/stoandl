@@ -67,7 +67,6 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
 | `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). |
 | `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). |
-| `power.screen_gate` | bool | `true` | Run the pairing-window BLE scan / BR/EDR inquiry only while the display is on (DRM DPMS); warn when another app runs discovery with the display off. |
 | `power.pause_datalog_screen_off` | bool | `false` | Pause the watch's datalog sends (health data, app datalog) while the display is off; resumed when it comes on. |
 | `ble.conn_params` | set | _(off)_ | `min_ms,max_ms,latency,supervision_ms` the watch keeps while idle (e.g. `500,520,0,6000`); off keeps the upstream "phone manages" write. Needs `MaxConnectionInterval` in BlueZ's `main.conf` — read [deep-sleep.md](deep-sleep.md#connection-parameters--read-this-before-turning-them-on). Startup-only. |
 | `ble.conn_params_fast` | set | _(off)_ | Optional fast set during the connect handshake and bulk transfers (e.g. `15,15,0,6000`). Only with the kernel "K5" fix — see deep-sleep.md. |
@@ -91,7 +90,8 @@ never use one:
 classic.discover = false           # turn off classic-era Pebble discovery (on by default)
 ```
 
-Just `stoandl watch pair` (confirm the 6-digit code on the watch; the host auto-confirms). A BR/EDR
+Just `stoandl watch pair` (confirm the 6-digit code on the watch and, on a terminal, answer `y` to the
+same code in the CLI; without a terminal or with `--yes` the CLI accepts it by itself). A BR/EDR
 inquiry runs only while that pairing window is open — the rest of the time the radio is quiet. A
 bonded watch reconnects on its own afterwards: stoandl pages its fixed address (no advertising), so
 it survives airplane mode / out-of-range. There's no kernel-side background auto-connect for BR/EDR

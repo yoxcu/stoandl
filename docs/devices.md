@@ -74,7 +74,8 @@ Just pair as usual:
 
 ```sh
 stoandl watch pair                 # opens a pairing window; inquires for BLE and classic watches alike
-# then confirm the matching 6-digit code ON THE WATCH — stoandl auto-confirms on the host side
+# then confirm the matching 6-digit code ON THE WATCH, and answer y when the CLI shows the same code
+# (without a terminal, e.g. `ssh host stoandl watch pair`, or with --yes the CLI accepts it by itself)
 ```
 
 With `classic.discover` on, a known watch reconnects on its own afterwards: stoandl pages its fixed

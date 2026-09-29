@@ -74,7 +74,8 @@ state ← `libPebble.watches`; firmware ← `FirmwareControl.statusFlow()`'s inn
 The only other object stoandl exports on any bus is an internal **BlueZ pairing agent**
 (`org.bluez.Agent1` at `/io/stoandl/agent`, on the **system** bus, from
 [`BluezPairingAgent.kt`](../src/main/kotlin/de/yoxcu/stoandl/pebble/BluezPairingAgent.kt)). It is
-registered with `org.bluez.AgentManager1` for headless auto-confirm pairing and is **not** part of
+registered with `org.bluez.AgentManager1` for headless pairing (it answers the numeric comparison:
+through `ConfirmPairing` on a `Pair`/`Repair` window, by itself otherwise) and is **not** part of
 the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
@@ -125,10 +126,10 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 | `HeartbeatInfo` | `(s) → s` | Header of the newest captured analytics heartbeat for `watch`. `ok:watchTs\trx\tsize\tversion\tbuildId\tfw\tknown\tmetricCount` (`known` 1/0 — see below); `unknown:<label>`; `notready:`. | `watch battery heartbeat` |
 | `HeartbeatMetrics` | `(s) → as` | **Every** metric of that newest heartbeat, one `name\tvalue\ttext\traw` record each (92 in the current firmware layout). Empty when the watch has no heartbeat or its layout is unverified. | `watch battery heartbeat --all` |
 | `Connect` | `(s) → s` | Connect/switch to a known watch by name (exact-then-unique-substring); hands it the single connection slot. | `watch connect <name>` |
-| `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. | `watch pair` |
-| `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. | (polled by `watch pair`/`watch repair`; the CLI prompts y/N on `confirm:`) |
-| `ConfirmPairing` | `(b) → s` | Accept/decline the `confirm:<code>` numeric comparison (verify it matches the watch first). `ok:accepted`/`ok:declined`, or `error:No pairing confirmation pending`. Gates client-initiated `Pair`/`Repair` only; the notification re-pair path auto-accepts. | (CLI y/N prompt during `watch pair`/`repair`) |
-| `Repair` | `(s) → s` | Forget one known watch (bond + Trusted intent) and reopen the pairing window; multi-watch-safe. Poll `PairStatus`. | `watch repair <name>` |
+| `Pair` | `() → s` | Open a ~2-min pairing window; returns `ok:` immediately, poll `PairStatus`. The window discovers whether or not the display is on (it is an explicit request), but only while the host is awake: discovery stops for every suspend. | `watch pair [--yes]` |
+| `PairStatus` | `() → s` | Pairing outcome: `pending:<msg>` / `confirm:<code>` (numeric comparison awaiting `ConfirmPairing`) / `ok:` / `error:` / `timeout:`. `pending:` messages are progress (`Found <watch> — pairing...`, `Confirm code <NNNNNN> on the watch`) or why the window can't discover right now: `Discovery paused — Bluetooth is off. Turn it on to pair.` / `BLE scan paused — <watch> is connecting (a scan would disturb it).` / `Searching again — the phone slept, which pauses discovery. Keep it awake (e.g. the screen on) until the watch is found.` — show them as they change. | (polled by `watch pair`/`watch repair`, which print each new `pending:` message; on `confirm:` the CLI asks y/N when stdin is a terminal or holds a piped answer, and accepts by itself with `--yes` or with nothing to read an answer from) |
+| `ConfirmPairing` | `(b) → s` | Accept/decline the `confirm:<code>` numeric comparison (verify it matches the watch first). `ok:accepted`/`ok:declined`, or `error:No pairing confirmation pending`. Gates client-initiated `Pair`/`Repair` only; the notification re-pair path auto-accepts. A declined or timed-out pairing ends the window and isn't retried: the daemon drops libpebble3's connection request for that watch (and refuses a retry already under way) until the next pairing window. | (CLI y/N prompt during `watch pair`/`repair`; skipped with `--yes` or when stdin is neither a terminal nor holds an answer) |
+| `Repair` | `(s) → s` | Forget one known watch (bond + Trusted intent) and reopen the pairing window; multi-watch-safe. Poll `PairStatus`. | `watch repair <name> [--yes]` |
 | `Unpair` | `(s) → s` | Forget watch(es): empty = blanket (all), name = single (exact-then-substring). libpebble `forget()` + BlueZ `RemoveDevice`. | `watch unpair [name]` |
 | `FindWatch` | `() → b` | Ring the watch continuously (a "Find My Watch" call screen) until a button is pressed. `false` = not ready. | `watch find` |
 | `WatchDetails` | `() → s` | Structured details for the connected watch: `ok:name\tcode\tmodel\tplatform\ttransport\tfirmware\tserial\tbattery\tlastSync`, or `notready:`. | *(GUI; no standalone verb — see `support`/`watch list`)* |
@@ -405,7 +406,7 @@ states:
 
 | Operation | Start method | Polled method | Cadence | Timeout | Terminal states |
 |---|---|---|---|---|---|
-| **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues; `confirm:<code>` → answer with `ConfirmPairing(b)` (≤60 s or it declines) |
+| **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues (progress, or a `Discovery paused — …`/`BLE scan paused — …`/`Searching again — the phone slept …` reason); `confirm:<code>` → answer with `ConfirmPairing(b)` (≤60 s or it declines) |
 | **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure; `prf:` continues (restart the activity tracking and the timeout: the flash resumes from recovery after a reconnect) |
 | **Language install** | `InstallLanguage(query)` / `SideloadLanguage(path)` | `LanguageStatus()` | 0.6 s | 180 s | `done:` = success; `failed:` = failure; post-activity `notready:` = disconnected |
 

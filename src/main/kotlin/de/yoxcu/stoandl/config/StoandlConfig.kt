@@ -231,10 +231,6 @@ data class StoandlConfig(
     /** Longest a suspend is held for pending watch traffic, in ms (logind's own cap is
      *  `InhibitDelayMaxSec`, 5 s by default). */
     val powerSleepGuardMaxMs: Long,
-    /** Run the pairing-window BLE scan / BR/EDR inquiry only while the display is on (DRM DPMS). A scan
-     *  makes the controller report every nearby advertiser — with the link kept across suspend that is a
-     *  wake per report. On by default; no effect on machines without a readable DRM display state. */
-    val powerScreenGate: Boolean,
     /** Pause the watch's datalog sends (health data, app datalog) while the display is off, resume when
      *  it comes on (DataLogging SetSendEnabled). Saves the ~4 watch-initiated wakes per hour of the
      *  15-minute datalog flush on a phone that keeps the link across suspend; health data then arrives
@@ -347,7 +343,6 @@ data class StoandlConfig(
             bleConnParamsFast = null,
             powerSleepGuard = true,
             powerSleepGuardMaxMs = DEFAULT_SLEEP_GUARD_MAX_MS,
-            powerScreenGate = true,
             powerPauseDatalogScreenOff = false,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
@@ -454,7 +449,6 @@ data class StoandlConfig(
                 powerSleepGuard = map["power.sleep_guard"]?.let { parseBool(it) } ?: true,
                 powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 4500L) ?: DEFAULT_SLEEP_GUARD_MAX_MS,
-                powerScreenGate = map["power.screen_gate"]?.let { parseBool(it) } ?: true,
                 powerPauseDatalogScreenOff = parseBool(map["power.pause_datalog_screen_off"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
@@ -493,7 +487,6 @@ data class StoandlConfig(
                     (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
                     (cfg.bleConnParams?.let { ", bleConnParams=$it" + (cfg.bleConnParamsFast?.let { f -> " (fast $f)" } ?: "") } ?: "") +
                     (if (!cfg.powerSleepGuard) ", sleepGuard=off" else if (cfg.powerSleepGuardMaxMs != DEFAULT_SLEEP_GUARD_MAX_MS) ", sleepGuardMaxMs=${cfg.powerSleepGuardMaxMs}" else "") +
-                    (if (!cfg.powerScreenGate) ", screenGate=off" else "") +
                     (if (cfg.powerPauseDatalogScreenOff) ", pauseDatalogScreenOff=true" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
                     (if (!cfg.alertsEnabled) ", alerts=off"

@@ -132,21 +132,30 @@ interface StoandlControl : DBusInterface {
     fun RemoveCalendarSource(id: String): String
 
     /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
-     *  `ok:` immediately; poll [PairStatus] for the outcome. */
+     *  `ok:` immediately; poll [PairStatus] for the outcome. The window discovers whether or not the
+     *  display is on (it is an explicit request), but only while the host is awake: discovery stops for
+     *  every suspend. */
     fun Pair(): String
 
-    /** Return the current pairing status: `pending:<msg>`, `ok:<msg>`, `error:<msg>`, or
-     *  `timeout:<msg>`. While pairing, once BlueZ requests numeric-comparison confirmation the message
-     *  becomes `pending:Confirm code <NNNNNN> on the watch` — show it so the user can verify it matches
-     *  the code on the watch (the phone auto-accepts; the watch-side confirmation is the MITM gate).
+    /** Return the current pairing status: `pending:<msg>`, `confirm:<code>`, `ok:<msg>`, `error:<msg>`,
+     *  or `timeout:<msg>`. `pending:` messages report progress (`Found <watch> — pairing...`, `Confirm
+     *  code <NNNNNN> on the watch` when only the watch has to confirm) or why the window can't discover
+     *  right now (`Discovery paused — Bluetooth is off…`, `BLE scan paused — <watch> is connecting…`,
+     *  `Searching again — the phone slept…` after a suspend inside the window);
+     *  show them as they change. Once BlueZ requests numeric-comparison confirmation on a [Pair]/[Repair]
+     *  window it becomes `confirm:<NNNNNN>`: answer with [ConfirmPairing] after checking the code matches
+     *  the watch (the user also confirms it on the watch, which is the MITM check).
      *  Returns `error:No pairing in progress` if [Pair] was never called. */
     fun PairStatus(): String
 
     /** Answer the numeric-comparison confirmation that [PairStatus] is surfacing as `confirm:<code>`:
      *  [accept] true to bond, false to reject. The phone-side confirmation gates client-initiated
-     *  pairing ([Pair]/[Repair]); the user verifies the code matches the watch first. Returns
-     *  `ok:accepted`/`ok:declined`, or `error:No pairing confirmation pending` (none outstanding, or it
-     *  already timed out). */
+     *  pairing ([Pair]/[Repair]); the user verifies the code matches the watch first. A declined (or
+     *  timed-out) pairing ends the window and isn't retried: the daemon drops its connection request
+     *  for that watch (and refuses a retry already under way) until the next pairing window. The CLI
+     *  asks when its stdin is a terminal (or already holds a piped answer) and accepts by itself with
+     *  `--yes` or with nothing to read an answer from. Returns `ok:accepted`/`ok:declined`, or
+     *  `error:No pairing confirmation pending` (none outstanding, or it already timed out). */
     fun ConfirmPairing(accept: Boolean): String
 
     /** Forget paired watch(es) on this host: libpebble3 forget() (stops auto-connect) plus a BlueZ
