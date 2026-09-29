@@ -680,6 +680,11 @@ Files are written under `~/.config/stoandl/health/` (honouring `XDG_CONFIG_HOME`
 Units are normalised for consumers: **distance in metres, energy in kcal, durations in minutes**;
 timestamps are unix epoch seconds. Both halves are local-only (no egress), so they're **on by default**.
 
+> **Session distances written by earlier versions are 100× too small.** `activities.ndjson` divided the
+> session's `distance_m` by 100 (the watch sends metres, not centimetres). Rows inside the
+> `health.export_days` window are rewritten correctly at the next export; older rows keep the wrong
+> value (multiply by 100). `daily.ndjson` was always right.
+
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `health.sync` | `true` | Request a health sync from the watch on every connect (incremental — the first run, with an empty DB, is a full pull). Costs a little watch BLE/battery. |

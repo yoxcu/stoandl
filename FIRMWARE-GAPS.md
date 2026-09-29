@@ -78,6 +78,9 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   stored as `distanceCm`, and `HealthExporter.kt:120` divides by 100. Change that line to
   `put("distance_m", s.distanceCm)`. Line `:165` is minute-level and really is cm, so it is fine. Past NDJSON
   rows stay wrong: overlays are consume-once.
+  - **Done, to be tested (TESTING 5.219d).** Sessions export metres now. The DB rows were always right, so
+    the next export rewrites the rows inside `health.export_days`; older rows keep the 1/100 value, and
+    `docs/configuration.md` says so.
 - **Sleep card.** Cherry-pick `7de45f8a` then `42cbc5a4`. Fork `HealthStatsSync.kt:107-113` writes epoch
   seconds into the watch's bedtime/wake fields, and `:155-158` writes zero typicals.
 - **HW check.** After moving the watch to 4.38.2, see whether the next sync backfills the 4.38.0/4.38.1 gap

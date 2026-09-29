@@ -117,7 +117,9 @@ class HealthExporter(
                 put("type", (OverlayType.fromValue(s.type)?.name ?: s.type.toString()))
                 put("duration_min", (s.duration / 60.0).roundToInt())
                 put("steps", s.steps)
-                put("distance_m", (s.distanceCm / 100.0).roundToInt())
+                // Metres despite the name: the overlay record carries distance_meters, which libpebble3
+                // stores in its distanceCm column (minute records really are cm, see buildDay).
+                put("distance_m", s.distanceCm)
                 put("active_kcal", s.activeKiloCalories)
             }
             activities[s.startTime.toString()] = obj

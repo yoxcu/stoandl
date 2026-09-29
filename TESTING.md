@@ -921,6 +921,7 @@ enough to have data; daemon running.
 | 5.216 | Samples opt-in | set `health.export_samples = true`, restart, sync | `samples/<date>.ndjson` files appear with minute-level `{ts,steps,hr,hr_zone}` rows (steps>0 or hr>0). Off by default → no such files. |
 | 5.217 | Toggles off | set `health.sync = false` / `health.export = false`, restart | Log notes each disabled; no health requests on connect / no files written, respectively. |
 | 5.218 | Dump | `stoandl health dump daily` / `dump activities` | Prints the raw NDJSON. |
+| 5.219d | Session distance in metres ⚠️ UNVERIFIED | do a tracked walk of known length (e.g. 1 km), sync, `stoandl health activities` | `DIST` shows about the real distance (≈1.0 km), not 1/100 of it; the `activities.ndjson` row has `distance_m` ≈ 1000. Older sessions inside `health.export_days` are corrected by the same export. |
 | 5.219 | After the libpebble3 bump (e6b5138e) ⚠️ UNVERIFIED | do a tracked walk/run after upgrading, sync, compare `stoandl health activities` against the watch's own activity summary | The new session's `KCAL` matches the watch's **active** calories (upstream `90b9caa3` swapped the overlay's active/resting order). Sessions ingested *before* the upgrade keep the swapped value until they leave the `health.export_days` window. On fw 4.38.0/4.38.1, `stoandl health sync` now also parses v14 minute records (earlier syncs dropped them after the ACK). |
 
 ---
