@@ -64,8 +64,9 @@ dependencies {
     // Test-only. The daemon's behaviour needs a watch and a session bus, so there is no unit-test
     // suite for it; what IS unit-testable is the settings surface — the GUI config schema, its
     // validation, and its agreement with the config parser. That logic can silently corrupt
-    // stoandl.conf or persist a value the daemon then ignores, so it gets tests. `gradle test` is not
-    // part of `shadowJar`, so nothing ships.
+    // stoandl.conf or persist a value the daemon then ignores, so it gets tests. So does the firmware
+    // downgrade handoff (driven through fake watches), whose hardware test risks the watch. `gradle
+    // test` is not part of `shadowJar`, so nothing ships.
     testImplementation(kotlin("test"))
 }
 

@@ -866,6 +866,7 @@ private fun printFirmwareStatusOnce(resp: String) {
         "waiting" -> "Starting firmware transfer…"
         "inprogress" -> "Flashing: $body%"
         "reboot" -> "Transfer complete — watch rebooting to apply"
+        "prf" -> "Downgrade to $body: the watch is rebooting into recovery; stoandl flashes it there once it reconnects"
         "failed" -> "Last firmware update failed: ${body.ifEmpty { "unknown error" }}"
         "notready" -> body.ifEmpty { "No watch connected" }
         else -> resp
@@ -874,9 +875,11 @@ private fun printFirmwareStatusOnce(resp: String) {
 }
 
 /** Polls FirmwareStatus() while a flash runs, rendering a progress bar in place. Treats `reboot:`
- *  (or a disconnect after activity) as success and `failed:` as failure. */
+ *  (or a disconnect after activity) as success and `failed:` as failure. A downgrade (`prf:`) reboots
+ *  into recovery first and is flashed from there, so polling follows it across that reconnect. */
 private fun pollFirmwareStatus(control: StoandlControl) {
-    val startMs = System.currentTimeMillis()
+    var startMs = System.currentTimeMillis()
+    var viaRecovery = false
     var sawActivity = false
     var barShown = false
     var lastDownloading = ""
@@ -901,6 +904,13 @@ private fun pollFirmwareStatus(control: StoandlControl) {
                 if (barShown) { renderProgressBar("Flashing", 100); println() }
                 println("Done — watch rebooting to apply the firmware.")
                 return
+            }
+            "prf" -> if (!viaRecovery) {
+                viaRecovery = true
+                println("Downgrade to $body: rebooting the watch into recovery; stoandl flashes it there once it reconnects…")
+                // The reboot's disconnect doesn't end this flash; the one from recovery does.
+                sawActivity = false
+                startMs = System.currentTimeMillis()
             }
             "failed" -> {
                 if (barShown) println()

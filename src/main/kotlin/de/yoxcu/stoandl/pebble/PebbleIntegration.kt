@@ -507,6 +507,8 @@ class PebbleIntegration(
         // (Constructed above; started here, after libPebble is up.) Managed live via `stoandl ext`.
         extensionManager.start()
         startFirmwareNotifier()
+        // A downgrade on a dual-slot watch reboots into recovery first; finish it from there.
+        firmwareControl.resumeDowngradesInRecovery()
         startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. libpebble3 emits
         // them on Datalogging.thirdPartyEvents; without a subscriber they're simply dropped (as before).
@@ -1949,7 +1951,8 @@ class PebbleIntegration(
 
     private fun noteWatchOp(status: String) {
         if (status.startsWith("downloading:") || status.startsWith("waiting:") ||
-            status.startsWith("inprogress:") || status.startsWith("reboot:") || status.startsWith("installing:")) {
+            status.startsWith("inprogress:") || status.startsWith("reboot:") || status.startsWith("prf:") ||
+            status.startsWith("installing:")) {
             lastWatchOpMs = System.currentTimeMillis()
         }
     }

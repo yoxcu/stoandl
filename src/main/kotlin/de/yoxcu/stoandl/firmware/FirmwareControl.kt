@@ -8,6 +8,7 @@ import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
+import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
@@ -22,7 +23,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.io.files.Path
 import java.io.File
@@ -88,6 +91,20 @@ class FirmwareControl(
     // concurrent network checks (the throttle's read-then-write is otherwise racy).
     private val notifying = AtomicBoolean(false)
 
+    /** The `.pbz` behind a watch's most recent flash, so a downgrade through recovery can be finished. */
+    private data class Flash(val serial: String, val pbz: String)
+    private val lastFlash = AtomicReference<Flash?>(null)
+
+    /**
+     * A downgrade waiting for its watch to come back in recovery (PRF). A dual-slot watch can't
+     * downgrade from normal firmware, so libpebble3's `sideloadFirmware()` (upstream 2461f781) reboots
+     * it into PRF without transferring anything; [resumeDowngradesInRecovery] flashes the same `.pbz`
+     * once it reconnects there. Meanwhile [update] refuses: in PRF [needsUpdate] offers the latest
+     * release, and one tap would undo the downgrade.
+     */
+    private data class PendingDowngrade(val serial: String, val pbz: String, val version: String)
+    private val pendingDowngrade = AtomicReference<PendingDowngrade?>(null)
+
     /** Outcome of an online firmware check, shared by [check]/[update]/[maybeNotify]. */
     private sealed class CheckResult {
         /** The source for this watch is off; [hint] names the config key to enable it. */
@@ -118,7 +135,9 @@ class FirmwareControl(
         val dev = device() ?: return "notready:No watch connected"
         if (!File(path).isFile) return "error:No such file: $path"
         return try {
-            dev.sideloadFirmware(Path(path))
+            // An explicit sideload replaces a pending downgrade: the user has chosen what to flash.
+            pendingDowngrade.set(null)
+            flash(dev, path)
             "ok:Flashing ${File(path).name}"
         } catch (e: Exception) {
             log.warn(e) { "sideloadFirmware($path) failed" }
@@ -126,19 +145,26 @@ class FirmwareControl(
         }
     }
 
+    /** Every flash goes through here, so a downgrade that ends in a PRF reboot knows its `.pbz`. */
+    private fun flash(dev: CommonConnectedDevice, pbz: String) {
+        lastFlash.set(Flash(dev.serial, pbz))
+        dev.sideloadFirmware(Path(pbz))
+    }
+
     /**
      * Current firmware-update state of the connected watch, as a status-prefixed string:
      * `idle:`, `downloading:<asset>`, `waiting:`, `inprogress:<percent>`, `reboot:` (success, watch
-     * rebooting), `failed:<reason>`, or `notready:` (no watch).
+     * rebooting), `prf:<version>` (a downgrade: the watch is rebooting into recovery, nothing flashed
+     * yet; [resumeDowngradesInRecovery] flashes it there), `failed:<reason>`, or `notready:` (no watch).
      */
     fun status(): String {
         val dev = device() ?: return "notready:No watch connected"
-        return statusString(dev.firmwareUpdateState)
+        return statusString(dev.firmwareUpdateState, dev.watchInfo.runningFwVersion)
     }
 
     /** Map a [FirmwareUpdateStatus] to the status-prefixed string (shared by [status] and [statusFlow]).
      *  For `InProgress` it samples the current percentage; [statusFlow] re-emits live as that ticks. */
-    private fun statusString(st: FirmwareUpdateStatus): String = when (st) {
+    private fun statusString(st: FirmwareUpdateStatus, running: FirmwareVersion): String = when (st) {
         is FirmwareUpdateStatus.NotInProgress.Idle ->
             st.lastFailure?.let { "failed:${it.message ?: it::class.simpleName ?: "firmware update failed"}" }
                 ?: preparing?.let { "downloading:$it" }
@@ -146,7 +172,54 @@ class FirmwareControl(
         is FirmwareUpdateStatus.NotInProgress.ErrorStarting -> "failed:${st.error}"
         is FirmwareUpdateStatus.WaitingToStart -> "waiting:"
         is FirmwareUpdateStatus.InProgress -> "inprogress:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
-        is FirmwareUpdateStatus.WaitingForReboot -> "reboot:"
+        is FirmwareUpdateStatus.WaitingForReboot ->
+            if (isDowngradeViaRecovery(st.update.version, running)) "prf:${st.update.version.stringVersion}" else "reboot:"
+    }
+
+    /**
+     * Whether flashing [target] over [running] goes through recovery: libpebble3's internal
+     * `needsPrfToDowngrade` for a sideload, which always allows downgrades. `WaitingForReboot` then
+     * means the watch is rebooting into PRF with nothing flashed, not that the flash succeeded.
+     */
+    private fun isDowngradeViaRecovery(target: FirmwareVersion, running: FirmwareVersion): Boolean =
+        running.isDualSlot && !running.isRecovery &&
+            compareValuesBy(target, running, { it.major }, { it.minor }, { it.patch }) < 0
+
+    /**
+     * Finish downgrades that libpebble3 routes through recovery (see [pendingDowngrade]): note one when
+     * a flash ends in that PRF reboot, and flash the same `.pbz` once the watch reconnects in PRF. A
+     * watch that comes back on normal firmware instead left recovery without it, so the downgrade is
+     * dropped rather than applied at some later, unrelated PRF visit. Call once libPebble is up.
+     */
+    fun resumeDowngradesInRecovery() {
+        val lp = libPebbleRef.get() ?: return
+        lp.watches
+            .onEach { devs -> devs.filterIsInstance<CommonConnectedDevice>().forEach(::followDowngrade) }
+            .launchIn(scope)
+    }
+
+    private fun followDowngrade(dev: CommonConnectedDevice) {
+        val st = dev.firmwareUpdateState
+        val pending = pendingDowngrade.get()
+        when {
+            st is FirmwareUpdateStatus.WaitingForReboot &&
+                isDowngradeViaRecovery(st.update.version, dev.watchInfo.runningFwVersion) -> {
+                val flash = lastFlash.get()?.takeIf { it.serial == dev.serial } ?: return
+                val next = PendingDowngrade(dev.serial, flash.pbz, st.update.version.stringVersion)
+                if (pendingDowngrade.getAndSet(next) != next) {
+                    log.info { "Downgrade to ${next.version}: the watch is rebooting into recovery; flashing ${File(next.pbz).name} there once it reconnects" }
+                }
+            }
+            pending == null || pending.serial != dev.serial -> Unit
+            dev is ConnectedPebbleDeviceInRecovery -> {
+                if (st is FirmwareUpdateStatus.NotInProgress && pendingDowngrade.compareAndSet(pending, null)) {
+                    log.info { "Watch is in recovery: flashing the pending downgrade to ${pending.version}" }
+                    flash(dev, pending.pbz)
+                }
+            }
+            st !is FirmwareUpdateStatus.WaitingForReboot && pendingDowngrade.compareAndSet(pending, null) ->
+                log.warn { "Watch came back on normal firmware without the downgrade to ${pending.version}; dropped it (sideload the .pbz again to retry)" }
+        }
     }
 
     /**
@@ -165,11 +238,11 @@ class FirmwareControl(
             .map { devs -> devs.filterIsInstance<CommonConnectedDevice>().firstOrNull() }
             .distinctUntilChanged { a, b -> a === b }
             .flatMapLatest { dev ->
-                when (val st = dev?.firmwareUpdateState) {
-                    null -> flowOf("notready:")
+                if (dev == null) return@flatMapLatest flowOf("notready:")
+                when (val st = dev.firmwareUpdateState) {
                     is FirmwareUpdateStatus.InProgress ->
                         st.progress.map { "inprogress:${(it * 100).toInt().coerceIn(0, 100)}" }
-                    else -> flowOf(statusString(st))
+                    else -> flowOf(statusString(st, dev.watchInfo.runningFwVersion))
                 }
             }
             .distinctUntilChanged()
@@ -195,9 +268,17 @@ class FirmwareControl(
      * Check the matching source and, if newer firmware is available for the watch's board, download
      * it and start flashing. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once the
      * download+flash is kicked off (poll [status] to follow it), `uptodate:<msg>`, `noasset:<msg>`,
-     * `busy:<msg>`, or `disabled:`/`notready:`/`error:`.
+     * `busy:<msg>` (also while a downgrade waits for recovery), or `disabled:`/`notready:`/`error:`.
      */
-    suspend fun update(): String = when (val r = doCheck()) {
+    suspend fun update(): String {
+        val dev = device()
+        pendingDowngrade.get()?.takeIf { dev != null && it.serial == dev.serial }?.let {
+            return "busy:A downgrade to ${it.version} is pending: stoandl flashes it once the watch is in recovery"
+        }
+        return updateTo(doCheck())
+    }
+
+    private fun updateTo(check: CheckResult): String = when (val r = check) {
         is CheckResult.Disabled -> "disabled:${r.hint}"
         CheckResult.NoWatch -> "notready:No watch connected"
         is CheckResult.Error -> "error:${r.message}"
@@ -215,6 +296,8 @@ class FirmwareControl(
     suspend fun maybeNotify(minIntervalMs: Long) {
         if (!config.firmwareNotify) return
         if (!config.firmwareGithub && !config.firmwareCohorts) return
+        // Offering the latest release now would invite undoing the downgrade in flight.
+        if (pendingDowngrade.get() != null) return
         if (!notifying.compareAndSet(false, true)) return
         try {
             val now = System.currentTimeMillis()
@@ -240,7 +323,7 @@ class FirmwareControl(
                     log.warn { "Firmware download failed for ${update.bundle.name}; aborting update" }
                     return@launch
                 }
-                device()?.sideloadFirmware(Path(file.absolutePath))
+                device()?.let { flash(it, file.absolutePath) }
                     ?: log.warn { "Watch disconnected before flashing ${update.bundle.name}" }
             } catch (e: Exception) {
                 log.warn(e) { "Firmware update (${update.bundle.name}) failed" }

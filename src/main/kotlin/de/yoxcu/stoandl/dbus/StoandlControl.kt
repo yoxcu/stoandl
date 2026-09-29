@@ -307,8 +307,10 @@ interface StoandlControl : DBusInterface {
     fun SideloadFirmware(path: String): String
 
     /** Current firmware-update state of the connected watch: `idle:`, `downloading:<asset>`,
-     *  `waiting:`, `inprogress:<percent>`, `reboot:` (success — watch rebooting), `failed:<reason>`,
-     *  or `notready:` (no watch). Poll this after [SideloadFirmware]/[UpdateFirmware]. */
+     *  `waiting:`, `inprogress:<percent>`, `reboot:` (success — watch rebooting), `prf:<version>`
+     *  (a downgrade on a dual-slot watch: rebooting into recovery, nothing flashed yet — the daemon
+     *  flashes it once the watch reconnects there, so keep polling), `failed:<reason>`, or `notready:`
+     *  (no watch). Poll this after [SideloadFirmware]/[UpdateFirmware]. */
     fun FirmwareStatus(): String
 
     /** Check the source matching the watch's generation (GitHub for Core devices, cohorts.rebble.io

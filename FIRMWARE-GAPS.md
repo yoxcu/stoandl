@@ -346,6 +346,11 @@ meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
     undoes the downgrade.
   - **Fix:** a distinct status, remember the pending `.pbz`, suppress the latest-release offer while it is
     pending, and re-sideload it in PRF.
+  - **Implemented with the bump (daemon), to be tested (TESTING 5.11e):** `FirmwareStatus` reports
+    `prf:<version>`, `FirmwareControl` re-sideloads the `.pbz` when that watch reconnects in PRF,
+    `UpdateFirmware` answers `busy:` and `maybeNotify` stays quiet meanwhile, and the CLI follows the flash
+    across the reconnect. Still open: both GUIs map any post-activity disconnect to success and know no
+    `prf` phase.
 - **Optional anywhere: digest check.** The GitHub API returns `digest: sha256:…` per asset; verify downloads
   with it. This needs no bump.
 - **eng-dash (`dash.repebble.com/api/ota/latest`).** An optional opt-in source that gives release notes and

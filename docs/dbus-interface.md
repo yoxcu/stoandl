@@ -291,9 +291,9 @@ not yet a tracked timestamp.
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `CheckFirmware` | `() → s` | Check the matching source (GitHub for Core, cohorts.rebble.io for classic) for a newer build: `ok:<board>\t<current>\t<latest>\t<asset>\t<yes\|no>\t<source>\t<changelogUrl>` (the 7th field, the PebbleOS changelog page, is a constant present on both `ok:` branches), or `noasset:`/`disabled:`/`notready:`/`error:`. | `firmware check` |
-| `UpdateFirmware` | `() → s` | Download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:`/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
+| `UpdateFirmware` | `() → s` | Download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:` (also while a downgrade waits for recovery)/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
 | `SideloadFirmware` | `(s) → s` | Flash a local `.pbz` (absolute daemon-side path), async. Poll `FirmwareStatus`. | `firmware sideload <file.pbz>` / `firmware <file.pbz>` |
-| `FirmwareStatus` | `() → s` | Flash state: `idle:` / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `failed:<reason>` / `notready:`. | `firmware status` (also polled during update/sideload) |
+| `FirmwareStatus` | `() → s` | Flash state: `idle:` / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `prf:<version>` (a downgrade on a dual-slot watch: rebooting into recovery with nothing flashed yet; the daemon flashes the same `.pbz` once the watch reconnects there) / `failed:<reason>` / `notready:`. | `firmware status` (also polled during update/sideload) |
 
 ### Language packs (`stoandl language`)
 
@@ -405,7 +405,7 @@ states:
 | Operation | Start method | Polled method | Cadence | Timeout | Terminal states |
 |---|---|---|---|---|---|
 | **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues; `confirm:<code>` → answer with `ConfirmPairing(b)` (≤60 s or it declines) |
-| **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure |
+| **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure; `prf:` continues (restart the activity tracking and the timeout: the flash resumes from recovery after a reconnect) |
 | **Language install** | `InstallLanguage(query)` / `SideloadLanguage(path)` | `LanguageStatus()` | 0.6 s | 180 s | `done:` = success; `failed:` = failure; post-activity `notready:` = disconnected |
 
 For firmware/language, the start method returns `ok:` (kicked off) and the *snapshot* status is read
