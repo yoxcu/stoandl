@@ -19,7 +19,10 @@ object ScreenState {
     private val DRM = File("/sys/class/drm")
 
     fun isOn(): Boolean? {
-        val connectors = DRM.listFiles { f -> f.name.startsWith("card") && f.name.contains('-') } ?: return null
+        // cardN-<connector>, minus writeback connectors (not a display; their DPMS says nothing).
+        val connectors = DRM.listFiles { f ->
+            f.name.startsWith("card") && f.name.contains('-') && !f.name.contains("Writeback")
+        } ?: return null
         var sawOff = false
         for (c in connectors) {
             val status = read(File(c, "status")) ?: continue
