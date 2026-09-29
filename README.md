@@ -32,16 +32,18 @@ comparison with the other companion apps, and what's not yet implemented.
 
 ## Desktop / mobile GUI (optional)
 
-The daemon is fully headless — but there's also an optional **[Kirigami](https://develop.kde.org/frameworks/kirigami/)
-GUI** ([`gui/`](gui/), a separate repo: [yoxcu/stoandl-gui](https://github.com/yoxcu/stoandl-gui)).
-It's a pure D-Bus client of the `de.yoxcu.stoandl.Control` interface — no code shared with the daemon —
-and is **convergent**: the same app runs on a KDE/GNOME desktop and on Plasma Mobile. Five screens —
-**Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates, the locker + extensions,
-health charts, battery insights, notification rules, calendars and the full `stoandl.conf`.
+The daemon is fully headless — but there's also an optional **GUI** ([`gui/`](gui/), a separate repo:
+[yoxcu/stoandl-gui](https://github.com/yoxcu/stoandl-gui)) in two front-ends that install side by side:
+**[Kirigami](https://develop.kde.org/frameworks/kirigami/)** (Qt 6 / QML, for Plasma) and **GTK 4 /
+libadwaita** (for GNOME and Phosh). Both are pure D-Bus clients of the `de.yoxcu.stoandl.Control`
+interface — no code shared with the daemon — and **convergent**: the same app runs on a desktop and on a
+Linux phone. Five screens — **Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates,
+the locker + extensions, health charts, battery insights, notification rules, calendars and the full
+`stoandl.conf`.
 
 **Screenshots, build & install:** see the GUI repo's README — it has
-[screenshots](https://github.com/yoxcu/stoandl-gui#screenshots), the native Qt6
-[build](https://github.com/yoxcu/stoandl-gui#build), and **Flatpak** / postmarketOS `.apk`
+[screenshots](https://github.com/yoxcu/stoandl-gui#screenshots), the native Qt 6 and GTK
+[builds](https://github.com/yoxcu/stoandl-gui#build), and **Flatpak** / postmarketOS `.apk`
 [releases](https://github.com/yoxcu/stoandl-gui/releases).
 
 ## Compatibility
@@ -113,8 +115,8 @@ applies this pin for you via `BUILD_JAVA_HOME`.)
 **Releases.** CI (`.github/workflows/release.yml`) builds the fat JAR on every push, and pushing a
 `v*` tag publishes a GitHub Release with the JAR, a deploy tarball (jar + service + `install.sh` +
 `conf.example`), and an auto-generated changelog (features / bug fixes). The version is derived from
-`git describe --tags`, so the JAR is named for the tag. The Kirigami GUI ([`gui/`](gui/), a separate
-repo) has its own release pipeline shipping a Flatpak — see its README.
+`git describe --tags`, so the JAR is named for the tag. The GUI ([`gui/`](gui/), a separate repo) has
+its own release pipeline shipping a Flatpak and a pmOS `.apk` per front-end — see its README.
 
 **Installing the postmarketOS `.apk`.** A tagged release also ships an aarch64 pmOS `.apk` and the
 public signing key (`mick@yoxcu.de-*.rsa.pub`). Trust the key once and `apk add` installs it — and

@@ -61,13 +61,13 @@ dependencies {
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
 
-    // Test-only. The daemon's behaviour needs a watch and a session bus, so there is no unit-test
-    // suite for it; what IS unit-testable is the settings surface — the GUI config schema, its
-    // validation, and its agreement with the config parser. That logic can silently corrupt
-    // stoandl.conf or persist a value the daemon then ignores, so it gets tests. So does the firmware
-    // downgrade handoff (driven through fake watches), whose hardware test risks the watch, and the
-    // analytics-heartbeat layouts, where a wrong table entry silently shifts every value after it.
-    // `gradle test` is not part of `shadowJar`, so nothing ships.
+    // Test-only. Most daemon behaviour needs a watch and a session bus and is tested by hand
+    // (TESTING.md). The unit tests cover pure logic whose mistakes are silent: the settings surface (the
+    // GUI config schema, its validation and its agreement with the config parser, which could corrupt
+    // stoandl.conf or persist a value the daemon ignores), the analytics-heartbeat layouts (a wrong
+    // entry shifts every value after it), firmware release selection and the downgrade handoff (driven
+    // through fake watches; its hardware test risks the watch), iCal all-day dates across host zones,
+    // and the watch-pref ranges. `gradle test` is not part of `shadowJar`, so nothing ships.
     testImplementation(kotlin("test"))
 }
 

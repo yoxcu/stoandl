@@ -12,7 +12,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew run          # run locally
 ./gradlew shadowJar    # build fat JAR → build/libs/stoandl-<version>-all.jar
 java -jar build/libs/stoandl-*.jar   # run the fat JAR manually
+./gradlew test                              # daemon unit tests
+./gradlew :libpebble3:libpebble3:jvmTest    # the fork's JVM tests (included build)
 ```
+
+Gradle 8.14.4 runs on JDK 21 (`JAVA_HOME=/usr/lib/jvm/java-21-openjdk`); Kotlin 2.4.10 compiles against a
+JDK 25 toolchain, and the daemon needs JDK 25 at runtime (the Classic transport uses `java.lang.foreign`).
+The outer dependency pins in `build.gradle.kts` (Kotlin, Koin, Ktor, kotlinx, kermit) follow the fork's
+`gradle/libs.versions.toml`; move them together.
 
 > Note: no `--add-opens` flags are needed. The BecomeMonitor fix reflects into dbus-java internals,
 > but the fat JAR runs on the classpath where dbus-java is in the unnamed module (no encapsulation).
@@ -27,7 +34,11 @@ Install and control (requires systemd service running):
 stoandl apps install app.pbw              # sideload a .pbw onto the connected watch
 ```
 
-There are no automated tests in this project.
+Most behaviour needs a watch and a session bus and is tested by hand from [TESTING.md](TESTING.md). The unit
+tests cover pure logic whose mistakes are silent: the settings schema against the config parser, the
+analytics-heartbeat layouts, firmware release selection and the downgrade handoff, iCal all-day dates and
+watch-pref ranges (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS and notification catch-up
+(fork jvmTest).
 
 ## Architecture
 
@@ -41,7 +52,7 @@ DbusNotificationMonitor   ← passive BecomeMonitor copy (does NOT intercept)
 PebbleIntegration / DbusNotificationListenerConnection
     │  buildTimelineNotification → libPebble.sendNotification()
     ▼
-libpebble3 (composite build submodule: libs/libpebble3, stoandl branch)
+libpebble3 (composite build submodule: libs/libpebble3, stoandl-bump branch)
     ▼
 BlueZ GATT server (forward PPoG: phone acts as BLE peripheral)
     ▼
@@ -64,7 +75,9 @@ Pebble watch over BLE/PPoG
 
 ## libpebble3 submodule
 
-The dependency is a patched fork of upstream [`coredevices/libpebble3`](https://github.com/coredevices/libpebble3) (`yoxcu/libpebble3`, branch `stoandl`), included as a git submodule at `libs/libpebble3`. It tracks `coredevices/master` directly and is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
+The dependency is a patched fork of upstream [`coredevices/libpebble3`](https://github.com/coredevices/libpebble3) (`yoxcu/libpebble3`), included as a git submodule at `libs/libpebble3`. It tracks `coredevices/master` directly and is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
+
+The submodule follows fork branch **`stoandl-bump`**: the fork rebased as a linear history onto upstream `e6b5138e`, plus the deep-sleep commits. It replaces the old branch `stoandl` (base `e4180ffc`) once it passes the hardware pass in TESTING §5.33; then `.gitmodules` goes back to `stoandl`. Push the fork branch before tagging a release: the APKBUILD and CI fetch libpebble3 by commit from GitHub. [FIRMWARE-GAPS.md §3](FIRMWARE-GAPS.md) is the runbook for the next bump.
 
 The fork adds: a pure-BlueZ D-Bus BLE backend + GATT server, a Bluetooth Classic (RFCOMM/SPP) transport for classic-era watches, PPoG handshake/reconnect fixes for Linux BLE, BlueZ pairing/bonding, and a GraalJS PKJS runtime for watchapp companion JS. It builds the JVM target. The Android-SDK-only modules sit behind one gate in its `settings.gradle.kts`: an SDK (`ANDROID_HOME` or `sdk.dir`), a Gradle at or above AGP's minimum (9.5 for AGP 9.3.1), and a standalone build, so they are never on inside stoandl's composite. The iOS targets are kept (they're load-bearing for the Room codegen).
 
@@ -97,15 +110,20 @@ The service unit sets `DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so it finds th
 
 ## GUI / D-Bus contract
 
-The daemon's public control surface — for the CLI and any future GUI (e.g. a Kirigami front-end) —
-is the single D-Bus interface `de.yoxcu.stoandl.Control` (session bus, name `de.yoxcu.stoandl`,
-path `/de/yoxcu/stoandl`), defined in `dbus/StoandlControl.kt` and implemented by
-`StoandlControlImpl` in `PebbleIntegration.kt`. It is **methods only — zero signals, zero
-properties** — so clients poll; long-running ops (pair, firmware flash, language install) report
-progress via polled status strings (`PairStatus`/`FirmwareStatus`/`LanguageStatus`). `backup`,
-`restore` and `support` are **CLI-local** (no D-Bus method).
+The daemon's public control surface — for the CLI and the GUI (the `gui/` submodule, which ships a
+Kirigami and a GTK front-end) — is the single D-Bus interface `de.yoxcu.stoandl.Control` (session bus,
+name `de.yoxcu.stoandl`, path `/de/yoxcu/stoandl`), defined in `dbus/StoandlControl.kt` and implemented
+by `StoandlControlImpl` in `PebbleIntegration.kt`. The **methods are the source of truth**; seven
+signals (`WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `CalendarsChanged`,
+`ExtensionsChanged`, `ExtensionStateChanged`) are a reactive layer on top, and there are no properties.
+The daemon isn't D-Bus-activated, so a client can miss a signal: it re-reads the method when the name
+appears and keeps a slow fallback poll. Long-running ops (pair, firmware flash, language install)
+report progress via polled status strings (`PairStatus`/`FirmwareStatus`/`LanguageStatus`), which the
+CLI uses. `backup`, `restore` and `support` are **CLI-local** (no D-Bus method). The GUI settings page
+renders whatever `GetConfigSchema` advertises (`config/ConfigSchema.kt`), so a new config key needs a
+schema row, not GUI code.
 
 See [docs/dbus-interface.md](docs/dbus-interface.md) for the full method catalog (D-Bus signatures,
 CLI mapping, tab-separated record layouts, status-string conventions) **and** the GUI gap analysis
-per planned screen (Watch, Apps & Faces, Plugins, Sync, System) — i.e. the signals/fields/methods
-to add for a reactive GUI. Keep that doc in sync when you change the interface.
+per screen (Watch, Apps & Faces, Plugins, Sync, System). Keep that doc in sync when you change the
+interface.
