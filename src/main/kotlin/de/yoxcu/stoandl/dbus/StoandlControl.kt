@@ -237,8 +237,8 @@ interface StoandlControl : DBusInterface {
      *  are epoch seconds, `buildId` is the firmware's GNU build-id (hex; identifies the exact build and
      *  is NOT a git SHA), and `known` is 1 when `(size, version)` names a layout stoandl has verified
      *  (0 ⇒ the record was captured raw and no metrics can be decoded — see docs/heartbeat-metrics.md).
-     *  `unknown:<label>` when that watch has no captured heartbeat; `notready:<msg>` when battery
-     *  capture is disabled. */
+     *  `unknown:<label>` when that watch is not connected (its serial keys the store) or has no
+     *  captured heartbeat; `notready:<msg>` when battery capture is disabled. */
     fun HeartbeatInfo(watch: String): String
 
     /** Every metric of the most recent captured analytics heartbeat, for the Debug → Heartbeat page.

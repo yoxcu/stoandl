@@ -27,28 +27,21 @@ private val log = KotlinLogging.logger {}
  * locally instead.
  *
  * The record is a `struct PACKED native_heartbeat_record` (little-endian ARM, copied raw to the DLS
- * byte array). Layout, verified against `coredevices/PebbleOS@main`
- * (`src/fw/services/analytics/native.c`, `include/pbl/services/analytics/analytics.def`):
+ * byte array): a 29 B header (`version:u8 @0 | timestamp:u64 @1 | build_id:u8[20] @9`) followed by
+ * the metrics of PebbleOS `analytics.def` in declaration order. Which metrics, and so every offset,
+ * depends on the firmware release: [HeartbeatLayouts] holds the table and derives the offsets for
+ * each released `(size, version)`, and everything here reads fields **by name** through it. On
+ * current firmware (≥ 4.33.0) the record is 567 B / version 3 with 101 metrics.
  *
- *     header (29 B): version:u8 @0 (=1) | timestamp:u64 @1 | build_id:u8[20] @9
- *     battery block (struct offsets): soc_pct:u32 @102 (÷scale @106 =100)
- *                                     soc_pct_drop:u32 @108 (÷scale @112 =100)
- *                                     voltage:u32 @114 (÷scale @118 =1000, → volts)
- *                                     voltage_delta:i32 @120 (÷scale @124 =1000)
- *                                     tte_s:u32 @126 | charge_time_ms:u32 @130 | discharge_ms:u32 @134
- *     total sizeof = 523 B before 2026-07-14, 527 B after (== one uploadAnalyticsHeartbeat payload).
+ * [decode] reads the battery block (state of charge, voltage, time-to-empty, charge/discharge time).
+ * [decodeActivity] reads the per-subsystem on-times, CPU residency and event counters behind the
+ * drop / power-attribution / notification views, from the stored raw blob.
  *
- * The same record also carries per-subsystem on-time timers, CPU residency/per-task CPU %, and event
- * counters (notifications, etc.). Those are decoded on demand by [decodeActivity] (for the drop /
- * power-attribution / notification views) from the stored raw blob — see `analytics.def` for the full
- * 91-metric layout; the offsets used live in that method.
- *
- * The blob layout is firmware-version-specific (any reordered/added metric in `analytics.def` shifts
- * every offset after it, and the version byte does not necessarily change). So decoding is **strictly
- * guarded**: we decode only when `(size, version)` names a layout we have actually verified against
- * `analytics.def` (see `HeartbeatLayouts.LAYOUTS`), the on-wire scale fields match the compile-time constants, and the
- * values are physically plausible. On any mismatch we still persist the **raw** blob (base64) + header
- * so the exact firmware build can be identified and the offsets finalized later — we never emit a
+ * Decoding is **strictly guarded**: we decode only when `(size, version)` names a released layout
+ * (see `HeartbeatLayouts.LAYOUTS`), the on-wire scale fields match the compile-time constants, and
+ * the values are physically plausible. [decode] alone also accepts an unknown layout whose battery
+ * block proves itself (see there). On any mismatch we still persist the **raw** blob (base64) +
+ * header so the exact firmware build can be identified and the layout added later — we never emit a
  * guessed value. Every record (decoded or not) keeps its raw bytes, so the file is a lossless local
  * capture, and adding a layout to `HeartbeatLayouts` retroactively recovers every record already on disk.
  *
@@ -77,8 +70,8 @@ class HeartbeatStore(
         val rx = System.currentTimeMillis() / 1000
         val key = keyFor(serial)
         val version = if (payload.isNotEmpty()) payload[0].toInt() and 0xFF else -1
-        val hasHeader = payload.size >= HEADER_SIZE
-        val buildId = if (hasHeader) payload.hex(9, BUILD_ID_LEN) else ""
+        val hasHeader = payload.size >= HeartbeatLayouts.HEADER_SIZE
+        val buildId = if (hasHeader) payload.hex(HeartbeatLayouts.BUILD_ID_OFF, HeartbeatLayouts.BUILD_ID_LEN) else ""
         val snap = decode(payload, rx)
 
         val row = buildJsonObject {
@@ -118,39 +111,38 @@ class HeartbeatStore(
     /**
      * Decode the battery block, or null when the layout isn't trusted (see class docs).
      *
-     * The battery block has sat at the same offsets in **every** layout ever observed, because it
-     * is near the front of `analytics.def` and metrics have only ever been added behind it. It is
-     * also *self-describing*: each scaled metric carries its scale as a `u16` immediately after
-     * the value, so the block validates itself in place.
-     *
-     * So when `(size, version)` is a layout we know, the normal guard applies. When it is NOT
-     * known, we do not give up — that is what left records stranded when the record grew on
-     * 2026-07-14, and it made insights silently replay a stale decode for days. Instead we require
-     * the block to prove itself: BOTH scale pairs must equal their compile-time constants
-     * (100/100 and 1000/1000), soc and voltage must be physically plausible, and charge+discharge
-     * must add up to roughly the one-hour reporting interval. Passing seven independent structural
-     * constraints at once is verification, not a guess; failing any one of them still refuses.
+     * A known `(size, version)` is read at its own offsets under the normal guard. An unknown one
+     * is NOT given up on — that is what left records stranded when the record grew on 2026-07-14,
+     * and it made insights silently replay a stale decode for days. Instead it is read at the
+     * newest known layout's offsets (the battery block has not moved since fw 4.13, because every
+     * metric since has been added behind it) and must prove itself there. The block is
+     * *self-describing*: each scaled metric carries its scale as a `u16` right after the value. So
+     * BOTH scale pairs must equal their compile-time constants (100/100 and 1000/1000), soc and
+     * voltage must be physically plausible, and charge+discharge must add up to roughly the one-hour
+     * reporting interval. Passing seven independent structural constraints at once is
+     * verification, not a guess; failing any one of them still refuses.
      */
     private fun decode(p: ByteArray, rx: Long): BatterySnapshot? {
-        if (p.size < BATTERY_BLOCK_END) return null
+        val known = HeartbeatLayouts.of(p)
+        val l = known ?: HeartbeatLayouts.NEWEST
         // Wire scale fields must match the compile-time constants (a mismatch signals layout drift).
-        if (p.u16le(106) != 100 || p.u16le(118) != 1000) return null
-        val soc = p.u32le(102) / 100.0
-        val voltage = p.u32le(114) / 1000.0
+        if (l.scale(p, SOC) != 100 || l.scale(p, VOLTAGE) != 1000) return null
+        val soc = (l.u32(p, SOC) ?: return null) / 100.0
+        val voltage = (l.u32(p, VOLTAGE) ?: return null) / 1000.0
         if (soc !in 0.0..100.0) return null
         if (voltage !in VOLT_MIN..VOLT_MAX) return null
-        val chargeMs = p.u32le(130)
-        val dischargeMs = p.u32le(134)
-        if (HeartbeatLayouts.of(p) == null) {
+        val chargeMs = l.u32(p, CHARGE_MS) ?: return null
+        val dischargeMs = l.u32(p, DISCHARGE_MS) ?: return null
+        if (known == null) {
             // Unknown layout: only accept on the stricter self-validation described above.
-            if (p.u16le(112) != 100 || p.u16le(124) != 1000) return null
+            if (l.scale(p, SOC_DROP) != 100 || l.scale(p, VOLTAGE_DELTA) != 1000) return null
             if (chargeMs + dischargeMs !in INTERVAL_MIN_MS..INTERVAL_MAX_MS) return null
             val key = p.size to (p[0].toInt() and 0xFF)
             if (warnedUnknown.add(key)) {
                 log.info {
                     "analytics heartbeat layout ${key.first}B/v${key.second} is not in the verified table; " +
                         "the battery block validated structurally so insights still work, but the " +
-                        "power/activity view needs its offsets confirmed (tools/hb_relayout_probe.py)"
+                        "power/activity view needs the layout added (tools/hb_layouts_from_source.py)"
                 }
             }
         }
@@ -158,8 +150,8 @@ class HeartbeatStore(
             watchTs = p.u64le(1),
             socPct = soc,
             voltage = voltage,
-            voltageDelta = p.i32le(120) / 1000.0,
-            tteSeconds = p.u32le(126),
+            voltageDelta = (l.i32(p, VOLTAGE_DELTA) ?: return null) / 1000.0,
+            tteSeconds = l.u32(p, "battery_tte_s") ?: 0L, // not emitted before fw 4.9.170
             chargeMs = chargeMs,
             dischargeMs = dischargeMs,
             charging = chargeMs > 0,
@@ -167,42 +159,48 @@ class HeartbeatStore(
         )
     }
 
-    /** Decode the richer subsystem-activity + event-counter fields (drop / power / notifications), or null
-     *  when the layout isn't trusted. Same trust gate as [decode] plus the CPU-percent scale field; every
-     *  value read here lives in the same guarded record, so it backfills from the stored raw. */
+    /**
+     * Decode the richer subsystem-activity + event-counter fields (drop / power / notifications), or
+     * null when the layout isn't trusted. Same trust gate as [decode] plus the CPU-percent scale
+     * field, but no structural fallback: these fields reach past the region that moves between
+     * layouts, so they cannot be validated in place. Every value read here lives in the same guarded
+     * record, so it backfills from the stored raw. A metric the watch's release does not emit yet
+     * (the speaker and per-task CPU metrics on the oldest layouts) reads as 0.
+     */
     private fun decodeActivity(p: ByteArray): HeartbeatActivity? {
-        val layout = HeartbeatLayouts.of(p) ?: return null
-        if (p.u16le(106) != 100 || p.u16le(118) != 1000) return null
-        if (p.u16le(202) != 100) return null // cpu_running_pct scale — a mismatch signals layout drift
-        val soc = p.u32le(102) / 100.0
+        val l = HeartbeatLayouts.of(p) ?: return null
+        if (l.scale(p, SOC) != 100 || l.scale(p, VOLTAGE) != 1000) return null
+        if (l.scale(p, "cpu_running_pct") != 100) return null // a mismatch signals layout drift
+        val soc = (l.u32(p, SOC) ?: return null) / 100.0
         if (soc !in 0.0..100.0) return null
+        fun u32(name: String): Long = l.u32(p, name) ?: 0L
+        fun pct(name: String): Int = u32(name).toInt().coerceIn(0, 100)
         // Scaled percentages carry an inline u16 scale right after the u32 value; divide by it.
-        fun pct(o: Int): Double { val s = p.u16le(o + 4); return if (s > 0) p.u32le(o).toDouble() / s else 0.0 }
-        val dropScale = p.u16le(112)
-        val drop = if (dropScale > 0) p.u32le(108).toDouble() / dropScale else null
+        fun scaled(name: String): Double = l.scaled(p, name) ?: 0.0
         return HeartbeatActivity(
             ts = p.u64le(1),
             socPct = soc,
-            socDropPct = drop?.takeIf { it in 0.0..100.0 },
-            intervalMs = p.u32le(130) + p.u32le(134), // charge_time_ms + discharge_duration_ms
-            backlightMs = p.u32le(138),
-            backlightIntensityPct = p.u32le(142).toInt().coerceIn(0, 100),
-            vibratorMs = p.u32le(146),
-            vibratorStrengthPct = p.u32le(150).toInt().coerceIn(0, 100),
-            speakerMs = p.u32le(154),
-            speakerVolumePct = p.u32le(162).toInt().coerceIn(0, 100),
-            hrmMs = p.u32le(174),
-            phoneCallMs = p.u32le(314),
-            watchfaceMs = p.u32le(326),
-            btConnectedMs = p.u32le(layout.off("connectivity_connected_time_ms") ?: return null),
-            cpuRunningPct = pct(198),
-            cpuAppPct = pct(244),
-            cpuBtPct = pct(250) + pct(256) + pct(262), // bt_host + bt_controller + bt_hci
-            cpuWorkerPct = pct(238),
-            cpuKernelPct = pct(226) + pct(232), // kernel_main + kernel_background
-            notifCount = p.u32le(302),
-            notifDndCount = p.u32le(306),
-            phoneCallCount = p.u32le(310),
+            socDropPct = l.scaled(p, SOC_DROP)?.takeIf { it in 0.0..100.0 },
+            intervalMs = u32(CHARGE_MS) + u32(DISCHARGE_MS),
+            backlightMs = u32("backlight_on_time_ms"),
+            backlightIntensityPct = pct("backlight_avg_intensity_pct"),
+            vibratorMs = u32("vibrator_on_time_ms"),
+            vibratorStrengthPct = pct("vibrator_avg_strength_pct"),
+            speakerMs = u32("speaker_on_time_ms"),
+            speakerVolumePct = pct("speaker_avg_volume_pct"),
+            hrmMs = u32("hrm_on_time_ms"),
+            phoneCallMs = u32("phone_call_time_ms"),
+            watchfaceMs = u32("watchface_time_ms"),
+            btConnectedMs = u32("connectivity_connected_time_ms"),
+            cpuRunningPct = scaled("cpu_running_pct"),
+            cpuAppPct = scaled("task_cpu_app_pct"),
+            cpuBtPct = scaled("task_cpu_bt_host_pct") + scaled("task_cpu_bt_controller_pct") +
+                scaled("task_cpu_bt_hci_pct"),
+            cpuWorkerPct = scaled("task_cpu_worker_pct"),
+            cpuKernelPct = scaled("task_cpu_kernel_main_pct") + scaled("task_cpu_kernel_background_pct"),
+            notifCount = u32("notification_received_count"),
+            notifDndCount = u32("notification_received_dnd_count"),
+            phoneCallCount = u32("phone_call_incoming_count"),
         )
     }
 
@@ -337,8 +335,8 @@ class HeartbeatStore(
      * The most recent stored record for [serialQuery], with **every** metric its layout defines
      * decoded — the `Debug → Heartbeat` surface.
      *
-     * Reads from the stored raw blob, so it shows the full 92-metric picture even for records that
-     * predate a layout being known (they decode as soon as the layout is added). Returns null when
+     * Reads from the stored raw blob, so it shows every metric (101 on fw ≥ 4.33) even for records
+     * that predate a layout being known (they decode as soon as the layout is added). Returns null when
      * the watch has no records at all; a record whose layout is unknown comes back with
      * [HeartbeatDump.known] false and no metrics, rather than guessed values.
      */
@@ -463,7 +461,7 @@ class HeartbeatStore(
         // ESTIMATES for a Pebble-class device (single-cell ~150 mAh, Cortex-M MCU) — representative,
         // not metered. Only the *ratios* between them shape the pie (the absolute magnitude is fixed by
         // the measured SoC drop we anchor to), and getting them wrong only re-skews shares — it never
-        // touches the lossless raw capture. Tune against a hardware `analytics native_metrics_dump` or
+        // touches the lossless raw capture. Tune against a hardware `analytics native metrics_dump` or
         // the official app's own breakdown. Set MA_SYSTEM = 0.0 to drop the always-on baseline slice.
         private const val MA_SYSTEM = 1.0     // always-on floor: MCU sleep + Sharp-LCD retention + RTC
         private const val MA_BACKLIGHT = 25.0 // backlight LED at full intensity (scaled by intensity %)
@@ -473,12 +471,13 @@ class HeartbeatStore(
         private const val MA_BLE = 8.0        // BLE radio averaged over BT-stack active CPU time
         private const val MA_CPU = 12.0       // MCU running non-BT tasks, averaged over active CPU time
 
-        // native_heartbeat_record layout (coredevices/PebbleOS, PACKED little-endian).
-        private const val BUILD_ID_LEN = 20
-        private const val HEADER_SIZE = 1 + 8 + BUILD_ID_LEN // 29
-
-        /** Exclusive end of the battery block: its last field is discharge_duration_ms u32 @134. */
-        private const val BATTERY_BLOCK_END = 138
+        // The battery-block metrics, by their analytics.def names (offsets come from HeartbeatLayouts).
+        private const val SOC = "battery_soc_pct"
+        private const val SOC_DROP = "battery_soc_pct_drop"
+        private const val VOLTAGE = "battery_voltage"
+        private const val VOLTAGE_DELTA = "battery_voltage_delta"
+        private const val CHARGE_MS = "battery_charge_time_ms"
+        private const val DISCHARGE_MS = "battery_discharge_duration_ms"
 
         /** One-hour reporting interval, with slack for a partial first record after boot. */
         private const val INTERVAL_MIN_MS = 1_800_000L // 0.5 h
@@ -499,17 +498,4 @@ class HeartbeatStore(
     }
 }
 
-// Little-endian readers over the packed record (no byte-swap anywhere in the firmware→DLS path).
-private fun ByteArray.u16le(o: Int) = (this[o].toInt() and 0xFF) or ((this[o + 1].toInt() and 0xFF) shl 8)
-private fun ByteArray.u32le(o: Int): Long {
-    var v = 0L
-    for (i in 0..3) v = v or ((this[o + i].toLong() and 0xFF) shl (8 * i))
-    return v
-}
-private fun ByteArray.i32le(o: Int): Int = u32le(o).toInt()
-private fun ByteArray.u64le(o: Int): Long {
-    var v = 0L
-    for (i in 0..7) v = v or ((this[o + i].toLong() and 0xFF) shl (8 * i))
-    return v
-}
 private fun ByteArray.hex(o: Int, len: Int): String = buildString { for (i in 0 until len) append("%02x".format(this@hex[o + i])) }

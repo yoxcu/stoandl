@@ -1482,8 +1482,8 @@ private fun batteryPower(args: List<String>) {
 /** Dump the captured analytics heartbeats — offline, reading the per-serial NDJSON under
  *  `<configDir>/battery/heartbeat/` directly (no daemon). Useful to confirm B decodes on the actual
  *  hardware; `--raw` shows the raw blob (base64) so an undecodable firmware layout can be sent upstream
- *  to finalize the offsets; `--all` decodes and prints **every** metric of the newest record (all 92 in
- *  the current layout — see docs/heartbeat-metrics.md), which is the same data the GUI's
+ *  to finalize the offsets; `--all` decodes and prints **every** metric of the newest record (101 on
+ *  fw ≥ 4.33 — see docs/heartbeat-metrics.md), which is the same data the GUI's
  *  Debug → Heartbeat page shows. */
 private fun batteryHeartbeat(args: List<String>) {
     val watch = flagValue(args, "--watch")
@@ -1510,7 +1510,7 @@ private fun batteryHeartbeat(args: List<String>) {
             val metrics = HeartbeatLayouts.decodeAll(blob)
             if (metrics.isEmpty()) {
                 println("  Layout ${blob.size}B/v${if (blob.isNotEmpty()) blob[0].toInt() and 0xFF else -1} is not in the verified table —")
-                println("  no metrics decoded (raw is kept; see tools/hb_relayout_probe.py).")
+                println("  no metrics decoded (raw is kept; add the layout with tools/hb_layouts_from_source.py).")
                 return@forEach
             }
             metrics.forEach { m ->
