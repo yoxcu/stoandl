@@ -62,7 +62,7 @@ Pebble watch over BLE/PPoG
 
 The dependency is a patched fork of upstream [`coredevices/libpebble3`](https://github.com/coredevices/libpebble3) (`yoxcu/libpebble3`, branch `stoandl`), included as a git submodule at `libs/libpebble3`. It tracks `coredevices/master` directly and is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
 
-The fork adds: a pure-BlueZ D-Bus BLE backend + GATT server, a Bluetooth Classic (RFCOMM/SPP) transport for classic-era watches, PPoG handshake/reconnect fixes for Linux BLE, BlueZ pairing/bonding, and a GraalJS PKJS runtime for watchapp companion JS. It builds the JVM target; the Android-SDK-only modules are gated behind `ANDROID_HOME`, and the iOS targets are kept (they're load-bearing for the Room codegen).
+The fork adds: a pure-BlueZ D-Bus BLE backend + GATT server, a Bluetooth Classic (RFCOMM/SPP) transport for classic-era watches, PPoG handshake/reconnect fixes for Linux BLE, BlueZ pairing/bonding, and a GraalJS PKJS runtime for watchapp companion JS. It builds the JVM target. The Android-SDK-only modules sit behind one gate in its `settings.gradle.kts`: an SDK (`ANDROID_HOME` or `sdk.dir`), a Gradle at or above AGP's minimum (9.5 for AGP 9.3.1), and a standalone build, so they are never on inside stoandl's composite. The iOS targets are kept (they're load-bearing for the Room codegen).
 
 ## PKJS (PebbleKit JS)
 
@@ -78,7 +78,7 @@ GraalJS is a full, spec-compliant ECMAScript engine — modern JS (classes, `for
 - Don't set `js.esversion` as a `GraalJsRunner` option — it isn't a valid GraalJS option and throws.
 - When building JS strings to `eval` (e.g. injecting an XHR response body), JSON-encode the value (`Json.encodeToString(...)`) — don't hand-escape. Unescaped `\n`/`\r`/control chars cause a silent `PolyglotException` and the JS callbacks never fire.
 
-There is no offline syntax harness (the GraalJS language jars aren't in the Gradle module cache); verify PKJS changes by running the daemon and watching the log for `Pebble JS Bridge initialized.` and the script's `console.log` output.
+libpebble3's `GraalJsRunnerTest` (jvmTest, `:libpebble3:libpebble3:jvmTest`) runs PKJS offline on GraalJS with the real shims: bridge init, the host-access allow-list, AppMessage/config round trips, intercepted and reused XHRs. Add a case there for a shim change; still confirm on hardware via `Pebble JS Bridge initialized.` and the script's `console.log` output in the log.
 
 ## Deployment (postmarketOS / systemd user service)
 

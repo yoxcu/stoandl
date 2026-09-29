@@ -58,9 +58,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build shadowJar
-        # libpebble3 enables its Android targets only with an SDK *and* Gradle >= 9, so the runner
-        # image's exported ANDROID_HOME can't switch them on under Gradle 8.14. Unset it (and
-        # ANDROID_SDK_ROOT) anyway, so a later Gradle bump can't pull AGP into the JAR build.
+        # libpebble3 enables its Android targets only in a standalone build with an SDK and a Gradle
+        # AGP runs on (>= 9.5), so the runner image's exported ANDROID_HOME can't switch them on in
+        # this composite. Unset it (and ANDROID_SDK_ROOT) anyway, as a safety net.
         run: >-
           env -u ANDROID_HOME -u ANDROID_SDK_ROOT
           ./gradlew --no-daemon shadowJar
@@ -242,8 +242,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/packages"
           pkgdir="$(pwd)/packaging"
           # GitHub's runner image ships the Android SDK and exports ANDROID_HOME, which
-          # leaks into the chroot — libpebble3 then tries to configure its Android target
-          # against an SDK that isn't in Alpine. Unset it so it's a Linux-only JVM build.
+          # leaks into the chroot. libpebble3's gate keeps Android off in stoandl's composite
+          # anyway (standalone builds only, Gradle >= 9.5); the unset is a safety net.
           doas su "$(id -un)" -c "unset ANDROID_HOME ANDROID_SDK_ROOT; cd '$pkgdir' && export REPODEST='$GITHUB_WORKSPACE/packages' && abuild checksum && abuild -r"
         shell: alpine.sh {0}
 
