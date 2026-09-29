@@ -1876,8 +1876,13 @@ class PebbleIntegration(
         )
     }
 
-    /** Persist + live-apply a Sync-screen toggle. The dnd boolean maps to its 4-way mode (true→both,
-     *  false→off; the precise direction stays editable in Settings). Returns the GUI status string. */
+    // The dnd.sync direction a Sync-screen "off" replaced, so turning the switch back on restores it. Held
+    // for the daemon's lifetime only: after a restart, "on" falls back to `both`.
+    @Volatile private var dndModeBeforeOff: StoandlConfig.DndSyncMode? = null
+
+    /** Persist + live-apply a Sync-screen toggle. The dnd boolean maps to its 4-way mode (true→the
+     *  direction it had, else both; false→off; the precise direction stays editable in Settings). Returns
+     *  the GUI status string. */
     private fun setSyncEnabledLive(service: String, enabled: Boolean): String {
         val (key, token) = when (service) {
             "notifications" -> "notification.forward" to enabled.toString()
@@ -1886,13 +1891,15 @@ class PebbleIntegration(
             "music" -> "music.enabled" to enabled.toString()
             "health" -> "health.sync" to enabled.toString()
             // dnd is a 4-way mode behind a 2-way switch. Turning it ON must not flatten a direction the
-            // user picked on the Settings page: keep whatever non-off mode is stored, and only fall back
-            // to `both` when there is none. (Writing `both` unconditionally silently turned "To watch"
-            // into "Both" on the next off/on cycle.)
+            // user picked on the Settings page: keep a non-off mode that is stored, else restore the one
+            // the last "off" replaced, and only fall back to `both` when there is neither (a fresh daemon).
             "dnd" -> "dnd.sync" to when {
-                !enabled -> "off"
+                !enabled -> {
+                    config.dndSync.takeIf { it != StoandlConfig.DndSyncMode.OFF }?.let { dndModeBeforeOff = it }
+                    "off"
+                }
                 config.dndSync != StoandlConfig.DndSyncMode.OFF -> config.dndSync.name.lowercase()
-                else -> "both"
+                else -> (dndModeBeforeOff ?: StoandlConfig.DndSyncMode.BOTH).name.lowercase()
             }
             else -> return "notfound:no sync service '$service'"
         }

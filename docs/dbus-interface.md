@@ -262,7 +262,7 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `SetSyncEnabled` | `(s,b) → s` | Turn a sync service on/off at **runtime** (no daemon restart). `service` ∈ {notifications, weather, calendar, music, health, dnd}. Persists the backing config key **and** starts/stops the live service. `dnd` maps the boolean to its 4-way mode (`true` → `both`, `false` → `off`; the direction is still set via `SetConfig dnd.sync`). `ok:<service> enabled\|disabled` / `notfound:` (unknown service) / `error:`. | `sync enable <service>` / `sync disable <service>` |
+| `SetSyncEnabled` | `(s,b) → s` | Turn a sync service on/off at **runtime** (no daemon restart). `service` ∈ {notifications, weather, calendar, music, health, dnd}. Persists the backing config key **and** starts/stops the live service. `dnd` maps the boolean to its 4-way mode (`false` → `off`; `true` → the direction an earlier `false` replaced in this daemon run, else `both`; the direction is still set via `SetConfig dnd.sync`). `ok:<service> enabled\|disabled` / `notfound:` (unknown service) / `error:`. | `sync enable <service>` / `sync disable <service>` |
 | `SyncWeather` | `() → s` | Fetch weather now and push to the watch. `error:` if weather isn't enabled. | `weather` |
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
@@ -556,7 +556,7 @@ notification filters.*
 | Quiet-hours (scheduled mute window) | action | **dropped — superseded by `dnd.sync`** (which mirrors desktop DND ↔ the watch's native Quiet Time); a separate host-side time-window subsystem would be redundant | *(none — dropped)* | **not pursued** |
 | Force-sync for **music** and **notifications** | action | **no `SyncMusic`/`SyncNotifications`** (both are continuous push by design) | `SyncMusic() → s` (re-enumerate MPRIS + re-push) / `SyncNotifications() → s`, or omit from the screen | **wiring-only if wanted** — `MprisMusicControl` has `enumerateExisting()`/`recompute()`; arguably unnecessary |
 | Music/MPRIS state for the screen (active player, playing?) | data | **done** — `MusicStatus() → s` (`playing\|paused\tplayer\ttrack`); the Sync screen's Music row shows now-playing | `MusicStatus() → s` | **done** — reads `MprisMusicControl.playbackState`; refreshed on page open |
-| DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | live on/off via `SetSyncEnabled("dnd", …)` (true → `both`, false → `off`); the **direction** mode is set via `SetConfig dnd.sync` and read via `GetSyncStatus` (mode string in `lastSync`) | *(covered)* | **implemented (live)** |
+| DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | live on/off via `SetSyncEnabled("dnd", …)` (false → `off`, true → the direction before, else `both`); the **direction** mode is set via `SetConfig dnd.sync` and read via `GetSyncStatus` (mode string in `lastSync`) | *(covered)* | **implemented (live)** |
 
 ### Screen 5 — System
 

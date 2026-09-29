@@ -504,7 +504,8 @@ interface StoandlControl : DBusInterface {
 
     /** Turn a sync service on/off at runtime: [service] is one of {notifications, weather, calendar,
      *  music, health, dnd}. Persists the backing key and **starts/stops the live service** (no restart) —
-     *  the dnd boolean maps to its mode (true→both, false→off; the direction stays editable in Settings).
+     *  the dnd boolean maps to its mode (false→off; true→the direction it had before, or both when the daemon
+     *  has seen none; the direction stays editable in Settings).
      *  Status-prefixed return (`ok:<service> enabled|disabled`, `notfound:` for an unknown service). */
     fun SetSyncEnabled(service: String, enabled: Boolean): String
 

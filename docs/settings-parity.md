@@ -229,7 +229,9 @@ left alone:
    toggle and the Daemon configuration row. Both write the same conf key through the same store, so they
    cannot disagree; it is duplicated *presentation*, not duplicated state. **Decision: keep both.** The
    Sync screen adds availability and last-sync that a flat row cannot express, and keeping the keys in
-   `GUI_CONFIG_FIELDS` is also what makes them reachable from `stoandl daemon list/set`.
+   `GUI_CONFIG_FIELDS` is also what makes them reachable from `stoandl daemon list/set`. For `dnd.sync` the
+   Sync switch is two-way over a four-way mode: "off" writes `off`, and "on" restores the direction that
+   "off" replaced — remembered for the daemon's lifetime only, so after a restart "on" gives `both`.
 2. **`firmware.notify` vs `alerts.*`** — deliberately not unified: `firmware.notify` gates a *watch*
    notification too, so folding it under `alerts.enabled` would make one switch mean two different
    things. Documented in both KDoc and the Alerts screen's footer text.
