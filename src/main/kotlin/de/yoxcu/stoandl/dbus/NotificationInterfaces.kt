@@ -74,3 +74,32 @@ interface FreedesktopNotifications : DBusInterface {
         val action_key: String = action_key
     }
 }
+
+/**
+ * Plasma's private notification-manager interface, on the same object as [FreedesktopNotifications]
+ * (`org.freedesktop.Notifications` at `/org/freedesktop/Notifications`). Any session-bus client may call
+ * it; KDE Connect uses it too. `InvokeAction` makes the server emit `ActionInvoked` to the app exactly as
+ * a click in the popup would; `InvokeReply` does the same for an inline reply (`NotificationReplied`) and
+ * only exists with the plasma-workspace patch (Plasma 6.9+) — probe with introspection before calling it.
+ * Never pass `inline-reply` to `InvokeAction`: KNotifications turns that into an empty reply.
+ */
+@DBusInterfaceName("org.kde.NotificationManager")
+interface KdeNotificationManager : DBusInterface {
+    fun InvokeAction(id: UInt32, action_key: String)
+    fun InvokeReply(id: UInt32, text: String)
+}
+
+/** The xdg-desktop-portal Notification backend interface (plasmanotify, xdg-desktop-portal-kde/-gnome), at
+ *  `/org/freedesktop/portal/desktop`. The backends don't check the caller, so a wrist dismiss can remove a
+ *  sandboxed app's notification the way the portal frontend would. */
+@DBusInterfaceName("org.freedesktop.impl.portal.Notification")
+interface PortalNotificationBackend : DBusInterface {
+    fun RemoveNotification(app_id: String, id: String)
+}
+
+/** GNOME Shell's GApplication notification interface (`org.gtk.Notifications` at `/org/gtk/Notifications`).
+ *  RemoveNotification doesn't check the caller. */
+@DBusInterfaceName("org.gtk.Notifications")
+interface GtkNotifications : DBusInterface {
+    fun RemoveNotification(app_id: String, id: String)
+}

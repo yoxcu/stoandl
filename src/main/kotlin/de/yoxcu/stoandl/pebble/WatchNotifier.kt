@@ -3,9 +3,8 @@
 package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.config.ConfigStore
-import de.yoxcu.stoandl.dbus.FreedesktopNotifications
+import de.yoxcu.stoandl.config.DEFAULT_CANNED_REPLIES
 import de.yoxcu.stoandl.notification.NotificationFilters
-import de.yoxcu.stoandl.util.openSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -22,10 +21,6 @@ import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.rebble.libpebblecommon.timeline.toPebbleColor
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.freedesktop.dbus.connections.impl.DBusConnection
-import org.freedesktop.dbus.types.UInt32
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Clock
@@ -43,7 +38,38 @@ import kotlin.uuid.Uuid
  * registers under the same id; the owner-opaque token travels in the route).
  */
 data class NotifAction(val id: String, val label: String)
-data class ReplySpec(val cannedReplies: List<String>, val allowVoice: Boolean)
+/** A Reply (Response) action. An empty [cannedReplies] means `notification.canned_replies`; [label] is the
+ *  action's title on the watch (an app's own inline-reply label, e.g. "Reply"). */
+data class ReplySpec(val cannedReplies: List<String> = emptyList(), val label: String = "Reply")
+
+/** The firmware's limit for the canned-response attribute: the items joined by NUL, UTF-8. */
+private const val MAX_CANNED_BYTES = 512
+/** Longest action title we send (bytes, UTF-8). */
+private const val MAX_ACTION_TITLE_BYTES = 64
+
+/** Keep whole canned replies (in order, blanks dropped) while the NUL-joined UTF-8 fits [maxBytes]; the
+ *  first one that doesn't fit ends the list (a cut-off reply would be sent cut off). */
+internal fun trimCannedReplies(replies: List<String>, maxBytes: Int = MAX_CANNED_BYTES): List<String> {
+    val out = ArrayList<String>()
+    var size = 0
+    for (r in replies.map { it.trim() }.filter { it.isNotEmpty() }) {
+        val add = r.encodeToByteArray().size + if (out.isEmpty()) 0 else 1
+        if (size + add > maxBytes) break
+        out += r; size += add
+    }
+    return out
+}
+
+/** [s] cut to at most [maxBytes] of UTF-8 without splitting a character. */
+internal fun trimUtf8(s: String, maxBytes: Int): String {
+    if (s.encodeToByteArray().size <= maxBytes) return s
+    var end = s.length
+    while (end > 0 && s.substring(0, end).encodeToByteArray().size > maxBytes) {
+        end--
+        if (end > 0 && Character.isLowSurrogate(s[end]) && Character.isHighSurrogate(s[end - 1])) end--
+    }
+    return s.substring(0, end)
+}
 
 /** A request to put a notification on the watch. [appName] is the policy key (per-app mute/style). */
 data class NotifRequest(
@@ -100,6 +126,12 @@ class NotifRouteTable {
     fun put(itemId: Uuid, route: NotifRoute) { routes[itemId.toString()] = route }
     fun get(itemId: Uuid): NotifRoute? = routes[itemId.toString()]
     fun remove(itemId: Uuid) { routes.remove(itemId.toString()) }
+    /** Drop every route of [ownerId] (their tokens went stale); returns how many. */
+    fun removeOwner(ownerId: String): Int {
+        var n = 0
+        routes.entries.removeIf { (it.value.ownerId == ownerId).also { hit -> if (hit) n++ } }
+        return n
+    }
 }
 
 /** `notification.default_mute` → the mute state a newly-tracked app starts in. Unknown values fall back
@@ -209,7 +241,12 @@ class WatchNotifier(
         val muteActionId = if (app != null) aid++ else null
         // (the Dismiss action takes the next id; it's matched by type, not stored)
 
-        val reply = req.reply
+        // An empty list means the configured one; trimmed to whole items the firmware accepts.
+        val reply = req.reply?.let { r ->
+            val canned = trimCannedReplies(r.cannedReplies.ifEmpty { cfg.notificationCannedReplies })
+                .ifEmpty { DEFAULT_CANNED_REPLIES }
+            r.copy(cannedReplies = canned, label = trimUtf8(r.label.ifBlank { "Reply" }, MAX_ACTION_TITLE_BYTES))
+        }
         val styled = app
         val fixedId = req.itemId
         val notif = buildTimelineNotification(
@@ -232,11 +269,11 @@ class WatchNotifier(
             }
             actions {
                 req.actions.forEach { a ->
-                    action(TimelineItem.Action.Type.Generic) { attributes { title { a.label } } }
+                    action(TimelineItem.Action.Type.Generic) { attributes { title { trimUtf8(a.label, MAX_ACTION_TITLE_BYTES) } } }
                 }
                 if (reply != null) {
                     action(TimelineItem.Action.Type.Response) {
-                        attributes { title { "Reply" }; cannedResponse { reply.cannedReplies } }
+                        attributes { title { reply.label }; cannedResponse { reply.cannedReplies } }
                     }
                 }
                 if (styled != null) {
@@ -377,50 +414,5 @@ class WatchActionRouter(
         val attr = attributes.firstOrNull { it.attributeId.get() == titleId } ?: attributes.firstOrNull()
         // Wire strings are NUL-terminated; trim that (and any trailing space) off the chosen text.
         return attr?.content?.get()?.toByteArray()?.decodeToString()?.trimEnd(' ', ' ').orEmpty()
-    }
-}
-
-/**
- * [NotifOwner] for the passive desktop-notification bridge. The route's token is the originating
- * desktop notification's D-Bus id, so a wrist dismiss can close it via `CloseNotification()` (the one
- * method a non-owner may call on `org.freedesktop.Notifications`). Desktop notifications carry no named
- * actions or reply, so those callbacks are no-ops.
- */
-class DesktopNotifOwner : NotifOwner {
-    override val id = "desktop"
-    private val log = KotlinLogging.logger {}
-    @Volatile private var conn: DBusConnection? = null
-
-    override suspend fun onAction(itemId: Uuid, token: String?, actionId: String) {}
-    override suspend fun onReply(itemId: Uuid, token: String?, text: String) {}
-
-    override suspend fun onDismiss(itemId: Uuid, token: String?) {
-        val dbusId = token?.toLongOrNull()?.let { UInt32(it) } ?: return
-        withContext(Dispatchers.IO) {
-            try {
-                notifService()?.CloseNotification(dbusId)
-                log.info { "Closed D-Bus notification $dbusId for watch item $itemId" }
-            } catch (e: Exception) {
-                log.warn { "CloseNotification($dbusId) failed: ${e.message}" }
-                conn = null
-            }
-        }
-    }
-
-    private fun notifService(): FreedesktopNotifications? = try {
-        val existing = conn
-        val c = if (existing != null && existing.isConnected()) existing else {
-            existing?.disconnect()
-            openSessionBus().also { conn = it }
-        }
-        c.getRemoteObject(
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications",
-            FreedesktopNotifications::class.java,
-        )
-    } catch (e: Exception) {
-        log.warn { "Cannot reach D-Bus notification service: ${e.message}" }
-        conn = null
-        null
     }
 }

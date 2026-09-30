@@ -16,6 +16,9 @@ private val log = KotlinLogging.logger {}
  * affected subsystem — so GUI-exposed keys take effect without a restart. A hand-edit of this file
  * still needs a restart (nothing watches it), as do a few startup-only structural keys.
  */
+/** The firmware's own canned-reply list: `notification.canned_replies` when that is empty. */
+val DEFAULT_CANNED_REPLIES = listOf("Ok", "Yes", "No", "Call me", "Call you later")
+
 data class StoandlConfig(
     /** Track every observed desktop app in a per-app store and enforce per-app mute state host-side
      *  (drop before send) before a notification reaches the watch. Apps are lazy-added the first time
@@ -43,6 +46,10 @@ data class StoandlConfig(
      *  libpebble3's upstream behaviour (only notifications posted after the connection came up are sent).
      *  Capped at 1440 (the notification DB never syncs anything older than a day). Startup-only. */
     val notificationCatchUpMinutes: Long,
+    /** The watch's Reply list for desktop notifications with an inline reply (Plasma) and for extensions
+     *  that don't bring their own. Empty = the firmware's own list. Items are kept whole and cut off once
+     *  they no longer fit the firmware's 512-byte limit. Read per notification. */
+    val notificationCannedReplies: List<String>,
     /** Master switch for the desktop alerts stoandl raises **about itself** — pairing/bond trouble, a
      *  Bluetooth scan blocking reconnects, an extension that needs setup. These are the daemon's own
      *  events, not forwarded app notifications (those follow [notificationForward] / per-app mute), and
@@ -289,6 +296,7 @@ data class StoandlConfig(
             notificationSyncToWatch = false,
             notificationForward = true,
             notificationCatchUpMinutes = DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
+            notificationCannedReplies = DEFAULT_CANNED_REPLIES,
             alertsEnabled = true,
             alertsPairing = true,
             alertsBluetooth = true,
@@ -384,6 +392,8 @@ data class StoandlConfig(
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
                 notificationCatchUpMinutes = map["notification.catch_up_minutes"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 1440L) ?: DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
+                notificationCannedReplies = list("notification.canned_replies", DEFAULT_CANNED_REPLIES)
+                    .ifEmpty { DEFAULT_CANNED_REPLIES },
                 alertsEnabled = map["alerts.enabled"]?.let { parseBool(it) } ?: true,
                 alertsPairing = map["alerts.pairing"]?.let { parseBool(it) } ?: true,
                 alertsBluetooth = map["alerts.bluetooth"]?.let { parseBool(it) } ?: true,
@@ -459,6 +469,7 @@ data class StoandlConfig(
                 "Config loaded from ${file.path}: " +
                     "perApp=${cfg.notificationPerApp}, defaultMute=${cfg.notificationDefaultMute}, " +
                     "syncToWatch=${cfg.notificationSyncToWatch}, catchUp=${cfg.notificationCatchUpMinutes}min, " +
+                    "cannedReplies=${cfg.notificationCannedReplies}, " +
                     "dialerApps=${cfg.dialerApps}, vcardPaths=${cfg.vcardPaths}, " +
                     "weatherLocations=${cfg.weatherLocations.map { it.name }}, " +
                     "weatherIntervalMinutes=${cfg.weatherIntervalMinutes}, " +

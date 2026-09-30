@@ -2,7 +2,7 @@ package de.yoxcu.stoandl
 
 import co.touchlab.kermit.Logger
 import de.yoxcu.stoandl.battery.HeartbeatLayouts
-import de.yoxcu.stoandl.dbus.IncomingNotification
+import de.yoxcu.stoandl.dbus.NotificationEvent
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
@@ -66,7 +66,7 @@ fun main(args: Array<String>) {
     log.info { "stoandl ${BuildInfo.version} starting" }
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val notificationBus = MutableSharedFlow<IncomingNotification>(extraBufferCapacity = 64)
+    val notificationBus = MutableSharedFlow<NotificationEvent>(extraBufferCapacity = 64)
 
     val serviceConn = openSessionBus()
     serviceConn.requestBusName(STOANDL_BUS_NAME)
@@ -81,8 +81,8 @@ fun main(args: Array<String>) {
 
     // Start DBus notification monitor and feed into libpebble3
     monitorNotifications()
-        .onEach { notification ->
-            notificationBus.emit(notification)
+        .onEach { event ->
+            notificationBus.emit(event)
         }
         .launchIn(scope)
 

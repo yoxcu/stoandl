@@ -247,6 +247,11 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "A reconnecting watch also gets the notifications it missed that are at most this old (never from " +
             "before the daemon started or the watch was paired). 0 = only ones posted after it reconnected.",
         min = 0, max = 1440, unit = "min", apply = ConfigApply.RESTART) { it.notificationCatchUpMinutes.toIntClamped() },
+    list("notification.canned_replies", G_NOTIF, "Canned replies",
+        "The watch's Reply list for desktop notifications that take a reply (Plasma with the InvokeReply " +
+            "patch) and for extensions without their own list. Empty = Ok, Yes, No, Call me, Call you later. " +
+            "Whole items up to 512 bytes in total are sent.",
+        placeholder = "Ok,Yes,No,Call me,Call you later") { it.notificationCannedReplies },
 
     // --- stoandl's own alerts ---
     toggle("alerts.enabled", G_ALERTS, "Alerts from stoandl",

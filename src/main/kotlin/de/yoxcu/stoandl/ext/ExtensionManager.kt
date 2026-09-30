@@ -684,7 +684,9 @@ private class ExtensionProcess(
         } ?: emptyList()
         val reply = params["reply"]?.jsonObject?.let { r ->
             val canned = r["cannedReplies"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
-            ReplySpec(canned, r["allowVoice"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false)
+            // An empty list falls back to notification.canned_replies (in WatchNotifier). "allowVoice" is
+            // no longer read: the firmware offers Voice on any watch with a microphone regardless.
+            ReplySpec(canned, r.str("label") ?: "Reply")
         }
         val requestedId = params.str("itemId")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         val req = NotifRequest(

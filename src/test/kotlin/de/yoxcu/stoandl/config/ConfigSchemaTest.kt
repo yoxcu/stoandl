@@ -276,6 +276,15 @@ class ConfigSchemaTest {
     /** `weather.units` was dropped (the watch's own units decide): a line left in a user's file must
      *  still load, and the key must not come back as a GUI control. */
     @Test
+    fun `canned replies default to the firmware list, also when set empty`(): Unit = withTempConf { conf ->
+        assertEquals(DEFAULT_CANNED_REPLIES, StoandlConfig.load(conf, logResult = false).notificationCannedReplies)
+        conf.writeText("notification.canned_replies =\n")
+        assertEquals(DEFAULT_CANNED_REPLIES, StoandlConfig.load(conf, logResult = false).notificationCannedReplies)
+        conf.writeText("notification.canned_replies = On my way, Later ,\n")
+        assertEquals(listOf("On my way", "Later"), StoandlConfig.load(conf, logResult = false).notificationCannedReplies)
+    }
+
+    @Test
     fun `a leftover weather_units line is ignored`(): Unit = withTempConf { conf ->
         conf.writeText("weather.units = imperial\nweather.interval = 45\n")
         assertEquals(45L, StoandlConfig.load(conf, logResult = false).weatherIntervalMinutes)

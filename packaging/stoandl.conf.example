@@ -30,6 +30,10 @@ notification.forward = true
 # watch already has is not re-sent. 0 = only notifications posted after the connection came up (the
 # libpebble3 default). 0-1440; startup-only.
 notification.catch_up_minutes = 10
+# The watch's Reply list (comma-separated) for desktop notifications that take a reply -- on Plasma with
+# the InvokeReply patch (docs/features.md) -- and for extensions that don't bring their own. Whole items
+# are kept while they fit the firmware's 512-byte limit; empty = the firmware's list below.
+notification.canned_replies = Ok, Yes, No, Call me, Call you later
 
 # --- stoandl's own alerts -------------------------------------------------------------------------
 # The desktop alerts stoandl raises ABOUT ITSELF -- pairing trouble, another app's Bluetooth scan

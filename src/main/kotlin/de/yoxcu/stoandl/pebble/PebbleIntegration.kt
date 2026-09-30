@@ -3,7 +3,7 @@
 package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
-import de.yoxcu.stoandl.dbus.IncomingNotification
+import de.yoxcu.stoandl.dbus.NotificationEvent
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.dbus.MprisMusicControl
 import de.yoxcu.stoandl.dbus.TimedateTimeChanged
@@ -287,7 +287,7 @@ private val SCREEN_POLL = 5.seconds
 private val log = KotlinLogging.logger {}
 
 class PebbleIntegration(
-    private val notificationFlow: Flow<IncomingNotification>,
+    private val notificationFlow: Flow<NotificationEvent>,
     private val scope: CoroutineScope,
     private val serviceConn: DBusConnection,
 ) {
@@ -462,7 +462,8 @@ class PebbleIntegration(
         // In-memory route table: the firmware only offers the action menu on the live notification (not
         // from history), so a route never needs to outlive the daemon.
         val routeTable = NotifRouteTable()
-        val notifOwners = NotifOwnerRegistry().apply { register(DesktopNotifOwner()) }
+        val desktopOwner = DesktopNotifOwner(routeTable)
+        val notifOwners = NotifOwnerRegistry().apply { register(desktopOwner) }
         watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
@@ -494,6 +495,7 @@ class PebbleIntegration(
                     dialerApps = { config.dialerApps },
                     dialerNameCache = dialerNameCache,
                     watchNotifier = watchNotifier,
+                    desktopOwner = desktopOwner,
                 )
             }
             // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
@@ -2247,7 +2249,7 @@ class PebbleIntegration(
 }
 
 private class DbusNotificationListenerConnection(
-    private val notificationFlow: Flow<IncomingNotification>,
+    private val notificationFlow: Flow<NotificationEvent>,
     private val scope: CoroutineScope,
     /** Read live off the config store, so a `call.dialer_apps` edit applies without a restart. */
     private val dialerApps: () -> List<String>,
@@ -2255,13 +2257,20 @@ private class DbusNotificationListenerConnection(
     // The shared choke point: per-app tracking/mute/style + build + send + route now live here, used by
     // extensions too. This bridge just turns a desktop notification into a [NotifRequest].
     private val watchNotifier: WatchNotifier,
+    // Delivers wrist dismiss/reply/actions back to the desktop, and tracks server restarts and closes.
+    private val desktopOwner: DesktopNotifOwner,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
     override fun init(libPebble: LibPebble) {
         log.info { "DBus notification listener connection initialized" }
         scope.launch {
-            notificationFlow.collect { notification ->
+            notificationFlow.collect { event ->
+                if (event !is NotificationEvent.Posted) {
+                    desktopOwner.onEvent(event)
+                    return@collect
+                }
+                val notification = event.notification
                 val appLower = notification.appName.lowercase()
                 // Dialer notifications: capture the title for caller-name fallback, then suppress
                 // them from the watch (the native call screen already shows the call).
@@ -2270,22 +2279,37 @@ private class DbusNotificationListenerConnection(
                     log.info { "Suppressed dialer notification from ${notification.appName} (name='${notification.summary}')" }
                     return@collect
                 }
+                val ref = DesktopNotifRef.of(notification) ?: return@collect
+                // Reply and named actions go back through the server (Plasma's org.kde.NotificationManager),
+                // so they're only offered when that server has the method; otherwise a button that always
+                // fails would be worse than none. The canned list is filled in by WatchNotifier.
+                val caps = desktopOwner.capabilitiesFor(notification)
+                val reply = inlineReplyLabel(notification.actions)
+                    ?.takeIf { caps.invokeReply }?.let { ReplySpec(label = it) }
+                val actions = if (caps.invokeAction) {
+                    wristActions(notification.actions, MAX_WRIST_ACTIONS).map { (key, label) -> NotifAction(key, label) }
+                } else emptyList()
                 // subtitle defaults to appName inside WatchNotifier; per-app mute/style + the "Mute"
-                // action are applied there. The D-Bus id rides in the route as the owner token, so a
-                // wrist dismiss closes the original desktop notification (even after a restart).
+                // action are applied there. The desktop ref rides in the route as the owner token, so a
+                // wrist dismiss/reply reaches the original notification.
                 watchNotifier.push(
                     NotifRequest(
                         appName = notification.appName,
                         title = notification.summary,
                         body = notification.body,
+                        actions = actions,
+                        reply = reply,
                     ),
-                    ownerId = "desktop",
-                    ownerToken = notification.id.toString(),
+                    ownerId = desktopOwner.id,
+                    ownerToken = ref.encode(),
                 )
             }
         }
     }
 }
+
+/** App actions offered on the wrist besides Reply, Mute and Dismiss. */
+private const val MAX_WRIST_ACTIONS = 3
 
 /**
  * Host-side mute decision for a tracked app, mirroring the relevant parts of libpebble3's
