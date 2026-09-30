@@ -325,9 +325,11 @@ power.pause_datalog_screen_off = false
 # upstream behaviour (the link keeps whatever it had at connect, often 15 ms). 500,520,0,6000 suits a
 # sleeping phone; it needs /etc/bluetooth/main.conf [LE] MaxConnectionInterval=416 — read
 # docs/deep-sleep.md first (the Linux "LL trap"). Watch buttons react up to one interval later.
+ble.conn_params = off
 # ble.conn_params = 500,520,0,6000
 # Optional fast set during the connect handshake and bulk transfers. Only with the K5 kernel fix (or a
 # watch that uses L2CAP signalling) — see docs/deep-sleep.md.
+ble.conn_params_fast = off
 # ble.conn_params_fast = 15,15,0,6000
 
 # ── Do Not Disturb ↔ Quiet Time ──────────────────────────────────────────────────────────────────

@@ -8,8 +8,8 @@ Keep it in sync with `GUI_CONFIG_FIELDS` — `ConfigSchemaTest` enforces the mec
 exposed key round-trips through `StoandlConfig.load`, no duplicates, no framing characters), but the
 *Applies* column is prose and only a human can keep it honest.
 
-**Scope.** `stoandl.conf` has 58 top-level keys plus two prefix families (`watch.<prefId>`,
-`extension.<name>.<key>`). 51 are rendered by the schema-driven Settings page; the remaining ones are
+**Scope.** `stoandl.conf` has 57 top-level keys plus two prefix families (`watch.<prefId>`,
+`extension.<name>.<key>`). 50 are rendered by the schema-driven Settings page; the remaining ones are
 reachable through a **richer dedicated surface** and are listed in [§3](#3-keys-deliberately-not-in-the-schema).
 Nothing is unreachable.
 

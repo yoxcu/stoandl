@@ -515,14 +515,19 @@ interface StoandlControl : DBusInterface {
      *  read off the live (reloaded-on-write) config store. */
     fun GetConfig(): List<String>
 
-    /** Schema for the curated daemon-config keys: one tab-separated `key\ttype\tlabel\toptions\tdesc`
-     *  each (type `toggle`|`combo`; `options` is a CSV for combos). Paired with [GetConfig]. */
+    /** Schema for the curated daemon-config keys, one tab-separated row each:
+     *  `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder` — type `toggle`|`combo`|
+     *  `text`|`int`|`list`; `options` is a CSV for combos; `apply` is `live` or `restart`; `min`/`max`/`unit`
+     *  are set for `int`, `placeholder` for `text`/`list`. Columns 6–11 were appended to the original five,
+     *  so a client that reads the first five positionally still works. Paired with [GetConfig]. */
     fun GetConfigSchema(): List<String>
 
-    /** Set one curated daemon-config [key] to [value] (a toggle's `true`/`false` or a combo's option
-     *  label, per [GetConfigSchema]), persisted to `stoandl.conf`. The change is reloaded and the affected
-     *  subsystem re-reconciled, so it **takes effect live** (no restart). `notfound:` for an unknown key,
-     *  `error:` for an invalid value or a write failure. */
+    /** Set one curated daemon-config [key] to [value] (a toggle's `true`/`false`, a combo's option label,
+     *  or the text/number/list value, per [GetConfigSchema]), persisted to `stoandl.conf`. The change is
+     *  reloaded and the affected subsystem re-reconciled, so it takes effect live — except for the keys the
+     *  schema marks `apply=restart`, which the daemon reads only at startup: their `ok:` ends in
+     *  "(restart stoandl to apply)". `notfound:` for an unknown key, `error:` for an invalid value or a
+     *  write failure. */
     fun SetConfig(key: String, value: String): String
 
     // --- Signals -----------------------------------------------------------------------------------

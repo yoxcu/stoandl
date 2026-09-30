@@ -223,8 +223,9 @@ data class StoandlConfig(
     val bleConnParamsFast: BleConnParamSet?,
     /** Hold a logind *delay* inhibitor so a suspend waits (up to [powerSleepGuardMaxMs]) until watch
      *  traffic in flight — typically the notification a push wake just produced — has reached the watch.
-     *  Also drives the suspend-aware (wall-clock) scheduling of weather/calendar/firmware checks. On by
-     *  default; harmless on desktops (released within milliseconds when nothing is pending). */
+     *  Switches only the lock: the suspend-aware (wall-clock) scheduling of weather/calendar/firmware
+     *  checks and the before-suspend discovery stop work the same without it. On by default; harmless on
+     *  desktops (released within milliseconds when nothing is pending). */
     val powerSleepGuard: Boolean,
     /** Longest a suspend is held for pending watch traffic, in ms (logind's own cap is
      *  `InhibitDelayMaxSec`, 5 s by default). */
