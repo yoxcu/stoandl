@@ -137,10 +137,15 @@ friction without real security, so it was dropped — `extensions.enabled` is th
   "title":"Alice","body":"dinner?","subtitle":"#weekend",
   "iconCode":"NotificationGeneric","color":"Red","vibe":"double",  // optional; per-app override wins
   "actions":[{"id":"archive","label":"Archive"}],
-  "reply":{"cannedReplies":["OK","On my way","Later"],"allowVoice":true}}}
+  "reply":{"cannedReplies":["OK","On my way","Later"],"label":"Reply"}}}
 // host -> ext (result)
 {"jsonrpc":"2.0","id":7,"result":{"itemId":"e3b0c442-…"}}   // daemon-issued correlation id
 ```
+
+`reply.cannedReplies` may be empty: the host then uses `notification.canned_replies`. The list is cut
+after the last whole item that fits the firmware's 512 bytes. `reply.label` (optional, default `Reply`)
+is the action's title on the watch. The older `allowVoice` field is accepted and ignored: the watch
+offers voice on any model with a microphone regardless.
 
 Callbacks (host→ext notifications, dispatched **async** — never blocking the read loop):
 

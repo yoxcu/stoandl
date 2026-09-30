@@ -20,12 +20,18 @@ tested](#implemented--to-be-tested)** is written but not yet run on hardware (te
 
 Desktop → watch: D-Bus `org.freedesktop.Notifications` → the Pebble timeline. This is the core of
 stoandl and runs automatically once the daemon is up and a watch is connected — no command needed.
+_To be tested:_ also the notifications that never pass through `Notify` — sandboxed (Flatpak) apps on
+Plasma ≥ 6.7, whose portal notifications plasmashell draws itself, and GApplication apps on GNOME
+(`org.gtk.Notifications`) — see [below](#notifications-from-sandboxed-and-gtk-apps).
 
 ### Notification dismiss
 
 Watch → desktop: `Dismiss` / `AncsDismiss` actions mark the notification read on the watch **and**
-call `CloseNotification()` on D-Bus, so dismissing on the wrist clears it on the desktop too.
-Automatic.
+close it on the desktop, so dismissing on the wrist clears it there too. Automatic. A `Notify`
+notification is closed with `CloseNotification()`; GNOME ≥ 42's relay refuses that for a live
+notification another app posted, so stoandl then closes it on GNOME Shell's own object, which uses the
+same ids (_to be tested_; `notify-send` never showed the problem because its ids aren't live any more).
+Portal and GTK notifications are removed with their backend's `RemoveNotification` (_to be tested_).
 
 ### App / watchface management
 
@@ -585,6 +591,37 @@ offline (the fork's 281 JVM tests, the daemon's tests, a boot smoke that migrate
 the hardware pass is _to be tested_ ([TESTING.md §5.33](../TESTING.md)). The fork branch becomes
 `stoandl` once it passes. Runbook and decisions: [FIRMWARE-GAPS.md §3](../FIRMWARE-GAPS.md).
 
+### Reply to desktop notifications
+
+On Plasma with the `InvokeReply` patch (plasma-workspace, submitted upstream; carried on the phone as
+`plasma-workspace` 99996.7.5-r100 + `plasma-mobile` 6.7.5-r101), a notification whose app offers an
+inline reply — NeoChat, Kaidan, Telegram, Nheko, Ruqola, KDE Connect mirrors — gets a **Reply** action on
+the watch with the canned list from `notification.canned_replies` (the watch also offers emoji, and
+voice on watches with a microphone). The chosen text goes to the app exactly as if typed into the
+popup: stoandl asks plasmashell to send it (`org.kde.NotificationManager.InvokeReply`), because apps
+only accept a reply from the notification server itself. stoandl probes the server for that method at
+start and after every restart, so without the patch no Reply action appears. The app's other actions
+(e.g. Telegram's *Mark as read*) appear on the wrist too, up to three, through the `InvokeAction`
+method every Plasma since 5.19 has. Replies also go out while the phone is locked — answering from the
+wrist is the point. The watch shows *Sent* when plasmashell accepted it and *Failed* otherwise
+(notification already gone, server restarted). Not on GNOME: GNOME Shell has no inline replies at all,
+so reply there per channel (the [Matrix extension](../examples/extensions/matrix)). _To be tested_
+([TESTING.md §5.34](../TESTING.md)).
+
+### Notifications from sandboxed and GTK apps
+
+Two kinds of notification never reach `org.freedesktop.Notifications.Notify`, so the watch never saw
+them: on Plasma ≥ 6.7 a sandboxed (Flatpak) app's portal notification is drawn by plasmashell itself
+(`plasmanotify`), and on GNOME every GApplication app — and every portal notification — goes to
+`org.gtk.Notifications`. stoandl now also watches those calls (passively, as before). A notification
+seen twice on its way (GNOME forwards portal notifications to `org.gtk.Notifications`; Plasma ≤ 6.6
+turns them into a `Notify`) is sent once. Their app name comes from the app's `.desktop` file, so they
+share a per-app mute entry with the same app's `Notify` notifications. They have no reply or actions on
+the wrist; Dismiss works. And when the notification server restarts (plasmashell crash, GNOME Shell
+restart) stoandl rebuilds its monitor instead of going silent until its own restart, and forgets the
+old ids, so a wrist action can't hit a new notification that reuses one. _To be tested_
+([TESTING.md §5.34](../TESTING.md)).
+
 ### Phone call notifications
 
 ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive
@@ -742,11 +779,10 @@ Pebbles to verify. _To be tested._ Known gaps before multi-watch is fully usable
 
 ### Send text / reply
 
-Reply to messages from the watch. A **generic** reply driven off the notification bus is *not viable*
-([why](#why-generic-notification-reply-isnt-viable)): stoandl is a passive `BecomeMonitor` copy, not
-the owner of `org.freedesktop.Notifications`, so reply signals are dropped — only `Dismiss` works (it
-rides on `CloseNotification()`, the one method a third party may call). The viable path is
-**per-channel, bypassing the notification bus**: **Matrix** already ships as an extension
+Reply to messages from the watch. On Plasma with the `InvokeReply` patch, replies to ordinary desktop
+notifications now work ([above](#reply-to-desktop-notifications)); elsewhere a generic reply off the
+notification bus is still impossible ([why](#why-generic-notification-reply-isnt-viable)). The path that
+works everywhere, GNOME included, is **per-channel, bypassing the notification bus**: **Matrix** already ships as an extension
 ([`examples/extensions/matrix`](../examples/extensions/matrix), mautrix-go + pure-Go goolm; long-poll
 `/sync` → watch, canned reply → same room, E2EE handled) — built + smoke-tested, not yet run on a real
 account/watch — and **SMS** via the ModemManager Messaging interface (reusing the telephony
@@ -826,6 +862,17 @@ instantaneous GATT *level* stays BLE-only.
 ## Why generic notification reply isn't viable
 
 _Investigated 2026-06; parked. Recorded here so it isn't re-litigated._
+
+**Update 2026-09-30:** on Plasma it *is* viable after all — not by owning the name, but by asking the
+owner. plasmashell's private `org.kde.NotificationManager` interface already lets any client invoke a
+notification's actions (`InvokeAction`); a ~20-line plasma-workspace patch adds `InvokeReply`, and stoandl
+uses it ([Reply to desktop notifications](#reply-to-desktop-notifications)). Two statements below were
+wrong and are corrected: KDE Connect forwards desktop notifications with `BecomeMonitor` exactly like
+stoandl and can reply only to notifications it posted itself; and on GNOME ≥ 42 `CloseNotification()`
+is *not* callable on any notification — the relay only lets the posting client close a live one.
+GNOME and the portal remain as described (no inline reply in GNOME Shell; no sandboxed app sends a
+reply button through the portal yet). Research: the two reports behind this are summarised in memory
+`notification-reply-parked`.
 
 Replying to a desktop notification means delivering text **back to the originating app**. On the
 freedesktop bus that happens via the daemon→app `ActionInvoked` / `NotificationReplied` *signal*,

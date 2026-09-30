@@ -1762,6 +1762,29 @@ older jar, `stoandl restore` that backup.
 | 5.33k | Health | 5.219 and 5.219d; after a synced night, the watch's sleep card | The sleep card shows plausible typical bedtime and wake times (upstream `7de45f8a`/`42cbc5a4`; before, epoch seconds and zero typicals). |
 | 5.33l | Quick wired-feature pass | 5.239 (battery, screenshot, language list, music from the watch), plus a calendar reminder | Each still works. A calendar reminder now offers Dismiss/Snooze on the watch (upstream `d1cffc9e`). |
 
+## 5.34 Desktop notification reply, portal/GTK notifications, server restarts  ⚠️ UNVERIFIED (needs a watch; Plasma rows need the InvokeReply patch)
+
+Plasma packages with the patch (phone): `plasma-workspace` + **`plasma-workspace-libs`** 99996.7.5-r100
+(install every installed `plasma-workspace*` subpackage together — the code is in `-libs`) and
+`plasma-mobile` 6.7.5-r101, from `builder:~/alpine-build/out/` (signed with the builder key
+`op6@localhost-6abb912a`). Restart the session afterwards. Check:
+`gdbus introspect --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications | grep -A3 InvokeReply`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.34a | Capability probe | start the daemon on the patched Plasma; then on stock Plasma; then on GNOME | Log once per server: `Notification server :1.N: InvokeAction=true, InvokeReply=true` (patched) / `InvokeReply=false` (stock) / no line or both false (GNOME). |
+| 5.34b | Reply from the wrist | NeoChat (native package) message arrives; on the watch open it → **Reply** → pick a canned reply | Watch shows *Sent*; the room gets the message from your account; log `Replied to D-Bus notification N`. The desktop/phone popup goes away (reason 3). |
+| 5.34c | Reply while locked | as b with the phone locked and the display off (Mode A or B, §5.32) | Same result: replies are sent while locked. With plasma-mobile r101 the notification keeps its reply action after the popup timed out / with the display off (before: gone after ~0–5 s). |
+| 5.34d | No Reply without the patch | stock plasma-workspace, or GNOME | The NeoChat notification on the watch has no Reply action (only Mute/Dismiss and, on stock Plasma, the app's other actions). |
+| 5.34e | App actions | Telegram Desktop message on Plasma | The watch lists *Mark as read* (and at most three app actions); choosing it marks the chat read; log `Invoked action 'mail-mark-read' …`. No action named after the reply ever appears as a plain action. |
+| 5.34f | Canned list | `stoandl daemon set notification.canned_replies "On my way, Later"` (or the GUI), new message | The Reply list shows exactly *On my way*, *Later* (live, no restart). Empty value → the firmware's five. A very long list is cut after the last whole item that fits 512 bytes. |
+| 5.34g | Late reply | receive a message, dismiss it on the phone/desktop, then Reply on the watch | Watch shows *Failed* (the server reports it closed); nothing is sent. |
+| 5.34h | Server restart | `systemctl --user restart plasma-plasmashell` (desktop) or `kquitapp6 plasmashell; plasmashell &` | Log `Owner of org.freedesktop.Notifications changed — rebuilding the notification monitor` and `Notification server changed (…): dropped N desktop route(s)`; a new notification afterwards reaches the watch (before: silence until stoandl restarted). A wrist Dismiss/Reply on a notification from before the restart does nothing to new notifications. |
+| 5.34i | Flatpak app on Plasma ≥ 6.7 | Flathub NeoChat (or any Flatpak messenger) posts a notification | It reaches the watch once, with the app's name from its `.desktop` file; wrist Dismiss removes it from plasmashell (log `Removed portal notification …`). |
+| 5.34j | GApplication app on GNOME | Fractal / Chatty / `gapplication` test app posts a notification | Reaches the watch once (a portal notification forwarded to `org.gtk.Notifications` too — not twice); wrist Dismiss removes it (log `Removed GTK notification …`). |
+| 5.34k | GNOME dismiss of a live notification | NeoChat or Telegram on GNOME (not `notify-send`), dismiss on the wrist | The desktop notification disappears; log `Closed D-Bus notification N via GNOME Shell` (the relay refused the direct close). |
+| 5.34l | Extension reply list | Matrix extension message → Reply | The extension's own canned list if it sends one; otherwise `notification.canned_replies`. |
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)

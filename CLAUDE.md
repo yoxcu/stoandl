@@ -44,7 +44,8 @@ watch-pref ranges (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS an
 
 ```
 Desktop apps
-    │  Notify() on org.freedesktop.Notifications (D-Bus session bus)
+    │  Notify() on org.freedesktop.Notifications, AddNotification() on the portal
+    │  backend (Plasma >= 6.7 Flatpaks) or org.gtk.Notifications (GNOME)  (D-Bus session bus)
     ▼
 DbusNotificationMonitor   ← passive BecomeMonitor copy (does NOT intercept)
     │  Flow<IncomingNotification>  (MutableSharedFlow, buffer 64)
@@ -61,7 +62,7 @@ Pebble watch over BLE/PPoG
 
 **Key design points:**
 
-- `monitorNotifications()` (`DbusNotificationMonitor.kt`) uses `DBusMonitoring.BecomeMonitor` — the notification is a *passive copy*; the original still reaches the system notification daemon (dunst, mako, etc.). After `BecomeMonitor` succeeds, the writer on `TransportConnection` is replaced with a no-op via reflection to prevent dbus-java's auto-reply from closing the monitor connection.
+- `monitorNotifications()` (`DbusNotificationMonitor.kt`) uses `DBusMonitoring.BecomeMonitor` — the notification is a *passive copy*; the original still reaches the system notification daemon (dunst, mako, etc.). After `BecomeMonitor` succeeds, the writer on `TransportConnection` is replaced with a no-op via reflection to prevent dbus-java's auto-reply from closing the monitor connection. It also watches portal/GTK `AddNotification`, the server's `NotificationClosed` and `NameOwnerChanged` for its name (rebuilding itself when the server restarts). Wrist actions go back through `DesktopNotifOwner` (`pebble/DesktopNotifOwner.kt`): Dismiss via `CloseNotification` (GNOME Shell's own object as fallback) or the backend's `RemoveNotification`; Reply and app actions via Plasma's `org.kde.NotificationManager` (`InvokeReply` needs the plasma-workspace patch and is probed by introspection) — never `InvokeAction("inline-reply")`, which KNotifications turns into an empty reply.
 
 - `PebbleIntegration.kt` initializes Koin (libpebble3's DI), then loads an override module. It swaps `NotificationListenerConnection` for `DbusNotificationListenerConnection` (bridges the D-Bus `Flow`), replaces libpebble3's no-op JVM platform bindings (notification actions, music, calendar, call log, geolocation, time changes, platform flags), and pins four config flows to one host-built `LibPebbleConfig` so no persisted Java Preferences (`LibPebbleConfigHolder` loads storage over the host default) can override them: `LibPebbleConfigFlow`/`BleConfigFlow` (forward PPoG, `legacyReversedPPoG=false` + `useReversedPpogV2=false`; upstream `PebbleBle` picks the transport from `LibPebbleConfigFlow`), `WatchConfigFlow` (`lanDevConnection=true`) and `NotificationConfigFlow` (`missedNotificationCatchUpMs` from `notification.catch_up_minutes`, the fork's notification catch-up after a disconnect).
 
