@@ -151,7 +151,7 @@ class HeartbeatStore(
             socPct = soc,
             voltage = voltage,
             voltageDelta = (l.i32(p, VOLTAGE_DELTA) ?: return null) / 1000.0,
-            tteSeconds = l.u32(p, "battery_tte_s") ?: 0L, // not emitted before fw 4.9.170
+            tteSeconds = l.u32(p, "battery_tte_s") ?: 0L,
             chargeMs = chargeMs,
             dischargeMs = dischargeMs,
             charging = chargeMs > 0,

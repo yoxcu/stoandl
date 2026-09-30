@@ -15,12 +15,12 @@ is the complete map.
 Derived from `include/pbl/services/analytics/analytics.def` in
 [`coredevices/PebbleOS`](https://github.com/coredevices/PebbleOS) — the X-macro list that
 `src/fw/services/analytics/native.c` expands into `struct PACKED native_heartbeat_record` — at every
-release tag. Offsets are computed, not guessed: header is
+release tag from v4.10.0. Offsets are computed, not guessed: header is
 `version:u8 @0 | timestamp:u64 @1 | build_id:u8[20] @9` (29 B), then metrics in declaration order
 with `UNSIGNED`/`SIGNED`/`TIMER` = 4 B, `SCALED_*` = value 4 B + `u16` scale, `STRING(len)` = `len + 1`.
 
-`tools/hb_layouts_from_source.py <PebbleOS checkout>` does that walk for every `vX.Y.Z` tag and prints
-the layouts, each metric's first release, and (`--kotlin`) the lines for `HeartbeatLayout.kt`;
+`tools/hb_layouts_from_source.py <PebbleOS checkout>` does that walk for every `vX.Y.Z` tag whose record
+is really packed (it skips and lists the others) and prints the layouts, each metric's first release, and (`--kotlin`) the lines for `HeartbeatLayout.kt`;
 `--offsets <tag>` prints one release's full offset map. It also reports any `(size, version)` two
 releases fill differently (none so far). Run it after a firmware release that touches
 `analytics.def`. When the source isn't available, `tools/hb_relayout_probe.py` recovers the
@@ -30,21 +30,12 @@ battery-block shift empirically from stored raw blobs — the record's `build_id
 ## Layout versioning — read this before adding offsets
 
 The record is **not** fixed. Adding a metric to `analytics.def` shifts every field after it, and for
-thirteen layouts the version byte did not change. Every released layout, as `HeartbeatLayout.kt`
-has them:
+four layouts the version byte did not change. Every decoded layout, as `HeartbeatLayout.kt` has them:
 
 | size | version | first release | metrics | change |
 | ---- | ------- | ------------- | ------: | ------ |
-| 310 B | 1 | 4.9.158 | 50 | first native heartbeat |
-| 419 B | 1 | 4.9.160 | 65 | + `fw_version`, `last_reboot_reason`, `touch_event_count`, ten `task_cpu_*_pct`, `settings_power_mode`, `settings_motion_sensitivity` |
-| 427 B | 1 | 4.9.166 | 67 | + `gesture_tap_count`, `gesture_double_tap_count` |
-| 431 B | 1 | 4.9.167 | 68 | + `app_tick_timer_second_subscribed` |
-| 451 B | 1 | 4.9.168 | 73 | + five `speaker_*` metrics |
-| 459 B | 1 | 4.9.170 | 75 | + `battery_tte_s`, `sifli_ipc_not_idle_count` |
-| 467 B | 1 | 4.9.172 | 77 | + `watchface_crash_count`, `watchface_crash_revert_count` |
-| 495 B | 1 | 4.9.177 | 84 | + `memory_largest_free_pct`, six `ble_disconnect_*_count` |
-| 499 B | 1 | 4.9.179 | 85 | + `uptime_s` |
-| 507 B | 1 | 4.9.184 | 87 | + `settings_backlight_intensity_pct`, `settings_backlight_timeout_s` |
+| _336–560 B_ | 1 | 4.9.158 … 4.9.184 | 50 → 87 | **not packed, not decoded** (see below); kept raw |
+| 507 B | 1 | 4.10.0 | 87 | first packed record (PebbleOS `fac6968e`), the metrics of 4.9.184 |
 | 515 B | 1 | 4.13.0 | 89 | + `stack_free_app_syscall_bytes`, `stack_free_worker_syscall_bytes` |
 | 523 B | 1 | 4.20.0 | 91 | + `touch_driver_wake_cnt`, `settings_touch_enabled` |
 | 527 B | 1 | 4.26.0 (`31e3ea8e1`, 2026-07-14) | 92 | **+ `ppog_reversed` @467, same version byte** |
@@ -64,15 +55,25 @@ Consequences that have already bitten us:
 3. The 567 B / v3 record went unnoticed from fw 4.33.0 (2026-08-06) until the review of 2026-09-28:
    it had no row, so the power pie, drain bars and notification overlay were empty while the battery
    block kept decoding through the structural fallback.
-4. Before 4.13 even the battery block sat elsewhere (`battery_soc_pct` @49 in 4.9.158, @86 from
-   4.9.160, @90, @94). No offset is stable across all releases, which is why stoandl reads every
-   field **by name** through the layout and hardcodes none.
+4. Before 4.13 even the battery block sat elsewhere (`battery_soc_pct` @94 in 4.10.0, @102 from
+   4.13.0). No offset is stable across all releases, which is why stoandl reads every field
+   **by name** through the layout and hardcodes none.
+5. **The 4.9.x records were never packed.** Through v4.9.184 `native.c` declared
+   `__attribute__((packed)) struct native_heartbeat_record`, and GCC ignores the attribute in front of
+   `struct`. Those records have natural ARM alignment: timestamp @8 and build_id @16, 2 B of padding
+   after every `u16` scale, the tail padded to 8 B (336, 472, 480, 504, 512, 520, 544, 552 and 560 B,
+   `battery_soc_pct` @56 to @104). PebbleOS `fac6968e` (first in v4.10.0) moved the attribute and added
+   a `_Static_assert`. An earlier table carried nine 4.9.x rows computed as if packed, sizes no watch
+   ever sent; the tool now skips a tag whose struct isn't packed. Such records match no row and fail
+   the structural fallback's scale checks, so they are kept raw and not decoded (their stored `build_id`
+   and `watch_ts` are read at the packed offsets and are wrong too).
 
 ## The metrics
 
 102 metrics across all releases; 101 in the current 567 B / v3 layout. Offsets are given for the four
 layouts since 4.20; `—` means the metric does not exist in that layout. For older releases run
-`tools/hb_layouts_from_source.py <PebbleOS> --offsets v4.9.184` (or the release in question).
+`tools/hb_layouts_from_source.py <PebbleOS> --offsets v4.10.0` (or the release in question). `since` is
+the first release whose `analytics.def` has the metric; records are decoded only from 4.10.0 on.
 ✅ marks the 28 the battery views read; `stoandl watch battery heartbeat --all` and the
 `HeartbeatMetrics` D-Bus method decode all of them.
 

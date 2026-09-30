@@ -76,8 +76,8 @@ class HeartbeatStoreTest {
 
     @Test
     fun oldLayoutReadsTheBatteryBlockAtItsOwnOffsets() {
-        // fw 4.9.184 (507 B / v1) has no stack_free_*_syscall_bytes, so its battery block starts
-        // at 94, not 102. Offsets from `hb_layouts_from_source.py --offsets v4.9.184`.
+        // fw 4.10.0 (507 B / v1) has no stack_free_*_syscall_bytes, so its battery block starts
+        // at 94, not 102. Offsets from `hb_layouts_from_source.py --offsets v4.10.0`.
         val p = ByteArray(507).also { it[0] = 1 }
         p.putU32(94, 5000); p.putU16(98, 100) // battery_soc_pct
         p.putU32(100, 100); p.putU16(104, 100) // battery_soc_pct_drop
@@ -86,13 +86,13 @@ class HeartbeatStoreTest {
         p.putU32(126, 3_600_000) // battery_discharge_duration_ms
         p.putU16(190, 100) // cpu_running_pct scale @186
         p.putU32(290, 4) // notification_received_count
-        store.record(p, "OLD", "v4.9.184")
+        store.record(p, "OLD", "v4.10.0")
 
         assertEquals(50.0, store.history("OLD", 0).single().level)
         val a = store.activity("OLD", 0).single()
         assertEquals(1.0, a.socDropPct)
         assertEquals(4L, a.notifCount)
-        assertEquals(0L, a.speakerMs, "fw 4.9.184 emits speaker metrics, all zero here")
+        assertEquals(0L, a.speakerMs, "fw 4.10.0 emits speaker metrics, all zero here")
         assertEquals(87, assertNotNull(store.latestDump("OLD")).metrics.size)
     }
 

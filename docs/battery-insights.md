@@ -87,12 +87,14 @@ from records already on disk with `tools/hb_relayout_probe.py`.
 any row stored with `decoded=false`, and the activity views re-read every row's raw blob, so records
 stranded by an unknown layout recover on the next read — no file rewrite or migration.
 
-Known layouts — every release tag's `analytics.def`, walked to its record size (the full list, from
-4.9.158 on, is in [heartbeat-metrics.md](heartbeat-metrics.md#layout-versioning--read-this-before-adding-offsets)):
+Known layouts — every release tag's `analytics.def`, walked to its record size (the full list is in
+[heartbeat-metrics.md](heartbeat-metrics.md#layout-versioning--read-this-before-adding-offsets)). Records
+are decoded from fw 4.10.0 on: 4.9.x firmware never actually packed the record, so its naturally aligned
+records are kept raw only:
 
 | size | version | first release | notes |
 | ---- | ------- | ------------- | ----- |
-| 310–515 B | 1 | 4.9.158 … 4.13.0 | eleven early layouts; the battery block sits at @49 to @102, so they decode only because every field is read by name |
+| 507–515 B | 1 | 4.10.0 … 4.13.0 | two early layouts; the battery block sits at @94 and @102, so they decode only because every field is read by name |
 | 523 B | 1 | 4.20.0 | 91 metrics |
 | 527 B | 1 | 4.26.0 (PebbleOS `31e3ea8e1`, 2026-07-14) | inserted `ppog_reversed` @467 (92 metrics). Of the fields the views read, only `connectivity_connected_time_ms` moves: 515 → 519 |
 | 523 B | 2 | 4.32.0 (PebbleOS `5ef38b9e9`, 2026-07-22) | removed `settings_power_mode` and bumped the version byte; back to 523 B with a different tail than 523 B / v1 |

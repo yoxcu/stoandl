@@ -1279,8 +1279,8 @@ captured in the `WebServices.uploadAnalyticsHeartbeat` override that used to dro
 [docs/battery-insights.md](docs/battery-insights.md).
 
 **The load-bearing unknown is B on real hardware:** the record layouts + offsets are derived from
-PebbleOS `analytics.def` at every release tag (15 layouts, 4.9.158 through the current **567 B /
-version 3** of fw ≥ 4.33) and unit-tested against that source, but *not* against a live watch. The
+PebbleOS `analytics.def` at every release tag (6 layouts, 4.10.0 through the current **567 B /
+version 3** of fw ≥ 4.33; 4.9.x records were never packed and are not decoded) and unit-tested against that source, but *not* against a live watch. The
 decoder is strictly gated (`(size, version)` must be a released layout, + scale/range checks) and
 **captures raw on any mismatch**, so a layout mismatch degrades to the GATT fallback rather than
 emitting garbage — but confirm it actually decodes.
@@ -1355,7 +1355,7 @@ installed** (`./install.sh`, or `./install.sh --remote user@host`). Which watch 
 Firmware 4.33.0 through 4.38.2 sends the heartbeat as **567 B / version 3** (ten metrics appended),
 which stoandl had no layout for: the battery block still decoded through the structural fallback, but
 the drain bars, the power pie and the notification overlay stayed **empty on every current firmware**.
-`HeartbeatLayout.kt` now carries every released layout, derived from PebbleOS `analytics.def` by
+`HeartbeatLayout.kt` now carries every released packed layout (fw ≥ 4.10.0), derived from PebbleOS `analytics.def` by
 `tools/hb_layouts_from_source.py` and checked by `HeartbeatLayoutTest`/`HeartbeatStoreTest` (a
 synthetic 567 B record decodes every metric at its source offset; unknown layouts are rejected).
 Records captured before the update are kept raw, so they **backfill** on the first read.

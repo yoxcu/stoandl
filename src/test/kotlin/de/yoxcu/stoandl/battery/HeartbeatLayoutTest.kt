@@ -62,15 +62,6 @@ class HeartbeatLayoutTest {
             "connectivity_connected_time_ms",
         )
         val golden = mapOf(
-            (310 to 1) to listOf(49, 97, 105, null, 145, 206, 282, 302),
-            (419 to 1) to listOf(86, 134, 146, 188, 246, 307, 383, 411),
-            (427 to 1) to listOf(86, 134, 154, 196, 254, 315, 391, 419),
-            (431 to 1) to listOf(86, 134, 154, 196, 254, 315, 391, 423),
-            (451 to 1) to listOf(86, 154, 174, 216, 274, 335, 411, 443),
-            (459 to 1) to listOf(86, 158, 178, 224, 282, 343, 419, 451),
-            (467 to 1) to listOf(86, 158, 178, 224, 282, 343, 427, 459),
-            (495 to 1) to listOf(90, 162, 182, 228, 286, 347, 455, 487),
-            (499 to 1) to listOf(94, 166, 186, 232, 290, 351, 459, 491),
             (507 to 1) to listOf(94, 166, 186, 232, 290, 351, 459, 499),
             (515 to 1) to listOf(102, 174, 194, 240, 298, 359, 467, 507),
             (523 to 1) to listOf(102, 174, 198, 244, 302, 363, 471, 515),
@@ -118,6 +109,9 @@ class HeartbeatLayoutTest {
     fun unknownLayoutsAreRejectedNotMisdecoded() {
         val cases = listOf(
             567 to 2, 567 to 4, // right size, wrong version
+            // fw 4.9.158 … 4.9.184: the struct's packed attribute was ignored, so these records are
+            // naturally aligned (PebbleOS fac6968e) and match no packed layout.
+            336 to 1, 472 to 1, 480 to 1, 504 to 1, 512 to 1, 520 to 1, 544 to 1, 552 to 1, 560 to 1,
             531 to 3, 563 to 3, // v3 development builds between two releases
             523 to 3, 568 to 3, 0 to 0,
         )
@@ -134,9 +128,9 @@ class HeartbeatLayoutTest {
     @Test
     fun readersReportAbsentMetricsAndRejectTypos() {
         val oldest = HeartbeatLayouts.LAYOUTS.first()
-        assertNull(oldest.off("speaker_on_time_ms"), "no speaker metrics in fw 4.9.158")
-        assertNotNull(HeartbeatLayouts.NEWEST.off("speaker_on_time_ms"))
-        assertFailsWith<IllegalArgumentException> { oldest.off("speaker_ontime_ms") }
+        assertNull(oldest.off("stack_free_app_syscall_bytes"), "no syscall stack metrics before fw 4.13.0")
+        assertNotNull(HeartbeatLayouts.NEWEST.off("stack_free_app_syscall_bytes"))
+        assertFailsWith<IllegalArgumentException> { oldest.off("stack_free_app_syscal_bytes") }
         // A record too short for the field reads as absent, not as an out-of-bounds read.
         assertNull(HeartbeatLayouts.NEWEST.u32(ByteArray(100), "battery_soc_pct"))
     }

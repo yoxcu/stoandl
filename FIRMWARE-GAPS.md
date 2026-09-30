@@ -58,10 +58,11 @@ did not.
 `Layout(567, 3)` walks to 567 B. Instead of per-row omit sets (every new metric would have to be added to
 every older row), each metric now carries the first release that emits it (`since`, plus `until` for
 `settings_power_mode`), and each layout row names its first release. `tools/hb_layouts_from_source.py` derives
-both from every PebbleOS release tag and prints the Kotlin lines. Walking every tag also turned up eleven
-older released layouts (310 … 515 B, all v1, 4.9.158 … 4.13.0) that had no row. They have rows now, which only
+both from every PebbleOS release tag and prints the Kotlin lines. Walking every tag also turned up two
+older released layouts (507 and 515 B, v1, 4.10.0 and 4.13.0) that had no row. They have rows now, which only
 works because `HeartbeatStore` now reads every field by name through the layout (before 4.13 even the battery
-block sat elsewhere). No two releases fill the same `(size, version)` differently. Unit tests
+block sat elsewhere). The 4.9.x tags get none: their struct was never really packed (PebbleOS `fac6968e`,
+first in 4.10.0), so their records are naturally aligned, and the tool skips them. No two releases fill the same `(size, version)` differently. Unit tests
 (`HeartbeatLayoutTest`, `HeartbeatStoreTest`) check every layout's size, landmark offsets per layout from the
 source, a synthetic 567 B record end to end, and that unknown layouts are rejected. History backfills from the
 stored raw blobs. Bonus fields (`battery_temp_c`, `battery_soc_pct_min`, …) are in the full dump (`watch

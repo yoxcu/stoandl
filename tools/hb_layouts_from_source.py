@@ -17,6 +17,12 @@ Releases are the `vX.Y.Z[.W]` tags that carry an `analytics.def`. The record is
 `version:u8 | timestamp:u64 | build_id:u8[20]` (29 B) followed by the metrics in declaration order,
 packed: UNSIGNED/SIGNED/TIMER = 4 B, SCALED_* = 4 B + u16 scale, STRING(len) = len + 1.
 
+Packed only from v4.10.0 on. Before that (v4.9.158 … v4.9.184) native.c wrote
+`__attribute__((packed)) struct native_heartbeat_record`, an attribute GCC ignores in that position, so
+those records have natural ARM alignment (timestamp @8, padding after every u16 scale) and none of the
+layouts this computes. PebbleOS fac6968e moved the attribute (`struct PACKED …`). Such releases are
+skipped and listed as UNPACKED on stderr; their records are not decoded.
+
 A `(size, version)` pair that two releases fill with different metric lists is reported as a
 COLLISION: such a pair cannot be decoded safely and must not get a row.
 """
@@ -51,8 +57,16 @@ def layout_at(repo, tag):
         args = [a.strip() for a in m.group(2).split(",")]
         kind = KINDS[m.group(1)]
         metrics.append((args[0], kind, int(args[1]) if kind == "STR" else 0))
-    v = re.search(r"#define\s+NATIVE_HEARTBEAT_RECORD_VERSION\s+(\d+)", git(repo, "show", f"{tag}:{natives[0]}"))
-    return (int(v.group(1)) if v else None), metrics
+    native = git(repo, "show", f"{tag}:{natives[0]}")
+    v = re.search(r"#define\s+NATIVE_HEARTBEAT_RECORD_VERSION\s+(\d+)", native)
+    return (int(v.group(1)) if v else None), metrics, is_packed(native)
+
+
+def is_packed(native_c):
+    """Whether the record struct is really packed: the attribute must sit between `struct` and the tag
+    (`struct PACKED native_heartbeat_record`); GCC ignores it in front of `struct`."""
+    return re.search(r"struct\s+(PACKED|PBL_PACKED|__attribute__\s*\(\(\s*packed\s*\)\))\s+native_heartbeat_record\b",
+                     native_c) is not None
 
 
 def main():
@@ -62,11 +76,18 @@ def main():
     repo = sys.argv[1]
     tags = sorted((t for t in git(repo, "tag").split() if re.fullmatch(r"v\d+(\.\d+)+", t)), key=semver)
     releases = []  # (tag, version, metrics, size)
+    unpacked = []
     for t in tags:
         got = layout_at(repo, t)
         if got and got[0] is not None:
-            version, metrics = got
+            version, metrics, packed = got
+            if not packed:
+                unpacked.append(t)
+                continue
             releases.append((t, version, metrics, HEADER + sum(size_of(k, n) for _, k, n in metrics)))
+    if unpacked:
+        print(f"UNPACKED (natural alignment, skipped): {unpacked[0]} … {unpacked[-1]} ({len(unpacked)} tags)",
+              file=sys.stderr)
 
     if "--offsets" in sys.argv:
         want = sys.argv[sys.argv.index("--offsets") + 1]

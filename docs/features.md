@@ -385,8 +385,9 @@ stoandl watch battery power      # estimated usage share: what drew power (displ
 stoandl watch battery heartbeat  # the raw decoded heartbeat record
 ```
 
-Decoding is strictly gated on the record's `(size, version)` — every released layout, derived from
-PebbleOS `analytics.def`, up to the current 567 B / version 3 of fw ≥ 4.33 — and captures the raw blob
+Decoding is strictly gated on the record's `(size, version)` — every released layout from fw 4.10.0
+(the first that really packs the record), derived from PebbleOS `analytics.def`, up to the current
+567 B / version 3 of fw ≥ 4.33 — and captures the raw blob
 on any mismatch, so a firmware layout change degrades to the BLE battery-level fallback rather than
 emitting garbage. The record carries 101 metrics on current firmware (the battery block is 7;
 `stoandl watch battery heartbeat --all` prints them all); the rest — per-subsystem on-times
