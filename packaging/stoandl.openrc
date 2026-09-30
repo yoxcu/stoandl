@@ -13,9 +13,11 @@ _java="/usr/lib/jvm/java-25-openjdk/bin/java"
 
 command="$_java"
 # --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning (never
-# --enable-preview). -XX:ErrorFile puts a JVM crash report (native + Java stacks) next to
-# /tmp/stoandl.log; %p is the JVM's pid placeholder. JVM flags must precede -jar.
-command_args="--enable-native-access=ALL-UNNAMED -XX:ErrorFile=/tmp/stoandl-hs_err_pid%p.log -jar /usr/share/java/stoandl/stoandl.jar"
+# --enable-preview). -XX:ErrorFile puts a JVM crash report (native + Java stacks, some memory, the
+# environment) in $_crashdir, which only $command_user can read (start_pre), not in world-readable /tmp;
+# `stoandl support` looks there. %p is the JVM's pid placeholder. JVM flags must precede -jar.
+_crashdir="/run/stoandl"
+command_args="--enable-native-access=ALL-UNNAMED -XX:ErrorFile=$_crashdir/stoandl-hs_err_pid%p.log -jar /usr/share/java/stoandl/stoandl.jar"
 command_user="$STOANDL_USER"
 # Respawn the daemon when it dies (the systemd unit's Restart=on-failure), but give up after about 5
 # crashes within 5 minutes (the unit's StartLimitBurst=5), so a crash that recurs on every start can't
@@ -39,4 +41,5 @@ depend() {
 start_pre() {
 	# The log is opened after the switch to $command_user, so it must exist and belong to that user.
 	checkpath -f -o "$command_user" -m 0600 "$output_log"
+	checkpath -d -o "$command_user" -m 0700 "$_crashdir"
 }

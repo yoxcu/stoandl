@@ -15,7 +15,7 @@ STOANDL_DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
 # Set to DEBUG for verbose BLE/protocol packet traces.
 #STOANDL_LOG="INFO"
 
-# Core dumps are off ("-c 0"): a JVM crash writes its report to /tmp/stoandl-hs_err_pid<pid>.log
-# instead. Uncomment to allow cores (~80 MB each) when debugging a native crash; where they land
+# Core dumps are off ("-c 0"): a JVM crash writes its report to /run/stoandl/stoandl-hs_err_pid<pid>.log
+# instead (readable by STOANDL_USER only). Uncomment to allow cores (~80 MB each) when debugging a native crash; where they land
 # depends on /proc/sys/kernel/core_pattern.
 #rc_ulimit="-c unlimited"

@@ -16,9 +16,11 @@ Type=simple
 # Requires a JDK 25 runtime (libpebble3's BT Classic transport uses java.lang.foreign).
 # --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning; never
 # --enable-preview (FFM is final on 22+, that flag would fail on a release JDK).
-# -XX:ErrorFile puts a JVM crash report (native + Java stacks) next to /tmp/stoandl.log instead of the
-# working directory ($HOME). %%p is the JVM's pid placeholder, escaped from systemd's %p specifier.
-ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -XX:ErrorFile=/tmp/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
+# -XX:ErrorFile puts a JVM crash report (native + Java stacks, some memory, the environment) in the
+# user's runtime dir (%t = $XDG_RUNTIME_DIR, mode 0700) rather than the working directory ($HOME) or
+# /tmp, where it would be world-readable and a predictable name another user could plant. %%p is the
+# JVM's pid placeholder, escaped from systemd's %p specifier.
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -XX:ErrorFile=%t/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
 Restart=on-failure
 RestartSec=5
 # No core dumps: a JVM core is ~80 MB per crash, and the crash report above already has the stacks.

@@ -2309,17 +2309,24 @@ private fun ctlSupport(rest: List<String>) {
         note("daemon log: none found at /tmp/stoandl*.log")
     }
 
-    // JVM crash reports: the shipped services point -XX:ErrorFile at /tmp/stoandl-hs_err_pid<pid>.log.
-    // Newest 5 only — a crash loop writes one per start until the unit's start limit stops it.
-    val crashReports = (logDir.listFiles { f ->
-        f.isFile && Regex("""stoandl-hs_err_pid\d+\.log""").matches(f.name)
-    } ?: emptyArray()).sortedByDescending { it.lastModified() }.take(5)
+    // JVM crash reports: the shipped services point -XX:ErrorFile at a directory only the daemon's user
+    // can read — the systemd unit at its runtime dir ($XDG_RUNTIME_DIR), the OpenRC service at
+    // /run/stoandl. Only our own files: a report holds memory and the environment. Newest 5 only — a
+    // crash loop writes one per start until the unit's start limit stops it.
+    val crashDirs = listOfNotNull(System.getenv("XDG_RUNTIME_DIR")?.takeIf { it.isNotBlank() }, "/run/stoandl")
+    val me = System.getProperty("user.name")
+    val crashReports = crashDirs.flatMap { dir ->
+        (File(dir).listFiles { f ->
+            f.isFile && Regex("""stoandl-hs_err_pid\d+\.log""").matches(f.name) &&
+                runCatching { java.nio.file.Files.getOwner(f.toPath()).name == me }.getOrDefault(false)
+        } ?: emptyArray()).toList()
+    }.sortedByDescending { it.lastModified() }.take(5)
     if (crashReports.isNotEmpty()) {
         val dest = File(bundleDir, "crash-reports").apply { mkdirs() }
         val copied = crashReports.count { runCatching { it.copyTo(File(dest, it.name), overwrite = true) }.isSuccess }
         note("JVM crash reports: $copied file(s)")
     } else {
-        note("JVM crash reports: none at /tmp/stoandl-hs_err_pid*.log")
+        note("JVM crash reports: none at ${crashDirs.joinToString(" or ") { "$it/stoandl-hs_err_pid*.log" }}")
     }
 
     // stoandl.conf — included with secrets redacted (CalDAV passwords, credentials in URLs).

@@ -203,8 +203,9 @@ with watch info and a **secret-redacted** copy of your config into a `.tar.gz` r
 the watch logs can still contain personal data.
 
 **If the daemon crashes** (the JVM itself, not a Kotlin exception), the crash report with the native
-and Java stacks is `/tmp/stoandl-hs_err_pid<pid>.log`. `stoandl support` includes it; /tmp is
-cleared at reboot, so build the bundle before rebooting. The shipped services write no core dumps
+and Java stacks is `$XDG_RUNTIME_DIR/stoandl-hs_err_pid<pid>.log` (`/run/user/<uid>/…`; under OpenRC
+`/run/stoandl/…`), readable only by you. `stoandl support` includes it; that directory is cleared at
+logout and reboot, so build the bundle before rebooting. The shipped services write no core dumps
 (a JVM core is ~80 MB). They restart the daemon after a crash but give up after 5 starts in
 5 minutes, so a crash that recurs on every start can't loop forever. systemd counts those 5 minutes in
 awake time, so on a phone that suspends the window can span hours and sporadic crashes add up too.
