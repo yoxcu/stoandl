@@ -229,15 +229,24 @@ The remaining `settings_*` (`motion_sensitivity`, `backlight_intensity_pct`, `ba
 
 ### App / UX telemetry
 
-`watchface_name` + `watchface_uuid` (what is actually running; strings), `watchface_crash_count` +
+`watchface_name` + `watchface_uuid` (the face launched in that hour — see below; strings), `watchface_crash_count` +
 `watchface_crash_revert_count` (sideloaded-face crashes), `app_message_sent_count` /
 `app_message_received_count` (PebbleKit + extension throughput), `app_tick_timer_second_subscribed`
 (per-second tick subscribers — a classic drain culprit), `button_pressed_count`, `touch_event_count`,
 `gesture_tap_count`, `accel_shake_count`, and `speaker_play_count` / `speaker_preempted_count` /
 `speaker_stream_underrun_count`.
 
-`fw_version` is a watch-authoritative firmware string carried in the record itself, and `utc_offset_s`
-lets the timesync feature **verify** the watch's offset rather than assume it.
+`fw_version` is a watch-authoritative firmware string carried in the record itself.
+
+**Every metric covers one heartbeat interval.** After each record the firmware zeroes every integer and
+empties every string (`native.c` `prv_record_metrics(reset)`); a metric is non-zero only if something set
+or counted it during that hour. The heartbeat re-collects some each time (`fw_version`,
+`last_reboot_reason`, `uptime_s` and the battery, CPU, memory, stack, storage and settings groups), but
+not these event-set ones:
+`utc_offset_s` is written only when the phone sets the time (`clock/service.c`), i.e. in the record
+covering a connect or a time sync, and `watchface_name`/`watchface_uuid` only when a watchface launches
+(`app_manager.c`). In any other hour they read 0 / empty, so they can't tell the watch's current offset or
+face on their own.
 
 ### New in 567 B / v3 (fw ≥ 4.33)
 
@@ -258,7 +267,8 @@ lets the timesync feature **verify** the watch's offset rather than assume it.
   `layout.u32(record, "hrm_on_time_ms")` (or `i32`/`scale`/`scaled`) reads a field. It returns null
   when that release does not emit the metric, and throws for a name that is in no release (a typo).
 - **String fields** (`fw_version`, `watchface_name`, `watchface_uuid`) are fixed-width
-  `char[len + 1]` and must be null-trimmed — not the `u32` path.
+  `char[len + 1]` and must be null-trimmed — not the `u32` path. An empty one usually means "not set
+  this hour", not a decode error.
 - **Scaled fields** carry their divisor inline as a `u16` immediately after the value; divide by the
   wire scale rather than a hardcoded constant (and treat scale 0 as "absent").
 - **A new firmware layout** is one `M(...)` line per added metric (with its `since`) plus one
