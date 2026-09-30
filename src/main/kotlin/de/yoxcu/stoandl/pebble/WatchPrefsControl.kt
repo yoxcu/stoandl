@@ -105,8 +105,10 @@ class WatchPrefsControl(
     private companion object {
         /** What stoandl adds to libpebble3's description where the firmware changed what a pref does. */
         val DESCRIPTION_NOTES = mapOf(
-            EnumWatchPref.TextSize.id to "From PebbleOS 4.38.1 the watch keeps its own system and notification " +
-                "text sizes, which the phone can't set: this only seeds them once, so set the size on the watch.",
+            EnumWatchPref.TextSize.id to "What this sizes depends on the firmware: up to PebbleOS 4.36 " +
+                "notifications and the timeline, on 4.37 the whole system UI, on 4.38.0 the system UI but not " +
+                "notifications (they have their own size). From 4.38.1 it only seeds the notification size once, " +
+                "on a watch that never stored one. The phone can't set the newer sizes: change them on the watch.",
         )
     }
 

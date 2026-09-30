@@ -194,7 +194,7 @@ Status 2026-09-29: items 1–3 are implemented and to be tested on hardware (FIR
    - notification-timeout ≥15 s clamp (came with the bump; `WatchPrefsControlTest`)
    - all-day events at UTC midnight (TESTING 5.56a)
    - session `distance_m` ×100 (TESTING 5.219d)
-   - `textStyle` docs (TESTING 5.27b)
+   - `textStyle` docs (TESTING 5.30b)
 2. 🔴 **Fork cherry-picks, no full bump needed:** `90b9caa3` (before fw re-enables v14), `7de45f8a`→`42cbc5a4`, `cf8f33e4`; optionally the single-file `WatchPrefEntity.kt` diff and VibeScore 15-20. ✅ All upstream ones came with the bump; the fork-only VibeScore 15-20 patch is still open.
 3. 🟢 **libpebble3 bump to `433fef18`:** runbook in FIRMWARE-GAPS.md; ~4–6 d + 1–2 d HW. It unlocks notification images, album art, weather v4, the new prefs, QEMU, firmware resume/CRC, the calendar fixes and reverse PPoG v2. **Handle the downgrade→PRF interaction before shipping it.** ✅ Done on fork branch `stoandl-bump` (upstream `e6b5138e`), downgrade→PRF handled; hardware pass TESTING §5.33 before promoting it to `stoandl`.
 4. 🟢 **Host features independent of the bump:** (done: the "4.38 drops the built-in languages" note, TESTING 5.11h) `pebbleos-translations` catalog · Quick Launch actions · MPRIS `Seeked` + seek-for-podcasts · `hrm_activity` · live HR via GATT `0x180D` · battery-full alert.

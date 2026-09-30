@@ -464,9 +464,12 @@ watch.qlBack = off
 watch.textStyle = Larger   # fw < 4.38.1, see below
 ```
 
-`textStyle` (Text Size) only works on firmware before PebbleOS 4.38.1. From 4.38.1 the watch keeps
-separate system and notification text sizes that the phone can't set, and `textStyle` only seeds them
-once, so a pin here does nothing: set the sizes on the watch.
+`textStyle` (Text Size) sizes different things per firmware. Up to PebbleOS 4.36 it sizes notifications
+and the timeline; on 4.37 the whole system UI, notifications included; on 4.38.0 the system UI, while
+notifications have their own size that the phone can't set. From 4.38.1 the system size is a separate
+setting too (the phone can't set it either), and `textStyle` only seeds the notification size once, on a
+watch that has never stored one. So on 4.38.1 and later a pin here does nothing: set the sizes on the
+watch.
 
 Values are parsed per the setting's type: booleans (`true`/`false`), numbers (validated against the
 setting's range), enums (by name — `stoandl settings` shows the choices), quick-launch (an app name/UUID, or

@@ -93,12 +93,12 @@ stoandl settings set <id> <v>  # set one, e.g. settings set lightAmbientThreshol
 Or via `watch.<id>` config keys. See [configuration.md](configuration.md#watch-settings-advanced).
 _Hardware-verified._
 
-_Implemented — to be tested ([TESTING.md §5.33j](../TESTING.md), 5.27b):_ the libpebble3 bump brings the
+_Implemented — to be tested ([TESTING.md §5.33j](../TESTING.md), 5.30b):_ the libpebble3 bump brings the
 newer prefs: the Quiet Time weekday/weekend hours (`dndWeekdaySchedule`, a `HH:MM-HH:MM` window that
 needs its `…Enabled` switch on), `dndAutoDismiss`, `lightPreset`, `lightDynamicMode`, `unitsWind` and
 `language`; `langEnglish`, `lightDynamicIntensity` and `dynBacklightMinThreshold` are gone. The
 notification timeout can't be set below 15 s (shorter ones vanish without a vibe). From fw 4.38.1
-`textStyle` only seeds the watch's own text sizes, and its description says so.
+`textStyle` only seeds the watch's notification text size once, and its description says so.
 
 ### Bluetooth Classic transport
 

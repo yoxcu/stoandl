@@ -36,7 +36,7 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 | 2 | Heartbeat `(567, 3)` layout row | Battery insights' power pie, drain bars and notification overlay have been **dark since fw 4.33** | trivial | no | Done; TBT 5.29M |
 | 3 | Weather: UTF-8 string length (`cf8f33e4`) + units from `unitsDistance` | Non-ASCII locations never update; warnings say "Below freezing" on warm days | trivial + small | no | Done (UTF-8 with the bump); TBT 4.4–4.4c, 5.33i |
 | 4 | Firmware "latest" = max semver | A backport release can hide newer fw, and a PRF watch would flash the backport | small | no | Done; TBT 5.11f, 5.11g |
-| 5 | Small correctness fixes: notification timeout ≥15 s, all-day at UTC midnight, session distance ×100, sleep-card cherry-picks, `textStyle` docs | Each is a wrong result in a shipped feature | trivial each | no | Done (sleep card and timeout floor with the bump); TBT 5.219d, 5.56a, 5.27b, 5.33k |
+| 5 | Small correctness fixes: notification timeout ≥15 s, all-day at UTC midnight, session distance ×100, sleep-card cherry-picks, `textStyle` docs | Each is a wrong result in a shipped feature | trivial each | no | Done (sleep card and timeout floor with the bump); TBT 5.219d, 5.56a, 5.30b, 5.33k |
 | 6 | libpebble3 bump to `433fef18` (§3) | Unlocks notification images, album art, weather v4, new prefs, QEMU testing, firmware resume/CRC | 4–6 d + 1–2 d HW | — | Done on fork branch `stoandl-bump` (`e6b5138e`); hardware pass TESTING §5.33, then promote |
 | 7 | Host features independent of the bump (§5) | `pebbleos-translations` packs (4.38 removed built-in languages), Quick Launch actions, MPRIS seek | small each | no | Open, except the 4.38 languages note (§1.6) |
 | 8 | Features on top of the bump (§4) | New prefs → weather v4 → album art → notification images, by value for effort | 0.5–3 d each | yes | Open, except the schedule pref (§4.1) and downgrades (§4.5) |
@@ -156,12 +156,13 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
     alarm on an all-day occurrence into that frame (its host-local wall-clock time, read as UTC); relative
     alarms already were frame-independent. `ICalParserTest` covers both across host zones, and
     `calendar dump` reads all-day dates in UTC.
-- **`textStyle` (fw ≥4.38.1).** It is now only a one-shot seed; the real keys `systemTextSize` and
-  `notifTextSize` are not phone-syncable. Reword `packaging/stoandl.conf.example:93` and the pref description.
+- **`textStyle` (fw ≥4.38.1).** It now only seeds `notifTextSize` once (never `systemTextSize`); neither of
+  those real keys is phone-syncable. Reword `packaging/stoandl.conf.example:93` and the pref description.
   Raising the missing whitelist entries with PebbleOS is worth a short issue.
-  - **Done, to be tested (TESTING 5.27b).** `conf.example` and `docs/configuration.md` say `textStyle` works
-    only before 4.38.1, and `WatchPrefsControl` appends that to the pref's description (libpebble3 has none),
-    so `stoandl settings` and both GUIs show it. The PebbleOS issue is not filed.
+  - **Done, to be tested (TESTING 5.30b).** `conf.example` and `docs/configuration.md` say what `textStyle`
+    sizes on each firmware (notifications up to 4.36, the whole UI on 4.37, the UI but not notifications on
+    4.38.0, a one-shot notification seed from 4.38.1), and `WatchPrefsControl` appends that to the pref's
+    description (libpebble3 has none), so `stoandl settings` and both GUIs show it. The PebbleOS issue is not filed.
 - **Dead backlight prefs.** `lightDynamicIntensity` and `dynBacklightMinThreshold` are rejected by every current
   fw, and each rejected row is resent on every connect (`BlobDB.kt:374-384`). Hide them with a small deny-list
   pre-bump, or just take the bump, which removes them. Drop the GUI section-rule special cases (`qml:75`,
