@@ -46,11 +46,15 @@ JAR=$(ls -t build/libs/stoandl-*-all.jar | head -1)
 
 if [ -n "$REMOTE" ]; then
     JARNAME=$(basename "$JAR")
-    TMP=/tmp/stoandl-install-$$
+    # Stage in a fresh directory mktemp creates on the remote (mode 0700, unpredictable name): the
+    # script run from it installs through sudo, so a directory another user could pre-create and fill
+    # must never be used. Same for the local script file.
+    TMP=$(ssh "$REMOTE" 'mktemp -d /tmp/stoandl-install.XXXXXX')
+    [ -n "$TMP" ] || { echo "Could not create a staging directory on $REMOTE" >&2; exit 1; }
 
     # Build the remote install script locally ($TMP and $JARNAME are baked in by the
     # unquoted heredoc; DROPIN and systemctl references stay literal for the remote shell).
-    SCRIPT=/tmp/stoandl-remote-$$.sh
+    SCRIPT=$(mktemp /tmp/stoandl-remote.XXXXXX)
     cat > "$SCRIPT" << EOF
 #!/bin/sh
 set -e
@@ -74,7 +78,6 @@ $START_SERVICE
 rm -rf $TMP
 EOF
 
-    ssh "$REMOTE" "mkdir -p $TMP"
     scp "$JAR" packaging/stoandl.service packaging/stoandl-ctl "$SCRIPT" "$REMOTE:$TMP/"
     rm "$SCRIPT"
     # -t allocates a PTY on the remote so sudo can prompt for a password
