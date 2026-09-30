@@ -146,6 +146,9 @@ class ConfigSchemaTest {
         assertContains(err(f, "500,400,0,6000"), "max interval")
         assertContains(err(f, "500,520,0,1000"), "supervision")
         assertContains(err(field("ble.conn_params_fast"), "5,15,0,2000"), "min interval")
+        // toDoubleOrNull() parses NaN, which passes every range check and then fails every connect.
+        assertContains(err(f, "NaN,520,0,6000"), "numbers")
+        assertContains(err(f, "500,NaN,0,6000"), "numbers")
     }
 
     /** The conn-params value is rendered from the decoded set, so it must come back in the form written —
