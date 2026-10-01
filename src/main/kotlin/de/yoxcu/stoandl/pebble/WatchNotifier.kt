@@ -103,6 +103,10 @@ interface NotifOwner {
     suspend fun onDismiss(itemId: Uuid, token: String?)
 }
 
+/** An owner turning down a wrist action for an expected reason (the notification was closed, its server
+ *  restarted). [wristText] is what the watch shows instead of "Failed". */
+class ActionRefused(val wristText: String, message: String) : Exception(message)
+
 /** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. (Action ids are UByte
  *  on the wire but stored as Int.) In-memory only: the firmware presents the action menu solely on the
  *  *live* notification, never from the history, so a route never needs to outlive the daemon — once a
@@ -388,8 +392,7 @@ class WatchActionRouter(
                     owner?.onReply(itemId, route.ownerToken, text)
                         ?: return TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
                 } catch (e: Exception) {
-                    log.warn(e) { "onReply failed for $itemId" }
-                    return TimelineActionResult(false, TimelineIcon.ResultFailed, "Failed")
+                    return failed("Reply", itemId, e)
                 }
                 // Optimistic: the wrist shows "Sent" before the owner's service confirms.
                 TimelineActionResult(true, TimelineIcon.ResultSent, "Sent")
@@ -399,8 +402,7 @@ class WatchActionRouter(
                     owner?.onAction(itemId, route.ownerToken, route.namedActions.getValue(aid))
                         ?: return TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
                 } catch (e: Exception) {
-                    log.warn(e) { "onAction failed for $itemId" }
-                    return TimelineActionResult(false, TimelineIcon.ResultFailed, "Failed")
+                    return failed("Action", itemId, e)
                 }
                 TimelineActionResult(true, TimelineIcon.ResultSent, "Done")
             }
@@ -409,6 +411,16 @@ class WatchActionRouter(
                 TimelineActionResult(false, TimelineIcon.ResultFailed, "Not supported")
             }
         }
+    }
+
+    /** An expected refusal is one INFO line and its reason on the wrist; anything else is a WARN. */
+    private fun failed(what: String, itemId: Uuid, e: Exception): TimelineActionResult {
+        if (e is ActionRefused) {
+            log.info { "$what on $itemId refused: ${e.message}" }
+            return TimelineActionResult(false, TimelineIcon.ResultFailed, e.wristText)
+        }
+        log.warn(e) { "$what failed for $itemId" }
+        return TimelineActionResult(false, TimelineIcon.ResultFailed, "Failed")
     }
 
     /** The watch returns the chosen canned response / dictated transcript as the Title (0x01)

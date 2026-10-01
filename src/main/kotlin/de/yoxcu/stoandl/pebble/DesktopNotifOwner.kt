@@ -225,8 +225,7 @@ class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
             ?: error("only notifications posted with Notify can be replied to")
         require(text.isNotBlank()) { "empty reply" }
         withContext(Dispatchers.IO) {
-            check(!isDead(ref)) { "notification ${ref.id} was closed" }
-            check(sameServer(ref)) { "the notification server restarted" }
+            checkLive(ref)
             // Any D-Bus error (no such method on an unpatched Plasma, unknown or expired id, a sandboxed
             // caller) propagates: the watch then shows Failed rather than a false Sent.
             session().getRemoteObject(FDO_NAME, FDO_PATH, KdeNotificationManager::class.java)
@@ -241,12 +240,17 @@ class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
         // KNotifications turns InvokeAction("inline-reply") into an empty reply the app would send.
         require(actionId != INLINE_REPLY) { "inline-reply is not an action" }
         withContext(Dispatchers.IO) {
-            check(!isDead(ref)) { "notification ${ref.id} was closed" }
-            check(sameServer(ref)) { "the notification server restarted" }
+            checkLive(ref)
             session().getRemoteObject(FDO_NAME, FDO_PATH, KdeNotificationManager::class.java)
                 .InvokeAction(UInt32(ref.id), actionId)
             log.info { "Invoked action '$actionId' on D-Bus notification ${ref.id} from watch item $itemId" }
         }
+    }
+
+    /** A notification already closed, or from a server that has gone since, can't be acted on. */
+    private fun checkLive(ref: DesktopNotifRef.Fdo) {
+        if (isDead(ref)) throw ActionRefused("Already closed", "notification ${ref.id} was closed")
+        if (!sameServer(ref)) throw ActionRefused("Server restarted", "the notification server restarted")
     }
 
     private fun deadKey(owner: String?, id: Long) = "fdo|${owner.orEmpty()}|$id"
