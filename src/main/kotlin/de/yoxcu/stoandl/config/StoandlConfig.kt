@@ -66,8 +66,9 @@ data class StoandlConfig(
     val alertsBluetooth: Boolean,
     /** Alert when an installed extension requires configuration before it can start. On by default. */
     val alertsExtensions: Boolean,
-    /** Telephony/dialer app-name substrings. Their notifications are suppressed from the watch (the
-     *  native call screen replaces them) and their title is used as a fallback caller name. */
+    /** Dialer apps, by app name or desktop-entry id (exact, case-insensitive). Their notifications are
+     *  suppressed from the watch while a call is up (the native call screen replaces them) and their
+     *  title is used as a fallback caller name. */
     val dialerApps: List<String>,
     /** vCard files or directories scanned for caller-ID resolution. */
     val vcardPaths: List<String>,
@@ -275,8 +276,9 @@ data class StoandlConfig(
     enum class WeatherLocationSource { MANUAL, GNOME, COMMAND }
 
     companion object {
-        // Covers Plasma Mobile (Spacebar) and GNOME Calls out of the box; override in config.
-        private val DEFAULT_DIALER_APPS = listOf("spacebar", "calls")
+        // GNOME Calls. Not Plasma Mobile's "Phone": it shows calls full-screen and posts only "Missed call",
+        // after the call. Not Spacebar: that is Plasma Mobile's SMS app.
+        private val DEFAULT_DIALER_APPS = listOf("calls")
         private const val DEFAULT_WEATHER_INTERVAL_MINUTES = 30L
         private const val DEFAULT_GPS_DESKTOP_ID = "stoandl"
         private const val DEFAULT_GPS_NAME = "Current location"

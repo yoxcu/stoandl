@@ -2,7 +2,7 @@ package de.yoxcu.stoandl.contacts
 
 /**
  * Remembers the title of the most recent dialer notification, so an incoming call whose number
- * isn't in the vCard files can still show a name. The dialer (GNOME Calls, Spacebar, …) typically
+ * isn't in the vCard files can still show a name. The dialer (GNOME Calls, …) typically
  * raises its own "Incoming call from X" notification at roughly the same moment ModemManager
  * reports the call; that notification is suppressed from the watch but its title is captured here.
  *

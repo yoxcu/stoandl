@@ -267,9 +267,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
 
     // --- Calls & contacts ---
     list("call.dialer_apps", G_CALLS, "Dialer apps",
-        "Notifications from these apps are suppressed (the watch's native call screen replaces them) " +
-            "and their title is used as a fallback caller name",
-        placeholder = "spacebar,calls") { it.dialerApps },
+        "Apps, by name or desktop-entry id (exact match), whose notifications are held back while a call " +
+            "is up (the watch's native call screen replaces them); their title is a fallback caller name. " +
+            "Their other notifications, such as Missed call, still reach the watch.",
+        placeholder = "calls") { it.dialerApps },
     list("contacts.vcard_paths", G_CALLS, "Contact files",
         "vCard files or directories scanned to turn an incoming number into a name. No egress.",
         placeholder = "~/.local/share/contacts") { it.vcardPaths },

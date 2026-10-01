@@ -4,6 +4,7 @@ package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.NotificationEvent
+import de.yoxcu.stoandl.dbus.IncomingNotification
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.dbus.MprisMusicControl
 import de.yoxcu.stoandl.dbus.TimedateTimeChanged
@@ -2271,45 +2272,69 @@ private class DbusNotificationListenerConnection(
                     return@collect
                 }
                 val notification = event.notification
-                val appLower = notification.appName.lowercase()
-                // Dialer notifications: capture the title for caller-name fallback, then suppress
-                // them from the watch (the native call screen already shows the call).
-                if (dialerApps().any { appLower.contains(it.lowercase()) }) {
-                    dialerNameCache.record(notification.summary)
-                    log.info { "Suppressed dialer notification from ${notification.appName} (name='${notification.summary}')" }
+                if (isDialerApp(dialerApps(), notification.appName, notification.appId)) {
+                    // Off the collector: waiting for the call must not hold up other notifications.
+                    scope.launch { onDialerNotification(libPebble, notification) }
                     return@collect
                 }
-                val ref = DesktopNotifRef.of(notification) ?: return@collect
-                // Reply and named actions go back through the server (Plasma's org.kde.NotificationManager),
-                // so they're only offered when that server has the method; otherwise a button that always
-                // fails would be worse than none. The canned list is filled in by WatchNotifier.
-                val caps = desktopOwner.capabilitiesFor(notification)
-                val reply = inlineReplyLabel(notification.actions)
-                    ?.takeIf { caps.invokeReply }?.let { ReplySpec(label = it) }
-                val actions = if (caps.invokeAction) {
-                    wristActions(notification.actions, MAX_WRIST_ACTIONS).map { (key, label) -> NotifAction(key, label) }
-                } else emptyList()
-                // subtitle defaults to appName inside WatchNotifier; per-app mute/style + the "Mute"
-                // action are applied there. The desktop ref rides in the route as the owner token, so a
-                // wrist dismiss/reply reaches the original notification.
-                watchNotifier.push(
-                    NotifRequest(
-                        appName = notification.appName,
-                        title = notification.summary,
-                        body = notification.body,
-                        actions = actions,
-                        reply = reply,
-                    ),
-                    ownerId = desktopOwner.id,
-                    ownerToken = ref.encode(),
-                )
+                forward(notification)
             }
         }
+    }
+
+    /**
+     * A dialer's title is the caller-name fallback. Its notification is held back while a call is up (the
+     * watch's native call screen shows it) and forwarded otherwise, so Missed call still alerts. The
+     * dialer and ModemManager see a call at about the same moment, so wait briefly for the call to show.
+     */
+    private suspend fun onDialerNotification(libPebble: LibPebble, notification: IncomingNotification) {
+        dialerNameCache.record(notification.summary)
+        val call = withTimeoutOrNull(DIALER_CALL_WAIT_MS) { libPebble.currentCall.first { it != null } }
+        if (call != null) {
+            log.info { "Suppressed dialer notification from ${notification.appName} during a call (name='${notification.summary}')" }
+        } else {
+            forward(notification)
+        }
+    }
+
+    private suspend fun forward(notification: IncomingNotification) {
+        val ref = DesktopNotifRef.of(notification) ?: return
+        // Reply and named actions go back through the server (Plasma's org.kde.NotificationManager),
+        // so they're only offered when that server has the method; otherwise a button that always
+        // fails would be worse than none. The canned list is filled in by WatchNotifier.
+        val caps = desktopOwner.capabilitiesFor(notification)
+        val reply = inlineReplyLabel(notification.actions)
+            ?.takeIf { caps.invokeReply }?.let { ReplySpec(label = it) }
+        val actions = if (caps.invokeAction) {
+            wristActions(notification.actions, MAX_WRIST_ACTIONS).map { (key, label) -> NotifAction(key, label) }
+        } else emptyList()
+        // subtitle defaults to appName inside WatchNotifier; per-app mute/style + the "Mute"
+        // action are applied there. The desktop ref rides in the route as the owner token, so a
+        // wrist dismiss/reply reaches the original notification.
+        watchNotifier.push(
+            NotifRequest(
+                appName = notification.appName,
+                title = notification.summary,
+                body = notification.body,
+                actions = actions,
+                reply = reply,
+            ),
+            ownerId = desktopOwner.id,
+            ownerToken = ref.encode(),
+        )
     }
 }
 
 /** App actions offered on the wrist besides Reply, Mute and Dismiss. */
 private const val MAX_WRIST_ACTIONS = 3
+
+/** How long a dialer notification waits for ModemManager to report the call it is about. */
+private const val DIALER_CALL_WAIT_MS = 1_500L
+
+/** Whether a notification comes from one of [dialerApps]: its app name or desktop-entry id, exact and
+ *  case-insensitive. A substring match would take "Microphone" for "phone". */
+internal fun isDialerApp(dialerApps: List<String>, appName: String, appId: String?): Boolean =
+    dialerApps.any { it.equals(appName, ignoreCase = true) || (appId != null && it.equals(appId, ignoreCase = true)) }
 
 /**
  * Host-side mute decision for a tracked app, mirroring the relevant parts of libpebble3's
