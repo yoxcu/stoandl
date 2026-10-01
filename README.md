@@ -78,8 +78,8 @@ enable the Bluetooth Classic transport.
 > as well as glibc distros. One native library does load at runtime: libpebble3's SQLite driver
 > (androidx `sqlite-bundled`) ships a JNI library built for glibc. On musl it lacks one glibc-only
 > symbol (`__isnan`), and the JVM crashed on the first query that touched a floating-point value —
-> right after the first pairing. stoandl now works around this automatically on musl
-> (**implemented — to be tested**, [TESTING.md §5.32a](TESTING.md)): at startup it loads a tiny
+> right after the first pairing. stoandl works around this automatically on musl (verified on a
+> OnePlus 6 running postmarketOS, [TESTING.md §5.32a](TESTING.md)): at startup it loads a tiny
 > built-in `__isnan` shim ([tools/isnan-shim](tools/isnan-shim/)), and it keeps one copy of the
 > SQLite library in `~/.cache/stoandl/native/` instead of a new `/tmp/androidx_sqliteJni*.tmp` per
 > start. If the shim can't be loaded, the log has an `SQLite: could not provide __isnan` ERROR with the

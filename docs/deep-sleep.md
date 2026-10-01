@@ -6,8 +6,8 @@ few features for that kind of host. They are harmless on a desktop, and the two 
 watch keeps its link (connection parameters, datalog pause) are off unless you turn them on. The
 reference device is a OnePlus 6 on postmarketOS with Plasma Mobile ("Mode B" below).
 
-**Status:** partially verified on hardware. First on-device test: OnePlus 6, postmarketOS, BlueZ 5.87,
-Pebble Time 2 (2026-09-29).
+**Status:** partially verified on hardware: OnePlus 6, postmarketOS, BlueZ 5.87, Pebble Time 2
+(2026-09-29, and a night in Mode A 2026-09-30/10-01).
 
 - **Mode A:** verified that notifications reach the watch while the phone is awake, and that the sleep
   guard holds its delay lock (`systemd-inhibit --list` shows `stoandl`, mode `delay`). A notification
@@ -21,8 +21,8 @@ Everything else on this page is unit/harness-tested off-device only. Test plan:
 [TESTING.md §5.32](../TESTING.md).
 
 postmarketOS and Alpine use musl. The SQLite driver bundled with stoandl is built for glibc, and
-older builds crash-loop right after the first pairing. stoandl now works around this automatically on
-musl (**implemented, to be tested**). See [README → Requirements](../README.md#requirements).
+older builds crash-loop right after the first pairing. stoandl works around this automatically on
+musl (verified on the OnePlus 6). See [README → Requirements](../README.md#requirements).
 
 ## Two ways a watch can live with a sleeping phone
 
@@ -52,7 +52,7 @@ untested. All hardware testing so far used a BLE watch.
 | No reconnect busywork | (automatic) | — | After a reconnect, weather is only refetched if older than `weather.interval`, health data only re-requested after 15 min. |
 | Notification catch-up | `notification.catch_up_minutes` | 60 min | A reconnecting watch also gets the notifications it hasn't received from that window — in Mode A the ones a push wake produced while the link was still down. Never older than the daemon's start or the watch's pairing; nothing the watch already has is re-sent. See [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up). |
 | Discovery warning | (automatic) | — | A warning is logged if another app runs Bluetooth discovery while the display is off. stoandl's own discovery (BLE scan / BR/EDR inquiry) only runs in a pairing window; that is an explicit, 2-minute request, so it scans with the display off too (e.g. `stoandl watch pair` over ssh). It is stopped at every PrepareForSleep — before the suspend while the sleep guard holds its delay lock (`power.sleep_guard`) — and not restarted until the resume. So a phone that suspends with the display off only discovers while it is awake: keep it awake while pairing (screen on, or `systemd-inhibit --what=sleep sleep 150`); after a suspend inside the window `watch pair` says `Searching again — the phone slept …`. |
-| Slow, fixed connection parameters | `ble.conn_params`, `ble.conn_params_fast` | off | The watch keeps the link at your idle set (e.g. 500–520 ms, latency 0) and never asks to change it — every change request needs the phone, i.e. a wake. |
+| Slow, fixed connection parameters | `ble.conn_params`, `ble.conn_params_fast` | off | The watch keeps the link at your idle set (e.g. 500–520 ms, latency 0) and never asks to change it — every change request needs the phone, i.e. a wake. Needs the watch's Connection Parameters characteristic, which the Pebble Time 2 doesn't have (see below). |
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
 
 Every key in this table is also in the GUI (Settings → Daemon configuration → Deep sleep, and
@@ -69,6 +69,13 @@ something to catch up on; the time is UTC), `connected and services resolved (N 
 `STOANDL_LOG=DEBUG` every suspend/resume is logged.
 
 ### Connection parameters — read this before turning them on
+
+These keys work through the Pebble Pairing Service's Connection Parameters characteristic
+(`00000005-328e-…`). The Pebble Time 2 (Core firmware) doesn't have it: there the keys have no effect,
+and stoandl says so once per run (WARN `this watch has no Connection Parameters characteristic`). The
+link then runs at what the host picks at connect; the only host-side handle is BlueZ's
+`/etc/bluetooth/main.conf [LE]` (`MinConnectionInterval`, `MaxConnectionInterval`, `ConnectionLatency`,
+`ConnectionSupervisionTimeout`), which applies to every new LE connection from that host.
 
 Upstream libpebble3 tells the watch "the phone manages the parameters" and never changes them, so the
 link keeps whatever it had at connect — often the watch's 15 ms bulk-transfer set (about 67 radio

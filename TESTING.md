@@ -1520,7 +1520,7 @@ now follow `STOANDL_LOG`.)
 through s2idle with the Mode B kernel patches; (c) LL vs L2CAP parameter-update path of the Time 2
 (btmon) — decides whether `ble.conn_params_fast` is safe without K5.
 
-### 5.32a musl: bundled SQLite `__isnan` shim + one cached JNI library (handoff #1, #9)  ⚠️ UNVERIFIED on the phone (needs a musl phone + a Time 2 with heart-rate data)
+### 5.32a musl: bundled SQLite `__isnan` shim + one cached JNI library (handoff #1, #9)  ✅ a4, a5, a6, a8 passed on the OnePlus 6 (2026-09-30 – 10-01); a0–a3 off-device (musl harness)
 
 androidx's bundled `libsqliteJni.so` is built for glibc and imports `__isnan`, which musl lacks. Before
 this fix the JVM crashed (SIGSEGV in `avgFinalize`) at the first floating-point SQL value, which was
@@ -1771,6 +1771,10 @@ Plasma packages with the patch (phone): `plasma-workspace` + **`plasma-workspace
 `op6@localhost-6abb912a`). Restart the session afterwards. Check:
 `gdbus introspect --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications | grep -A3 InvokeReply`.
 
+OnePlus 6, 2026-09-30 22:45: **a** passed (patched Plasma), and **b** passed with a synthetic sender
+(`reply-test.py`, a notification with an `inline-reply` action) instead of NeoChat: `NotificationReplied('Ok')`
+8.6 s after posting. NeoChat's own row needs its patched build (r100).
+
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
 | 5.34a | Capability probe | start the daemon on the patched Plasma; then on stock Plasma; then on GNOME | Log once per server: `Notification server :1.N: InvokeAction=true, InvokeReply=true` (patched) / `InvokeReply=false` (stock) / no line or both false (GNOME). |
@@ -1785,6 +1789,25 @@ Plasma packages with the patch (phone): `plasma-workspace` + **`plasma-workspace
 | 5.34j | GApplication app on GNOME | Fractal / Chatty / `gapplication` test app posts a notification | Reaches the watch once (a portal notification forwarded to `org.gtk.Notifications` too — not twice); wrist Dismiss removes it (log `Removed GTK notification …`). |
 | 5.34k | GNOME dismiss of a live notification | NeoChat or Telegram on GNOME (not `notify-send`), dismiss on the wrist | The desktop notification disappears; log `Closed D-Bus notification N via GNOME Shell` (the relay refused the direct close). |
 | 5.34l | Extension reply list | Matrix extension message → Reply | The extension's own canned list if it sends one; otherwise `notification.canned_replies`. |
+
+## 5.35 OnePlus 6 handoff 2026-10-01: dialer, Bluetooth off, transient, contacts, monitor at login  ⚠️ UNVERIFIED (needs a watch; 5.35c on a desktop)
+
+Off-device: daemon tests `DialerAppTest`, `ContactResolverTest`, `NotificationParsingTest` (transient
+hint). Rows marked *desktop* need a Bluetooth power cycle: not on the OnePlus 6 before kernel r10.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.35a | SMS reach the watch on Plasma Mobile (N1) | No `call.dialer_apps` line in `stoandl.conf` (or `stoandl daemon get call.dialer_apps` → `calls`); receive an SMS | `Notification queued for watch: Spacebar – …`, and the SMS shows on the watch. No `Suppressed dialer notification` line. |
+| 5.35b | Missed call still alerts (N1) | GNOME Calls (or Plasma's Phone) as the dialer; call the phone and hang up unanswered | While it rings: the native call screen, and `Suppressed dialer notification from Calls during a call` (GNOME Calls only). After the call: `Notification queued for watch: … – Missed call`, the watch buzzes, plus the missed-call pin. |
+| 5.35c | Adapter off is detected (N2, N3) — *desktop* | Watch connected; `bluetoothctl power off`; wait 5 min with the host awake; `stoandl watch list`; then `bluetoothctl power on`. Repeat with `rfkill block bluetooth` / `unblock`. | One INFO `Bluetooth adapters: hci0 off` (`off-blocked` for rfkill). For the 5 min: no `Connect() pending/failed` lines and no bluetoothd `Host is unreachable`. `watch list` ends with `Bluetooth is off — …`; the GUI shows Bluetooth off. After power on: `Bluetooth adapters: hci0 on` and the watch reconnects within ~10 s. The bond is untouched (`bluetoothctl info <mac>` → `Paired: yes`). |
+| 5.35d | Adapter off at start (N3) — *desktop* | `bluetoothctl power off`; `systemctl --user restart stoandl`; wait 1 min; `bluetoothctl power on` | `Bluetooth adapters: hci0 off` at start, no `Connect()` loop; the watch connects after power on. |
+| 5.35e | Adapter removed and re-added — *desktop* (or the phone after r10) | Watch connected; reload the driver (`btusb` / `hci_uart`, see deep-sleep.md) | `Bluetooth adapters: no adapter`, then `… hci0 on`; `BlueZ GATT application re-registered … after adapter power-cycle`; the watch reconnects and notifications arrive (PPoG works). |
+| 5.35f | Transient notifications stay on the desktop (N5) | `notify-send --transient a b`; `notify-send a b`; then `stoandl notif filter add '^a$' allow` and the transient one again; remove the filter | First: `Transient notification from notify-send not forwarded`, nothing on the watch. Second: on the watch. With the allow filter: the transient one reaches the watch. |
+| 5.35g | Contacts from Plasma's phonebook (N7) | No `contacts.vcard_paths` line; a contact in `~/.local/share/kpeoplevcard/own/*.vcard`; call from its number | `Contact index loaded: N number(s) from M file(s)` with M ≥ 1; the watch's call screen shows the contact's name. |
+| 5.35h | Notification monitor at login (N8.1) | Reboot (or log out and in) with the daemon enabled; look at the first minute of `journalctl --user -u stoandl` | If the shell isn't up yet: `No owner of org.freedesktop.Notifications yet … waiting for a notification server`, then `Owner of … changed — rebuilding the notification monitor` and `Notification daemon owner: :1.N`. **No** `FatalException … EOFException` ERROR and no `BecomeMonitor connection lost`. A notification right after login reaches the watch. |
+| 5.35i | Connection parameters that can't apply (N6 S1) | `stoandl daemon set ble.conn_params 500,520,0,6000`; restart; let the Time 2 connect twice | Exactly one WARN `this watch has no Connection Parameters characteristic — the configured connection parameters have no effect` per run. Remove the key afterwards. |
+| 5.35j | Quieter suspend races (N6 S5, N8.4/5) | A day in Mode A on the phone | No WARN/ERROR for `StartNotify failed: Disconnecting`/`Not Connected`, `service discovery failed … Disconnecting`, `already done cleanup`, `couldn't send PPoG reset on close … not configured`, `MTU property unavailable` or `PhoneContactsSyncer - No permission` (all DEBUG now). |
+| 5.35k | Small log fixes (N8.6–8) | Restart with `power.screen_gate = true` still in the config; `stoandl daemon set call.dialer_apps calls` | Start: `BT Classic transport on (BR/EDR inquiry only while a pairing window is open)` and a WARN `power.screen_gate is no longer read …`. The `daemon set` logs INFO `Config call.dialer_apps: '…' → 'calls'`. |
 
 ---
 
