@@ -370,10 +370,6 @@ class PebbleIntegration(
     private val pairingResult = AtomicReference<CompletableDeferred<String>?>(null)
     // Bond-state cache keyed by identifier.asString — avoids repeated BlueZ D-Bus round-trips.
     private val bondCache = ConcurrentHashMap<String, Boolean>()
-    // Reflects org.bluez.Adapter1.Powered — set by watchBluetoothPowerState().
-    // Distinct from libPebble.bluetoothEnabled: covers rfkill/airplane-mode blocks where
-    // GattServerManager still reports Enabled but the radio is actually off.
-    private val btAdapterPowered = MutableStateFlow(true)
     // Long-lived session-bus connection for notifications that carry an action button, plus a map of
     // notification id → callback to run when the user taps it (org.freedesktop.Notifications.ActionInvoked).
     @Volatile private var notifConn: DBusConnection? = null
@@ -576,7 +572,6 @@ class PebbleIntegration(
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
         notificationAppsControl = NotificationAppsControl(koin.get())
         watchConnector = koin.get()
-        watchBluetoothPowerState()
         libPebble.init()
         sleepGuard?.start()
         startScanLoop()
@@ -671,9 +666,7 @@ class PebbleIntegration(
         if (!config.classicDiscover) return
         scope.launch {
             // Wait for Bluetooth to be up so the BR/EDR inquiry can reach the watch.
-            combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
-                bt.enabled() && powered
-            }.first { it }
+            libPebble.bluetoothEnabled.first { it.enabled() }
             delay(2.seconds)
             log.info { "BT Classic: discovering classic Pebbles (BR/EDR inquiry)" }
             startClassicDiscovery()
@@ -690,7 +683,7 @@ class PebbleIntegration(
         // until the resume (hostSuspending).
         scope.launch {
             while (true) {
-                val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                val btOn = libPebble.bluetoothEnabled.value.enabled()
                 val classicConnected = libPebble.watches.value.any {
                     it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
                 }
@@ -784,9 +777,6 @@ class PebbleIntegration(
         // window's PairStatus says why nothing turned up yet (PAIRING_PAUSED_SLEPT).
         wakeups().onEach { pairingGate.noteResume() }.launchIn(scope)
         scope.launch {
-            // Wait for watchBluetoothPowerState() to complete its initial GetManagedObjects() check
-            // before the first scan attempt so btAdapterPowered reflects reality from the start.
-            delay(1.seconds)
             // startBleScan auto-stops after 30s, so we re-issue it while we still want to scan; tick
             // fast so we stop the scan within ~2s of a GATT link coming up (a scan running during the
             // PPoG handshake starves the watch's GATT traffic → the handshake times out and the link is
@@ -794,16 +784,12 @@ class PebbleIntegration(
             val tick = 2.seconds
             var displayOffNoted = false // this window's "discovering with the display off" line is logged
             while (true) {
-                // Suspend when BT is disabled — from libpebble3's state OR from our Powered watcher
-                // (covers rfkill / airplane mode where GattServerManager may still report Enabled).
-                // Wait for BOTH sources to agree BT is on before attempting anything.
-                val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                // Wait while Bluetooth is off (libpebble3 reads BlueZ: no adapter, powered off or rfkill-blocked).
+                val btOn = libPebble.bluetoothEnabled.value.enabled()
                 if (!btOn) {
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
                     if (pairingGate.isOpen()) showPairingScanPause(PAIRING_PAUSED_BT_OFF)
-                    combine(libPebble.bluetoothEnabled, btAdapterPowered) { bt, powered ->
-                        bt.enabled() && powered
-                    }.first { it }
+                    libPebble.bluetoothEnabled.first { it.enabled() }
                     showPairingScanPause(null)
                     delay(2.seconds) // brief settle so BlueZ is ready before we scan
                     continue
@@ -916,7 +902,7 @@ class PebbleIntegration(
                 while (true) {
                     delay(DISCOVERY_WARN_INTERVAL)
                     val devices = libPebble.watches.value
-                    val btOn = libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value
+                    val btOn = libPebble.bluetoothEnabled.value.enabled()
                     // Deep-sleep hosts: a discovery session left open while the display is off makes the
                     // controller report every advertiser nearby — with the watch link kept across suspend,
                     // each report wakes the phone. We can't stop another client's scan; say so once per
@@ -1345,95 +1331,6 @@ class PebbleIntegration(
             log.warn { "sendActionableNotification failed: ${e.message}" }
             sendDesktopNotification(summary, body, STOANDL_DESKTOP_ONLY_APP)
             UInt32(0)
-        }
-    }
-
-    private fun watchBluetoothPowerState() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
-                try {
-                    // Use presence of org.bluez.GattManager1 on any hci adapter as the "BT ready"
-                    // signal. More reliable than the Powered property: GNOME/KDE disable BT via rfkill
-                    // which leaves Powered=true but removes GattManager1 from the adapter's interfaces.
-                    // Don't hardcode hci0 — phones may expose the adapter under a different index.
-                    fun isHciAdapter(path: String) = Regex("/org/bluez/hci\\d+$").matches(path)
-
-                    fun isGattReady(): Boolean = try {
-                        val objMgr = conn.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
-                        @Suppress("UNCHECKED_CAST")
-                        (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>).any { (path, ifaces) ->
-                            isHciAdapter(path.toString()) && "org.bluez.GattManager1" in ifaces
-                        }
-                    } catch (_: Exception) { true } // assume ready on error; scan will fail if not
-
-                    fun logAdapters() = try {
-                        val objMgr = conn.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
-                        @Suppress("UNCHECKED_CAST")
-                        val adapters = (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>)
-                            .filter { (path, _) -> isHciAdapter(path.toString()) }
-                            .map { (path, ifaces) -> "$path [${ifaces.keys.joinToString()}]" }
-                        log.info { "BlueZ adapters: ${if (adapters.isEmpty()) "none found" else adapters.joinToString()}" }
-                    } catch (_: Exception) {}
-
-                    logAdapters()
-                    val ready = isGattReady()
-                    btAdapterPowered.value = ready
-                    if (!ready) {
-                        log.info { "Bluetooth is currently disabled — will start scanning when Bluetooth is re-enabled" }
-                    }
-
-                    // InterfacesAdded: GattManager1 appeared → BT became operational
-                    val addedRule = DBusMatchRuleBuilder.create()
-                        .withType("signal")
-                        .withInterface("org.freedesktop.DBus.ObjectManager")
-                        .withMember("InterfacesAdded")
-                        .build()
-                    conn.addGenericSigHandler(addedRule) { msg: DBusSignal ->
-                        try {
-                            val params = msg.getParameters() ?: return@addGenericSigHandler
-                            if (params.size < 2) return@addGenericSigHandler
-                            if (!isHciAdapter(params[0].toString())) return@addGenericSigHandler
-                            @Suppress("UNCHECKED_CAST")
-                            val ifaces = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                            if ("org.bluez.GattManager1" in ifaces) {
-                                btAdapterPowered.value = true
-                                log.info { "Bluetooth re-enabled — resuming" }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
-                    // InterfacesRemoved: GattManager1 removed → BT is off or blocked
-                    val removedRule = DBusMatchRuleBuilder.create()
-                        .withType("signal")
-                        .withInterface("org.freedesktop.DBus.ObjectManager")
-                        .withMember("InterfacesRemoved")
-                        .build()
-                    conn.addGenericSigHandler(removedRule) { msg: DBusSignal ->
-                        try {
-                            val params = msg.getParameters() ?: return@addGenericSigHandler
-                            if (params.size < 2) return@addGenericSigHandler
-                            if (!isHciAdapter(params[0].toString())) return@addGenericSigHandler
-                            val removed = params[1]
-                            val ifaces = when (removed) {
-                                is Array<*> -> removed.filterIsInstance<String>()
-                                is List<*>  -> removed.filterIsInstance<String>()
-                                else        -> return@addGenericSigHandler
-                            }
-                            if ("org.bluez.GattManager1" in ifaces) {
-                                btAdapterPowered.value = false
-                                log.info { "Bluetooth disabled — pausing (will resume automatically when Bluetooth is re-enabled)" }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
-                    awaitCancellation()
-                } finally {
-                    conn.disconnect()
-                }
-            } catch (e: Exception) {
-                log.debug { "Bluetooth state monitor unavailable: $e" }
-            }
         }
     }
 
@@ -2004,7 +1901,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups) { libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups) { libPebble.bluetoothEnabled.value.enabled() })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -2189,7 +2086,7 @@ class PebbleIntegration(
                 // Don't fight pairing (its discovery/connect path owns the radio) or a powered-off adapter,
                 // and hold the goal steady across a firmware/language update's reboot gap.
                 if (pairingGate.isOpen()) continue
-                if (!(libPebble.bluetoothEnabled.value.enabled() && btAdapterPowered.value)) continue
+                if (!libPebble.bluetoothEnabled.value.enabled()) continue
                 if (System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds) continue
 
                 val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
@@ -2783,7 +2680,7 @@ private class StoandlControlImpl(
     // Resume signal (SleepGuard.resumed): the pairing monitor's timeout runs on the wall clock, like the
     // gate's, and is re-checked on every resume.
     private val wakeups: () -> Flow<Unit>,
-    // True only when Bluetooth is actually usable (libpebble3 state AND adapter Powered/GattManager1).
+    // True only when Bluetooth is usable: libpebble3's state (a BlueZ adapter exists and is powered).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
     private val log = KotlinLogging.logger {}

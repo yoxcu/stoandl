@@ -117,7 +117,7 @@ tab-separated payloads. "CLI" is the `stoandl` subcommand that calls each method
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `BluetoothStatus` | `() → s` | Whether host Bluetooth is on/usable: `ok:on` / `ok:off`. Tracked from libpebble3's adapter state **and** `org.bluez.GattManager1` presence (so it catches rfkill/airplane-mode, which leave `Powered=true`). The daemon already detects and logs every transition; this method just exposes the state for polling. | *(GUI)* |
+| `BluetoothStatus` | `() → s` | Whether host Bluetooth is on/usable: `ok:on` / `ok:off`. libpebble3's state, read from BlueZ: `on` = some adapter exists and is `Powered` (rfkill and airplane mode show as `Powered=false`, `PowerState=off-blocked`). While it is off the daemon makes no connection attempts. The daemon logs every transition; this method exposes the state for polling. | `watch list` (a line when off), GUI |
 | `ListWatches` | `() → as` | Known watches, one record each: `name\tstate\tbattery\ttransport` (below). | `watch list` (also bare `watch`) |
 | `Battery` | `() → s` | Active watch's battery: `ok:<name>\t<level>` (0–100), `unknown:<name>`, or `notready:`. | `watch battery` |
 | `BatteryHistory` | `(s,x) → s` | Battery %-over-time series for `(watch, sinceEpoch)` (empty watch = connected). `ok:` + newline-joined `ts\tlevel\tsource\tvoltage` records (see below); `notready:` when capture is off. | `watch battery history` |

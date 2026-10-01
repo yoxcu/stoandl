@@ -109,8 +109,10 @@ takes, besides the settings above:
 ### Switching between Mode A and Mode B
 
 `qca_keep_links_on_suspend` is read-only at runtime (mode 0444), so switching modes means reloading
-the Bluetooth driver. stoandl can keep running across the reload. While the adapter is gone it logs
-`failed to connect … FailedToConnect` every few seconds, which is harmless, and it reconnects on its
+the Bluetooth driver. Some kernels fail to power Bluetooth on again after a reload (OnePlus 6 kernel
+"r9": only a reboot brings it back), so prefer setting the parameter at boot (below). stoandl can keep
+running across a reload. While no adapter is powered it pauses its connection attempts (INFO
+`Bluetooth adapters: no adapter`, `stoandl watch list` says Bluetooth is off), and it reconnects on its
 own once the controller is configured again. It doesn't touch the pairing: a failed connect never
 deletes a bond. The first hardware test did lose a valid pairing here, through a check that has
 since been removed — **implemented, to be tested** ([TESTING.md §5.32c, §5.32g](../TESTING.md)). Stopping

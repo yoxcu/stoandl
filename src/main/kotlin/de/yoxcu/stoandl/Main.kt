@@ -1288,6 +1288,7 @@ private fun watchList() = withControl { control ->
                 println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, tail))
             }
         }
+        if (control.BluetoothStatus() == "ok:off") println("Bluetooth is off — no watch can connect until it is on.")
     } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
 }
 
