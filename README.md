@@ -183,8 +183,9 @@ systemctl --user enable --now stoandl
 
 Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO.
 
-**Filing a bug? Run with debug logging and attach the log** — a `STOANDL_LOG=DEBUG` trace (full
-BLE/protocol packets, PPoG handshake, PKJS lifecycle) is by far the most useful thing you can include:
+**Filing a bug? Run with debug logging and attach the log** — a `STOANDL_LOG=DEBUG` log (connect and
+drop reasons, PPoG handshake, suspend/resume, PKJS lifecycle) is by far the most useful thing you can
+include. For a protocol problem use `STOANDL_LOG=TRACE`, which adds a line per BLE/protocol packet:
 
 ```sh
 STOANDL_LOG=DEBUG ./gradlew run

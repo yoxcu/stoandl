@@ -72,7 +72,7 @@ Pebble watch over BLE/PPoG
 
 - `power/` makes the daemon suspend-aware for phones that deep-sleep (see [docs/deep-sleep.md](docs/deep-sleep.md)): `SleepGuard` holds a logind *delay* lock (a `systemd-inhibit … cat` child — dbus-java's native transport can't receive logind's fd) and drains pending watch traffic (libpebble3 `WatchLinkActivity`) on `PrepareForSleep(true)`; periodic work uses `delayWallClock()` (monotonic `delay()` stops while suspended) and re-checks on `SleepGuard.resumed`. Never use a *block* lock for routine work — it makes a one-shot `systemctl suspend` fail.
 
-- Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO: startup, scan, watch connected, notifications, PKJS lifecycle. Set `STOANDL_LOG=DEBUG` (env var or `-DSTOANDL_LOG=DEBUG` JVM flag) for full BLE/protocol packet traces.
+- Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO: startup, scan, watch connected, notifications, PKJS lifecycle. Set `STOANDL_LOG=DEBUG` (env var or `-DSTOANDL_LOG=DEBUG` JVM flag) for the decisions behind them (sleep guard, connect/drop reasons, catch-up, health sync), and `STOANDL_LOG=TRACE` for a line per BLE/protocol packet too (libpebble3's Kermit `v` = TRACE: keep per-packet lines there, not at `d`).
 
 ## libpebble3 submodule
 

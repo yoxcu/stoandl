@@ -1825,6 +1825,7 @@ dbus-daemon bus with an activatable mock server (2026-10-01).
 | 5.36c | Server restart (B1) | as §5.34h, on dbus-broker | `Notification server gone: :1.A`, `Notification server appeared: :1.B`; the next notification reaches the watch; a wrist Reply on a fresh one still works. No `BecomeMonitor connection lost`. |
 | 5.36d | dbus-daemon regression | 5.36b and c on a dbus-daemon session (Debian/Ubuntu) | Same lines and results. |
 | 5.36e | Refused wrist reply (B5) | as §5.34g: answer a message on the phone, then Reply to it on the watch | The watch shows *Already closed* with the failed icon (note what the Time 2 shows, and whether it shows the text at all); the journal has one INFO `Reply on … refused: …` and no WARN with a stack trace. |
+| 5.36f | DEBUG without the packet firehose (B3) | One hour on the phone in Mode B with `STOANDL_LOG=DEBUG`; then 10 min with `STOANDL_LOG=TRACE` | DEBUG: no `sendData: emitting PropertiesChanged`, `WriteValue: N bytes`, `inbound pebble protocol packet`, `sending …`, `sendPacketImmediately`, `dynamicQuery: refreshing` or `Found N sleep entries` lines; `SleepGuard`, connect/drop and catch-up lines still there; stoandl well under the 66 % of the user journal it had (target < 20 %). TRACE: the packet lines are back. |
 
 ---
 

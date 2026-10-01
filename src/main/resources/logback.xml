@@ -1,7 +1,10 @@
 <configuration>
     <!--
         Default: INFO — startup, connection, notifications, PKJS lifecycle only.
-        Verbose: set STOANDL_LOG=DEBUG (env var or -DSTOANDL_LOG=DEBUG JVM flag).
+        Verbose: set STOANDL_LOG=DEBUG (env var or -DSTOANDL_LOG=DEBUG JVM flag): the decisions (sleep guard,
+        connect and drop reasons, catch-up, health sync). STOANDL_LOG=TRACE adds a line per packet (GATT
+        writes, PPoG, decoded Pebble-protocol packets, BlobDB refresh rounds, sleep-window dumps).
+        libpebble3's Kermit Verbose maps to TRACE (KermitSlf4jWriter).
     -->
     <property name="logLevel" value="${STOANDL_LOG:-INFO}"/>
 
@@ -56,7 +59,7 @@
     <logger name="BluezGattConnector" level="${logLevel}"/>
     <logger name="PebbleConnector" level="${logLevel}"/>
     <logger name="PairingJvm" level="${logLevel}"/>
-    <!-- Decoded Pebble-protocol packet traces (inbound + outbound) — DEBUG-only firehose,
+    <!-- Decoded Pebble-protocol packet traces (inbound + outbound) — a TRACE-only firehose,
          but the only way to see what the watch actually sends (e.g. timeline actions). -->
     <logger name="PebbleProtocol" level="${logLevel}"/>
     <logger name="PebbleProtocolRunner" level="${logLevel}"/>
@@ -77,7 +80,7 @@
          HealthDataProcessor logs each datalog frame ("handleSendDataItems …", "Parsed N step/overlay
          records", "Received sleep tag data"); HealthService logs the sync request + watermark
          ("Requesting incremental health data sync (last <N>s)"); SleepSessionGrouper logs "Found N sleep
-         entries …" — the decisive signals for diagnosing empty steps/sleep/HR. -->
+         entries …" at TRACE — the decisive signals for diagnosing empty steps/sleep/HR. -->
     <logger name="HealthDataProcessor" level="${logLevel}"/>
     <logger name="HealthService" level="${logLevel}"/>
     <logger name="SleepSessionGrouper" level="${logLevel}"/>
