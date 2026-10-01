@@ -512,6 +512,10 @@ data class StoandlConfig(
                 "weather.units is no longer read: weather follows the watch's units " +
                     "(stoandl health profile set units metric|imperial). Remove the line from ${file.path}."
             }
+            if (logResult && "power.screen_gate" in map) log.warn {
+                "power.screen_gate is no longer read: a pairing window always discovers, display on or off. " +
+                    "Remove the line from ${file.path}."
+            }
             return cfg
         }
 

@@ -668,7 +668,7 @@ class PebbleIntegration(
             // Wait for Bluetooth to be up so the BR/EDR inquiry can reach the watch.
             libPebble.bluetoothEnabled.first { it.enabled() }
             delay(2.seconds)
-            log.info { "BT Classic: discovering classic Pebbles (BR/EDR inquiry)" }
+            log.info { "BT Classic transport on (BR/EDR inquiry only while a pairing window is open)" }
             startClassicDiscovery()
         }
     }
@@ -1846,7 +1846,9 @@ class PebbleIntegration(
      * writes, reloads and reconciles instead of two that could drift.
      */
     private fun persistConfig(key: String, value: String, service: String? = null): String {
-        val result = if (guiConfigField(key) != null) {
+        val field = guiConfigField(key)
+        val before = field?.value(configStore.current())
+        val result = if (field != null) {
             applyGuiConfig(key, value, StoandlConfig.configFile())
         } else {
             try {
@@ -1858,7 +1860,8 @@ class PebbleIntegration(
             }
         }
         if (!result.startsWith("ok:")) return result
-        configStore.reload()
+        val after = configStore.reload()
+        log.info { if (field != null) "Config $key: '$before' → '${field.value(after)}'" else "Config $key set to '$value'" }
         (service ?: serviceForConfigKey(key))?.let { reconcile(it) }
         return result
     }

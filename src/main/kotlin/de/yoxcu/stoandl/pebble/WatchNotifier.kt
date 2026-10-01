@@ -420,6 +420,6 @@ class WatchActionRouter(
         val titleId = TimelineAttribute.Title.id
         val attr = attributes.firstOrNull { it.attributeId.get() == titleId } ?: attributes.firstOrNull()
         // Wire strings are NUL-terminated; trim that (and any trailing space) off the chosen text.
-        return attr?.content?.get()?.toByteArray()?.decodeToString()?.trimEnd(' ', ' ').orEmpty()
+        return attr?.content?.get()?.toByteArray()?.decodeToString()?.trimEnd('\u0000', ' ').orEmpty()
     }
 }
