@@ -212,8 +212,9 @@ internal object DesktopAppNames {
 // reply whose serial collides with a pending Notify, yielding a wrong notification ID —
 // which later makes CloseNotification() a silent no-op on the daemon. To avoid that we
 // only accept a method_return as a Notify reply when its sender is the notification
-// daemon (daemonOwner). If the owner could not be resolved, daemonOwner is null and we
-// fall back to the looser serial-only correlation.
+// daemon (daemonOwner). With no daemon (daemonOwner null, e.g. at login before the shell
+// takes the name) there are no replies to watch: pending Notify calls wait for the server
+// that NameOwnerChanged announces, and the loop rebuilds the monitor for it.
 private class InterceptingReader(
     private val inner: IMessageReader,
     private val pending: ConcurrentHashMap<Long, PendingNotify>,
@@ -287,7 +288,7 @@ private class InterceptingReader(
     }
 
     private fun onReturn(msg: MethodReturn) {
-        if (daemonOwner != null && msg.getSource() != daemonOwner) return
+        if (daemonOwner == null || msg.getSource() != daemonOwner) return
         val p = pending.remove(msg.getReplySerial()) ?: return
         val params = try { msg.getParameters() } catch (_: Exception) { return }
         val id = when (val rawId = params?.firstOrNull() ?: return) {
@@ -324,13 +325,14 @@ private class InterceptingReader(
                 val newOwner = (params.getOrNull(2) as? String)?.takeIf { it.isNotEmpty() }
                 if (newOwner == daemonOwner) return
                 // The monitor's reply rule is narrowed to the old owner: rebuild it (the loop re-resolves the
-                // owner and starts over with an empty pending map).
+                // owner). The old server's pending calls will never be answered; with no old server, the
+                // calls still pending are the ones the new server (perhaps bus-activated by them) answers.
                 ownerChanged.set(true)
-                pending.clear()
+                if (daemonOwner != null) pending.clear()
                 emit(NotificationEvent.OwnerChanged(newOwner))
             }
             iface == NOTIFICATIONS_IFACE && member == "NotificationClosed" -> {
-                if (daemonOwner != null && msg.getSource() != daemonOwner) return
+                if (daemonOwner == null || msg.getSource() != daemonOwner) return
                 val params = msg.getParameters() ?: return
                 val id = params.getOrNull(0) as? UInt32 ?: return
                 val reason = params.getOrNull(1) as? UInt32 ?: UInt32(4)
@@ -349,6 +351,9 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
         // a notification that arrived in the 200 ms window straddling the reconnect.
         val lastSeen = ConcurrentHashMap<String, Long>()
         val crossDedupe = CrossSourceDedupe()
+        // Notify calls awaiting their reply. Kept across a rebuild for a server that just appeared (see
+        // InterceptingReader's NameOwnerChanged); entries age out (PENDING_MAX_AGE_MS).
+        val pendingBySerial = ConcurrentHashMap<Long, PendingNotify>()
 
         // Reflected accessors — reused across reconnect iterations.
         val getTransportMethod = AbstractConnectionBase::class.java
@@ -371,8 +376,6 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
             }
             var tc: TransportConnection? = null
             var originalWriter: IMessageWriter? = null
-            // Per-connection pending map; cleared implicitly when the connection is replaced.
-            val pendingBySerial = ConcurrentHashMap<Long, PendingNotify>()
             val ownerChanged = AtomicBoolean(false)
             try {
                 monitorConn.addFallback(NOTIFICATIONS_OBJECT_PATH, object : FreedesktopNotifications {
@@ -406,7 +409,8 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                     )
                     dbus.GetNameOwner(NOTIFICATIONS_IFACE)
                 } catch (e: Exception) {
-                    log.warn { "Could not resolve owner of $NOTIFICATIONS_IFACE (falling back to serial-only matching): ${e.message}" }
+                    // Normal at login, before the shell takes the name; NameOwnerChanged triggers the rebuild.
+                    log.info { "No owner of $NOTIFICATIONS_IFACE yet (${e.message}) — waiting for a notification server" }
                     null
                 }
                 log.info { "Notification daemon owner: ${daemonOwner ?: "unknown"}" }
@@ -422,34 +426,26 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                     originalReader, pendingBySerial, lastSeen, crossDedupe, daemonOwner, ownerChanged,
                 ) { event -> trySend(event) })
 
-                // Narrow the method_return rule to replies from the notification daemon when its
-                // unique name is known. Otherwise the monitor receives *every* reply on the bus —
-                // a firehose that makes the daemon drop the monitor for falling behind (EOF on the
-                // transport). The in-code sender check in InterceptingReader still guards correctness
-                // and covers the daemonOwner == null fallback.
-                val returnRule = if (daemonOwner != null)
-                    "type='method_return',sender='$daemonOwner'"
-                else
-                    "type='method_return'"
-                // Only method_calls and two signal kinds besides the narrowed returns, so no firehose:
-                // portal/GTK notifications need no reply (the app picks the id); NotificationClosed marks a
-                // route dead; NameOwnerChanged tells us the server restarted (its ids start over).
-                val closedRule = if (daemonOwner != null)
-                    "type='signal',sender='$daemonOwner',interface='$NOTIFICATIONS_IFACE',member='NotificationClosed'"
-                else
-                    "type='signal',interface='$NOTIFICATIONS_IFACE',member='NotificationClosed'"
+                // Replies and NotificationClosed only from the notification server, and none while there is
+                // no server. An unnarrowed method_return rule receives *every* reply on the bus — a firehose
+                // that makes the bus drop the monitor for falling behind (EOF on the transport), which is
+                // what happened at every login while the owner was still unknown. Besides those, only
+                // method_calls and NameOwnerChanged: portal/GTK notifications need no reply (the app picks
+                // the id); NameOwnerChanged tells us a server appeared or restarted (its ids start over).
+                val serverRules = if (daemonOwner != null) listOf(
+                    "type='method_return',sender='$daemonOwner'",
+                    "type='signal',sender='$daemonOwner',interface='$NOTIFICATIONS_IFACE',member='NotificationClosed'",
+                ) else emptyList()
                 monitoring.BecomeMonitor(
-                    arrayOf(
+                    (listOf(
                         "type='method_call',interface='$NOTIFICATIONS_IFACE',member='$NOTIFY_MEMBER'",
-                        returnRule,
                         "type='method_call',interface='$PORTAL_IMPL_IFACE',member='AddNotification'",
                         "type='method_call',interface='$PORTAL_IMPL_IFACE',member='RemoveNotification'",
                         "type='method_call',interface='$GTK_IFACE',member='AddNotification'",
                         "type='method_call',interface='$GTK_IFACE',member='RemoveNotification'",
-                        closedRule,
                         "type='signal',sender='$DBUS_NAME',interface='$DBUS_NAME',member='NameOwnerChanged'," +
                             "arg0='$NOTIFICATIONS_IFACE'",
-                    ),
+                    ) + serverRules).toTypedArray(),
                     UInt32(0),
                 )
 
@@ -481,7 +477,8 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                 }
                 try { monitorConn.disconnect() } catch (_: Exception) {}
             }
-            if (isActive) delay(1000)
+            // A new server: rebuild at once, so its replies to the calls still pending aren't missed.
+            if (isActive && !ownerChanged.get()) delay(1000)
         }
     }
 
