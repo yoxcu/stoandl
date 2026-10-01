@@ -25,6 +25,16 @@ class NotificationParsingTest {
     }
 
     @Test
+    fun `the transient hint reads as a boolean or an integer, absent = false`() {
+        val dict = mapOf("transient" to Variant(true), "one" to Variant(1.toByte()), "zero" to Variant(0))
+        assertTrue(dictBool(dict, "transient"))
+        assertTrue(dictBool(dict, "one"))
+        assertFalse(dictBool(dict, "zero"))
+        assertFalse(dictBool(dict, "missing"))
+        assertFalse(dictBool(null, "transient"))
+    }
+
+    @Test
     fun `dict strings unwrap nested variants and ignore empty values`() {
         val dict = mapOf(
             "title" to Variant("Hello"),

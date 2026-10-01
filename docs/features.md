@@ -641,7 +641,8 @@ title as fallback. See [configuration.md](configuration.md#caller-id-resolution)
 
 Free-text allow/block **filters** (matched live against app name + title + body) mute or gate
 individual conversations regardless of app; `call.dialer_apps` holds back the dialer's redundant call
-notification while the call is up. (Per-app muting is a separate, hardware-verified feature above.)
+notification while the call is up. Notifications with the `transient` hint aren't forwarded unless an
+allow filter matches. (Per-app muting is a separate, hardware-verified feature above.)
 
 ```sh
 stoandl notif filter add <regex> block|allow   # matched against app name + title + body

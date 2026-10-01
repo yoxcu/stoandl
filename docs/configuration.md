@@ -165,6 +165,13 @@ Run **`stoandl notif styles`** to print the full list of accepted colours (64), 
 app/messaging set plus the generic timeline icons) and vibe presets — it's generated from the enums, so
 it always matches what the daemon accepts, and needs no daemon or watch.
 
+**Transient notifications** are not forwarded: a notification with the `transient` hint
+(`notify-send --transient`, many on-screen-display notices) is one the desktop itself doesn't keep, so
+stoandl doesn't buzz the wrist for it. An `allow` filter (`stoandl notif filter add <regex> allow`) still
+lets one through. Plasma's network notices (app "Network Management") don't set the hint; mute them with
+`stoandl notif mute "Network Management"` if they are too chatty, as on a phone whose modem keeps
+re-registering.
+
 **`notification.sync_to_watch`** (off by default) additionally pushes the list + mute states to the
 watch via libpebble3's `NotificationAppItem` BlobDB. It's off because current firmware has no per-app
 *settings menu* to surface them (muting is via the action menu above, which needs no sync). Kept as an

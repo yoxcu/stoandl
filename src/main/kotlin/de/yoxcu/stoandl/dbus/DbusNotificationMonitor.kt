@@ -73,6 +73,8 @@ data class IncomingNotification(
     val backend: String? = null,
     /** FDO: the notification's actions as (key, label), in order. */
     val actions: List<Pair<String, String>> = emptyList(),
+    /** FDO: the `transient` hint — a passing notice the server keeps out of its history. */
+    val transient: Boolean = false,
 )
 
 /** What the passive monitor reports. */
@@ -94,6 +96,7 @@ private data class PendingNotify(
     val body: String,
     val desktopEntry: String?,
     val actions: List<Pair<String, String>>,
+    val transient: Boolean,
     val atMs: Long,
 )
 
@@ -118,6 +121,14 @@ internal fun parseNotifyActions(raw: Any?): List<Pair<String, String>> {
 /** A string-valued entry of an `a{sv}` map (Notify hints, a portal/GTK notification dict). */
 internal fun dictString(dict: Any?, key: String): String? =
     ((dict as? Map<*, *>)?.get(key)?.let(::unwrapVariant) as? String)?.takeIf { it.isNotEmpty() }
+
+/** A boolean entry of an `a{sv}` map. The spec types hints like `transient` as `b`; some senders use an integer. */
+internal fun dictBool(dict: Any?, key: String): Boolean =
+    when (val v = (dict as? Map<*, *>)?.get(key)?.let(::unwrapVariant)) {
+        is Boolean -> v
+        is Number -> v.toLong() != 0L
+        else -> false
+    }
 
 /**
  * Suppresses the second sighting of one notification that reaches the bus twice:
@@ -243,6 +254,7 @@ private class InterceptingReader(
                             appName, summary, body,
                             desktopEntry = dictString(params.getOrNull(6), "desktop-entry"),
                             actions = parseNotifyActions(params.getOrNull(5)),
+                            transient = dictBool(params.getOrNull(6), "transient"),
                             atMs = now,
                         )
                     }
@@ -297,6 +309,7 @@ private class InterceptingReader(
             emit(NotificationEvent.Posted(IncomingNotification(
                 id, p.appName, p.summary, p.body,
                 source = NotifSource.FDO, owner = daemonOwner, appId = p.desktopEntry, actions = p.actions,
+                transient = p.transient,
             )))
         }
     }

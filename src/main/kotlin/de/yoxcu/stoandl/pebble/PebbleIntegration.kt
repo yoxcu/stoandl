@@ -2318,6 +2318,7 @@ private class DbusNotificationListenerConnection(
                 body = notification.body,
                 actions = actions,
                 reply = reply,
+                transient = notification.transient,
             ),
             ownerId = desktopOwner.id,
             ownerToken = ref.encode(),

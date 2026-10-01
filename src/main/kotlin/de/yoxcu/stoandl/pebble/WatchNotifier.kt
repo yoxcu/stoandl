@@ -85,6 +85,9 @@ data class NotifRequest(
     // Stable watch-item id. When set, a re-send replaces the same notification (even across daemon
     // restarts) instead of creating a duplicate — and its action route is refreshed. Random when null.
     val itemId: Uuid? = null,
+    // The desktop `transient` hint: a passing notice (network changes, volume, …) the server itself
+    // doesn't keep. Not forwarded unless an allow filter whitelists it.
+    val transient: Boolean = false,
 )
 
 /**
@@ -201,6 +204,10 @@ class WatchNotifier(
         }
         if (!whitelisted && !cfg.notificationForward) {
             log.info { "Notification forwarding paused (notification.forward=false) — dropped from ${req.appName}" }
+            return null
+        }
+        if (!whitelisted && req.transient) {
+            log.info { "Transient notification from ${req.appName} not forwarded" }
             return null
         }
         val dao = notifAppDao
