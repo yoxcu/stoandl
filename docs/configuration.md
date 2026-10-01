@@ -41,7 +41,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
 | `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
 | `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
-| `notification.catch_up_minutes` | number | `10` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
+| `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
 | `notification.canned_replies` | list | `Ok, Yes, No, Call me, Call you later` | The watch's Reply list for desktop notifications that take a reply (Plasma with the `InvokeReply` patch, see [features.md → Reply to desktop notifications](features.md#reply-to-desktop-notifications)) and for extensions that don't send their own. Whole items are kept while the NUL-joined list fits the firmware's 512 bytes; empty = the firmware's list. A reply can't contain a comma. |
 | `alerts.enabled` | bool | `true` | Master switch for the desktop alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup) — as opposed to forwarded app notifications. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
 | `alerts.pairing` | bool | `true` | Alert when a watch keeps connecting-then-dropping (unpaired on the watch) or its pairing was removed on this host — each with the action that fixes it (Re-pair / Pair). Without it a watch can silently stop reconnecting forever. |
@@ -185,9 +185,9 @@ on a phone that loses the Bluetooth link on every suspend (see [deep-sleep.md](d
 every notification a push message wakes it for, because it is posted a few seconds *before* the link is
 back.
 
-**`notification.catch_up_minutes`** (default `10`) makes a reconnecting watch also get the notifications
+**`notification.catch_up_minutes`** (default `60`) makes a reconnecting watch also get the notifications
 it hasn't received that are at most that many minutes old. They keep their original time on the watch.
-The window bounds a long absence (out of range for an hour → only the last 10 minutes arrive), and it
+The window bounds a long absence (out of range for three hours → only the last hour arrives), and it
 never reaches back past the daemon's start (no replay of a previous run) or the watch's pairing /
 factory reset (it starts clean). What the watch already has is not sent again — sync state is tracked
 per notification and watch. One an extension has withdrawn in the meantime (`closeNotification`) is

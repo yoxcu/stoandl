@@ -39,7 +39,7 @@ the setting on the next read.
 | `notification.per_app` | toggle | ✓ | live | read per push in `WatchNotifier.push` | — | `true` |
 | `notification.default_mute` | combo | ✓ | live | read per newly-tracked app (was a startup snapshot; **fixed this session**) | one of never/always/weekdays/weekends | `Never` |
 | `notification.sync_to_watch` | toggle | ✓ | **restart** | decides a Koin binding (`PlatformConfig(syncNotificationApps=…)`) built once in `init()` | — | `false` |
-| `notification.catch_up_minutes` | int | ✓ | **restart** | part of the host-built `LibPebbleConfig` that `init()` pins into `NotificationConfigFlow` once | 0–1440 min | `10` |
+| `notification.catch_up_minutes` | int | ✓ | **restart** | part of the host-built `LibPebbleConfig` that `init()` pins into `NotificationConfigFlow` once | 0–1440 min | `60` |
 | `notification.canned_replies` | list | ✓ | live | read per notification in `WatchNotifier.push` | — | `Ok,Yes,No,Call me,Call you later` |
 | `notification.forward` | toggle | Sync screen | live | read per push; `SetSyncEnabled("notifications", …)` | — | `true` |
 

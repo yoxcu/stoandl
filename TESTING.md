@@ -1584,7 +1584,7 @@ androidx changes the `sqliteJni-…` one. The probe prints its log lines to stdo
 ### 5.32b Notification catch-up (handoff #2)  ⚠️ UNVERIFIED
 
 After a reconnect, the watch also gets the notifications it hasn't received from the last
-`notification.catch_up_minutes` (default 10). Two limits apply: nothing from before the daemon started,
+`notification.catch_up_minutes` (default 60). Two limits apply: nothing from before the daemon started,
 and nothing from before the watch's pairing or unfaithful reset. The pairing/reset limit is recorded as
 soon as that connection begins, so it still applies if that connection drops during its handshake. This
 is implemented in libpebble3 `NotificationCatchUp`, which sets the notification DB's `onlyInsertAfter`
@@ -1593,8 +1593,8 @@ green) covers the threshold rule, including a fresh-start connection that drops 
 stoandl's own alerts about a watch that can't connect are desktop-only, so they are never caught up.
 
 **Prerequisite:** watch paired and connected, and `tail -f /tmp/stoandl.log` running.
-- The window in effect: with a `stoandl.conf`, the startup line `Config loaded … catchUp=10min` shows it.
-  Without one, the log says `No config file at …; using defaults` and the default of 10 applies.
+- The window in effect: with a `stoandl.conf`, the startup line `Config loaded … catchUp=60min` shows it.
+  Without one, the log says `No config file at …; using defaults` and the default of 60 applies.
 - Proof of delivery is the watch itself. With `STOANDL_LOG=DEBUG`, a BlobDB `insert: Notification …` line
   after the reconnect also proves it.
 - The INFO line `Notification catch-up: sending N unsent notification(s) created after <UTC>` appears only

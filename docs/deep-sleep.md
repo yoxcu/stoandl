@@ -14,7 +14,7 @@ Pebble Time 2 (2026-09-29).
   that arrived *with* a push wake — posted while the link was still down from the suspend — was never
   delivered in that test. This is addressed (**implemented, to be tested**): such a notification now
   goes out once the watch reconnects, if that happens within `notification.catch_up_minutes` (default
-  10) — see [Mode A](#without-the-host-work-mode-a) below.
+  60) — see [Mode A](#without-the-host-work-mode-a) below.
 - **Mode B:** not yet tested.
 
 Everything else on this page is unit/harness-tested off-device only. Test plan:
@@ -50,7 +50,7 @@ untested. All hardware testing so far used a BLE watch.
 | Sleep guard | `power.sleep_guard`, `power.sleep_guard_max_ms` | on, 3000 ms | Holds a logind **delay** inhibitor. When the system is about to suspend, stoandl waits (at most `sleep_guard_max_ms`) until watch traffic in flight is done — typically the notification the push wake just produced — then lets it sleep. A delay lock never makes a suspend fail. |
 | Wall-clock scheduling | (automatic) | — | Weather, calendar and the daily firmware check count **real** time, not awake time, and run right after a resume when overdue — riding on a wake the phone has anyway. Never an RTC alarm. |
 | No reconnect busywork | (automatic) | — | After a reconnect, weather is only refetched if older than `weather.interval`, health data only re-requested after 15 min. |
-| Notification catch-up | `notification.catch_up_minutes` | 10 min | A reconnecting watch also gets the notifications it hasn't received from that window — in Mode A the ones a push wake produced while the link was still down. Never older than the daemon's start or the watch's pairing; nothing the watch already has is re-sent. See [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up). |
+| Notification catch-up | `notification.catch_up_minutes` | 60 min | A reconnecting watch also gets the notifications it hasn't received from that window — in Mode A the ones a push wake produced while the link was still down. Never older than the daemon's start or the watch's pairing; nothing the watch already has is re-sent. See [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up). |
 | Discovery warning | (automatic) | — | A warning is logged if another app runs Bluetooth discovery while the display is off. stoandl's own discovery (BLE scan / BR/EDR inquiry) only runs in a pairing window; that is an explicit, 2-minute request, so it scans with the display off too (e.g. `stoandl watch pair` over ssh). It is stopped at every PrepareForSleep — before the suspend while the sleep guard holds its delay lock (`power.sleep_guard`) — and not restarted until the resume. So a phone that suspends with the display off only discovers while it is awake: keep it awake while pairing (screen on, or `systemd-inhibit --what=sleep sleep 150`); after a suspend inside the window `watch pair` says `Searching again — the phone slept …`. |
 | Slow, fixed connection parameters | `ble.conn_params`, `ble.conn_params_fast` | off | The watch keeps the link at your idle set (e.g. 500–520 ms, latency 0) and never asks to change it — every change request needs the phone, i.e. a wake. |
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
@@ -139,6 +139,10 @@ Without those, you're in Mode A. The settings here still help:
 - Wall-clock scheduling keeps weather, calendar and the firmware check on time across suspends.
 - The sleep guard holds a suspend until a notification that is already on its way to a connected watch
   has arrived. It doesn't hold a suspend for a reconnect.
+- Expect the link to be up only on the longer wakes. One night on the OnePlus 6 (7 h, no messages):
+  261 wakes, median 1.2 s awake (90th percentile 2.0 s); 28 suspend drops, but only 23 full sessions
+  (a reconnect that got as far as syncing), 23–75 min apart. The watch costs about 7 mA overnight
+  (31.5 mA against about 24.4 mA with Bluetooth off).
 - A notification that arrives with a push wake is posted while the link is still down from the
   suspend. stoandl sends it once the watch has reconnected (in the first test, the link was back about
   8 s after the wake; about 5 s of that was the connector noticing the link late, which is fixed —
@@ -146,6 +150,7 @@ Without those, you're in Mode A. The settings here still help:
   reconnect attempt remain).
   The catch-up is bounded, so a long disconnect doesn't replay old notifications. If the phone suspends
   again before the reconnect completes, the notification goes out at the next connect, as long as that
-  falls within the catch-up window (`notification.catch_up_minutes`, default 10; 0 = off) — see
+  falls within the catch-up window (`notification.catch_up_minutes`, default 60, set to cover those
+  gaps; 0 = off) — see
   [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up).
   **Implemented, to be tested** ([TESTING.md §5.32b](../TESTING.md)).

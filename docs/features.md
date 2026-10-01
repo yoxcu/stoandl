@@ -736,7 +736,7 @@ tested ([TESTING.md §5.32h](../TESTING.md))._
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
 push wakes on a phone that drops the link on suspend, and a watch that was out of range. It is bounded
-by `notification.catch_up_minutes` (default 10; 0 = upstream behaviour), and never reaches back past the
+by `notification.catch_up_minutes` (default 60; 0 = upstream behaviour), and never reaches back past the
 daemon's start or the watch's pairing. Nothing the watch already has is re-sent, and stoandl's own
 alerts about a watch that can't connect stay on the desktop. Implemented in the libpebble3 fork
 (`NotificationCatchUp`, `NotificationConfig.missedNotificationCatchUpMs`, default 0 there); the fork's

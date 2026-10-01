@@ -290,7 +290,7 @@ data class StoandlConfig(
         private const val DEFAULT_HEALTH_EXPORT_DAYS = 30
         private const val DEFAULT_BATTERY_RETENTION_DAYS = 90
         private const val DEFAULT_SLEEP_GUARD_MAX_MS = 3000L
-        private const val DEFAULT_NOTIFICATION_CATCH_UP_MINUTES = 10L
+        private const val DEFAULT_NOTIFICATION_CATCH_UP_MINUTES = 60L
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
 
