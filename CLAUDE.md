@@ -36,8 +36,8 @@ stoandl apps install app.pbw              # sideload a .pbw onto the connected w
 
 Most behaviour needs a watch and a session bus and is tested by hand from [TESTING.md](TESTING.md). The unit
 tests cover pure logic whose mistakes are silent: the settings schema against the config parser, the
-analytics-heartbeat layouts, firmware release selection and the downgrade handoff, iCal all-day dates and
-watch-pref ranges (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS and notification catch-up
+analytics-heartbeat layouts, firmware release selection and the downgrade handoff, iCal all-day dates,
+watch-pref ranges, the dialer-app match and the vCard folder walk (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS and notification catch-up
 (fork jvmTest).
 
 ## Architecture

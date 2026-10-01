@@ -48,7 +48,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `alerts.bluetooth` | bool | `true` | Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which blocks the watch from reconnecting. |
 | `alerts.extensions` | bool | `true` | Alert when an installed extension requires configuration before it can start. |
 | `call.dialer_apps` | list | `calls` | Dialer apps, by app name or desktop-entry id (exact, case-insensitive). Their notifications are held back from the watch while a call is up (the native call screen replaces them); their other notifications, such as Missed call, still arrive. Their title is a fallback caller name. `calls` is GNOME Calls; Plasma Mobile's Phone app shows calls full-screen and needs no entry. Don't list Spacebar: it is Plasma Mobile's SMS app. |
-| `contacts.vcard_paths` | list | _(empty)_ | vCard (`.vcf`) files or directories scanned for caller-ID resolution. `~` expands to `$HOME`. |
+| `contacts.vcard_paths` | list | `~/.local/share/kpeoplevcard` | vCard files (`.vcf`, `.vcard`) or folders, searched recursively, for caller-ID resolution. Hidden files and folders are skipped. `~` expands to `$HOME`. The default is Plasma Mobile's phonebook; a missing folder is simply empty. |
 | `music.enabled` | bool | `true` | Bridge desktop media players (MPRIS) to the watch's Music app — now-playing display plus play/pause, next/previous and volume from the watch. Local-only; set `false` to disable. |
 | `music.volume` | string | `system` | What the watch's volume buttons control: `system` (master/output volume — auto-detects `wpctl`/`pactl`/`amixer`) or `player` (the active player's own MPRIS volume; pure D-Bus but ignored by players that don't expose it, e.g. most browsers). |
 | `music.volume_up_command` | string | _(empty)_ | For `music.volume = system`: an explicit shell command to raise volume, overriding the auto-detected backend. Only used if **both** up and down are set. |
@@ -500,9 +500,13 @@ There is no contacts D-Bus API shared across GNOME (evolution-data-server) and P
 (Akonadi/KPeople), so stoandl resolves names from **vCard files** — the DE-agnostic common
 denominator. Two convenient sources:
 
-- **Plasma Mobile** stores contacts as `.vcf` via the `kpeoplevcard` KPeople backend, typically in
-  `~/.local/share/kpeoplevcard/` — point `contacts.vcard_paths` straight at it.
+- **Plasma Mobile**'s phonebook stores contacts through the `kpeoplevcard` KPeople backend in
+  `~/.local/share/kpeoplevcard/` (the phonebook's own as `own/*.vcard`, synced address books in folders
+  of their own). That is the default for `contacts.vcard_paths`, so it works without a setting.
 - **GNOME Contacts** / any CardDAV setup (`vdirsyncer`, `khard`) can export/sync a `.vcf` directory.
+
+Folders are searched recursively for `*.vcf` and `*.vcard`; hidden files and folders are skipped, and
+so are vdirsyncer's temp files (`<name>.vcf<random>`).
 
 Numbers are matched digits-only by suffix, so a stored `0151 2345678` resolves an incoming
 `+49151 2345678` and vice versa. Files are re-read automatically when they change.

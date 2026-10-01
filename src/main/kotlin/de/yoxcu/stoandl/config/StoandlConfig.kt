@@ -70,7 +70,7 @@ data class StoandlConfig(
      *  suppressed from the watch while a call is up (the native call screen replaces them) and their
      *  title is used as a fallback caller name. */
     val dialerApps: List<String>,
-    /** vCard files or directories scanned for caller-ID resolution. */
+    /** vCard files or directories (walked recursively) scanned for caller-ID resolution. */
     val vcardPaths: List<String>,
     /** Master switch for weather sync. On by default; flipped live by the Sync screen
      *  (`SetSyncEnabled("weather", …)`). Weather only actually runs when this is on **and** a source is
@@ -279,6 +279,8 @@ data class StoandlConfig(
         // GNOME Calls. Not Plasma Mobile's "Phone": it shows calls full-screen and posts only "Missed call",
         // after the call. Not Spacebar: that is Plasma Mobile's SMS app.
         private val DEFAULT_DIALER_APPS = listOf("calls")
+        // Where Plasma Mobile's phonebook (KPeopleVCard) keeps its vCards; a missing folder is just empty.
+        private val DEFAULT_VCARD_PATHS = listOf("~/.local/share/kpeoplevcard")
         private const val DEFAULT_WEATHER_INTERVAL_MINUTES = 30L
         private const val DEFAULT_GPS_DESKTOP_ID = "stoandl"
         private const val DEFAULT_GPS_NAME = "Current location"
@@ -304,7 +306,7 @@ data class StoandlConfig(
             alertsBluetooth = true,
             alertsExtensions = true,
             dialerApps = DEFAULT_DIALER_APPS,
-            vcardPaths = emptyList(),
+            vcardPaths = DEFAULT_VCARD_PATHS.map(::expandTilde),
             weatherEnabled = true,
             weatherLocations = emptyList(),
             weatherLocationSource = WeatherLocationSource.MANUAL,
@@ -401,7 +403,7 @@ data class StoandlConfig(
                 alertsBluetooth = map["alerts.bluetooth"]?.let { parseBool(it) } ?: true,
                 alertsExtensions = map["alerts.extensions"]?.let { parseBool(it) } ?: true,
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
-                vcardPaths = list("contacts.vcard_paths").map(::expandTilde),
+                vcardPaths = list("contacts.vcard_paths", DEFAULT_VCARD_PATHS).map(::expandTilde),
                 weatherEnabled = map["weather.enabled"]?.let { parseBool(it) } ?: true,
                 weatherLocations = parseWeatherLocations(list("weather.locations")),
                 weatherLocationSource = parseLocationSource(map["weather.location_source"]),

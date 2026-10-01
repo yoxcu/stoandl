@@ -4,10 +4,11 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
 
 /**
- * DE-agnostic caller-ID resolution by reading vCard (`.vcf`) files. There is no contacts D-Bus API
+ * DE-agnostic caller-ID resolution by reading vCard files. There is no contacts D-Bus API
  * shared across GNOME (evolution-data-server) and Plasma/KDE (Akonadi/KPeople); the common
  * denominator both export — and that Plasma Mobile's `kpeoplevcard` backend stores natively in
- * `~/.local/share/kpeoplevcard/` — is vCard. So we parse `.vcf` directly.
+ * `~/.local/share/kpeoplevcard/` (`.vcard` files under `own/`, plus a folder per synced address book) — is vCard.
+ * So we parse `.vcf`/`.vcard` directly, walking folders recursively like KPeopleVCard does.
  *
  * Numbers are matched digits-only by suffix, so a stored `0151 23456789` resolves an incoming
  * `+4915123456789` and vice versa. Files are re-read when their size/mtime changes.
@@ -60,8 +61,7 @@ class ContactResolver(
     private fun vcardFiles(): List<File> = vcardPaths.flatMap { p ->
         val f = File(p)
         when {
-            f.isDirectory -> f.listFiles { file -> file.isFile && file.name.endsWith(".vcf", ignoreCase = true) }
-                ?.sorted() ?: emptyList()
+            f.isDirectory -> vcardFilesUnder(f)
             f.isFile -> listOf(f)
             else -> emptyList()
         }
@@ -94,5 +94,22 @@ class ContactResolver(
 
     companion object {
         private const val SUFFIX_LEN = 9
+        private const val MAX_DEPTH = 8
+
+        /**
+         * The vCard files under [dir], sorted: `*.vcf` and `*.vcard` (case-insensitive) at any depth up to
+         * [MAX_DEPTH], skipping hidden files and folders. Matching the extension at the end of the name
+         * skips vdirsyncer's temp files (`<name>.vcf<random>`); symlinked folders aren't followed, so a
+         * link loop can't trap the walk.
+         */
+        internal fun vcardFilesUnder(dir: File): List<File> =
+            dir.walkTopDown()
+                .maxDepth(MAX_DEPTH)
+                .onEnter { it == dir || (!it.name.startsWith(".") && !java.nio.file.Files.isSymbolicLink(it.toPath())) }
+                .filter { it.isFile && !it.name.startsWith(".") && it.name.substringAfterLast('.', "").lowercase() in VCARD_EXTENSIONS }
+                .sortedBy { it.path }
+                .toList()
+
+        private val VCARD_EXTENSIONS = setOf("vcf", "vcard")
     }
 }

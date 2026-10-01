@@ -272,8 +272,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
             "Their other notifications, such as Missed call, still reach the watch.",
         placeholder = "calls") { it.dialerApps },
     list("contacts.vcard_paths", G_CALLS, "Contact files",
-        "vCard files or directories scanned to turn an incoming number into a name. No egress.",
-        placeholder = "~/.local/share/contacts") { it.vcardPaths },
+        "vCard files (.vcf, .vcard) or folders, searched recursively, used to turn an incoming number " +
+            "into a name. Default: ~/.local/share/kpeoplevcard (Plasma Mobile's phonebook). No egress.",
+        placeholder = "~/.local/share/kpeoplevcard") { it.vcardPaths },
 
     // --- Weather ---
     list("weather.locations", G_WEATHER, "Locations",

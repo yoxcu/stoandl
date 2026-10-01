@@ -64,7 +64,7 @@ notification with an Update button. One switch per event, not two — see [§5](
 | Key | Kind | GUI | Applies | Why | Default |
 | --- | --- | --- | --- | --- | --- |
 | `call.dialer_apps` | list | ✓ | live | read per notification (was a constructor snapshot; **fixed this session**) | `calls` |
-| `contacts.vcard_paths` | list | ✓ | live | `ContactResolver` re-reads on its file-signature check (was a snapshot; **fixed**) | _(empty)_ |
+| `contacts.vcard_paths` | list | ✓ | live | `ContactResolver` re-reads on its file-signature check (was a snapshot; **fixed**) | `~/.local/share/kpeoplevcard` |
 
 ### Weather
 
