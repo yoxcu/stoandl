@@ -618,9 +618,9 @@ seen twice on its way (GNOME forwards portal notifications to `org.gtk.Notificat
 turns them into a `Notify`) is sent once. Their app name comes from the app's `.desktop` file, so they
 share a per-app mute entry with the same app's `Notify` notifications. They have no reply or actions on
 the wrist; Dismiss works. And when the notification server restarts (plasmashell crash, GNOME Shell
-restart) stoandl rebuilds its monitor instead of going silent until its own restart, and forgets the
-old ids, so a wrist action can't hit a new notification that reuses one. _To be tested_
-([TESTING.md §5.34](../TESTING.md)).
+restart), or appears only after stoandl started (every boot on a phone), the monitor follows it without
+going silent until stoandl's own restart, and forgets the old ids, so a wrist action can't hit a new
+notification that reuses one. _To be tested_ ([TESTING.md §5.34, §5.36](../TESTING.md)).
 
 ### Phone call notifications
 

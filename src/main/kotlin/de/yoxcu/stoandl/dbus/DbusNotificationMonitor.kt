@@ -24,11 +24,11 @@ import org.freedesktop.dbus.types.UInt32
 import org.freedesktop.dbus.types.Variant
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 
 private val log = KotlinLogging.logger {}
 
 private const val NOTIFICATIONS_OBJECT_PATH = "/org/freedesktop/Notifications"
+private const val NOTIFICATIONS_NAME = "org.freedesktop.Notifications"
 private const val NOTIFICATIONS_IFACE = "org.freedesktop.Notifications"
 private const val NOTIFY_MEMBER = "Notify"
 private const val PORTAL_IMPL_IFACE = "org.freedesktop.impl.portal.Notification"
@@ -86,7 +86,8 @@ sealed interface NotificationEvent {
     /** An app withdrew a PORTAL/GTK notification. */
     data class Removed(val source: NotifSource, val appId: String, val portalId: String) : NotificationEvent
     /** org.freedesktop.Notifications has a new owner (or none): every FDO id seen so far is stale. Also
-     *  sent with the current owner each time the monitor (re)connects. */
+     *  sent with the current owner each time the monitor (re)connects. The monitor itself never needs it:
+     *  its rules follow the name. */
     data class OwnerChanged(val owner: String?) : NotificationEvent
 }
 
@@ -200,104 +201,58 @@ internal object DesktopAppNames {
     }
 }
 
-// Wraps the transport reader to intercept the monitored messages:
-// - Notify method calls and their returns: Notify call serials are recorded when the call is seen; when
-//   the corresponding MethodReturn arrives the daemon-assigned notification ID is extracted and the
-//   notification is emitted. The existing Notify() fallback handler is a no-op.
-// - portal / GTK AddNotification and RemoveNotification calls (no reply needed: the app picks the id);
-// - NotificationClosed from the notification server, and NameOwnerChanged for its name.
-//
-// D-Bus serials are per-sender, but the monitor sees method_returns from every client
-// on the bus. Correlating by reply-serial alone therefore risks matching an unrelated
-// reply whose serial collides with a pending Notify, yielding a wrong notification ID —
-// which later makes CloseNotification() a silent no-op on the daemon. To avoid that we
-// only accept a method_return as a Notify reply when its sender is the notification
-// daemon (daemonOwner). With no daemon (daemonOwner null, e.g. at login before the shell
-// takes the name) there are no replies to watch: pending Notify calls wait for the server
-// that NameOwnerChanged announces, and the loop rebuilds the monitor for it.
-private class InterceptingReader(
-    private val inner: IMessageReader,
-    private val pending: ConcurrentHashMap<Long, PendingNotify>,
-    private val lastSeen: ConcurrentHashMap<String, Long>,
-    private val crossDedupe: CrossSourceDedupe,
-    private val daemonOwner: String?,
-    private val ownerChanged: AtomicBoolean,
+/** A pending Notify call: serials count per connection, so the caller is part of the key. */
+private data class CallKey(val caller: String, val serial: Long)
+
+/**
+ * The monitor's bookkeeping, apart from the D-Bus message types so it can be tested on its own:
+ * - Notify calls are recorded by (caller, serial); the server's reply carries the id it assigned, and only
+ *   then is the notification emitted. The reply goes to the caller (its destination) with the call's
+ *   serial as reply-serial, so the key also tells two apps' calls with the same serial apart.
+ * - portal / GTK AddNotification and RemoveNotification calls (no reply needed: the app picks the id);
+ * - NotificationClosed from the notification server, and NameOwnerChanged for its name.
+ * The bus only passes on replies and NotificationClosed from whoever owns org.freedesktop.Notifications
+ * at that moment (the monitor's rules name the well-known name), so the sender of either is the server
+ * that assigned the id. One instance lives across monitor reconnects.
+ */
+internal class NotificationMonitorState(
     private val emit: (NotificationEvent) -> Unit,
-) : IMessageReader {
+    private val nowMs: () -> Long = System::currentTimeMillis,
+) {
+    private val pending = ConcurrentHashMap<CallKey, PendingNotify>()
+    private val lastSeen = ConcurrentHashMap<String, Long>()
+    private val crossDedupe = CrossSourceDedupe()
 
-    override fun readMessage(): Message? {
-        val msg = inner.readMessage() ?: return null
-        try {
-            when (msg) {
-                is MethodCall -> onCall(msg)
-                is MethodReturn -> onReturn(msg)
-                is DBusSignal -> onSignal(msg)
-            }
-        } catch (_: Exception) {}
-        return msg
+    fun onNotifyCall(caller: String?, serial: Long, params: Array<Any?>?) {
+        if (caller == null || params == null || params.size < 5) return
+        val summary = params[3] as? String ?: ""
+        if (summary.isEmpty()) return
+        val now = nowMs()
+        if (pending.size >= MAX_PENDING) pending.entries.removeIf { now - it.value.atMs > PENDING_MAX_AGE_MS }
+        if (pending.size >= MAX_PENDING) pending.clear()
+        pending[CallKey(caller, serial)] = PendingNotify(
+            appName = params[0] as? String ?: "",
+            summary = summary,
+            body = params[4] as? String ?: "",
+            desktopEntry = dictString(params.getOrNull(6), "desktop-entry"),
+            actions = parseNotifyActions(params.getOrNull(5)),
+            transient = dictBool(params.getOrNull(6), "transient"),
+            atMs = now,
+        )
     }
 
-    private fun onCall(msg: MethodCall) {
-        val iface = msg.getInterface()
-        val member = msg.getName()
-        when {
-            iface == NOTIFICATIONS_IFACE && member == NOTIFY_MEMBER -> {
-                val params = msg.getParameters()
-                if (params != null && params.size >= 5) {
-                    val appName = params[0] as? String ?: ""
-                    val summary = params[3] as? String ?: ""
-                    val body = params[4] as? String ?: ""
-                    if (summary.isNotEmpty()) {
-                        val now = System.currentTimeMillis()
-                        if (pending.size >= MAX_PENDING) pending.entries.removeIf { now - it.value.atMs > PENDING_MAX_AGE_MS }
-                        if (pending.size >= MAX_PENDING) pending.clear()
-                        pending[msg.getSerial()] = PendingNotify(
-                            appName, summary, body,
-                            desktopEntry = dictString(params.getOrNull(6), "desktop-entry"),
-                            actions = parseNotifyActions(params.getOrNull(5)),
-                            transient = dictBool(params.getOrNull(6), "transient"),
-                            atMs = now,
-                        )
-                    }
-                }
-            }
-            (iface == PORTAL_IMPL_IFACE || iface == GTK_IFACE) && member == "AddNotification" -> {
-                val params = msg.getParameters() ?: return
-                if (params.size < 3) return
-                val appId = params[0] as? String ?: return
-                val id = params[1] as? String ?: return
-                val dict = unwrapVariant(params[2])
-                val title = dictString(dict, "title") ?: return
-                val body = dictString(dict, "body") ?: ""
-                if (!crossDedupe.admitPortalOrGtk(appId, id, title, System.currentTimeMillis())) return
-                val source = if (iface == PORTAL_IMPL_IFACE) NotifSource.PORTAL else NotifSource.GTK
-                emit(NotificationEvent.Posted(IncomingNotification(
-                    id = UInt32(0), appName = DesktopAppNames.nameOf(appId), summary = title, body = body,
-                    source = source, appId = appId, portalId = id,
-                    backend = if (source == NotifSource.PORTAL) msg.getDestination() else null,
-                )))
-            }
-            (iface == PORTAL_IMPL_IFACE || iface == GTK_IFACE) && member == "RemoveNotification" -> {
-                val params = msg.getParameters() ?: return
-                val appId = params.getOrNull(0) as? String ?: return
-                val id = params.getOrNull(1) as? String ?: return
-                val source = if (iface == PORTAL_IMPL_IFACE) NotifSource.PORTAL else NotifSource.GTK
-                emit(NotificationEvent.Removed(source, appId, id))
-            }
-        }
-    }
-
-    private fun onReturn(msg: MethodReturn) {
-        if (daemonOwner == null || msg.getSource() != daemonOwner) return
-        val p = pending.remove(msg.getReplySerial()) ?: return
-        val params = try { msg.getParameters() } catch (_: Exception) { return }
-        val id = when (val rawId = params?.firstOrNull() ?: return) {
+    /** A method_return from [server] to [caller] answering its call [replySerial]. [params] is read only for
+     *  a Notify reply: the server answers many other calls. */
+    fun onReturn(server: String?, caller: String?, replySerial: Long, params: () -> Array<Any?>?) {
+        if (caller == null) return
+        val p = pending.remove(CallKey(caller, replySerial)) ?: return
+        val id = when (val rawId = params()?.firstOrNull() ?: return) {
             is UInt32 -> rawId
             is Long   -> UInt32(rawId)
             is Int    -> UInt32(rawId.toLong())
             else      -> return
         }
-        val now = System.currentTimeMillis()
+        val now = nowMs()
         // Our own "desktop-only" alerts carry a matching direct watch notification, so don't
         // bridge them (otherwise the watch would show the alert twice).
         if (p.appName == STOANDL_DESKTOP_ONLY_APP) return
@@ -309,9 +264,89 @@ private class InterceptingReader(
         if (prev == null || now - prev >= 200L) {
             emit(NotificationEvent.Posted(IncomingNotification(
                 id, p.appName, p.summary, p.body,
-                source = NotifSource.FDO, owner = daemonOwner, appId = p.desktopEntry, actions = p.actions,
+                source = NotifSource.FDO, owner = server, appId = p.desktopEntry, actions = p.actions,
                 transient = p.transient,
             )))
+        }
+    }
+
+    fun onAddNotification(source: NotifSource, backend: String?, params: Array<Any?>?) {
+        if (params == null || params.size < 3) return
+        val appId = params[0] as? String ?: return
+        val id = params[1] as? String ?: return
+        val dict = unwrapVariant(params[2])
+        val title = dictString(dict, "title") ?: return
+        val body = dictString(dict, "body") ?: ""
+        if (!crossDedupe.admitPortalOrGtk(appId, id, title, nowMs())) return
+        emit(NotificationEvent.Posted(IncomingNotification(
+            id = UInt32(0), appName = DesktopAppNames.nameOf(appId), summary = title, body = body,
+            source = source, appId = appId, portalId = id,
+            backend = if (source == NotifSource.PORTAL) backend else null,
+        )))
+    }
+
+    fun onRemoveNotification(source: NotifSource, params: Array<Any?>?) {
+        val appId = params?.getOrNull(0) as? String ?: return
+        val id = params.getOrNull(1) as? String ?: return
+        emit(NotificationEvent.Removed(source, appId, id))
+    }
+
+    /** NameOwnerChanged for org.freedesktop.Notifications. Nothing to rebuild: the rules follow the name. A
+     *  restart passes through "no owner" (gone, then appeared); only a hand-over changes it directly. */
+    fun onOwnerChanged(oldOwner: String?, newOwner: String?) {
+        when {
+            oldOwner == newOwner -> return
+            oldOwner == null -> log.info { "Notification server appeared: $newOwner" }
+            newOwner == null -> log.info { "Notification server gone: $oldOwner" }
+            else -> log.info { "Notification server changed: $oldOwner → $newOwner" }
+        }
+        emit(NotificationEvent.OwnerChanged(newOwner))
+    }
+
+    fun onClosed(server: String?, params: Array<Any?>?) {
+        val id = params?.getOrNull(0) as? UInt32 ?: return
+        val reason = params.getOrNull(1) as? UInt32 ?: UInt32(4)
+        emit(NotificationEvent.Closed(server, id, reason))
+    }
+}
+
+/** Wraps the transport reader: hands each monitored message to [state], then on to dbus-java. */
+private class InterceptingReader(
+    private val inner: IMessageReader,
+    private val state: NotificationMonitorState,
+    private val failedKinds: MutableSet<String>,
+) : IMessageReader {
+
+    override fun readMessage(): Message? {
+        val msg = inner.readMessage() ?: return null
+        try {
+            when (msg) {
+                is MethodCall -> onCall(msg)
+                is MethodReturn -> state.onReturn(msg.getSource(), msg.getDestination(), msg.getReplySerial()) { msg.getParameters() }
+                is DBusSignal -> onSignal(msg)
+            }
+        } catch (e: Exception) {
+            // A message we can't read is silent otherwise: say so once per kind.
+            val kind = "${msg.javaClass.simpleName} ${msg.getInterface()}.${msg.getName()}"
+            if (failedKinds.add(kind)) log.warn(e) { "Notification monitor could not read a $kind" }
+        }
+        return msg
+    }
+
+    private fun onCall(msg: MethodCall) {
+        val iface = msg.getInterface()
+        val source = when (iface) {
+            PORTAL_IMPL_IFACE -> NotifSource.PORTAL
+            GTK_IFACE -> NotifSource.GTK
+            else -> null
+        }
+        when {
+            iface == NOTIFICATIONS_IFACE && msg.getName() == NOTIFY_MEMBER ->
+                state.onNotifyCall(msg.getSource(), msg.getSerial(), msg.getParameters())
+            source != null && msg.getName() == "AddNotification" ->
+                state.onAddNotification(source, msg.getDestination(), msg.getParameters())
+            source != null && msg.getName() == "RemoveNotification" ->
+                state.onRemoveNotification(source, msg.getParameters())
         }
     }
 
@@ -319,25 +354,18 @@ private class InterceptingReader(
         val iface = msg.getInterface()
         val member = msg.getName()
         when {
+            // The rule has no sender key (dbus-broker never passes a sender-narrowed arg0 NameOwnerChanged
+            // rule to a monitor); the bus sets the sender, so this check is what keeps a peer from forging it.
             iface == DBUS_NAME && member == "NameOwnerChanged" && msg.getSource() == DBUS_NAME -> {
                 val params = msg.getParameters() ?: return
-                if (params.getOrNull(0) != NOTIFICATIONS_IFACE) return
-                val newOwner = (params.getOrNull(2) as? String)?.takeIf { it.isNotEmpty() }
-                if (newOwner == daemonOwner) return
-                // The monitor's reply rule is narrowed to the old owner: rebuild it (the loop re-resolves the
-                // owner). The old server's pending calls will never be answered; with no old server, the
-                // calls still pending are the ones the new server (perhaps bus-activated by them) answers.
-                ownerChanged.set(true)
-                if (daemonOwner != null) pending.clear()
-                emit(NotificationEvent.OwnerChanged(newOwner))
+                if (params.getOrNull(0) != NOTIFICATIONS_NAME) return
+                state.onOwnerChanged(
+                    (params.getOrNull(1) as? String)?.takeIf { it.isNotEmpty() },
+                    (params.getOrNull(2) as? String)?.takeIf { it.isNotEmpty() },
+                )
             }
-            iface == NOTIFICATIONS_IFACE && member == "NotificationClosed" -> {
-                if (daemonOwner == null || msg.getSource() != daemonOwner) return
-                val params = msg.getParameters() ?: return
-                val id = params.getOrNull(0) as? UInt32 ?: return
-                val reason = params.getOrNull(1) as? UInt32 ?: UInt32(4)
-                emit(NotificationEvent.Closed(daemonOwner, id, reason))
-            }
+            iface == NOTIFICATIONS_IFACE && member == "NotificationClosed" ->
+                state.onClosed(msg.getSource(), msg.getParameters())
         }
     }
 
@@ -347,13 +375,9 @@ private class InterceptingReader(
 
 fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
     launch {
-        // Dedup state persists across reconnect iterations so a reconnect doesn't re-admit
-        // a notification that arrived in the 200 ms window straddling the reconnect.
-        val lastSeen = ConcurrentHashMap<String, Long>()
-        val crossDedupe = CrossSourceDedupe()
-        // Notify calls awaiting their reply. Kept across a rebuild for a server that just appeared (see
-        // InterceptingReader's NameOwnerChanged); entries age out (PENDING_MAX_AGE_MS).
-        val pendingBySerial = ConcurrentHashMap<Long, PendingNotify>()
+        // Kept across reconnects: the dedupe windows and the Notify calls still awaiting their reply.
+        val state = NotificationMonitorState(emit = { event -> trySend(event) })
+        val failedKinds = ConcurrentHashMap.newKeySet<String>()
 
         // Reflected accessors — reused across reconnect iterations.
         val getTransportMethod = AbstractConnectionBase::class.java
@@ -376,7 +400,6 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
             }
             var tc: TransportConnection? = null
             var originalWriter: IMessageWriter? = null
-            val ownerChanged = AtomicBoolean(false)
             try {
                 monitorConn.addFallback(NOTIFICATIONS_OBJECT_PATH, object : FreedesktopNotifications {
                     override fun isRemote() = false
@@ -399,21 +422,22 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                     "org.freedesktop.DBus", "/org/freedesktop/DBus", DBusMonitoring::class.java,
                 )
 
-                // Resolve the unique name owning org.freedesktop.Notifications so the reader can
-                // reject method_returns from other senders. Must happen before BecomeMonitor — the
-                // monitor connection can no longer make normal method calls afterwards.
+                // The current server, for the log and DesktopNotifOwner; the rules don't depend on it. Must
+                // happen before BecomeMonitor — the monitor connection can no longer make normal method calls
+                // afterwards. A server that takes the name in between is caught up by DesktopNotifOwner from
+                // the owner of its first notification.
                 val daemonOwner = try {
                     val dbus = monitorConn.getRemoteObject(
                         "org.freedesktop.DBus", "/org/freedesktop/DBus",
                         org.freedesktop.dbus.interfaces.DBus::class.java,
                     )
-                    dbus.GetNameOwner(NOTIFICATIONS_IFACE)
+                    dbus.GetNameOwner(NOTIFICATIONS_NAME)
                 } catch (e: Exception) {
-                    // Normal at login, before the shell takes the name; NameOwnerChanged triggers the rebuild.
-                    log.info { "No owner of $NOTIFICATIONS_IFACE yet (${e.message}) — waiting for a notification server" }
+                    // Normal at login, before the shell takes the name; NameOwnerChanged announces it.
+                    log.info { "No owner of $NOTIFICATIONS_NAME yet (${e.message}) — waiting for a notification server" }
                     null
                 }
-                log.info { "Notification daemon owner: ${daemonOwner ?: "unknown"}" }
+                if (daemonOwner != null) log.info { "Notification server: $daemonOwner" }
                 trySend(NotificationEvent.OwnerChanged(daemonOwner))
 
                 val transport = getTransportMethod.invoke(monitorConn) as AbstractTransport
@@ -422,30 +446,27 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                 // Install intercepting reader *before* BecomeMonitor so that the Notify call
                 // serial is captured before the matching MethodReturn can arrive.
                 val originalReader = tc.getReader()
-                readerField.set(tc, InterceptingReader(
-                    originalReader, pendingBySerial, lastSeen, crossDedupe, daemonOwner, ownerChanged,
-                ) { event -> trySend(event) })
+                readerField.set(tc, InterceptingReader(originalReader, state, failedKinds))
 
-                // Replies and NotificationClosed only from the notification server, and none while there is
-                // no server. An unnarrowed method_return rule receives *every* reply on the bus — a firehose
-                // that makes the bus drop the monitor for falling behind (EOF on the transport), which is
-                // what happened at every login while the owner was still unknown. Besides those, only
-                // method_calls and NameOwnerChanged: portal/GTK notifications need no reply (the app picks
-                // the id); NameOwnerChanged tells us a server appeared or restarted (its ids start over).
-                val serverRules = if (daemonOwner != null) listOf(
-                    "type='method_return',sender='$daemonOwner'",
-                    "type='signal',sender='$daemonOwner',interface='$NOTIFICATIONS_IFACE',member='NotificationClosed'",
-                ) else emptyList()
+                // Replies and NotificationClosed only from the notification server. A well-known sender key
+                // matches whoever is the name's primary owner when the message is sent (dbus-daemon and
+                // dbus-broker both resolve it per message, for monitors too), so these rules follow the server
+                // through login and restarts, and catch the reply to the Notify that bus-activated it. An
+                // unnarrowed method_return rule would receive *every* reply on the bus — a firehose that makes
+                // the bus drop the monitor for falling behind (EOF on the transport). NameOwnerChanged has no
+                // sender key: dbus-broker never delivers a sender='org.freedesktop.DBus' + arg0 rule to a
+                // monitor (it files it per name, and monitors only read the wildcard and sender registries).
                 monitoring.BecomeMonitor(
-                    (listOf(
+                    arrayOf(
                         "type='method_call',interface='$NOTIFICATIONS_IFACE',member='$NOTIFY_MEMBER'",
                         "type='method_call',interface='$PORTAL_IMPL_IFACE',member='AddNotification'",
                         "type='method_call',interface='$PORTAL_IMPL_IFACE',member='RemoveNotification'",
                         "type='method_call',interface='$GTK_IFACE',member='AddNotification'",
                         "type='method_call',interface='$GTK_IFACE',member='RemoveNotification'",
-                        "type='signal',sender='$DBUS_NAME',interface='$DBUS_NAME',member='NameOwnerChanged'," +
-                            "arg0='$NOTIFICATIONS_IFACE'",
-                    ) + serverRules).toTypedArray(),
+                        "type='method_return',sender='$NOTIFICATIONS_NAME'",
+                        "type='signal',sender='$NOTIFICATIONS_NAME',interface='$NOTIFICATIONS_IFACE',member='NotificationClosed'",
+                        "type='signal',interface='$DBUS_NAME',member='NameOwnerChanged',arg0='$NOTIFICATIONS_NAME'",
+                    ),
                     UInt32(0),
                 )
 
@@ -460,13 +481,10 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
 
                 log.info { "Notification monitor: BecomeMonitor active" }
 
-                while (isActive && monitorConn.isConnected() && !ownerChanged.get()) {
+                while (isActive && monitorConn.isConnected()) {
                     delay(500)
                 }
-                if (isActive) {
-                    if (ownerChanged.get()) log.info { "Owner of $NOTIFICATIONS_IFACE changed — rebuilding the notification monitor" }
-                    else log.warn { "BecomeMonitor connection lost, reconnecting..." }
-                }
+                if (isActive) log.warn { "BecomeMonitor connection lost, reconnecting..." }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -477,8 +495,7 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
                 }
                 try { monitorConn.disconnect() } catch (_: Exception) {}
             }
-            // A new server: rebuild at once, so its replies to the calls still pending aren't missed.
-            if (isActive && !ownerChanged.get()) delay(1000)
+            if (isActive) delay(1000)
         }
     }
 
