@@ -23,6 +23,12 @@ Type=simple
 ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -XX:ErrorFile=%t/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
 Restart=on-failure
 RestartSec=5
+# The JVM exits 128+SIGTERM after its shutdown hooks on a normal stop; that is a clean stop, not a failure.
+SuccessExitStatus=143
+# SIGTERM the JVM only. The default (control-group) also signals the sleep guard's systemd-inhibit child,
+# which then dies before the shutdown hook releases it, and the guard re-acquires the lock mid-shutdown.
+# Whatever is left once the JVM has exited still gets SIGKILL.
+KillMode=mixed
 # No core dumps: a JVM core is ~80 MB per crash, and the crash report above already has the stacks.
 LimitCORE=0
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
