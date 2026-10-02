@@ -17,6 +17,7 @@ import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.power.NoWakeups
+import de.yoxcu.stoandl.power.QuietTimeLink
 import de.yoxcu.stoandl.power.ScreenState
 import de.yoxcu.stoandl.power.SleepGuard
 import de.yoxcu.stoandl.power.delayUntilWallClock
@@ -378,6 +379,9 @@ class PebbleIntegration(
     // schedulers ride on; see [SleepGuard]. Built in init() right after Koin (before the syncers that
     // take its resume signal), started once libPebble is up.
     private var sleepGuard: SleepGuard? = null
+    // power.quiet_time_link_off: no watch link during the watch's scheduled Quiet Time; started before
+    // libpebble3 connects anything, so a restart inside the window stays paused.
+    private var quietTimeLink: QuietTimeLink? = null
     private lateinit var linkActivity: WatchLinkActivity
     @Volatile private var lastHealthRequestMs = 0L
     // Datalog send state last pushed to the connected watch (null = none yet); see startDatalogPolicy.
@@ -412,7 +416,7 @@ class PebbleIntegration(
         // below so a persisted Java Preferences value (LibPebbleConfigHolder loads storage over our
         // default) can't undo them.
         // connectionParams (ble.conn_params / ble.conn_params_fast, startup-only): null keeps libpebble3's
-        // upstream "phone manages the LE parameters" write; see libpebble3 ConnectionParams.
+        // watch managing the LE parameters with its own sets (no write); see libpebble3 ConnectionParams.
         // missedNotificationCatchUpMs (notification.catch_up_minutes, startup-only; NotificationConfigFlow
         // is pinned too): a reconnecting watch also gets the notifications posted while it was away — on
         // a phone that drops the link on every suspend that's every push-wake notification (libpebble3
@@ -572,6 +576,15 @@ class PebbleIntegration(
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
         notificationAppsControl = NotificationAppsControl(koin.get())
         watchConnector = koin.get()
+        quietTimeLink = QuietTimeLink(
+            scope = scope,
+            libPebble = libPebble,
+            watchConnector = watchConnector,
+            enabled = { config.powerQuietTimeLinkOff },
+            mustStayOn = ::linkNeeded,
+            pendingWork = ::watchTraffic,
+            wakeups = wakeups(),
+        ).also { it.start() }
         libPebble.init()
         sleepGuard?.start()
         startScanLoop()
@@ -1470,11 +1483,28 @@ class PebbleIntegration(
      *  would roughly double the phone's awake time for nothing — the link drops again right after. Real
      *  deliveries still count: their PPoG packets and BlobDB records show up in [linkActivity]. */
     private fun pendingWatchWork(): String? {
+        val parts = listOfNotNull(quietTimeLink?.pendingDescription(), watchTraffic())
+        return if (parts.isEmpty()) null else parts.joinToString("; ")
+    }
+
+    /** Notifications and packets owed to or awaited from the watch; see [pendingWatchWork]. A notification
+     *  queued while the Quiet Time pause holds the link off can't be delivered, so it isn't waited for. */
+    private fun watchTraffic(): String? {
         val parts = buildList {
-            if (::watchNotifier.isInitialized) watchNotifier.pendingDescription(NOTIFICATION_PICKUP_GRACE_MS)?.let(::add)
+            if (::watchNotifier.isInitialized && quietTimeLink?.held != true) {
+                watchNotifier.pendingDescription(NOTIFICATION_PICKUP_GRACE_MS)?.let(::add)
+            }
             if (linkActivity.busy.value) add(linkActivity.summary())
         }
         return if (parts.isEmpty()) null else parts.joinToString("; ")
+    }
+
+    /** Why the watch link must stay up whatever the Quiet Time pause wants, or null. */
+    private fun linkNeeded(): String? = when {
+        pairingGate.isOpen() -> "pairing window open"
+        System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds -> "watch update running"
+        libPebble.currentCall.value != null -> "call in progress"
+        else -> null
     }
 
     /**
@@ -2090,6 +2120,7 @@ class PebbleIntegration(
                 // and hold the goal steady across a firmware/language update's reboot gap.
                 if (pairingGate.isOpen()) continue
                 if (!libPebble.bluetoothEnabled.value.enabled()) continue
+                if (quietTimeLink?.held == true) { armedId = null; continue } // paused on purpose: nothing to rotate
                 if (System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds) continue
 
                 val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()

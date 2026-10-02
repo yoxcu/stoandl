@@ -387,8 +387,11 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("power.pause_datalog_screen_off", G_SLEEP, "Pause datalog while the display is off",
         "The watch holds back its health data (flushed every 15 min) until the display is on again: " +
             "fewer wakes on a phone that keeps the watch link across suspend") { it.powerPauseDatalogScreenOff },
+    toggle("power.quiet_time_link_off", G_SLEEP, "Pause watch connection during Quiet Time",
+        "Saves phone battery at night. Notifications that arrive during Quiet Time are sent to the watch " +
+            "when it ends. If calls may interrupt Quiet Time, the connection stays on.") { it.powerQuietTimeLinkOff },
     text("ble.conn_params", G_SLEEP, "Idle connection parameters",
-        "min_ms,max_ms,latency,supervision_ms the watch keeps while idle; empty or off = the phone manages " +
+        "min_ms,max_ms,latency,supervision_ms the watch keeps while idle; empty or off = the watch manages " +
             "them. Needs MaxConnectionInterval in BlueZ's main.conf: read docs/deep-sleep.md first.",
         placeholder = "500,520,0,6000", apply = ConfigApply.RESTART, validate = ::connParamsValid) {
         StoandlConfig.encodeConnParams(it.bleConnParams)

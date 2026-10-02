@@ -243,6 +243,12 @@ data class StoandlConfig(
      *  15-minute datalog flush on a phone that keeps the link across suspend; health data then arrives
      *  in bursts when the phone is used. Off by default. */
     val powerPauseDatalogScreenOff: Boolean,
+    /** Keep the watch disconnected during the watch's own *scheduled* Quiet Time (its weekday/weekend
+     *  windows, read from the synced watch prefs) once the display has been off for a while; reconnect
+     *  when the window ends or the display comes on. Saves the idle link's cost at night. Never while
+     *  calls may interrupt Quiet Time. Notifications posted meanwhile are sent when the link is back. Off
+     *  by default. See power/QuietTimeLink. */
+    val powerQuietTimeLinkOff: Boolean,
     /** Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time. [DndSyncMode.OFF]
      *  by default — it actively changes state on both the host and the watch, so it's opt-in (it never
      *  touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property)
@@ -352,6 +358,7 @@ data class StoandlConfig(
             powerSleepGuard = true,
             powerSleepGuardMaxMs = DEFAULT_SLEEP_GUARD_MAX_MS,
             powerPauseDatalogScreenOff = false,
+            powerQuietTimeLinkOff = false,
             dndSync = DndSyncMode.OFF,
             extensionsEnabled = emptyList(),
             extensionConfig = emptyMap(),
@@ -459,6 +466,7 @@ data class StoandlConfig(
                 powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 4500L) ?: DEFAULT_SLEEP_GUARD_MAX_MS,
                 powerPauseDatalogScreenOff = parseBool(map["power.pause_datalog_screen_off"]),
+                powerQuietTimeLinkOff = parseBool(map["power.quiet_time_link_off"]),
                 healthExportDays = map["health.export_days"]?.trim()?.toIntOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_HEALTH_EXPORT_DAYS,
                 batteryHistory = map["battery.history"]?.let { parseBool(it) } ?: true,
@@ -498,6 +506,7 @@ data class StoandlConfig(
                     (cfg.bleConnParams?.let { ", bleConnParams=$it" + (cfg.bleConnParamsFast?.let { f -> " (fast $f)" } ?: "") } ?: "") +
                     (if (!cfg.powerSleepGuard) ", sleepGuard=off" else if (cfg.powerSleepGuardMaxMs != DEFAULT_SLEEP_GUARD_MAX_MS) ", sleepGuardMaxMs=${cfg.powerSleepGuardMaxMs}" else "") +
                     (if (cfg.powerPauseDatalogScreenOff) ", pauseDatalogScreenOff=true" else "") +
+                    (if (cfg.powerQuietTimeLinkOff) ", quietTimeLinkOff=true" else "") +
                     (if (cfg.dndSync != DndSyncMode.OFF) ", dndSync=${cfg.dndSync.name.lowercase()}" else "") +
                     (if (!cfg.alertsEnabled) ", alerts=off"
                      else listOfNotNull(

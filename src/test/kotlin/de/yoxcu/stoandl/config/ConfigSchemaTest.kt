@@ -137,7 +137,7 @@ class ConfigSchemaTest {
         val f = field("ble.conn_params")
         assertEquals("500,520,0,6000", ok(f, "500,520,0,6000"))
         assertEquals("7.5,15,0,2000", ok(f, " 7.5,15,0,2000 "))
-        // Empty and `off` both mean "the phone manages the parameters" (upstream behaviour).
+        // Empty and `off` both mean "the watch manages the parameters with its own sets".
         assertEquals("", ok(f, ""))
         assertEquals("off", ok(f, "off"))
         assertContains(err(f, "500,520,0"), "min_ms,max_ms,latency,supervision_ms")

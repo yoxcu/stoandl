@@ -1827,6 +1827,28 @@ dbus-daemon bus with an activatable mock server (2026-10-01).
 | 5.36e | Refused wrist reply (B5) | as §5.34g: answer a message on the phone, then Reply to it on the watch | The watch shows *Already closed* with the failed icon (note what the Time 2 shows, and whether it shows the text at all); the journal has one INFO `Reply on … refused: …` and no WARN with a stack trace. |
 | 5.36f | DEBUG without the packet firehose (B3) | One hour on the phone in Mode B with `STOANDL_LOG=DEBUG`; then 10 min with `STOANDL_LOG=TRACE` | DEBUG: no `sendData: emitting PropertiesChanged`, `WriteValue: N bytes`, `inbound pebble protocol packet`, `sending …`, `sendPacketImmediately`, `dynamicQuery: refreshing` or `Found N sleep entries` lines; `SleepGuard`, connect/drop and catch-up lines still there; stoandl well under the 66 % of the user journal it had (target < 20 %). TRACE: the packet lines are back. |
 
+## 5.37 OnePlus 6 handoff 2026-10-02: Quiet Time pause, connection-parameter log  ⚠️ UNVERIFIED (needs a watch; 5.37a–h on the phone)
+
+`power.quiet_time_link_off` keeps the watch disconnected during the watch's scheduled Quiet Time
+([deep-sleep.md → Quiet Time pause](docs/deep-sleep.md#quiet-time-pause)); libpebble3's
+`WatchConnector.holdDisconnected` holds the link off in memory, and paused time doesn't count towards the
+notification catch-up window. Off-device: `QuietTimeScheduleTest` (the watch's schedule rule, the
+interruptions mask), libpebble3 `WatchManagerTest` (a hold before init and during retries) and
+`NotificationCatchUpTest` (windows across pauses). Watch address in the examples: `ED:86:0A:D4:B3:49`.
+For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.37a | Pause starts | `stoandl daemon set power.quiet_time_link_off true`; set a weekday window that is active now (e.g. `stoandl settings set dndWeekdaySchedule 10:00-10:30`, `dndWeekdayScheduleEnabled true`; weekend window on a weekend), interruptions *All off*; display off for 10 min, then wake the phone over ssh only | Journal: `Quiet Time: watch connection paused until 10:30` once, and libpebble3 `holding every watch disconnected (Quiet Time)`; `bluetoothctl info ED:86:0A:D4:B3:49` shows `Connected: no`. btmon: no `LE Set Scan Enable: Enabled`, `LE Create Connection` or `LE Extended Create Connection` until the window ends. |
+| 5.37b | Catch-up after the pause | During the window (ask the user first) send two bench-room messages a few minutes apart; then let the window end | At the first wake after the end: `Quiet Time: watch connection back on (Quiet Time over)`; the watch reconnects and `Notification catch-up: sending 2 unsent notification(s) created after …` (a time before the pause began); both show on the watch with their original times. |
+| 5.37c | Display on ends it | In a paused window, turn the display on | Within ~5 s `… back on (display on)`; the watch reconnects within ~10 s. Display off again for 10 min: paused again. |
+| 5.37d | Restart inside the window | Paused, display off: `systemctl --user restart stoandl` | The new run logs `paused until …` before libpebble3's first connect; no `Requesting connection` / `connected and services resolved` until the window ends. |
+| 5.37e | Restart outside | Window not active: restart | Connects as usual; no `Quiet Time` line. |
+| 5.37f | Calls may interrupt | Set *Quiet Time interruptions* to *Phone calls* (`dndInterruptionsMask`) | One INFO `Quiet Time: watch connection stays on — calls may interrupt Quiet Time` per window; no pause. |
+| 5.37g | Switch off while paused | `stoandl daemon set power.quiet_time_link_off false` | Within ~5 s `… back on (switched off)`; the watch reconnects. GUI: the switch appears under Deep sleep as *Pause watch connection during Quiet Time*, and applies live. |
+| 5.37h | A night with the switch on | Weekday window e.g. 23:00–07:00, phone on the bench all night | BT UART wakes ≈ 0/h inside the window (journal times from the `paused`/`back on` lines); average current inside the window ≈ night5 (handoff C5.3). Watch alarms still ring. |
+| 5.37i | Connection-parameter log (C1) | Any connect of a Time 2 with `ble.conn_params` unset, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. |
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)

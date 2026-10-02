@@ -724,6 +724,12 @@ logind delay lock work. Delivery of notifications that arrive with a push wake (
 reconnect) is fixed and to be tested. Mode B is untested ([TESTING.md §5.32](../TESTING.md))._
 Details: [deep-sleep.md](deep-sleep.md).
 
+_Implemented — to be tested ([TESTING.md §5.37](../TESTING.md)):_ the Quiet Time pause
+(`power.quiet_time_link_off`, GUI *Pause watch connection during Quiet Time*, off by default). During the
+watch's scheduled Quiet Time, with the display off for 10 min, the watch link is paused, so the phone's
+radio doesn't serve an idle link all night. It comes back when the window ends or the display comes on,
+and the watch then gets the notifications from the pause. It stays on if calls may interrupt Quiet Time.
+
 Faster BLE reconnect: the BlueZ connector now notices a link that comes up while it waits to retry,
 instead of only when its 5 s wait ends. Before, a reconnect was usually noticed only at the end of that
 wait: 5.05 s after `connect() starting` after a resume on the phone, and 5.1–5.7 s (sometimes ~10.5 s)

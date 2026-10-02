@@ -326,6 +326,10 @@ power.sleep_guard_max_ms = 3000
 # Pause the watch's datalog (health data, flushed every 15 min) while the display is off; it arrives
 # when the phone is used again. Saves ~4 wakes/h on a phone that keeps the watch link across suspend.
 power.pause_datalog_screen_off = false
+# No watch link during the watch's scheduled Quiet Time (its weekday/weekend windows) once the display
+# has been off for 10 min; back on when the window ends or the display comes on. Notifications from the
+# pause reach the watch afterwards. Never while calls may interrupt Quiet Time.
+power.quiet_time_link_off = false
 #
 # LE connection parameters the watch keeps while idle: min_ms,max_ms,latency,supervision_ms. Off = the
 # upstream behaviour (the link keeps whatever it had at connect, often 15 ms). 500,520,0,6000 suits a

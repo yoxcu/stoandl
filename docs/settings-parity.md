@@ -154,6 +154,7 @@ The settings for phones that suspend whenever the display is off ([deep-sleep.md
 | `power.sleep_guard` | toggle | ✓ | **restart** | `SleepGuard` takes or skips its logind delay lock once, at construction in `init()` | — | `true` |
 | `power.sleep_guard_max_ms` | int | ✓ | **restart** | handed to `SleepGuard` at construction | 0–4500 ms | `3000` |
 | `power.pause_datalog_screen_off` | toggle | ✓ | live | read per tick of the datalog poll and in the before-sleep hook; the poll always runs, so turning it off while the watch is paused resumes it within ~5 s | — | `false` |
+| `power.quiet_time_link_off` | toggle | ✓ | live | read on every `QuietTimeLink` tick (5 s while awake, and on resume); turning it off while paused releases the hold within ~5 s | — | `false` |
 | `ble.conn_params` | text | ✓ | **restart** | part of the `BleConfig` in the `LibPebbleConfig` that `init()` pins | decoded with `StoandlConfig.decodeConnParams`, the function `load()` uses, including `BleConnParamSet.validate()`; empty or `off` = off | _(off)_ |
 | `ble.conn_params_fast` | text | ✓ | **restart** | ” (only used together with `ble.conn_params`) | ” | _(off)_ |
 
