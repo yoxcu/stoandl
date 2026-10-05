@@ -25,6 +25,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
+import de.yoxcu.stoandl.notification.AppNamePlacement
 import de.yoxcu.stoandl.pebble.VIBE_PRESETS
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
@@ -1035,17 +1036,26 @@ private fun ctlNotif(rest: List<String>) {
             "style" -> {
                 val query = rest.getOrNull(1)
                 if (query.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]  (use 'default' to reset; 'stoandl notif styles' lists the choices)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>] [--app-name small|subtitle|off]  (use 'default' to reset; 'stoandl notif styles' lists the choices)"); System.exit(1); return
                 }
                 val color = flagValue(rest, "--color") ?: ""
                 val icon = flagValue(rest, "--icon") ?: ""
                 val vibe = flagValue(rest, "--vibe") ?: ""
-                if (color.isEmpty() && icon.isEmpty() && vibe.isEmpty()) {
-                    System.err.println("Nothing to set: pass --color <name>, --icon <name> and/or --vibe <preset|ms,ms,…>"); System.exit(1); return
+                // Its own D-Bus method (NotifSetStyle's signature is fixed); null = not asked for.
+                val appName = flagValue(rest, "--app-name")
+                if (color.isEmpty() && icon.isEmpty() && vibe.isEmpty() && appName == null) {
+                    System.err.println("Nothing to set: pass --color <name>, --icon <name>, --vibe <preset|ms,ms,…> and/or --app-name small|subtitle|off"); System.exit(1); return
                 }
-                handleStatusResponse(try { control.NotifSetStyle(query, color, icon, vibe) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                if (color.isNotEmpty() || icon.isNotEmpty() || vibe.isNotEmpty()) {
+                    handleStatusResponse(try { control.NotifSetStyle(query, color, icon, vibe) } catch (e: Exception) {
+                        System.err.println("Error: ${e.message}"); System.exit(1); return
+                    })
+                }
+                if (appName != null) {
+                    handleStatusResponse(try { control.NotifSetAppName(query, appName) } catch (e: Exception) {
+                        System.err.println("Error: ${e.message}"); System.exit(1); return
+                    })
+                }
             }
             // Global allow/block notification filters (regex on app/title/body). `allow` is a whitelist
             // that bypasses block filters, the forwarding switch and per-app mute; `block` drops a match.
@@ -1094,7 +1104,7 @@ private fun ctlNotif(rest: List<String>) {
                 }
             }
             else -> {
-                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>]|filter <list|add|remove>>")
+                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|filter <list|add|remove>>")
                 System.exit(1)
             }
         }
@@ -1752,12 +1762,18 @@ private fun flagValue(args: List<String>, flag: String): String? {
 }
 
 /** Print the per-app styling values (`notif style` choices). Generated from the libpebble3
- *  `TimelineColor`/`TimelineIcon` enums + the shared vibe presets, so the listing can't drift from
- *  what the daemon actually accepts. Fully offline — no daemon or watch needed. */
+ *  `TimelineColor`/`TimelineIcon` enums, the shared vibe presets and [AppNamePlacement], so the listing
+ *  can't drift from what the daemon actually accepts. Fully offline — no daemon or watch needed. */
 private fun printNotifStyles() {
     println("Per-app notification styling — set with:")
-    println("  stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>]")
+    println("  stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>] [--app-name small|subtitle|off]")
     println("Names are case-insensitive; pass 'default' (or 'none'/'clear') for any flag to reset it.")
+    println()
+
+    println("App name on the watch (--app-name):")
+    println("  " + AppNamePlacement.entries.joinToString("  ") { it.token })
+    println("  (small = a small line under the title, subtitle = the large bold line, off = not shown;")
+    println("   default = follow notification.app_name)")
     println()
 
     println("Vibe presets (--vibe):")
@@ -1789,14 +1805,15 @@ private fun printColumns(items: List<String>, indent: String = "  ", width: Int 
     }
 }
 
-/** Render NotifList() rows (`name \t mute \t color \t icon \t vibe \t lastNotifiedEpoch`) as a table. */
+/** Render NotifList() rows (`name \t mute \t color \t icon \t vibe \t lastNotifiedEpoch \t appNamePlacement`)
+ *  as a table. */
 private fun printNotifList(rows: List<String>) {
     if (rows.isEmpty()) {
         println("No notification apps tracked yet — they're added as desktop apps notify (needs notification.per_app = true).")
         return
     }
-    val fmt = "%-22s %-13s %-10s %-18s %-8s %s"
-    println(fmt.format("APP", "MUTE", "COLOR", "ICON", "VIBE", "LAST"))
+    val fmt = "%-22s %-13s %-10s %-18s %-8s %-8s %s"
+    println(fmt.format("APP", "MUTE", "COLOR", "ICON", "VIBE", "APP NAME", "LAST"))
     rows.sortedBy { it.substringBefore('\t').lowercase() }.forEach { rec ->
         val f = rec.split('\t')
         val name = f.getOrElse(0) { "" }
@@ -1806,11 +1823,13 @@ private fun printNotifList(rows: List<String>) {
         val icon = f.getOrElse(3) { "" }.ifEmpty { "—" }.removePrefix("Notification")
         val vibe = f.getOrElse(4) { "" }.ifEmpty { "—" }
         val epoch = f.getOrElse(5) { "0" }.toLongOrNull() ?: 0L
-        println(fmt.format(name.take(22), mute, color.take(10), icon.take(18), vibe.take(8), relativeAge(epoch)))
+        // Empty (shown as —, like the other defaults) = the app follows notification.app_name.
+        val appName = f.getOrElse(6) { "" }.ifEmpty { "—" }
+        println(fmt.format(name.take(22), mute, color.take(10), icon.take(18), vibe.take(8), appName, relativeAge(epoch)))
     }
     println()
     println("  Mute:   stoandl notif mute <app> [always|weekdays|weekends|1h|2d]")
-    println("  Style:  stoandl notif style <app> [--color <c>] [--icon <i>] [--vibe <v>]")
+    println("  Style:  stoandl notif style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]")
 }
 
 private fun relativeAge(epochSeconds: Long): String {

@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.config
 
+import de.yoxcu.stoandl.notification.AppNamePlacement
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -248,6 +249,20 @@ class ConfigSchemaTest {
         assertEquals(DEFAULT_CANNED_REPLIES, StoandlConfig.load(conf, logResult = false).notificationCannedReplies)
         conf.writeText("notification.canned_replies = On my way, Later ,\n")
         assertEquals(listOf("On my way", "Later"), StoandlConfig.load(conf, logResult = false).notificationCannedReplies)
+    }
+
+    /** A mistyped `notification.app_name` must not hide the app name or fail the load: it falls back to the
+     *  default small line (and the loader WARNs). */
+    @Test
+    fun `notification_app_name reads its tokens and falls back to small`(): Unit = withTempConf { conf ->
+        assertEquals(AppNamePlacement.SMALL, StoandlConfig.load(conf, logResult = false).notificationAppName)
+        conf.writeText("notification.app_name = Subtitle\n")
+        assertEquals(AppNamePlacement.SUBTITLE, StoandlConfig.load(conf, logResult = false).notificationAppName)
+        conf.writeText("notification.app_name = off\n")
+        assertEquals(AppNamePlacement.OFF, StoandlConfig.load(conf, logResult = false).notificationAppName)
+        conf.writeText("notification.app_name = huge\n")
+        assertEquals(AppNamePlacement.SMALL, StoandlConfig.load(conf, logResult = false).notificationAppName)
+        assertEquals("small", ok(field("notification.app_name"), "Small line"))
     }
 
     /** `weather.units` was dropped (the watch's own units decide): a line left in a user's file must

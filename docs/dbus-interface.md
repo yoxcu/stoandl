@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 90 methods below **plus 7 signals** (`WatchesChanged`,
+> A live introspection should show the 91 methods below **plus 7 signals** (`WatchesChanged`,
 > `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`,
 > `CalendarsChanged`) and no properties.
 
@@ -31,7 +31,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 90 |
+| **Methods** | 91 |
 | **Signals** | **7** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `CalendarsChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -80,7 +80,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Six types appear across the 90 methods and the signals:
+Six types appear across the 91 methods and the signals:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -246,15 +246,20 @@ preset-name-or-hex, a quick-launch app-name-or-uuid-or-`off`, and a schedule `HH
 | `NotifSetMute` | `(s,s) → s` | Set mute for the app matching `<query>`; spec = `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`). | `notif mute <app> [spec]` / `notif unmute <app>` (sends `never`) |
 | `NotifSetMuteAll` | `(s) → s` | Apply a mute spec to every tracked app. | `notif mute-all [spec]` / `notif unmute-all` |
 | `NotifSetStyle` | `(s,s,s,s) → s` | Per-app styling `(query, color, icon, vibe)` applied host-side; per value, empty = unchanged, `default` = reset. | `notif style <app> [--color] [--icon] [--vibe]` |
+| `NotifSetAppName` | `(s,s) → s` | Where the app matching `query` shows its name on the watch `(query, placement)`, overriding `notification.app_name` for it: `small` / `subtitle` / `off`; `default` (or empty, `none`, `clear`) drops the override. Applies while `notification.per_app` is on. `ok:` / `notfound:` / `ambiguous:` / `error:Unknown app-name placement …`. Live. | `notif style <app> --app-name <small\|subtitle\|off\|default>` |
 | `SendTestNotification` | `(s,s) → s` | Debug: inject a synthetic notification `(title, body)` to the watch through the normal send path (per-app mute, style and filters all apply) — the notification-pipeline counterpart of `FakeCallRing`. `ok:`/`error:`/`notready:`. | `notif test [title] [body]` |
 | `NotifListFilters` | `() → as` | Global notification filters, one record each: `pattern\taction` (`action` ∈ `allow`/`block`). | `notif filter list` |
 | `NotifAddFilter` | `(s,s) → s` | Add a global filter `(pattern, action)`. `pattern` is a Java regex (inline flags like `(?i)` work), matched against appName + title + body; `action` `allow`/`block` (anything not `allow` ⇒ `block`). `ok:added <action> filter` / `error:empty pattern` / `error:invalid regex …`. Applied **live** (no restart). | `notif filter add <regex> [allow\|block]` |
 | `NotifRemoveFilter` | `(s) → s` | Remove a global filter by exact `pattern`. `ok:filter removed` / `notfound:`. Live. | `notif filter remove <regex>` |
 
-`NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds`
-(`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`). *(The interface
-KDoc lists only 3 fields; the implementation in `NotificationAppsControl.kt:34` emits all 6 —
-the KDoc is stale.)*
+`NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds \t appNamePlacement`
+(`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`; an unset style field is
+empty; `appNamePlacement` is the app's own placement `small`/`subtitle`/`off`, empty = it follows
+`notification.app_name`). The 7th column was appended, so a client that reads six positionally is
+unaffected.
+
+`stoandl notif style <app>` calls `NotifSetStyle` only when `--color`, `--icon` or `--vibe` is given and
+`NotifSetAppName` only for `--app-name`, so one command can set both.
 
 **Notification filters** are a host-side **global** allow/block list enforced in `WatchNotifier.push()`
 (the single send choke point). `allow` is a whitelist that **bypasses** the block filters, the master
@@ -407,7 +412,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` · `accountId`(owning source id, `discover`, or empty) |
 | `ListCalendarSources` | `id`(`caldav:`/`ical:`/`ics:`…) · `type`(caldav/ical/ics) · `url` · `username` · `label` — never the password |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
-| `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` |
+| `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` · `appNamePlacement`(small/subtitle/off, empty = global) |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` · `author` · `version` |
 | `GetHealthSeries` | steps bars: `label` · `steps` · `typical` · sleep timeline (day): `startFraction` · `widthFraction` · `isDeep`(0/1) · sleep bars: `label` · `totalMin` · `deepMin` · heart (day): `minuteOfDay`(0–1439) · `bpm` · heart bars: `label` · `avgBpm` |
@@ -451,7 +456,8 @@ is down — and a reminder that **backup/restore are not daemon capabilities**:
   directly; `--all` decodes the newest record with the same table as `HeartbeatMetrics`.
 - `health` / `health [days]` / `health activities` / `health dump` — read
   `~/.config/stoandl/health/*.ndjson` directly (`health sync` and `health hr` call the daemon).
-- `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums + vibe presets.
+- `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums, the vibe presets
+  and the app-name placements.
 - `version` and `language list` use a *soft* connection: they call the daemon if reachable and
   degrade to embedded/offline output otherwise.
 

@@ -622,6 +622,27 @@ restart), or appears only after stoandl started (every boot on a phone), the mon
 going silent until stoandl's own restart, and forgets the old ids, so a wrist action can't hit a new
 notification that reuses one. _To be tested_ ([TESTING.md §5.34, §5.36](../TESTING.md)).
 
+### Notification layout: app name and markup
+
+The watch draws a notification as the title (bold), the subtitle (the largest bold text on the card), a
+small line, then the body; the phone only chooses which text goes where. stoandl used to put the app
+name in the subtitle, so every NeoChat message carried a large bold "NeoChat" above the text. Now
+`notification.app_name` decides: a small line under the title (`small`, the default), the subtitle
+(`subtitle`, the old look) or nothing (`off`). A source's own subtitle (the Matrix extension's room)
+keeps the subtitle, and the app name is left out when it would repeat the title. Each app can override
+it (`stoandl notif style <app> --app-name …`, or the app's notification settings in either GUI), and
+stoandl's own firmware-update notification follows the global setting. Without a subtitle the watch's
+notification list also shows a preview of the message instead of the app name.
+
+Desktop notification bodies are markup, so `&`, `<` and `>` used to arrive as `&amp;`, `&lt;` and
+`&gt;` (NeoChat escapes every message), and other apps' `<b>` or links arrived as raw tags. stoandl now
+turns a body the desktop draws as markup into plain text first: every `Notify` body, and a portal one on
+Plasma ≤ 6.6 (xdg-desktop-portal-kde re-posts it through `Notify`). Other portal and GTK bodies are plain
+text, so a Flatpak NeoChat, which escapes them anyway, still shows `&amp;` on Plasma ≥ 6.7 and GNOME, as
+the desktop does. See
+[configuration.md](configuration.md#per-app-notification-settings). _To be tested_
+([TESTING.md §5.39](../TESTING.md)).
+
 ### Phone call notifications
 
 ModemManager (system bus) → `currentCall` → native Pebble call screen; watch Answer/Hangup drive

@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.config
 
+import de.yoxcu.stoandl.notification.AppNamePlacement
 import de.yoxcu.stoandl.util.ConfFile
 import java.io.File
 
@@ -235,6 +236,14 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         ConfigChoice("Weekdays", "weekdays") { it.notificationDefaultMute == "weekdays" },
         ConfigChoice("Weekends", "weekends") { it.notificationDefaultMute == "weekends" },
     )),
+    combo("notification.app_name", G_NOTIF, "App name on the watch",
+        "Where the app's name goes on the watch: a small line under the title, the large bold subtitle, " +
+            "or not at all. A source's own subtitle (an extension's) keeps the subtitle. Apps can override " +
+            "this in their notification settings.", choices = listOf(
+        AppNamePlacement.SMALL to "Small line",
+        AppNamePlacement.SUBTITLE to "Subtitle",
+        AppNamePlacement.OFF to "Off",
+    ).map { (p, label) -> ConfigChoice(label, p.token) { it.notificationAppName == p } }),
     toggle("notification.sync_to_watch", G_NOTIF, "Sync the app list to the watch",
         "Push the per-app list and mute states to the watch's BlobDB. Current firmware surfaces no " +
             "per-app notification UI, so this normally changes nothing — mute is enforced host-side.",

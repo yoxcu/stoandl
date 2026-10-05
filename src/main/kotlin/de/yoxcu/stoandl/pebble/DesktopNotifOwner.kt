@@ -26,6 +26,7 @@ private const val GNOME_SHELL_NAME = "org.gnome.Shell"
 private const val GTK_NAME = "org.gtk.Notifications"
 private const val GTK_PATH = "/org/gtk/Notifications"
 private const val PORTAL_PATH = "/org/freedesktop/portal/desktop"
+private const val KDE_PORTAL_NAME = "org.freedesktop.impl.portal.desktop.kde"
 private const val KDE_NM_IFACE = "org.kde.NotificationManager"
 private const val INLINE_REPLY = "inline-reply"
 private const val MAX_DEAD = 512
@@ -153,6 +154,19 @@ class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
         }
     }
 
+    /**
+     * Whether the desktop draws [n]'s body as markup, so the watch gets it as plain text. `Notify` bodies
+     * are markup (GNOME Shell and Plasma advertise `body-markup`). Portal and GTK bodies are plain text
+     * (plasmashell >= 6.7, GNOME Shell), except a portal one shown by xdg-desktop-portal-kde (Plasma <= 6.6),
+     * which re-posts it through `Notify` as it is. The frontend may address that backend by its unique name.
+     */
+    internal suspend fun bodyIsMarkup(n: IncomingNotification): Boolean = when (n.source) {
+        NotifSource.FDO -> true
+        NotifSource.GTK -> false
+        NotifSource.PORTAL -> n.backend == KDE_PORTAL_NAME ||
+            (n.backend != null && withContext(Dispatchers.IO) { nameOwner(KDE_PORTAL_NAME) } == n.backend)
+    }
+
     /** What the server that posted [n] supports (cached per server instance). */
     internal suspend fun capabilitiesFor(n: IncomingNotification): ServerCaps {
         if (n.source != NotifSource.FDO) return ServerCaps.NONE
@@ -266,13 +280,15 @@ class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
      *  the owner-change event was missed). An unknown owner on either side can't be checked: allow. */
     private fun sameServer(ref: DesktopNotifRef.Fdo): Boolean {
         val owner = ref.owner ?: return true
-        val current = try {
-            session().getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java)
-                .GetNameOwner(FDO_NAME)
-        } catch (_: Exception) {
-            return false // nobody owns it now
-        }
-        return current == owner
+        return nameOwner(FDO_NAME) == owner // null: nobody owns it now
+    }
+
+    /** The unique name that owns [name] now, or null when nobody does (or the bus can't say). */
+    private fun nameOwner(name: String): String? = try {
+        session().getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java)
+            .GetNameOwner(name)
+    } catch (_: Exception) {
+        null
     }
 
     private fun session(): DBusConnection {

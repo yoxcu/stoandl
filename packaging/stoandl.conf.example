@@ -14,6 +14,10 @@
 notification.per_app = true
 # Mute state applied to a newly observed app: never (deliver), always (mute), weekdays, or weekends.
 notification.default_mute = never
+# Where a notification's app name goes on the watch: small (a small line under the title), subtitle (the
+# large bold line under the title; a source's own subtitle, e.g. an extension's, keeps that slot) or off.
+# Never shown twice: left out when it is the title. Per app: stoandl notif style <app> --app-name <place>.
+notification.app_name = small
 # Sync the per-app list + mute states to the watch (libpebble3 NotificationAppItem -> BlobDB).
 # OFF by default: current Core/PebbleOS firmware has no per-app notification UI on the watch
 # (Settings->Notifications is global-only), so the synced records surface nowhere — mute is

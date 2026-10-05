@@ -8,8 +8,8 @@ Keep it in sync with `GUI_CONFIG_FIELDS` — `ConfigSchemaTest` enforces the mec
 exposed key round-trips through `StoandlConfig.load`, no duplicates, no framing characters), but the
 *Applies* column is prose and only a human can keep it honest.
 
-**Scope.** `stoandl.conf` has 57 top-level keys plus two prefix families (`watch.<prefId>`,
-`extension.<name>.<key>`). 50 are rendered by the schema-driven Settings page; the remaining ones are
+**Scope.** `stoandl.conf` has 58 top-level keys plus two prefix families (`watch.<prefId>`,
+`extension.<name>.<key>`). 51 are rendered by the schema-driven Settings page; the remaining ones are
 reachable through a **richer dedicated surface** and are listed in [§3](#3-keys-deliberately-not-in-the-schema).
 Nothing is unreachable.
 
@@ -38,6 +38,7 @@ the setting on the next read.
 | --- | --- | --- | --- | --- | --- | --- |
 | `notification.per_app` | toggle | ✓ | live | read per push in `WatchNotifier.push` | — | `true` |
 | `notification.default_mute` | combo | ✓ | live | read per newly-tracked app (was a startup snapshot; **fixed this session**) | one of never/always/weekdays/weekends | `Never` |
+| `notification.app_name` | combo | ✓ | live | read per push in `WatchNotifier.push` and per firmware-update notification; an app's own override (`NotifSetAppName`, not a conf key) wins while `notification.per_app` is on | one of small/subtitle/off | `Small line` |
 | `notification.sync_to_watch` | toggle | ✓ | **restart** | decides a Koin binding (`PlatformConfig(syncNotificationApps=…)`) built once in `init()` | — | `false` |
 | `notification.catch_up_minutes` | int | ✓ | **restart** | part of the host-built `LibPebbleConfig` that `init()` pins into `NotificationConfigFlow` once | 0–1440 min | `60` |
 | `notification.canned_replies` | list | ✓ | live | read per notification in `WatchNotifier.push` | — | `Ok,Yes,No,Call me,Call you later` |
@@ -199,7 +200,7 @@ that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex 
 | Forwarded desktop notification | watch | yes | `notification.forward`, per-app mute, filters |
 | Extension notification | watch | yes | same |
 | Test notification (`SendTestNotification`) | watch | **yes, deliberately** — the test is only useful if the policy applies to it | same |
-| Firmware update available | watch **and** desktop | no (own path, so the Update button works) | `firmware.notify` + a source enabled |
+| Firmware update available | watch **and** desktop | no (own path, so the Update button works) | `firmware.notify` + a source enabled; on the watch, its app name ("stoandl") follows `notification.app_name` |
 | "Pebble won't stay connected" (broken bond) | desktop, with Re-pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Pebble pairing removed" (host bond lost) | desktop, with Pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Blocked by a Bluetooth scan" | desktop | n/a | `alerts.enabled` + `alerts.bluetooth` |

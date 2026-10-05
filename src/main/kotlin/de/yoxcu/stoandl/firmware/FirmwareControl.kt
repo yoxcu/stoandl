@@ -3,6 +3,8 @@
 package de.yoxcu.stoandl.firmware
 
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.notification.watchFields
+import de.yoxcu.stoandl.notification.watchText
 import de.yoxcu.stoandl.pebble.isCoreDevice
 import de.yoxcu.stoandl.util.connectedDevice
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -399,15 +401,21 @@ class FirmwareControl(
         val languageNote = if (dropsBuiltInLanguages(info.board, info.current, info.latest)) {
             " It removes the built-in translations: a watch not in English needs a language pack afterwards."
         } else ""
+        // Laid out like every forwarded notification, with stoandl as the app (notification.app_name).
+        val fields = watchFields(
+            appName = "stoandl",
+            title = "Firmware update",
+            subtitle = null,
+            body = "${info.latest} is available (you're on ${info.current}). Choose Update to install it.$languageNote",
+            placement = config.notificationAppName,
+        )
         val notif = buildTimelineNotification(
             // Same parent the desktop notifications use, so the watch round-trips our Update action.
             parentId = SystemAppIDs.ANDROID_NOTIFICATIONS_UUID,
             timestamp = Clock.System.now(),
         ) {
             attributes {
-                title { "Firmware update" }
-                body { "${info.latest} is available (you're on ${info.current}). Choose Update to install it.$languageNote" }
-                subtitle { "stoandl" }
+                watchText(fields)
                 tinyIcon { TimelineIcon.NotificationFlag }
             }
             actions {

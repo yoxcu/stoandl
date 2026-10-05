@@ -5,6 +5,7 @@ package de.yoxcu.stoandl.pebble
 import de.yoxcu.stoandl.dbus.FreedesktopNotifications
 import de.yoxcu.stoandl.dbus.NotificationEvent
 import de.yoxcu.stoandl.dbus.IncomingNotification
+import de.yoxcu.stoandl.dbus.markupToPlainText
 import de.yoxcu.stoandl.dbus.ModemManagerCallMonitor
 import de.yoxcu.stoandl.dbus.MprisMusicControl
 import de.yoxcu.stoandl.dbus.TimedateTimeChanged
@@ -15,6 +16,7 @@ import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.notification.AppNamePlacements
 import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.QuietTimeLink
@@ -326,6 +328,8 @@ class PebbleIntegration(
     private val config: StoandlConfig get() = configStore.current()
     // Global allow/block notification filters (own file under configDir; live-mutable via D-Bus).
     private val notificationFilters = NotificationFilters(File(StoandlConfig.configDir(), "notification-filters"))
+    // Per-app overrides of notification.app_name (own file under configDir; set live via NotifSetAppName).
+    private val appNamePlacements = AppNamePlacements(File(StoandlConfig.configDir(), "notification-app-name"))
     // Secret store for CalDAV passwords: the system keyring (org.freedesktop.secrets) when it's unlocked,
     // else a 0600 file under the config dir (kept OUT of backups). So a password never sits in
     // stoandl.conf or a backup tarball. Used by the live calendar sources + the source-CRUD methods.
@@ -458,7 +462,7 @@ class PebbleIntegration(
         val routeTable = NotifRouteTable()
         val desktopOwner = DesktopNotifOwner(routeTable)
         val notifOwners = NotifOwnerRegistry().apply { register(desktopOwner) }
-        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters)
+        watchNotifier = WatchNotifier(libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements)
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
@@ -567,7 +571,7 @@ class PebbleIntegration(
         debugControl = DebugControl(libPebbleRef)
         developerControl = DeveloperControl(libPebbleRef)
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
-        notificationAppsControl = NotificationAppsControl(koin.get())
+        notificationAppsControl = NotificationAppsControl(koin.get(), appNamePlacements)
         watchConnector = koin.get()
         quietTimeLink = QuietTimeLink(
             scope = scope,
@@ -2232,14 +2236,16 @@ private class DbusNotificationListenerConnection(
         val actions = if (caps.invokeAction) {
             wristActions(notification.actions, MAX_WRIST_ACTIONS).map { (key, label) -> NotifAction(key, label) }
         } else emptyList()
-        // subtitle defaults to appName inside WatchNotifier; per-app mute/style + the "Mute"
-        // action are applied there. The desktop ref rides in the route as the owner token, so a
+        // Where the app name goes (notification.app_name), per-app mute/style and the "Mute" action
+        // are applied in WatchNotifier. The desktop ref rides in the route as the owner token, so a
         // wrist dismiss/reply reaches the original notification.
         watchNotifier.push(
             NotifRequest(
                 appName = notification.appName,
                 title = notification.summary,
-                body = notification.body,
+                // The watch draws text; a body the desktop draws as markup is converted first.
+                body = if (desktopOwner.bodyIsMarkup(notification)) markupToPlainText(notification.body)
+                    else notification.body,
                 actions = actions,
                 reply = reply,
                 transient = notification.transient,
@@ -3363,6 +3369,10 @@ private class StoandlControlImpl(
 
     override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
         notificationAppsControl?.setStyle(query, color, icon, vibe)
+            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun NotifSetAppName(query: String, placement: String): String =
+        notificationAppsControl?.setAppName(query, placement)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
 
     override fun SendTestNotification(title: String, body: String): String {

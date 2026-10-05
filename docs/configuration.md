@@ -38,6 +38,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 |-----|------|---------|---------|
 | `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). |
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
+| `notification.app_name` | string | `small` | Where a notification's app name goes on the watch: `small` (a small line under the title), `subtitle` (the large bold line under the title) or `off`. A source's own subtitle (an extension's) keeps the subtitle slot, and the app name is left out when it would repeat the title or that subtitle. An app can override it (`stoandl notif style <app> --app-name`, see [Per-app notification settings](#per-app-notification-settings)). Also used for stoandl's own firmware-update notification. |
 | `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
 | `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
 | `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
@@ -136,7 +137,8 @@ stoandl notif mute Discord 1h          # temporary mute (also 30m / 2d …); aut
 stoandl notif unmute Slack             # deliver again
 stoandl notif mute-all  / unmute-all   # apply to every tracked app
 stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
-stoandl notif styles                   # list every available colour, icon and vibe preset (offline)
+stoandl notif style NeoChat --app-name off   # where this app's name goes (small / subtitle / off / default)
+stoandl notif styles                   # list every available colour, icon, vibe preset and app-name place (offline)
 ```
 
 Quote multi-word app names. The app argument is a case-insensitive **substring** match, but an **exact**
@@ -162,6 +164,25 @@ render on the watch with no sync. For each flag, `default` resets it; omitting i
 Run **`stoandl notif styles`** to print the full list of accepted colours (64), icons (the `Notification*`
 app/messaging set plus the generic timeline icons) and vibe presets — it's generated from the enums, so
 it always matches what the daemon accepts, and needs no daemon or watch.
+
+**Where the app name goes** (`notif style <app> --app-name`) overrides `notification.app_name` for one
+app: `small`, `subtitle` or `off`; `default` drops the override. The watch draws a notification as the
+title (bold), the subtitle (the largest bold text), a small line, then the body, and stoandl can only
+choose which text goes where. With `small` (the default) a NeoChat message shows the room, a small
+"NeoChat", then the message; `off` leaves the icon and colour to tell the app. `stoandl notif list`
+shows an app's own setting in the APP NAME column (— = it follows `notification.app_name`). The
+overrides live in `<configDir>/notification-app-name`, one `app⇥place` line each, and apply only while
+`notification.per_app` is on, like the styles.
+
+**Markup in the message.** Desktop notifications (`Notify`) carry markup: apps escape `&` and `<` as
+`&amp;` and `&lt;` (NeoChat does) and may send `<b>` or links. stoandl turns the body into plain text
+before it is sent: line breaks stay line breaks, links keep their text, character references are
+decoded, and a `<` that opens no HTML tag (`a < b`, `<3`) is kept. Portal and GTK notifications have
+plain-text bodies (plasmashell ≥ 6.7 and GNOME Shell show them as text) and are sent as they are, except
+a portal one on Plasma ≤ 6.6: xdg-desktop-portal-kde re-posts it through `Notify`, so the desktop draws
+it as markup and stoandl converts it too. An app that escapes a plain-text body anyway, such as a Flatpak
+NeoChat (KNotifications uses the portal inside a sandbox), still shows `&amp;` on Plasma ≥ 6.7 and GNOME,
+on the desktop and the watch alike.
 
 **Transient notifications** are not forwarded: a notification with the `transient` hint
 (`notify-send --transient`, many on-screen-display notices) is one the desktop itself doesn't keep, so

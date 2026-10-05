@@ -30,9 +30,12 @@ private val log = KotlinLogging.logger {}
  */
 class NotificationAppsControl(
     private val dao: NotificationAppRealDao,
+    // Per-app overrides of notification.app_name (stoandl's own file, keyed like the DAO's packageName).
+    private val appNames: AppNamePlacements,
 ) {
-    /** Each entry tab-separated: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpoch`
-     *  (empty string for an unset style field). One row per known app. */
+    /** Each entry tab-separated: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpoch \t appName`
+     *  (empty string for an unset style field; `appName` is the app's own placement token, empty when it
+     *  follows `notification.app_name`). One row per known app. */
     fun list(): List<String> = try {
         val now = Clock.System.now()
         runBlocking { dao.allApps() }.map { app ->
@@ -43,6 +46,7 @@ class NotificationAppsControl(
                 app.iconCode.orEmpty(),
                 app.vibePatternName.orEmpty(),
                 app.lastNotified.instant.epochSeconds.toString(),
+                appNames.get(app.packageName)?.token.orEmpty(),
             ).joinToString("\t")
         }
     } catch (e: Exception) {
@@ -94,8 +98,27 @@ class NotificationAppsControl(
         "error:${e.message ?: "failed"}"
     }
 
+    /**
+     * Set where the app matching [query] shows its name on the watch: `small`, `subtitle` or `off` (see
+     * [AppNamePlacement]). `default` (or empty, `none`, `clear`) drops the override, so the app follows
+     * `notification.app_name` again. Applies from the app's next notification.
+     */
+    fun setAppName(query: String, placement: String): String = try {
+        val reset = placement.trim().lowercase() in setOf("", "default", "none", "clear")
+        val parsed = if (reset) null else AppNamePlacement.parse(placement)
+            ?: return "error:Unknown app-name placement '$placement' (use small|subtitle|off|default)"
+        resolveSingle(query) { app ->
+            appNames.set(app.packageName, parsed)
+            if (parsed == null) "ok:App name for ${app.name} follows notification.app_name"
+            else "ok:App name for ${app.name}: ${parsed.token}"
+        }
+    } catch (e: Exception) {
+        log.warn(e) { "notif setAppName failed" }
+        "error:${e.message ?: "failed"}"
+    }
+
     /** Resolve [query] to exactly one tracked app and run [onMatch], or return the empty/ambiguous
-     *  status string. Shared by [setMute] and [setStyle]. */
+     *  status string. Shared by [setMute], [setStyle] and [setAppName]. */
     private fun resolveSingle(query: String, onMatch: (NotificationAppItem) -> String): String {
         val matches = runBlocking { dao.allApps() }.resolve(query)
         return when {

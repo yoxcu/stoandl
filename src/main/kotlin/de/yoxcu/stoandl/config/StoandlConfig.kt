@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.config
 
+import de.yoxcu.stoandl.notification.AppNamePlacement
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
 
@@ -27,6 +28,11 @@ data class StoandlConfig(
     /** Mute state applied to a newly observed app: `never` (deliver), `always` (mute), or the
      *  day-of-week schedules `weekdays`/`weekends`. */
     val notificationDefaultMute: String,
+    /** Where a notification's app name goes on the watch: [AppNamePlacement.SMALL] a small line under the
+     *  title (default), [AppNamePlacement.SUBTITLE] the large bold subtitle (only when the source has no
+     *  subtitle of its own), or [AppNamePlacement.OFF]. An app's own override (`stoandl notif style <app>
+     *  --app-name`) wins while [notificationPerApp] is on. Read per notification. */
+    val notificationAppName: AppNamePlacement,
     /** Sync the per-app list + mute states to the watch (libpebble3's `NotificationAppItem` →
      *  BlobDB). **Off by default**: current Core/PebbleOS firmware exposes no per-app notification
      *  UI on the watch (Settings→Notifications is global-only, and notifications carry no per-app
@@ -283,12 +289,14 @@ data class StoandlConfig(
         private const val DEFAULT_BATTERY_RETENTION_DAYS = 90
         private const val DEFAULT_SLEEP_GUARD_MAX_MS = 3000L
         private const val DEFAULT_NOTIFICATION_CATCH_UP_MINUTES = 60L
+        private val DEFAULT_APP_NAME_PLACEMENT = AppNamePlacement.SMALL
 
         private val MUTE_STATES = setOf("never", "always", "weekdays", "weekends")
 
         private fun defaults() = StoandlConfig(
             notificationPerApp = true,
             notificationDefaultMute = "never",
+            notificationAppName = DEFAULT_APP_NAME_PLACEMENT,
             notificationSyncToWatch = false,
             notificationForward = true,
             notificationCatchUpMinutes = DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
@@ -383,6 +391,7 @@ data class StoandlConfig(
             val cfg = StoandlConfig(
                 notificationPerApp = map["notification.per_app"]?.let { parseBool(it) } ?: true,
                 notificationDefaultMute = parseDefaultMute(map["notification.default_mute"]),
+                notificationAppName = parseAppNamePlacement(map["notification.app_name"]),
                 notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
                 notificationCatchUpMinutes = map["notification.catch_up_minutes"]?.trim()?.toLongOrNull()
@@ -462,6 +471,7 @@ data class StoandlConfig(
             if (logResult) log.info {
                 "Config loaded from ${file.path}: " +
                     "perApp=${cfg.notificationPerApp}, defaultMute=${cfg.notificationDefaultMute}, " +
+                    "appName=${cfg.notificationAppName.token}, " +
                     "syncToWatch=${cfg.notificationSyncToWatch}, catchUp=${cfg.notificationCatchUpMinutes}min, " +
                     "cannedReplies=${cfg.notificationCannedReplies}, " +
                     "dialerApps=${cfg.dialerApps}, vcardPaths=${cfg.vcardPaths}, " +
@@ -559,6 +569,12 @@ data class StoandlConfig(
                 "never"
             }
         }
+
+        private fun parseAppNamePlacement(raw: String?): AppNamePlacement =
+            if (raw.isNullOrBlank()) DEFAULT_APP_NAME_PLACEMENT
+            else AppNamePlacement.parse(raw) ?: DEFAULT_APP_NAME_PLACEMENT.also {
+                log.warn { "Unknown notification.app_name '$raw'; defaulting to ${it.token}" }
+            }
 
         private fun parseMusicVolume(raw: String?): MusicVolumeMode = when (raw?.trim()?.lowercase()) {
             null, "", "system", "master" -> MusicVolumeMode.SYSTEM

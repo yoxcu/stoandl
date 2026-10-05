@@ -142,6 +142,11 @@ friction without real security, so it was dropped — `extensions.enabled` is th
 {"jsonrpc":"2.0","id":7,"result":{"itemId":"e3b0c442-…"}}   // daemon-issued correlation id
 ```
 
+`subtitle` (optional) is the large bold line under the title, and it is always kept. The app name
+follows `notification.app_name` (or the app's own override, `stoandl notif style <app> --app-name`): by
+default a small line under the title, in the subtitle slot only when the extension sends no subtitle,
+and never when it would repeat the title or the subtitle.
+
 `reply.cannedReplies` may be empty: the host then uses `notification.canned_replies`. The list is cut
 after the last whole item that fits the firmware's 512 bytes. `reply.label` (optional, default `Reply`)
 is the action's title on the watch. The older `allowVoice` field is accepted and ignored: the watch

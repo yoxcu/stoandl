@@ -396,10 +396,11 @@ interface StoandlControl : DBusInterface {
      *  [GetCoreDump]. Fire-and-forget. Returns `ok:<msg>`, `notready:<msg>`, or `error:<msg>`. */
     fun ForceCoreDump(): String
 
-    /** List the per-app notification store (apps lazy-tracked as they notify). Each entry is
-     *  tab-separated: `name \t muteLabel \t lastNotifiedEpochSeconds` (muteLabel is one of
-     *  `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`). Empty if per-app
-     *  notifications are disabled or no app has notified yet. */
+    /** List the per-app notification store (apps lazy-tracked as they notify). Each entry is tab-separated:
+     *  `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds \t appNamePlacement`
+     *  (muteLabel is one of `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`; an unset
+     *  style field is empty; appNamePlacement is the app's own `small`/`subtitle`/`off`, empty when it
+     *  follows `notification.app_name`). Empty until an app notifies while per-app notifications are on. */
     fun NotifList(): List<String>
 
     /** Set the mute state for the app matching [query] (substring of name/package). [spec] is
@@ -415,6 +416,12 @@ interface StoandlControl : DBusInterface {
      *  [vibe] (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off ms). For each
      *  value: empty = leave unchanged; `default` = reset. Status-prefixed return. */
     fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
+
+    /** Set where the app matching [query] shows its name on the watch, overriding `notification.app_name`
+     *  for it: [placement] `small` (a small line under the title), `subtitle` (the large bold subtitle,
+     *  when the source has none) or `off`; `default` (or empty) drops the override. Applies while per-app
+     *  notifications are on. Status-prefixed return (`ok:`/`notfound:`/`ambiguous:`/`error:`). */
+    fun NotifSetAppName(query: String, placement: String): String
 
     /** List the global notification filters (a host-side allow/block list applied at the send choke
      *  point, independent of per-app mute). Each entry is tab-separated `pattern \t action` where action

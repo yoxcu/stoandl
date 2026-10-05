@@ -1106,7 +1106,7 @@ verify it still behaves exactly as before.
 
 | # | Test | Command / Steps | Expected |
 |---|------|-----------------|----------|
-| 5.260 | Desktop notif still works (Phase 0) | trigger a desktop notification (e.g. `notify-send hi there`) | It appears on the watch with title/body/subtitle = app name, exactly as before; `Notification queued for watch: …` in the log. |
+| 5.260 | Desktop notif still works (Phase 0) | trigger a desktop notification (e.g. `notify-send hi there`) | It appears on the watch with title `hi`, body `there` and the app name `notify-send` as a small line under the title (`notification.app_name = small`, §5.39; it used to be the subtitle); `Notification queued for watch: …` in the log. |
 | 5.261 | Dismiss round-trip (Phase 0) | open that notification on the watch → Dismiss | Cleared on the watch AND the desktop notification closes (`Closed D-Bus notification …`); no "unmapped item" warning. |
 | 5.262 | Per-app mute still works (Phase 0) | `stoandl notif mute <app>`, trigger again; then the wrist "Mute <app>" action on a fresh one | Muted app is dropped host-side (`Muted notification from …`); the wrist Mute action sets the app to Always-mute (`Muted '<app>' from watch action`). |
 | 5.263 | Per-app style still works (Phase 0) | `stoandl notif style <app> icon=… color=… vibe=…`, trigger | The notification shows the configured icon/color/vibe (unchanged from before the refactor). |
@@ -1446,12 +1446,12 @@ six keys that persisted but did nothing until a restart.
 Verified in the sandbox at the milestone (no watch needed): both front-ends report `general loaded 45
 keys in 14 groups` under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test`
 19/19 and `cargo test` 22/22 pass. The deep-sleep keys (§5.32) joined the schema afterwards and
-`weather.units` left it (4.4c): 50 keys in 15 groups, six of them restart-only. Everything below needs
-the real daemon.
+`weather.units` left it (4.4c), and `notification.app_name` joined it (§5.39): 51 keys in 15 groups, six
+of them restart-only. Everything below needs the real daemon.
 
 | # | What | How | Expect |
 |---|------|-----|--------|
-| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 15 section headers (Deep sleep included); spin boxes with units for the 6 `int` keys; text fields with placeholders for the 7 `text` keys; comma lists for the 4 `list` keys. Nothing renders as a bare unlabelled text box. |
+| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 15 section headers (Deep sleep included); drop-downs for the 5 `combo` keys; spin boxes with units for the 6 `int` keys; text fields with placeholders for the 7 `text` keys; comma lists for the 4 `list` keys. Nothing renders as a bare unlabelled text box. |
 | 5.31b | Restart marking | look at `notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms` | Each row says "takes effect after restarting stoandl". No other row does (`power.pause_datalog_screen_off` applies live, see 5.328b). |
 | 5.31c | Validation surfaces | set `weather.interval` below its minimum via `stoandl daemon set weather.interval 1`; set `weather.locations` to `Nowhere` | `error:weather.interval must be at least 5`; `error:weather.locations: expected comma-separated Name:lat:lon entries`. `stoandl.conf` unchanged in both cases. |
 | 5.31d | Conf-breaking input | `stoandl daemon set weather.gps_name 'Home # 2'` | `error:… cannot contain '#'`. Then confirm `stoandl.conf` still parses (`stoandl daemon get weather.gps_name` returns the old value). |
@@ -1845,6 +1845,41 @@ For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
 | 5.37h | A night with the switch on | Weekday window e.g. 23:00–07:00, phone on the bench all night | BT UART wakes ≈ 0/h inside the window (journal times from the `paused`/`back on` lines); average current inside the window ≈ night5 (handoff C5.3). Watch alarms still ring. |
 | 5.37i | Connection-parameter log (C1) | Any connect of a Time 2, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. (Builds before 2026-10-05 had no `ConnectionParams` logger in logback, so the line never showed.) |
 | 5.37j | Leftover connection-parameter keys | Restart with `ble.conn_params = off` (as the old conf.example shipped it) and `ble.conn_params_fast = 15,15,0,6000` still in the config; `stoandl daemon get ble.conn_params`; GUI → Settings → Deep sleep | Start: one WARN `ble.conn_params and ble.conn_params_fast are no longer read …`; the daemon starts normally. `get`: `No config key 'ble.conn_params'`. Deep sleep shows four rows, no connection parameters. |
+
+## 5.39 Notification layout: app name placement, markup  ⚠️ UNVERIFIED (needs a watch; NeoChat rows need a Matrix account)
+
+The watch draws a card as Title (bold) → Subtitle (the largest bold font) → LocationName (small) → Body
+→ time, and the host only picks which text goes where. stoandl used to send the app name as the
+subtitle; `notification.app_name` (`small` default, `subtitle`, `off`) and a per-app override
+(`NotifSetAppName`, stored in `<configDir>/notification-app-name`) now decide. `Notify` bodies, and
+portal ones xdg-desktop-portal-kde shows (Plasma ≤ 6.6), are converted from markup to plain text.
+Off-device: `NotificationLayoutTest`, `AppNamePlacementsTest`, `NotificationMarkupTest` and the
+`notification.app_name` case in `ConfigSchemaTest`; the GUIs' mock smoke runs log each watch-card
+preview (`stoandl-smoke: preview <placement>: title=… | small=… | …`). Use a Time 2 (Large text, where
+the subtitle font is biggest) and NeoChat in a group room; `Notification queued for watch: NeoChat –
+<title>` tells NeoChat's live format (title = room, body = `Sender: text`) from its push format (title =
+`Sender (Room)`).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.39a | Default: small line | No `notification.app_name` line; a NeoChat group message | Card: room (bold), a small regular "NeoChat", then `Sender: text`. No large bold "NeoChat". |
+| 5.39b | Subtitle (old look) | `stoandl daemon set notification.app_name subtitle` (no restart); another message | "NeoChat" is back as the large bold line under the room. `stoandl daemon get notification.app_name` → `Subtitle`. |
+| 5.39c | Off | `stoandl daemon set notification.app_name off`; another message | Room, then the message; no app name anywhere; icon and colour unchanged. Set it back to `small`. |
+| 5.39d | Never twice | `notify-send -a Demo Demo "body"` | Title "Demo", body, no "Demo" line below it, in all three settings. |
+| 5.39e | Per-app override (CLI) | `stoandl notif style neochat --app-name off`; `stoandl notif list`; a NeoChat message; then `--app-name default` | `ok:App name for NeoChat: off`; the list shows `off` in APP NAME (— for every other app); the card has no app name while other apps still show the small line. After `default`: `ok:App name for NeoChat follows notification.app_name`, the list shows —, the small line is back. `stoandl notif style neochat --app-name huge` → `error:Unknown app-name placement 'huge' (use small\|subtitle\|off\|default)`. |
+| 5.39f | Override survives a restart; per_app gate | Set NeoChat to `subtitle`, `systemctl --user restart stoandl`; then `stoandl daemon set notification.per_app false` | After the restart NeoChat still shows the large bold app name (`App-name overrides: 1 loaded from …/notification-app-name`). With per_app off it follows the global setting again. Set per_app back on. |
+| 5.39g | Combined flags | `stoandl notif style neochat --color Red --app-name small` | Two `ok:` lines (style, then app name); both apply. `--app-name` alone does not touch colour/icon/vibe. |
+| 5.39h | Extension with its own subtitle | Matrix extension, a group message (title = sender, subtitle = room) | Sender (bold), room (large bold), small "Matrix", text. With `subtitle`: no "Matrix" (the room keeps the slot). In a DM (no subtitle) with `subtitle`: "Matrix" as the subtitle. |
+| 5.39i | Entities from NeoChat | Send `Tom & Jerry <3 "quotes" it's` in a NeoChat room (a native NeoChat; a Flatpak one is 5.39k/5.39n) | The watch shows exactly that text; no `&amp;`, `&lt;` or `&quot;`. |
+| 5.39j | Markup from other apps | `notify-send -a Demo T 'a <b>bold</b> <a href="https://example.org">link</a><br>line 2 &amp; a < b'` | Body: `a bold link`, then on the next line `line 2 & a < b`. Plasma's popup shows the same text (GNOME Shell renders only `<b>`/`<i>`/`<u>` and shows the rest raw). |
+| 5.39k | Portal / GTK bodies untouched | A Flatpak app on Plasma ≥ 6.7, or a GApplication app on GNOME, whose body contains `&amp;` literally (e.g. `Tom & Jerry` from a Flatpak NeoChat, which escapes every message) | The watch shows `&amp;` as the desktop does (those bodies are plain text). |
+| 5.39l | Notification list preview | On the watch: Notifications app, after 5.39a | The NeoChat row's second line is the start of the message (it was "NeoChat" while the app name was the subtitle). |
+| 5.39m | Firmware-update card | With a firmware update pending (§5.11): for each `notification.app_name` (`small`, `subtitle`, `off`), `stoandl daemon set notification.app_name <value>`, then `systemctl --user restart stoandl` and let the watch reconnect (the alert is sent once per version per daemon run, §5.11b). Set it back to `small` afterwards | "Firmware update" (bold), "stoandl" as a small line / the subtitle / not at all, then the text and the Update action. |
+| 5.39n | Portal bodies on Plasma ≤ 6.6 | A Flatpak NeoChat on Plasma ≤ 6.6 (xdg-desktop-portal-kde shows portal notifications): send `Tom & Jerry <3` | The watch shows `Tom & Jerry <3` as the desktop popup does; no `&amp;`. |
+| 5.39o | Global choice on the Alerts page (GUIs) | Kirigami and GTK: Alerts → Forwarding → "App name on the watch"; pick Subtitle, Off, then Small line, each followed by `stoandl daemon get notification.app_name` and a NeoChat message. Then set it on Settings → Daemon configuration and go back to Alerts | The row opens on the stored value. Each pick toasts `App name · <choice>`; `get` agrees and the next message follows it. After the change on Settings, Alerts shows the new value. |
+| 5.39p | Alerts preview, light and dark | Same row, in the light and then the dark theme | The card under the row follows each pick at once. It shows a #FF0055 banner with a bell, "Family" in bold, then "NeoChat" as a small line (Small line), a large bold line (Subtitle) or nowhere (Off), then "Alice: are we still on for tonight?" and "now". In both themes the card is white with black text and nothing is cut off. A screen reader reads "Watch preview: Family, NeoChat, …" and where the app name is. |
+| 5.39q | Per-app choices and preview (GUIs) | Kirigami and GTK: Alerts → NeoChat → its dialog: pick Notification color Blue, then Yellow; pick App name Subtitle, Off, Default, then Subtitle again, each followed by a NeoChat message and `stoandl notif list`; close and reopen the dialog. Then `stoandl notif style neochat --color Yellow` and reopen it | The card under App name shows "NeoChat". The banner turns blue with a white bell, then yellow with a black bell. The name moves as in 5.39p, and Default shows the Alerts choice, which the row's text names ("Default follows the Alerts page, now Small line."). Each App name pick applies to the next message and the list agrees (— after Default). On reopening, the colour combo shows Yellow and App name shows Subtitle, with "NeoChat" as the large bold line in the preview (the open-time preselection; Kirigami's colour combo used to show Default). After the CLI `Yellow` (pure yellow, not the dialog's Yellow = `ChromeYellow`) both GUIs show the colour as Default with a #FF0055 banner. Kirigami: the dialog opens without jumping and stderr has no `Binding loop detected for property "y"`. Set both back to Default. |
+| 5.39r | Preview matches the watch | After 5.39p, with each choice in turn, send a NeoChat message | The watch shows the lines in the preview's order, and the app name is on the same line as in the preview. Fonts and line breaks are only approximate. |
 
 ---
 

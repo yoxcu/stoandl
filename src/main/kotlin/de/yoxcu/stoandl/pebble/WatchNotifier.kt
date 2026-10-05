@@ -4,7 +4,10 @@ package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.DEFAULT_CANNED_REPLIES
+import de.yoxcu.stoandl.notification.AppNamePlacements
 import de.yoxcu.stoandl.notification.NotificationFilters
+import de.yoxcu.stoandl.notification.watchFields
+import de.yoxcu.stoandl.notification.watchText
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -29,9 +32,9 @@ import kotlin.uuid.Uuid
 /**
  * The single choke point through which **every** notification reaches the watch — the passive desktop
  * bridge ([DesktopNotifOwner]) and every [de.yoxcu.stoandl.ext.ExtensionManager] extension alike. It
- * owns the per-app mute/style policy (drop-before-send, so a source can't bypass mute) and records a
- * [NotifRoute] per item so [WatchActionRouter] can route the watch-side action/reply/dismiss back to
- * whoever sent it.
+ * owns the per-app mute/style policy (drop-before-send, so a source can't bypass mute) and which text goes
+ * in which attribute ([watchFields]), and records a [NotifRoute] per item so [WatchActionRouter] can route
+ * the watch-side action/reply/dismiss back to whoever sent it.
  *
  * Routes are persisted ([NotifRouteTable]) and owners resolved by id ([NotifOwnerRegistry]), so a
  * notification's actions keep working across a daemon restart (the route survives; the owner re-
@@ -162,6 +165,8 @@ class WatchNotifier(
     // filter list — both checked at the top of [push] so every source (desktop + extensions) obeys them.
     private val configStore: ConfigStore,
     private val filters: NotificationFilters,
+    // Per-app overrides of notification.app_name (where the app name goes on the card).
+    private val appNames: AppNamePlacements,
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -260,6 +265,9 @@ class WatchNotifier(
         }
         val styled = app
         val fixedId = req.itemId
+        // Like styles: an app's own placement applies only while per-app settings are on.
+        val placement = styled?.let { appNames.get(it.packageName) } ?: cfg.notificationAppName
+        val fields = watchFields(req.appName, req.title, req.subtitle, req.body, placement)
         val notif = buildTimelineNotification(
             // Pin to the same parent UUID the official Android app uses: the firmware only round-trips
             // dismiss/actions for a recognized notification-source app, never for a random parentId.
@@ -269,10 +277,7 @@ class WatchNotifier(
             // Stable id (when given) → a re-send replaces the same item instead of duplicating.
             if (fixedId != null) itemID = fixedId
             attributes {
-                title { req.title }
-                if (req.body.isNotEmpty()) body { req.body }
-                val sub = req.subtitle?.takeIf { it.isNotEmpty() } ?: req.appName
-                if (sub.isNotEmpty()) subtitle { sub }
+                watchText(fields)
                 // Explicit per-notification style wins, else the per-app store, else the app-name icon.
                 tinyIcon { perAppIcon(req.iconCode ?: styled?.iconCode, req.appName) }
                 perAppColor(req.colorName ?: styled?.colorName)?.let { c -> backgroundColor { c.toPebbleColor() } }
