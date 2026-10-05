@@ -54,6 +54,9 @@
     <logger name="BluezGattServer" level="${logLevel}"/>
     <logger name="GattServerManager" level="${logLevel}"/>
     <logger name="PebbleBle" level="${logLevel}"/>
+    <!-- Once per run at DEBUG: the watch has no PPS connection-parameter characteristic (Core watches),
+         so it manages the link parameters itself. -->
+    <logger name="ConnectionParams" level="${logLevel}"/>
     <!-- Reconnect arming at DEBUG: why each Device1.Connect() ended ("Connect() returned" /
          "Connect() pending/failed, tolerating: …") and each re-arm. Connect/drop lines stay INFO. -->
     <logger name="BluezGattConnector" level="${logLevel}"/>

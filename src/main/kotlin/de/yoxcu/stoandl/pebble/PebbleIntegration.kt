@@ -56,7 +56,6 @@ import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.BleConfig
-import io.rebble.libpebblecommon.BleConnParams
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
@@ -415,18 +414,12 @@ class PebbleIntegration(
         // The LibPebble-, Ble- and WatchConfigFlow are all pinned to this one flow in the override module
         // below so a persisted Java Preferences value (LibPebbleConfigHolder loads storage over our
         // default) can't undo them.
-        // connectionParams (ble.conn_params / ble.conn_params_fast, startup-only): null keeps libpebble3's
-        // watch managing the LE parameters with its own sets (no write); see libpebble3 ConnectionParams.
         // missedNotificationCatchUpMs (notification.catch_up_minutes, startup-only; NotificationConfigFlow
         // is pinned too): a reconnecting watch also gets the notifications posted while it was away — on
         // a phone that drops the link on every suspend that's every push-wake notification (libpebble3
         // NotificationCatchUp; 0 = upstream).
         val libPebbleConfig = LibPebbleConfig(
-            bleConfig = BleConfig(
-                legacyReversedPPoG = false,
-                useReversedPpogV2 = false,
-                connectionParams = config.bleConnParams?.let { BleConnParams(idle = it, fast = config.bleConnParamsFast) },
-            ),
+            bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
             watchConfig = WatchConfig(lanDevConnection = true),
             notificationConfig = NotificationConfig(
                 missedNotificationCatchUpMs = config.notificationCatchUpMinutes.minutes.inWholeMilliseconds,
@@ -504,8 +497,8 @@ class PebbleIntegration(
             // which otherwise keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
             if (config.notificationSyncToWatch) single { PlatformConfig(syncNotificationApps = true) }
             // Pin the transport to forward PPoG. PebbleBle picks the transport from LibPebbleConfigFlow;
-            // PPoG and ConnectionParams read BleConfigFlow. Pinning only the latter would leave the
-            // transport choice to the storage-backed LibPebbleConfigHolder.
+            // PPoG reads BleConfigFlow. Pinning only the latter would leave the transport choice to the
+            // storage-backed LibPebbleConfigHolder.
             single { LibPebbleConfigFlow(pinnedConfig) }
             single { BleConfigFlow(pinnedConfig) }
             // Pin lanDevConnection=true so the developer connection uses the LAN server (port 9000),

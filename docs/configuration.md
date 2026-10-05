@@ -19,11 +19,10 @@ stoandl daemon set weather.interval 15
 ```
 
 Those go through the daemon, which validates the value, writes it, reloads, and re-applies the affected
-subsystem — no restart. Eight keys are the exception because they decide startup wiring
+subsystem — no restart. Six keys are the exception because they decide startup wiring
 (`notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`,
-`power.sleep_guard`, `power.sleep_guard_max_ms`, `ble.conn_params`, `ble.conn_params_fast`); they are
-marked **Needs a daemon restart** below, the GUI says so on the row, and `stoandl daemon` prints
-`(restart)` next to them.
+`power.sleep_guard`, `power.sleep_guard_max_ms`); they are marked **Needs a daemon restart** below, the
+GUI says so on the row, and `stoandl daemon` prints `(restart)` next to them.
 [docs/settings-parity.md](settings-parity.md) records why, per key.
 
 The service allows 5 starts within 5 minutes, and manual restarts count towards that. A 6th restart
@@ -75,8 +74,6 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). `0` doesn't wait for watch traffic; stoandl still stops its own discovery before every suspend. **Needs a daemon restart.** |
 | `power.pause_datalog_screen_off` | bool | `false` | Pause the watch's datalog sends (health data, app datalog) while the display is off; resumed when it comes on. |
 | `power.quiet_time_link_off` | bool | `false` | Keep the watch disconnected during the watch's own **scheduled** Quiet Time (weekday/weekend windows) once the display has been off for 10 min; reconnect when the window ends or the display comes on. Notifications posted meanwhile reach the watch afterwards (paused time doesn't count towards `notification.catch_up_minutes`). Stays connected if calls may interrupt Quiet Time. See [deep-sleep.md → Quiet Time pause](deep-sleep.md#quiet-time-pause). |
-| `ble.conn_params` | set | _(off)_ | `min_ms,max_ms,latency,supervision_ms` the watch keeps while idle (e.g. `500,520,0,6000`); off lets the watch manage them with its own sets (nothing is written). Needs `MaxConnectionInterval` in BlueZ's `main.conf` — read [deep-sleep.md](deep-sleep.md#connection-parameters--read-this-before-turning-them-on). **Needs a daemon restart.** |
-| `ble.conn_params_fast` | set | _(off)_ | Optional fast set during the connect handshake and bulk transfers (e.g. `15,15,0,6000`). Only with the kernel "K5" fix — see deep-sleep.md. **Needs a daemon restart.** |
 | `battery.history` | bool | `true` | Log the watch's BLE GATT battery level whenever it changes, as a lean **fallback** for `stoandl watch battery history\|insights` when the analytics heartbeat has no decoded data for a watch. Local-only. |
 | `battery.heartbeat` | bool | `true` | Capture and decode the watch's hourly analytics native-heartbeat — state of charge, real voltage, the firmware's own time-to-empty and a measured charge signal. The **primary** battery source (and the only one over Bluetooth Classic / across disconnects). The raw blob is written under `<configDir>/battery/heartbeat/` and never uploaded. Decoded only behind a strict firmware-layout guard, else captured raw. |
 | `battery.retention_days` | int | `90` | How many days of battery history (both sources) to keep before pruning. |

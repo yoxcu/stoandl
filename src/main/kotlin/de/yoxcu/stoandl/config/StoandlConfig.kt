@@ -1,7 +1,6 @@
 package de.yoxcu.stoandl.config
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.rebble.libpebblecommon.BleConnParamSet
 import java.io.File
 
 private val log = KotlinLogging.logger {}
@@ -216,19 +215,6 @@ data class StoandlConfig(
      *  single paired watch. On by default; turn off to pin the connection to the last-chosen watch
      *  (use `stoandl watch connect <name>` to move it). */
     val connectionAutoswitch: Boolean,
-    /** LE connection parameters the watch should use while idle (`ble.conn_params = min_ms,max_ms,
-     *  latency,supervision_ms`). Null (the default, `off`) keeps libpebble3's upstream behaviour: the
-     *  phone claims to manage the parameters and never changes them, so the link keeps whatever it had
-     *  at connect (often the watch's 15 ms bulk set). Set, the watch manages them with this set in all
-     *  three of its response-time slots, so it converges once and never asks again — each request needs
-     *  the host, i.e. a wake on a sleeping phone. On Linux the host must allow the interval:
-     *  `/etc/bluetooth/main.conf [LE] MaxConnectionInterval` ≥ max_ms / 1.25. Startup-only. */
-    val bleConnParams: BleConnParamSet?,
-    /** Optional fast set (`ble.conn_params_fast`) used during the connect handshake and bulk transfers
-     *  (firmware, language pack, app install, big syncs), then back to [bleConnParams]. Off by default:
-     *  on the Linux LL path a link dropped while fast is re-created fast and can't go slow again unless
-     *  the kernel carries the "K5" fix (see docs/deep-sleep.md). Only used with [bleConnParams]. */
-    val bleConnParamsFast: BleConnParamSet?,
     /** Hold a logind *delay* inhibitor so a suspend waits (up to [powerSleepGuardMaxMs]) until watch
      *  traffic in flight — typically the notification a push wake just produced — has reached the watch.
      *  Switches only the lock: the suspend-aware (wall-clock) scheduling of weather/calendar/firmware
@@ -353,8 +339,6 @@ data class StoandlConfig(
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
             classicDiscover = true,
             connectionAutoswitch = true,
-            bleConnParams = null,
-            bleConnParamsFast = null,
             powerSleepGuard = true,
             powerSleepGuardMaxMs = DEFAULT_SLEEP_GUARD_MAX_MS,
             powerPauseDatalogScreenOff = false,
@@ -460,8 +444,6 @@ data class StoandlConfig(
                 // read an absent key as false and contradict defaults(), conf.example and the docs.
                 classicDiscover = map["classic.discover"]?.let { parseBool(it) } ?: true,
                 connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
-                bleConnParams = parseConnParams("ble.conn_params", map["ble.conn_params"]),
-                bleConnParamsFast = parseConnParams("ble.conn_params_fast", map["ble.conn_params_fast"]),
                 powerSleepGuard = map["power.sleep_guard"]?.let { parseBool(it) } ?: true,
                 powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 4500L) ?: DEFAULT_SLEEP_GUARD_MAX_MS,
@@ -503,7 +485,6 @@ data class StoandlConfig(
                     (if (cfg.batteryHistory || cfg.batteryHeartbeat) " (retention=${cfg.batteryRetentionDays}d)" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
                     (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
-                    (cfg.bleConnParams?.let { ", bleConnParams=$it" + (cfg.bleConnParamsFast?.let { f -> " (fast $f)" } ?: "") } ?: "") +
                     (if (!cfg.powerSleepGuard) ", sleepGuard=off" else if (cfg.powerSleepGuardMaxMs != DEFAULT_SLEEP_GUARD_MAX_MS) ", sleepGuardMaxMs=${cfg.powerSleepGuardMaxMs}" else "") +
                     (if (cfg.powerPauseDatalogScreenOff) ", pauseDatalogScreenOff=true" else "") +
                     (if (cfg.powerQuietTimeLinkOff) ", quietTimeLinkOff=true" else "") +
@@ -524,6 +505,10 @@ data class StoandlConfig(
             if (logResult && "power.screen_gate" in map) log.warn {
                 "power.screen_gate is no longer read: a pairing window always discovers, display on or off. " +
                     "Remove the line from ${file.path}."
+            }
+            if (logResult && ("ble.conn_params" in map || "ble.conn_params_fast" in map)) log.warn {
+                "ble.conn_params and ble.conn_params_fast are no longer read: the watch chooses its own link " +
+                    "parameters. Remove the lines from ${file.path}."
             }
             return cfg
         }
@@ -561,51 +546,6 @@ data class StoandlConfig(
             } else {
                 CalDavAccount(id, url, parts.getOrElse(2) { "" }.trim())
             }
-        }
-
-        /** Parse `min_ms,max_ms,latency,supervision_ms` (e.g. `500,520,0,6000`); empty/`off` = not set.
-         *  A malformed or out-of-range set is dropped with a warning (the watch or the Linux host would
-         *  refuse it anyway), falling back to "not set". */
-        private fun parseConnParams(key: String, raw: String?): BleConnParamSet? =
-            decodeConnParams(raw).getOrElse { e ->
-                log.warn { "Ignoring $key '$raw': ${e.message}" }
-                null
-            }
-
-        /**
-         * Decode a `ble.conn_params` / `ble.conn_params_fast` value — `min_ms,max_ms,latency,supervision_ms`,
-         * or empty / `off` for none — into the set (null = off), or fail with the reason it can't be used.
-         * [load] and the Settings schema's validator share it, so a value the GUI accepts is one the daemon
-         * applies rather than logs and ignores.
-         */
-        internal fun decodeConnParams(raw: String?): Result<BleConnParamSet?> {
-            val v = raw?.trim().orEmpty()
-            if (v.isEmpty() || v.lowercase() in setOf("off", "false", "no", "none")) return Result.success(null)
-            val parts = v.split(',').map { it.trim() }
-            val set = if (parts.size == 4) {
-                val min = parts[0].toDoubleOrNull()
-                val max = parts[1].toDoubleOrNull()
-                val latency = parts[2].toIntOrNull()
-                val supervision = parts[3].toIntOrNull()
-                if (min != null && max != null && latency != null && supervision != null) {
-                    BleConnParamSet(min, max, latency, supervision)
-                } else null
-            } else null
-            if (set == null) {
-                return Result.failure(
-                    IllegalArgumentException("expected min_ms,max_ms,latency,supervision_ms, e.g. 500,520,0,6000"),
-                )
-            }
-            set.validate()?.let { problem -> return Result.failure(IllegalArgumentException(problem)) }
-            return Result.success(set)
-        }
-
-        /** [decodeConnParams]'s inverse: the `stoandl.conf` form of [set], empty for off. Whole milliseconds
-         *  are written without a trailing `.0`, so a value reads back the way it was entered. */
-        internal fun encodeConnParams(set: BleConnParamSet?): String {
-            if (set == null) return ""
-            fun ms(v: Double) = if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
-            return "${ms(set.minIntervalMs)},${ms(set.maxIntervalMs)},${set.slaveLatency},${set.supervisionTimeoutMs}"
         }
 
         private fun parseBool(raw: String?): Boolean =

@@ -37,8 +37,8 @@ private const val LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
  * logind protocol: a process holding a *delay* inhibitor on "sleep" gets `PrepareForSleep(true)` before
  * the system suspends, and logind waits until it releases the lock (at most `InhibitDelayMaxSec`, 5 s
  * by default). We hold one permanently and on `PrepareForSleep(true)`:
- *  1. tell libpebble3 the host is going down ([WatchLinkActivity.setHostSuspending] — a link boosted to
- *     fast connection parameters drops to its idle set, so it never sleeps fast);
+ *  1. set the host-suspending hint ([WatchLinkActivity.setHostSuspending]) — the pairing-window
+ *     discovery loops read it and don't restart a scan until the resume;
  *  2. wait while watch traffic is still owed or awaited — the notification the push that woke us
  *     produced, a PPoG ACK ([pendingWork]) — for at most [maxHold];
  *  3. release the lock, so the suspend proceeds.

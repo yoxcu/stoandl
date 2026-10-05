@@ -1446,13 +1446,13 @@ six keys that persisted but did nothing until a restart.
 Verified in the sandbox at the milestone (no watch needed): both front-ends report `general loaded 45
 keys in 14 groups` under their headless smoke harness against `tools/mock_stoandl.py`; `gradle test`
 19/19 and `cargo test` 22/22 pass. The deep-sleep keys (§5.32) joined the schema afterwards and
-`weather.units` left it (4.4c): 50 keys in 15 groups, eight of them restart-only. Everything below needs
+`weather.units` left it (4.4c): 50 keys in 15 groups, six of them restart-only. Everything below needs
 the real daemon.
 
 | # | What | How | Expect |
 |---|------|-----|--------|
-| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 15 section headers (Deep sleep included); spin boxes with units for the 6 `int` keys; text fields with placeholders for the 9 `text` keys; comma lists for the 3 `list` keys. Nothing renders as a bare unlabelled text box. |
-| 5.31b | Restart marking | look at `notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms`, `ble.conn_params`, `ble.conn_params_fast` | Each row says "takes effect after restarting stoandl". No other row does (`power.pause_datalog_screen_off` applies live, see 5.328b). |
+| 5.31a | Schema renders | GUI → Settings → Daemon configuration | 15 section headers (Deep sleep included); spin boxes with units for the 6 `int` keys; text fields with placeholders for the 7 `text` keys; comma lists for the 4 `list` keys. Nothing renders as a bare unlabelled text box. |
+| 5.31b | Restart marking | look at `notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms` | Each row says "takes effect after restarting stoandl". No other row does (`power.pause_datalog_screen_off` applies live, see 5.328b). |
 | 5.31c | Validation surfaces | set `weather.interval` below its minimum via `stoandl daemon set weather.interval 1`; set `weather.locations` to `Nowhere` | `error:weather.interval must be at least 5`; `error:weather.locations: expected comma-separated Name:lat:lon entries`. `stoandl.conf` unchanged in both cases. |
 | 5.31d | Conf-breaking input | `stoandl daemon set weather.gps_name 'Home # 2'` | `error:… cannot contain '#'`. Then confirm `stoandl.conf` still parses (`stoandl daemon get weather.gps_name` returns the old value). |
 | 5.31e | CLI ↔ GUI round-trip | `stoandl daemon set music.volume Player`, then open the GUI page | Combo shows Player. Reverse: change it in the GUI, `stoandl daemon get music.volume` agrees. |
@@ -1464,17 +1464,16 @@ the real daemon.
 | 5.31k | `alerts.*` gating | `stoandl daemon set alerts.bluetooth false`, then run `bluetoothctl scan on` from another terminal and leave a watch out of range | **No** "blocked by a Bluetooth scan" desktop popup, but the WARN line is still in `/tmp/stoandl.log`. Re-enable → popup returns. |
 | 5.31l | `alerts.enabled` master | set it false, then provoke any pairing alert (e.g. unpair on the watch) | No desktop popup for any `alerts.*` event. Firmware-update alerts are **unaffected** (they follow `firmware.notify`) — confirm that separately if a firmware update is pending. |
 | 5.31m | Send test from Alerts | GUI → Alerts → **Send test** | Notification arrives on the watch. Then mute all / pause forwarding and repeat: it must **not** arrive (the test deliberately goes through the same policy path), and the toast reports it. With no watch: "No watch connected". |
-| 5.31n | `stoandl daemon list` | run it | Every key grouped by section with its current value; `(restart)` next to exactly the eight keys from 5.31b. |
+| 5.31n | `stoandl daemon list` | run it | Every key grouped by section with its current value; `(restart)` next to exactly the six keys from 5.31b. |
 | 5.31p | **Extension config precedence flipped** | with an extension that has both `extension.<name>.<key>` in stoandl.conf and the same key in `<configDir>/ext/<name>/config`, restart the daemon | The **config file** value wins (previously stoandl.conf did), and the log carries `Extension '<name>': extension.<name>.<key> in stoandl.conf is now overridden by …/config`. Then set the key from the GUI and confirm it sticks. `cmd` must still be taken from stoandl.conf when set there. |
 | 5.31q | **Pinned watch pref no longer reverts** | put `watch.<id> = <value>` in stoandl.conf, then change that pref from the GUI, then disconnect + reconnect the watch | The GUI value survives the reconnect, and the `watch.<id>` line in stoandl.conf now reads the new value. A pref that is **not** pinned in stoandl.conf must **not** gain a line when changed from the GUI. |
 | 5.31r | Calendar interval restarts the countdown | with `calendar.sync_interval = 60`, `stoandl daemon set calendar.sync_interval 5` | The next re-sync comes ~5 min later, not up to 60. Then set an unrelated calendar key and confirm the countdown is **not** reset (StateFlow conflates the unchanged interval). |
-| 5.31s | Deep-sleep keys validate like the parser | `stoandl daemon set ble.conn_params 500,400,0,6000`; then `stoandl daemon set ble.conn_params 500,520,0,6000`; `stoandl daemon get ble.conn_params`; finally `stoandl daemon set ble.conn_params off` | First: `error:ble.conn_params: max interval 400.0ms < min 500.0ms`, `stoandl.conf` unchanged. Second: `ok:ble.conn_params = 500,520,0,6000 (restart stoandl to apply)`. `get` prints `500,520,0,6000` (no `.0`). After `off` the value is empty and a restart logs no `bleConnParams=` in `Config loaded`. |
 | 5.31t | The Sync switch keeps the DND direction | Settings → Daemon configuration: `dnd.sync` = **To watch**. Sync screen: turn DND sync off, then on again. Then restart the daemon with it off and turn it on once more. | After the off/on cycle Settings shows **To watch** again (`stoandl daemon list` → `dnd.sync = To watch`), not Both. After the restart, "on" gives **Both** (the direction is remembered only while the daemon runs). |
 | 5.31o | Old-client compatibility | run an **older** GUI build against this daemon | Settings page still renders (it reads the first 5 columns and ignores the rest). This is the version-gating claim — worth one check before shipping. |
 
 ---
 
-## 5.32 Phones that deep-sleep (sleep guard, wall-clock sync, discovery warning, conn params, on-device fixes)  ⚠️ UNVERIFIED (needs a phone that suspends + a watch)
+## 5.32 Phones that deep-sleep (sleep guard, wall-clock sync, discovery warning, on-device fixes)  ⚠️ UNVERIFIED (needs a phone that suspends + a watch)
 
 See [docs/deep-sleep.md](docs/deep-sleep.md). The sleep guard holds a logind **delay** lock
 (`systemd-inhibit --who=stoandl --mode=delay … cat` child) and, on `PrepareForSleep(true)`, waits up to
@@ -1484,8 +1483,7 @@ records) or a notification being built/just queued is pending (not a reconnect h
 checks use the wall clock and re-check on every resume. A pairing window scans whether or not the
 display is on (it is an explicit, 2-minute request), but only while the phone is awake: the scan is
 stopped at every PrepareForSleep and not restarted until the resume, so keep the phone awake while
-pairing with the display off (5.32e). Optional:
-`ble.conn_params` (watch-managed idle set), `power.pause_datalog_screen_off`.
+pairing with the display off (5.32e). Optional: `power.pause_datalog_screen_off`.
 
 The first on-device test (OnePlus 6, 2026-09-29) found nine problems ("handoff #1–#9" below); their
 fixes are tested in 5.32a–5.32h below the main table, one subsection per item.
@@ -1493,7 +1491,7 @@ fixes are tested in 5.32a–5.32h below the main table, one subsection per item.
 Off-device already done: a scratch harness (embedded dbus-java bus + fake `systemd-inhibit`) passes lock
 at start / instant release when idle / hold until pending clears / retry after refusals / cap + stuck
 breaker / re-acquire after external kill / release on stop and on `kill -9` of the JVM; libpebble3
-`ConnectionParamsTest` + `WatchLinkActivityTest` green.
+`WatchLinkActivityTest` green.
 
 **Prerequisite:** the daemon on the phone, watch connected; `tail -f /tmp/stoandl.log`; for the suspend
 tests a way to suspend with the screen off (`systemctl suspend`, or the phone's own autosuspend). With
@@ -1510,15 +1508,13 @@ now follow `STOANDL_LOG`.)
 | 5.324 | Lock dies with the daemon | `kill -9` the stoandl JVM; `systemd-inhibit --list` | No `stoandl` entry left (cat got EOF). Restart: lock back. |
 | 5.325 | Weather on the wall clock | `weather.interval = 30`, phone mostly suspended for 2 h | `Weather updated` roughly every 30 min of **real** time (right after a wake), not every 30 min awake. A reconnect within 30 min logs `weather is N min old, not refetching`. |
 | 5.326 | Discovery warning: another app's discovery | Open the Plasma Bluetooth page, then turn the display off | One WARN `Bluetooth discovery is running while the display is off` (per display-off period). It has no key (`power.screen_gate` was removed; a leftover line in stoandl.conf is ignored) and never affects stoandl's own pairing-window scan: see 5.32e1–e3. |
-| 5.327 | Conn params (needs `ble.conn_params = 500,520,0,6000` + main.conf `MaxConnectionInterval=416`) | restart bluetooth + stoandl, let the watch connect | `watch-managed connection parameters: idle 500-520ms/…`, then `link parameters now interval 500.0ms…` (or 510/520) and after 60 s `link at idle parameters`. `btmon`: one `LE Connection Update Complete` with interval 400–416. If instead `link still at …` WARN: check main.conf and `/var/lib/bluetooth/<ad>/<watch>/info [ConnectionParameters]` (the LL trap). |
 | 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min, then on | `Watch datalog sends paused (display state\|before suspend)` / `resumed (display state)`; no datalog wakes while paused; health data arrives after the display comes on (`stoandl health` / `health/daily.ndjson`). |
 | 5.328b | Datalog pause applies live | key off, watch connected: `stoandl daemon set power.pause_datalog_screen_off true` (no restart), display off for > 10 s; then, display still off, `stoandl daemon set power.pause_datalog_screen_off false` | Within ~5 s of the display going off: `Watch datalog sends paused (display state)`. Within ~5 s of the second `set`: `Watch datalog sends resumed (display state)`, although the display is still off: turning the option off never leaves the watch paused. |
 | 5.329 | Desktop regression | on a desktop without suspend | Only `Sleep guard on` at startup; nothing else changes. Without systemd-inhibit: `neither systemd-inhibit nor elogind-inhibit found` WARN, daemon otherwise normal. |
 
-**Open questions for hardware:** (a) how long a push-wake delivery really takes at 500 ms intervals
-(the 3 s cap vs. the phone's own fast-resuspend delay); (b) whether the WCN3990 keeps the LE link
-through s2idle with the Mode B kernel patches; (c) LL vs L2CAP parameter-update path of the Time 2
-(btmon) — decides whether `ble.conn_params_fast` is safe without K5.
+**Open questions for hardware:** (a) how long a push-wake delivery really takes (the 3 s cap vs. the
+phone's own fast-resuspend delay); (b) whether the WCN3990 keeps the LE link through s2idle with the
+Mode B kernel patches.
 
 ### 5.32a musl: bundled SQLite `__isnan` shim + one cached JNI library (handoff #1, #9)  ✅ a4, a5, a6, a8 passed on the OnePlus 6 (2026-09-30 – 10-01); a0–a3 off-device (musl harness)
 
@@ -1805,7 +1801,6 @@ hint). Rows marked *desktop* need a Bluetooth power cycle: not on the OnePlus 6 
 | 5.35f | Transient notifications stay on the desktop (N5) | `notify-send --transient a b`; `notify-send a b`; then `stoandl notif filter add '^a$' allow` and the transient one again; remove the filter | First: `Transient notification from notify-send not forwarded`, nothing on the watch. Second: on the watch. With the allow filter: the transient one reaches the watch. |
 | 5.35g | Contacts from Plasma's phonebook (N7) | No `contacts.vcard_paths` line; a contact in `~/.local/share/kpeoplevcard/own/*.vcard`; call from its number | `Contact index loaded: N number(s) from M file(s)` with M ≥ 1; the watch's call screen shows the contact's name. |
 | 5.35h | Notification monitor at login (N8.1) | Reboot (or log out and in) with the daemon enabled; look at the first minute of `journalctl --user -u stoandl` | If the shell isn't up yet: `No owner of org.freedesktop.Notifications yet … waiting for a notification server`, then `Notification server appeared: :1.N` (no rebuild since §5.36a). **No** `FatalException … EOFException` ERROR and no `BecomeMonitor connection lost`. A notification right after login reaches the watch. |
-| 5.35i | Connection parameters that can't apply (N6 S1) | `stoandl daemon set ble.conn_params 500,520,0,6000`; restart; let the Time 2 connect twice | Exactly one WARN `this watch has no Connection Parameters characteristic — the configured connection parameters have no effect` per run. Remove the key afterwards. |
 | 5.35j | Quieter suspend races (N6 S5, N8.4/5) | A day in Mode A on the phone | No WARN/ERROR for `StartNotify failed: Disconnecting`/`Not Connected`, `service discovery failed … Disconnecting`, `already done cleanup`, `couldn't send PPoG reset on close … not configured`, `MTU property unavailable` or `PhoneContactsSyncer - No permission` (all DEBUG now). |
 | 5.35k | Small log fixes (N8.6–8) | Restart with `power.screen_gate = true` still in the config; `stoandl daemon set call.dialer_apps calls` | Start: `BT Classic transport on (BR/EDR inquiry only while a pairing window is open)` and a WARN `power.screen_gate is no longer read …`. The `daemon set` logs INFO `Config call.dialer_apps: '…' → 'calls'`. |
 
@@ -1833,8 +1828,9 @@ dbus-daemon bus with an activatable mock server (2026-10-01).
 ([deep-sleep.md → Quiet Time pause](docs/deep-sleep.md#quiet-time-pause)); libpebble3's
 `WatchConnector.holdDisconnected` holds the link off in memory, and paused time doesn't count towards the
 notification catch-up window. Off-device: `QuietTimeScheduleTest` (the watch's schedule rule, the
-interruptions mask), libpebble3 `WatchManagerTest` (a hold before init and during retries) and
-`NotificationCatchUpTest` (windows across pauses). Watch address in the examples: `ED:86:0A:D4:B3:49`.
+interruptions mask), libpebble3 `WatchManagerTest` (a hold before init and during retries),
+`NotificationCatchUpTest` (windows across pauses) and `ConnectionParamsTest` (no `{0x00,0x01}` write,
+with or without the characteristic). Watch address in the examples: `ED:86:0A:D4:B3:49`.
 For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
 
 | # | Test | Steps | Expected |
@@ -1847,7 +1843,8 @@ For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
 | 5.37f | Calls may interrupt | Set *Quiet Time interruptions* to *Phone calls* (`dndInterruptionsMask`) | One INFO `Quiet Time: watch connection stays on — calls may interrupt Quiet Time` per window; no pause. |
 | 5.37g | Switch off while paused | `stoandl daemon set power.quiet_time_link_off false` | Within ~5 s `… back on (switched off)`; the watch reconnects. GUI: the switch appears under Deep sleep as *Pause watch connection during Quiet Time*, and applies live. |
 | 5.37h | A night with the switch on | Weekday window e.g. 23:00–07:00, phone on the bench all night | BT UART wakes ≈ 0/h inside the window (journal times from the `paused`/`back on` lines); average current inside the window ≈ night5 (handoff C5.3). Watch alarms still ring. |
-| 5.37i | Connection-parameter log (C1) | Any connect of a Time 2 with `ble.conn_params` unset, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. |
+| 5.37i | Connection-parameter log (C1) | Any connect of a Time 2, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. (Builds before 2026-10-05 had no `ConnectionParams` logger in logback, so the line never showed.) |
+| 5.37j | Leftover connection-parameter keys | Restart with `ble.conn_params = off` (as the old conf.example shipped it) and `ble.conn_params_fast = 15,15,0,6000` still in the config; `stoandl daemon get ble.conn_params`; GUI → Settings → Deep sleep | Start: one WARN `ble.conn_params and ble.conn_params_fast are no longer read …`; the daemon starts normally. `get`: `No config key 'ble.conn_params'`. Deep sleep shows four rows, no connection parameters. |
 
 ---
 

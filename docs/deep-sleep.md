@@ -2,8 +2,8 @@
 
 A Linux phone saves most of its battery by suspending whenever the screen is off (s2idle), waking
 only for a push message, a call or an alarm — a few seconds awake, then asleep again. stoandl has a
-few features for that kind of host. They are harmless on a desktop, and the two that change how the
-watch keeps its link (connection parameters, datalog pause) are off unless you turn them on. The
+few features for that kind of host. They are harmless on a desktop, and the ones that change how the
+watch keeps its link (datalog pause, Quiet Time pause) are off unless you turn them on. The
 reference device is a OnePlus 6 on postmarketOS with Plasma Mobile ("Mode B" below).
 
 **Status:** partially verified on hardware: OnePlus 6, postmarketOS, BlueZ 5.87, Pebble Time 2
@@ -39,9 +39,9 @@ This page is about the LE link that BLE-native watches (Pebble Time 2, Pebble 2)
 watches (Pebble Time / Time Steel) connect over Bluetooth Classic instead
 ([configuration.md → Bluetooth Classic](configuration.md#bluetooth-classic)). For them, the wall-clock
 scheduling works the same way, and the BR/EDR inquiry follows the same pairing-window rules as the BLE
-scan. The sleep guard waits for their pending notification writes but not for the RFCOMM send queue. The
-connection-parameter settings are LE-only, and whether a Classic link survives a suspend (Mode B) is
-untested. All hardware testing so far used a BLE watch.
+scan. The sleep guard waits for their pending notification writes but not for the RFCOMM send queue.
+Whether a Classic link survives a suspend (Mode B) is untested. All hardware testing so far used a BLE
+watch.
 
 ## What stoandl does
 
@@ -52,23 +52,19 @@ untested. All hardware testing so far used a BLE watch.
 | No reconnect busywork | (automatic) | — | After a reconnect, weather is only refetched if older than `weather.interval`, health data only re-requested after 15 min. |
 | Notification catch-up | `notification.catch_up_minutes` | 60 min | A reconnecting watch also gets the notifications it hasn't received from that window — in Mode A the ones a push wake produced while the link was still down. Never older than the daemon's start or the watch's pairing; nothing the watch already has is re-sent. See [configuration.md → Missed notifications](configuration.md#missed-notifications-catch-up). |
 | Discovery warning | (automatic) | — | A warning is logged if another app runs Bluetooth discovery while the display is off. stoandl's own discovery (BLE scan / BR/EDR inquiry) only runs in a pairing window; that is an explicit, 2-minute request, so it scans with the display off too (e.g. `stoandl watch pair` over ssh). It is stopped at every PrepareForSleep — before the suspend while the sleep guard holds its delay lock (`power.sleep_guard`) — and not restarted until the resume. So a phone that suspends with the display off only discovers while it is awake: keep it awake while pairing (screen on, or `systemd-inhibit --what=sleep sleep 150`); after a suspend inside the window `watch pair` says `Searching again — the phone slept …`. |
-| Slow, fixed connection parameters | `ble.conn_params`, `ble.conn_params_fast` | off | The watch keeps the link at your idle set (e.g. 500–520 ms, latency 0) and never asks to change it — every change request needs the phone, i.e. a wake. Needs the watch's Connection Parameters characteristic, which the Pebble Time 2 doesn't have (see below). |
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
 | Quiet Time pause | `power.quiet_time_link_off` | off | No watch link during the watch's **scheduled** Quiet Time once the display has been off for 10 min; back on when the window ends or the display comes on. Saves the idle link's cost at night (see [What an idle link costs](#what-an-idle-link-costs) and [Quiet Time pause](#quiet-time-pause)). |
 
 Every key in this table is also in the GUI (Settings → Daemon configuration → Deep sleep, and
 Notifications for the catch-up) and in `stoandl daemon set <key> <value>`, which validates the value
-first (`ble.conn_params*` with the same check the daemon applies at startup). All of them except
-`power.pause_datalog_screen_off` and `power.quiet_time_link_off` take effect only after a daemon
-restart; those two apply at once.
+first. All of them except `power.pause_datalog_screen_off` and `power.quiet_time_link_off` take effect
+only after a daemon restart; those two apply at once.
 
 Log lines to look for (`/tmp/stoandl.log`): `Sleep guard on`, `PrepareForSleep: held the suspend …`,
 `Notification catch-up: sending N unsent notification(s) created after …` (only when a reconnect has
 something to catch up on; the time is UTC), `connected and services resolved (N ms after connect())`
-(how long a reconnect took), `watch-managed connection parameters: idle …`,
-`link parameters now …`, `link at idle parameters`, `Watch datalog sends paused/resumed`,
-`Quiet Time: watch connection paused until …` / `… back on (…)`. With `STOANDL_LOG=DEBUG` every
-suspend/resume is logged.
+(how long a reconnect took), `Watch datalog sends paused/resumed`, `Quiet Time: watch connection paused
+until …` / `… back on (…)`. With `STOANDL_LOG=DEBUG` every suspend/resume is logged.
 
 ### What an idle link costs
 
@@ -82,26 +78,22 @@ power on the watch only, and the phone's cost follows the **interval**:
 |---|---|---|
 | 15 ms, latency 0 (the watch's fast set) | 67 | 67 |
 | 30–45 ms, latency 3 (the Pebble Time 2's idle set) | 22–33 | 6–8 |
-| 250 ms, latency 0 | 4 | 4 |
-| 500 ms, latency 0 | 2 | 2 |
 
 Notifications and requests only come on top. On the OnePlus 6 a night in Mode B with the watch connected
 and no messages drew up to 8.3 mA more than a night in Mode A. That is an upper bound for the link: other
-things changed between the two nights too. Whether a slower interval saves in proportion is not
-measured yet; the controller may stay in a high-power state while it serves a link at all. The two
-handles stoandl has: no link when nobody needs one ([Quiet Time pause](#quiet-time-pause)), and a slower
-interval where the watch lets the phone choose it (below).
+things changed between the two nights too. The watch chooses the interval (below), so the one handle
+stoandl has is no link when nobody needs one ([Quiet Time pause](#quiet-time-pause)).
 
-### Connection parameters — read this before turning them on
+### Connection parameters: the watch chooses them
 
-These keys work through the Pebble Pairing Service's Connection Parameters characteristic
-(`00000005-328e-…`). The Pebble Time 2 (Core firmware, NimBLE) doesn't have it: there the keys have no
-effect, and stoandl says so once per run (WARN `this watch has no Connection Parameters
-characteristic`; with the keys unset a DEBUG line says the watch manages the link parameters itself).
-The firmware still has the code behind the characteristic; only its GATT entry is missing.
+The Pebble Pairing Service has a Connection Parameters characteristic (`00000005-328e-…`) through which
+a phone can take the link parameters over. Core watches (Pebble Time 2, Pebble 2 Duo, Round 2: PebbleOS
+on NimBLE) don't offer it, so the phone can't choose them; a PebbleOS change to add it was not accepted.
+The firmware still has the code behind the characteristic; only its GATT entry is missing. stoandl logs
+this once per run at DEBUG (`watch has no PPS Connection Parameters characteristic …`).
 
-**Without the characteristic the watch manages its own parameters**, and Linux accepts every valid
-request from it (PebbleOS `gap_le_connect_params.c`, `bt_conn_mgr.c`):
+**Without the characteristic the watch manages its own parameters** (PebbleOS `gap_le_connect_params.c`,
+`bt_conn_mgr.c`), and Linux accepts every valid request from it unless the LL trap below applies:
 
 | Watch state | Interval | Peripheral latency | Supervision |
 |---|---|---|---|
@@ -113,36 +105,22 @@ three times, and re-checks after every update. So the link runs at 15 ms for the
 connect and after each transfer, and at 30–45 ms otherwise. BlueZ's `/etc/bluetooth/main.conf [LE]`
 (`MinConnectionInterval`, `MaxConnectionInterval`, `ConnectionLatency`, `ConnectionSupervisionTimeout`)
 only sets the parameters a connection *starts* with; the watch replaces them within seconds. It still
-gives a better start (6 s supervision instead of 420 ms). (These are the firmware's sets; a btmon
-capture on the OnePlus 6 hasn't confirmed them on the wire yet.)
+gives a better start: `ConnectionSupervisionTimeout=600` (6 s) instead of 420 ms. (These are the
+firmware's sets; a btmon capture on the OnePlus 6 hasn't confirmed them on the wire yet.)
 
-On a watch that has the characteristic (older Pebbles, or Core firmware with a PebbleOS patch that
-adds it), upstream libpebble3 tells it "the phone manages the parameters"
-and never changes them, so the link keeps whatever it had at connect — often the watch's 15 ms
-bulk-transfer set (about 67 radio events per second, forever). stoandl doesn't: with the keys unset it
-writes nothing, and the watch keeps managing with its own sets, as above.
-`ble.conn_params = 500,520,0,6000` lets the watch manage the parameters with that set in all three of
-its response-time slots instead: it converges once and stays there.
+On a watch that has the characteristic (older Pebbles over LE), upstream libpebble3 tells it "the phone
+manages the parameters" and never changes them, so the link keeps whatever it had at connect — often the
+watch's 15 ms bulk-transfer set (about 67 radio events per second, forever). stoandl doesn't: it writes
+nothing, and the watch keeps managing with its own sets, as above.
 
-On Linux the host has to accept the watch's request:
-
-1. `/etc/bluetooth/main.conf`, section `[LE]`: `MaxConnectionInterval=416` (= 520 ms / 1.25) and
-   `ConnectionSupervisionTimeout=600` (6 s). Without it the kernel rejects anything above 50 ms.
-   Restart bluetoothd (`systemctl restart bluetooth`) and reconnect the watch.
-2. **The LL trap.** The kernel rejects an LL "remote connection parameter request" whose max exceeds
-   the max the connection was *created* with — and that is the device's last accepted parameters,
-   which bluetoothd persists (`/var/lib/bluetooth/<adapter>/<watch>/info`, `[ConnectionParameters]`).
-   If a connection ever ends right after the watch's own 15 ms discovery request, every later
-   connection starts at 15 ms and can never slow down. stoandl detects this 60 s after connect and logs
-   a WARN (`link still at …`). Fixes: remove the `[ConnectionParameters]` group from that file and
-   restart bluetoothd, or carry the kernel patch "K5" (accept up to the adapter's
-   `MaxConnectionInterval`; in the OnePlus 6 kernel since r9, `r9-0018`).
-3. `ble.conn_params_fast` (a fast set during the connect handshake and bulk transfers) makes the trap
-   likely — every boost is an accepted 15 ms request. Only use it with K5, or after btmon shows your
-   watch uses L2CAP signalling instead of the LL procedure.
-
-Trade-off: at 500 ms, watch buttons that talk to the phone (dismiss, music) react up to ~0.5 s later.
-250 ms (`200,250,0,6000`) is a middle ground.
+**The LL trap.** The kernel rejects an LL "remote connection parameter request" whose max exceeds the
+max the connection was *created* with — and that is the device's last accepted parameters, which
+bluetoothd persists (`/var/lib/bluetooth/<adapter>/<watch>/info`, `[ConnectionParameters]`). If a
+connection ever ends right after the watch's own 15 ms discovery request, every later connection starts
+at 15 ms, the watch's 30–45 ms idle request is rejected, and the link stays at 15 ms. Fixes: remove the
+`[ConnectionParameters]` group from that file and restart bluetoothd (`systemctl restart bluetooth`), or
+carry the kernel patch "K5" (accept up to the adapter's maximum interval instead; in the OnePlus 6
+kernel since r9, `r9-0018`).
 
 ### Quiet Time pause
 

@@ -199,10 +199,6 @@ private fun githubRepoValid(v: String): String? {
  *  field's own min/max, which is the only value it could write back anyway. */
 private fun Long.toIntClamped(): Int = coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
 
-/** `ble.conn_params*`, decoded with the very function that reads them back, so the GUI can't persist a
- *  set the daemon would log and ignore at load (e.g. a supervision timeout the watch rejects). */
-private fun connParamsValid(v: String): String? = StoandlConfig.decodeConnParams(v).exceptionOrNull()?.message
-
 private fun httpUrlValid(v: String): String? {
     if (v.isEmpty()) return "cannot be empty"
     return if ((v.startsWith("http://") || v.startsWith("https://")) && !v.contains(' ')) null
@@ -390,18 +386,6 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("power.quiet_time_link_off", G_SLEEP, "Pause watch connection during Quiet Time",
         "Saves phone battery at night. Notifications that arrive during Quiet Time are sent to the watch " +
             "when it ends. If calls may interrupt Quiet Time, the connection stays on.") { it.powerQuietTimeLinkOff },
-    text("ble.conn_params", G_SLEEP, "Idle connection parameters",
-        "min_ms,max_ms,latency,supervision_ms the watch keeps while idle; empty or off = the watch manages " +
-            "them. Needs MaxConnectionInterval in BlueZ's main.conf: read docs/deep-sleep.md first.",
-        placeholder = "500,520,0,6000", apply = ConfigApply.RESTART, validate = ::connParamsValid) {
-        StoandlConfig.encodeConnParams(it.bleConnParams)
-    },
-    text("ble.conn_params_fast", G_SLEEP, "Fast connection parameters",
-        "Optional set for the connect handshake and bulk transfers; only used with the idle set. Needs " +
-            "the K5 kernel fix (docs/deep-sleep.md).",
-        placeholder = "15,15,0,6000", apply = ConfigApply.RESTART, validate = ::connParamsValid) {
-        StoandlConfig.encodeConnParams(it.bleConnParamsFast)
-    },
 
     // --- Do Not Disturb ---
     combo("dnd.sync", G_DND, "Do Not Disturb sync",
