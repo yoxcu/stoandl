@@ -57,7 +57,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.location_source` | string | `manual` | Where extra locations come from: `manual` (only the list above), `gnome` (read GNOME/Phosh's weather GSettings), or `command` (run `weather.location_command`). |
 | `weather.location_command` | string | _(empty)_ | For `weather.location_source = command`: a shell command that prints `Name:lat:lon` lines. |
 | `weather.interval` | number | `30` | Minutes between weather refreshes. |
-| `weather.gps` | bool | `false` | Add a GeoClue2-tracked **current location** entry (shown first on the watch) alongside the fixed locations. |
+| `weather.gps` | bool | `false` | Add a GeoClue2 **current location** entry (shown first on the watch) alongside the fixed locations. City-level accuracy, so no GPS. |
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
@@ -298,13 +298,17 @@ is still fetched from Open-Meteo — importing only supplies the coordinates, no
 
 Set `weather.gps = true` to add a **current location** entry tracked via
 [GeoClue2](https://gitlab.freedesktop.org/geoclue/geoclue) — the standard Linux geolocation service,
-which aggregates modem GPS, Wi-Fi and A-GPS. It's resolved fresh on every refresh (so it follows
-`weather.interval`) and marked as the current location so the watch shows it first. By default the entry
+which aggregates modem GPS, Wi-Fi, cell towers and IP. Weather asks it for **city-level** accuracy:
+enough for a forecast and served from cell towers and Wi-Fi networks already seen, so the GPS stays off.
+It's resolved fresh on every refresh (so it follows `weather.interval`); GeoClue runs only for that lookup
+and stops a minute later. The entry is marked as the current location so the watch shows it first. By default the entry
 is labelled `weather.gps_name`; set `weather.reverse_geocode = true` to instead look up the nearest place
 name from the coordinates (via OSM Nominatim — see the network note below).
 
-GeoClue authorises clients by their `DesktopId`, so a headless daemon must be **allow-listed**. Add this
-to `/etc/geoclue/geoclue.conf` (the id must match `weather.gps_desktop_id`, default `stoandl`):
+GeoClue authorises clients by their `DesktopId`: through the session's location agent if one runs
+(GNOME Shell, Phosh, GeoClue's demo agent), otherwise only if the daemon is **allow-listed**. Add this
+to `/etc/geoclue/geoclue.conf` or a file in `/etc/geoclue/conf.d/` (the id must match
+`weather.gps_desktop_id`, default `stoandl`):
 
 ```ini
 [stoandl]
@@ -344,15 +348,21 @@ geolocation.enabled = true
 ```
 
 to back it with **GeoClue2** — the same Linux geolocation service stoandl already uses for weather's
-current-location entry (modem GPS aggregated with Wi-Fi and A-GPS). Coordinates, accuracy, altitude,
-heading and speed are passed through to the watchapp when GeoClue reports them.
+current-location entry (modem GPS aggregated with Wi-Fi, cell towers and IP). Coordinates, accuracy,
+altitude, heading and speed are passed through to the watchapp when GeoClue reports them.
+
+The request's options are honoured as a phone browser would: `enableHighAccuracy: true` asks GeoClue
+for an exact fix (the GPS, within 100 m), otherwise street level (Wi-Fi and cell towers, no GPS,
+within 1 km); `timeout` bounds the wait for a fix that accurate (30 s when unset), after which the
+best one so far answers; `maximumAge` lets a recent, accurate-enough fix answer without waking
+GeoClue at all. GeoClue, and the GPS with it, stops a minute after the last request.
 
 It's **off by default** because, once on, *any* watchapp you launch can read your location with no
 per-app prompt (Linux has no location-permission UI; libpebble3's per-app permission defaults to
 allow). Enable it only if you run watchapps you trust with your position.
 
-GeoClue authorises clients by their `DesktopId`, so — exactly as for `weather.gps` — the daemon must be
-**allow-listed** in `/etc/geoclue/geoclue.conf`. Geolocation reuses the **same** identity as weather
+GeoClue authorises clients by their `DesktopId`, so — exactly as for `weather.gps` — the daemon needs
+a location agent or an **allow-list** entry in `/etc/geoclue/geoclue.conf`. Geolocation reuses the **same** identity as weather
 (`weather.gps_desktop_id`, default `stoandl`), so a single allow-list entry covers both:
 
 ```

@@ -553,7 +553,7 @@ class PebbleIntegration(
                 LiveGeolocation(
                     enabled = { config.geolocation },
                     desktopId = { config.weatherGpsDesktopId },
-                    provider = { id -> GeoClueLocationProvider(id) },
+                    provider = { id -> GeoClueLocationProvider(id, wakeups()) },
                 )
             }
         }), allowOverride = true)
@@ -1383,7 +1383,7 @@ class PebbleIntegration(
             return
         }
         val gps = if (config.weatherGps) {
-            GeoClueLocationProvider(config.weatherGpsDesktopId).also { it.start() }
+            GeoClueLocationProvider(config.weatherGpsDesktopId, wakeups())
         } else null
         val deSource = when (config.weatherLocationSource) {
             WeatherLocationSource.MANUAL -> null

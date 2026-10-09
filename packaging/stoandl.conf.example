@@ -112,10 +112,11 @@ weather.interval = 30
 # watch.dndWeekdayScheduleEnabled = true   # turns the Mon-Fri Quiet Time schedule on (off by default)
 # watch.dndWeekdaySchedule = 22:00-07:00   # its hours (HH:MM-HH:MM; end < start runs overnight)
 
-# Optional GPS: add a "current location" entry tracked via GeoClue2 (modem GPS / Wi-Fi / A-GPS).
+# Optional: add a "current location" entry from GeoClue2 at city level (cell towers / Wi-Fi, no GPS).
 # It's shown first on the watch and re-resolved every refresh. The place name is reverse-geocoded
 # from the coordinates (OSM Nominatim), falling back to weather.gps_name.
-# GeoClue must allow this daemon — add to /etc/geoclue/geoclue.conf (id matches weather.gps_desktop_id):
+# GeoClue must allow this daemon: a location agent does, otherwise add to /etc/geoclue/geoclue.conf
+# (id matches weather.gps_desktop_id):
 #   [stoandl]
 #   allowed=true
 #   system=true
@@ -187,8 +188,9 @@ music.volume = system
 # music.volume_down_command = wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
 
 # ── Geolocation (watchapps) ──────────────────────────────────────────────────────────────────────
-# Provide GPS to watchapps that request it (PebbleKit JS navigator.geolocation, and sports/GPS apps)
-# via GeoClue2 — the same provider weather.gps uses (and the same geoclue.conf allow rule). Off by
+# Provide location to watchapps that request it (PebbleKit JS navigator.geolocation, and sports/GPS
+# apps) via GeoClue2 — the same provider weather.gps uses (and the same geoclue.conf allow rule). Street
+# level by default; the GPS only for apps that ask for high accuracy. Off by
 # default: it discloses your location to whatever watchapp asks for it.
 geolocation.enabled = false
 

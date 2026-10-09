@@ -10,8 +10,8 @@ const val GEOCLUE_MANAGER_IFACE = "org.freedesktop.GeoClue2.Manager"
 const val GEOCLUE_CLIENT_IFACE = "org.freedesktop.GeoClue2.Client"
 const val GEOCLUE_LOCATION_IFACE = "org.freedesktop.GeoClue2.Location"
 
-/** GeoClue2 accuracy levels (GClueAccuracyLevel). Only [EXACT] is requested today; the rest mirror
- *  the spec enum so a future accuracy setting has them to hand. */
+/** GeoClue2 accuracy levels (GClueAccuracyLevel). Weather asks for [CITY]; watchapps for [STREET],
+ *  or [EXACT] (the GPS) when they set `enableHighAccuracy`. */
 object GeoClueAccuracy {
     const val NONE = 0
     const val COUNTRY = 1

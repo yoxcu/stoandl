@@ -4,6 +4,7 @@ package de.yoxcu.stoandl.weather
 
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocation
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
+import de.yoxcu.stoandl.dbus.GeoClueAccuracy
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.LenientJson
@@ -211,7 +212,11 @@ class WeatherSync(
         val gpsProvider = gps
         if (gpsProvider != null) {
             tasks += scope.async {
-                val coords = withContext(Dispatchers.IO) { gpsProvider.currentLatLon() }
+                // City level is plenty for a forecast: cell towers and Wi-Fi already seen, no GPS and
+                // no scans of GeoClue's own. A fix from the last few minutes (an on-connect sync right
+                // after a periodic one) is reused.
+                val coords = gpsProvider.fix(GeoClueAccuracy.CITY, timeout = 30.seconds, maxAge = 5.minutes)
+                    ?.let { it.latitude to it.longitude }
                 if (coords == null) {
                     // No fix yet: send a "failed" marker so the entry's last-known data is preserved
                     // on the watch rather than wiped.

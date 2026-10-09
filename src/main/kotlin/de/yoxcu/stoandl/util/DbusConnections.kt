@@ -26,5 +26,10 @@ fun softOpenSessionBus(): DBusConnection? = try {
 fun openSystemBus(): DBusConnection =
     DBusConnectionBuilder.forSystemBus().build() as DBusConnection
 
+/** A private system-bus connection: its own bus peer, closed for real by `disconnect()`. For services
+ *  that keep per-peer state, like GeoClue's one client per peer. */
+fun openPrivateSystemBus(): DBusConnection =
+    DBusConnectionBuilder.forSystemBus().withShared(false).build() as DBusConnection
+
 /** Unwrap a dbus-java [Variant] to its contained value; pass-through for anything that isn't a Variant. */
 fun unwrapVariant(v: Any?): Any? = if (v is Variant<*>) v.value else v

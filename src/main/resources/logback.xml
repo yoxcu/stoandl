@@ -40,6 +40,10 @@
          honor STOANDL_LOG, or the parent's INFO pin hides the lines TESTING.md §5.32 times against. -->
     <logger name="de.yoxcu.stoandl.power" level="${logLevel}"/>
 
+    <!-- GeoClue client start/stop (`GeoClue client started at city`, `… stopped`): honor STOANDL_LOG so
+         DEBUG shows when the location radios are held on (TESTING.md §5.41). -->
+    <logger name="de.yoxcu.stoandl.location" level="${logLevel}"/>
+
     <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
     <logger name="PrivatePKJSInterface" level="INFO"/>
     <logger name="CompanionAppLifecycleManager" level="INFO"/>

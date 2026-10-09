@@ -29,7 +29,10 @@ class LiveGeolocation(
     private fun active(): SystemGeolocation {
         if (!enabled()) return DisabledGeolocation
         val id = desktopId()
-        cached?.let { (cachedId, delegate) -> if (cachedId == id) return delegate }
+        cached?.let { (cachedId, delegate) ->
+            if (cachedId == id) return delegate
+            delegate.provider.stop()
+        }
         return GeoClueSystemGeolocation(provider(id)).also { cached = id to it }
     }
 
@@ -45,7 +48,7 @@ class LiveGeolocation(
         highAccuracy: Boolean,
     ): Flow<GeolocationPositionResult> = flow {
         while (true) {
-            emit(getCurrentPosition(maximumAge = null, timeout = null, highAccuracy = highAccuracy))
+            emit(getCurrentPosition(maximumAge = interval, timeout = null, highAccuracy = highAccuracy))
             delay(interval)
         }
     }

@@ -1881,6 +1881,29 @@ the subtitle font is biggest) and NeoChat in a group room; `Notification queued 
 | 5.39q | Per-app choices and preview (GUIs) | Kirigami and GTK: Alerts → NeoChat → its dialog: pick Notification color Blue, then Yellow; pick App name Subtitle, Off, Default, then Subtitle again, each followed by a NeoChat message and `stoandl notif list`; close and reopen the dialog. Then `stoandl notif style neochat --color Yellow` and reopen it | The card under App name shows "NeoChat". The banner turns blue with a white bell, then yellow with a black bell. The name moves as in 5.39p, and Default shows the Alerts choice, which the row's text names ("Default follows the Alerts page, now Small line."). Each App name pick applies to the next message and the list agrees (— after Default). On reopening, the colour combo shows Yellow and App name shows Subtitle, with "NeoChat" as the large bold line in the preview (the open-time preselection; Kirigami's colour combo used to show Default). After the CLI `Yellow` (pure yellow, not the dialog's Yellow = `ChromeYellow`) both GUIs show the colour as Default with a #FF0055 banner. Kirigami: the dialog opens without jumping and stderr has no `Binding loop detected for property "y"`. Set both back to Default. |
 | 5.39r | Preview matches the watch | After 5.39p, with each choice in turn, send a NeoChat message | The watch shows the lines in the preview's order, and the app name is on the same line as in the preview. Fonts and line breaks are only approximate. |
 
+## 5.41 GeoClue only while a fix is wanted  ⚠️ PARTLY VERIFIED (5.41a, 5.41e on the op6, 2026-10-08/09)
+
+The GeoClue client used to start at EXACT accuracy on first use and stay started for the life of the
+daemon, which kept the phone's modem GPS on (`gps-nmea` in `mmcli -m any --location-status`).
+`GeoClueLocationProvider` now starts a client per request at the accuracy asked for (weather: city;
+watchapps: street, or exact with `enableHighAccuracy`), waits within the timeout for a fix inside that
+level's radius (exact 100 m, street 1 km, city 15 km; the best one so far when time runs out), reuses an
+accurate-enough fix within `maximumAge` while stopped, and stops one wall-clock minute after the last
+request. GeoClue's first location is often a ±25 km guess even at exact: the op6 handed that to
+WarnWeather three times on 2026-10-09 while the GPS fix came seconds later.
+Each client has its own private system-bus connection (the shared one gave weather and watchapps the
+same GeoClue client). Off-device: `GeoClueLocationProviderTest`. Log (`STOANDL_LOG=DEBUG`):
+`grep GeoClue /tmp/stoandl.log`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.41a | Weather: city level, then off | `weather.gps = true`; restart; wait 70 s; `busctl --system tree --list org.freedesktop.GeoClue2`; `mmcli -m any --location-status` | `GeoClue client started at city`, `Weather updated: 1/1`, then `GeoClue client stopped` 60 s later; no `/Client/N` left; `gps-nmea` not enabled. ✅ op6 2026-10-08 (`agps-msb` stayed enabled from the old build's EXACT session: GeoClue doesn't clear it). |
+| 5.41b | Watchapp, normal accuracy | `geolocation.enabled = true`; a PKJS app calling `navigator.geolocation.getCurrentPosition` without options (WarnWeather with "Using GPS") | `started at street`, the app gets a position (no `gps_1` error), `stopped` a minute later; `gps-nmea` stays off. |
+| 5.41c | Watchapp, high accuracy | An app with `enableHighAccuracy: true` (or a sports app) outdoors | `started at exact`; `gps-nmea` enabled while it runs; off again a minute after its last request. |
+| 5.41d | First fix waits | Cold start (no recent fix), app requests location | The app gets a position on its first request (up to its `timeout`, 30 s when unset) instead of an immediate `No location fix available`. |
+| 5.41e | Suspend while held | Request a fix, suspend the phone within the minute, wake it after 5 min | On resume the client stops at once (`stopped` right after `resumed`), not a minute of awake time later. ✅ op6 overnight 2026-10-08/09 (`resumed` then `last fix before stopping` + `stopped` within 20 ms, 2–5 min after the start). |
+| 5.41f | Accuracy, not the first fix | WarnWeather ("Using GPS", exact) outdoors with no recent fix | `GeoClue exact fix: ±N m` with N ≤ 100 (not `±25000 m`), or `no exact fix within …, using the best one` indoors after the timeout; weather's `city fix` ≤ ±15000 m. |
+
 ---
 
 ## 7. Regression sanity  (run after any of the above)

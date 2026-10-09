@@ -696,7 +696,8 @@ test last. [TESTING.md §5.17](../TESTING.md)._ See
 Expose the device's position to watchapps via libpebble3's `SystemGeolocation` hook, so PKJS apps'
 `navigator.geolocation` and location-aware sports/GPS watchapps get a fix. The fix comes from GeoClue2
 — the same provider weather's "current location" uses — so it works headlessly on a Linux phone (modem
-GPS + Wi-Fi/A-GPS) with no GPS-specific code. A small fork addition makes the GraalJS PKJS runtime
+GPS + Wi-Fi/cell) with no GPS-specific code. The GPS runs only for apps that ask for high accuracy, and
+GeoClue stops a minute after the last request. A small fork addition makes the GraalJS PKJS runtime
 route `_PebbleGeo` through the shared `GeolocationInterface`, and stoandl overrides the no-op
 `SystemGeolocation` binding with a GeoClue-backed one. Off by default — it hands the device's location
 to whatever watchapp asks — enable with `geolocation.enabled`. _To be tested — needs a watch + a
