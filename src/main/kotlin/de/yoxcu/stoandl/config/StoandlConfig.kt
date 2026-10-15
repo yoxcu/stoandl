@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.config
 
 import de.yoxcu.stoandl.notification.AppNamePlacement
+import de.yoxcu.stoandl.util.ConfFile
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
 
@@ -45,6 +46,13 @@ data class StoandlConfig(
      *  When off, every notification is dropped host-side at the send choke point (per-app mute, filters
      *  and styling are moot) — calls and firmware prompts use their own paths and are unaffected. */
     val notificationForward: Boolean,
+    /** Clear a notification from the watch when it's dismissed on the desktop or phone (closed by the user
+     *  or the app, withdrawn through the portal/GTK, or closed by an extension). Local only; read live. */
+    val notificationSyncDismissals: Boolean,
+    /** Show pictures attached to notifications (an extension's photo, a screenshot a notification links to)
+     *  on watches that can (Pebble Time 2 / Round 2, firmware 4.35+). Never sender avatars. Read live;
+     *  switching it off deletes the stored pictures. */
+    val notificationImages: Boolean,
     /** How far back, in minutes, a (re)connecting watch catches up on notifications it hasn't received —
      *  those posted while it was disconnected (a phone that drops the link on suspend and wakes for a
      *  push, a watch out of range). Never older than the daemon's start or the watch's pairing; `0` =
@@ -71,6 +79,8 @@ data class StoandlConfig(
     val alertsBluetooth: Boolean,
     /** Alert when an installed extension requires configuration before it can start. On by default. */
     val alertsExtensions: Boolean,
+    /** An app asks for a permission (plugins on): a prompt with Allow/Deny on the watch and the desktop. */
+    val alertsPermissions: Boolean,
     /** Dialer apps, by app name or desktop-entry id (exact, case-insensitive). Their notifications are
      *  suppressed from the watch while a call is up (the native call screen replaces them) and their
      *  title is used as a fallback caller name. */
@@ -104,6 +114,10 @@ data class StoandlConfig(
     /** When true (the default, whenever weather is enabled), also emit weather timeline pins —
      *  a sunrise and a sunset pin per day for the primary location — alongside the Weather app data. */
     val weatherPins: Boolean,
+    /** Answer the dead weather APIs classic watchfaces call from PKJS (Yahoo YQL; OpenWeatherMap 2.5 when
+     *  the app's own key is rejected) from Open-Meteo. Off by default: it fetches weather (and, for a typed
+     *  place name, a geocoding lookup) for whatever coordinates or place a watchapp sends. */
+    val weatherInterceptPkjs: Boolean,
     /** Expose the device's GeoClue2 position to watchapps via libpebble3's `SystemGeolocation` hook,
      *  so PKJS apps' `navigator.geolocation` and location-aware sports/GPS watchapps get a fix. Uses
      *  the same GeoClue identity as weather ([weatherGpsDesktopId] / `weather.gps_desktop_id`). Off by
@@ -138,6 +152,34 @@ data class StoandlConfig(
     val calendarCalDav: List<CalDavAccount>,
     /** How often calendars are re-read, in minutes (also rolls the timeline window forward). */
     val calendarSyncIntervalMinutes: Long,
+    /** Calendar pins carry their reminders (the watch buzzes before an event). Read live. */
+    val calendarReminders: Boolean,
+    /** Events you declined still become pins. Read live. */
+    val calendarShowDeclined: Boolean,
+    /** Vibration for every calendar reminder: a name from libpebble3's vibe-pattern table (`Standard`,
+     *  `Pulses`, …); null = the watch's own default. Read live. */
+    val calendarReminderVibe: String?,
+    /** Speech-to-text for the watch's dictation and extensions' voice notes: off, a local command, or an
+     *  OpenAI-compatible HTTP endpoint (egress, opt-in). Read on every use. */
+    val voiceBackend: VoiceBackend,
+    /** `voice.backend = command`: a shell command line with `{wav}` and `{lang}`, printing the transcript. */
+    val voiceCommand: String,
+    /** `voice.backend = http`: the transcription endpoint (`…/v1/audio/transcriptions`). */
+    val voiceUrl: String,
+    /** `voice.backend = http`: the `model` form field, if the service wants one. */
+    val voiceModel: String,
+    /** Language of the speech: an ISO-639 code, or `auto`. */
+    val voiceLanguage: String,
+    /** Keep each dictation's audio as a WAV under `~/.cache/stoandl/voice` (debugging; privacy). */
+    val voiceSaveAudio: Boolean,
+    /** Plugins (phone-side data sources and actions watchapps use, upstream's v1.15 plugin system): the
+     *  built-in ones, those shipped in .pbw files and extensions that serve sources. Also turns on app
+     *  permissions for every watchapp's PKJS. Off by default: no plugin code runs, nothing is fetched. */
+    val pluginsEnabled: Boolean,
+    /** When an app has to ask before it may use a permission (libpebble3 `PermissionPolicy`). */
+    val pluginsPermissionPolicy: PermissionPolicyMode,
+    /** Apps built before permissions (no manifest v2) are asked too, instead of keeping their old rights. */
+    val pluginsAskLegacyApps: Boolean,
     /** Capture datalog frames from custom watchapps (PebbleKit DataLogging) to NDJSON files under
      *  `~/.config/stoandl/datalog/<uuid>/<tag>.ndjson`. Local-only (no egress), but it writes
      *  app-supplied data to disk, so it's off by default — enable it to see which apps log data. */
@@ -265,6 +307,13 @@ data class StoandlConfig(
     /** What the watch volume buttons drive: the system/master output, or the active player's own volume. */
     enum class MusicVolumeMode { SYSTEM, PLAYER }
 
+    /** When apps must ask for a permission: only when they could send the data off this machine, always, or
+     *  never (everything granted, the user's explicit denials stand). */
+    enum class PermissionPolicyMode { ASK_IF_EXFILTRATING, ALWAYS_ASK, NEVER_ASK }
+
+    /** Where speech is turned into text: nowhere, a local command, or an HTTP endpoint. */
+    enum class VoiceBackend { OFF, COMMAND, HTTP }
+
     /** Which way desktop DND ↔ watch Quiet Time is mirrored: not at all, host→watch only, watch→host
      *  only, or both. */
     enum class DndSyncMode { OFF, TO_WATCH, TO_HOST, BOTH }
@@ -299,12 +348,15 @@ data class StoandlConfig(
             notificationAppName = DEFAULT_APP_NAME_PLACEMENT,
             notificationSyncToWatch = false,
             notificationForward = true,
+            notificationSyncDismissals = true,
+            notificationImages = true,
             notificationCatchUpMinutes = DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
             notificationCannedReplies = DEFAULT_CANNED_REPLIES,
             alertsEnabled = true,
             alertsPairing = true,
             alertsBluetooth = true,
             alertsExtensions = true,
+            alertsPermissions = true,
             dialerApps = DEFAULT_DIALER_APPS,
             vcardPaths = DEFAULT_VCARD_PATHS.map(::expandTilde),
             weatherEnabled = true,
@@ -317,6 +369,7 @@ data class StoandlConfig(
             weatherGpsName = DEFAULT_GPS_NAME,
             weatherReverseGeocode = false,
             weatherPins = true,
+            weatherInterceptPkjs = false,
             geolocation = false,
             watchPrefs = emptyMap(),
             musicControl = true,
@@ -329,6 +382,18 @@ data class StoandlConfig(
             calendarIcalUrls = emptyList(),
             calendarCalDav = emptyList(),
             calendarSyncIntervalMinutes = DEFAULT_CALENDAR_INTERVAL_MINUTES,
+            calendarReminders = true,
+            calendarShowDeclined = false,
+            calendarReminderVibe = null,
+            voiceBackend = VoiceBackend.OFF,
+            voiceCommand = "",
+            voiceUrl = "",
+            voiceModel = "",
+            voiceLanguage = "auto",
+            voiceSaveAudio = false,
+            pluginsEnabled = false,
+            pluginsPermissionPolicy = PermissionPolicyMode.ASK_IF_EXFILTRATING,
+            pluginsAskLegacyApps = false,
             datalog = false,
             firmwareGithub = false,
             firmwareGithubRepo = DEFAULT_FIRMWARE_GITHUB_REPO,
@@ -374,13 +439,8 @@ data class StoandlConfig(
                 if (logResult) log.info { "No config file at ${file.path}; using defaults" }
                 return defaults()
             }
-            val map = HashMap<String, String>()
-            try {
-                file.readLines().forEach { raw ->
-                    val line = raw.substringBefore('#').trim()
-                    val idx = line.indexOf('=')
-                    if (idx > 0) map[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
-                }
+            val map = try {
+                ConfFile.read(file)
             } catch (e: Exception) {
                 log.warn(e) { "Failed to read config ${file.path}; using defaults" }
                 return defaults()
@@ -394,6 +454,8 @@ data class StoandlConfig(
                 notificationAppName = parseAppNamePlacement(map["notification.app_name"]),
                 notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
+                notificationSyncDismissals = map["notification.sync_dismissals"]?.let { parseBool(it) } ?: true,
+                notificationImages = map["notification.images"]?.let { parseBool(it) } ?: true,
                 notificationCatchUpMinutes = map["notification.catch_up_minutes"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 1440L) ?: DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
                 notificationCannedReplies = list("notification.canned_replies", DEFAULT_CANNED_REPLIES)
@@ -402,6 +464,7 @@ data class StoandlConfig(
                 alertsPairing = map["alerts.pairing"]?.let { parseBool(it) } ?: true,
                 alertsBluetooth = map["alerts.bluetooth"]?.let { parseBool(it) } ?: true,
                 alertsExtensions = map["alerts.extensions"]?.let { parseBool(it) } ?: true,
+                alertsPermissions = map["alerts.permissions"]?.let { parseBool(it) } ?: true,
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
                 vcardPaths = list("contacts.vcard_paths", DEFAULT_VCARD_PATHS).map(::expandTilde),
                 weatherEnabled = map["weather.enabled"]?.let { parseBool(it) } ?: true,
@@ -417,6 +480,7 @@ data class StoandlConfig(
                     ?: DEFAULT_GPS_NAME,
                 weatherReverseGeocode = parseBool(map["weather.reverse_geocode"]),
                 weatherPins = map["weather.pins"]?.let { parseBool(it) } ?: true,
+                weatherInterceptPkjs = parseBool(map["weather.intercept_pkjs"]),
                 geolocation = parseBool(map["geolocation.enabled"]),
                 // `watch.<prefId> = value` keys are applied to the watch's settings BlobDB.
                 watchPrefs = map.entries
@@ -435,6 +499,26 @@ data class StoandlConfig(
                 calendarCalDav = parseCalDav(list("calendar.caldav")),
                 calendarSyncIntervalMinutes = map["calendar.sync_interval"]?.trim()?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: DEFAULT_CALENDAR_INTERVAL_MINUTES,
+                calendarReminders = map["calendar.reminders"]?.let { parseBool(it) } ?: true,
+                calendarShowDeclined = parseBool(map["calendar.show_declined"]),
+                calendarReminderVibe = map["calendar.reminder_vibe"]?.trim()?.takeIf { it.isNotEmpty() },
+                voiceBackend = when (map["voice.backend"]?.trim()?.lowercase()) {
+                    "command" -> VoiceBackend.COMMAND
+                    "http" -> VoiceBackend.HTTP
+                    else -> VoiceBackend.OFF
+                },
+                voiceCommand = map["voice.command"]?.trim().orEmpty(),
+                voiceUrl = map["voice.url"]?.trim().orEmpty(),
+                voiceModel = map["voice.model"]?.trim().orEmpty(),
+                voiceLanguage = map["voice.language"]?.trim()?.takeIf { it.isNotEmpty() } ?: "auto",
+                voiceSaveAudio = parseBool(map["voice.save_audio"]),
+                pluginsEnabled = parseBool(map["plugins.enabled"]),
+                pluginsPermissionPolicy = when (map["plugins.permission_policy"]?.trim()?.lowercase()) {
+                    "always_ask" -> PermissionPolicyMode.ALWAYS_ASK
+                    "never_ask" -> PermissionPolicyMode.NEVER_ASK
+                    else -> PermissionPolicyMode.ASK_IF_EXFILTRATING
+                },
+                pluginsAskLegacyApps = parseBool(map["plugins.ask_legacy_apps"]),
                 datalog = parseBool(map["datalog.enabled"]),
                 firmwareGithub = parseBool(map["firmware.github"]),
                 firmwareGithubRepo = map["firmware.github_repo"]?.trim()?.takeIf { it.isNotEmpty() }
@@ -504,6 +588,7 @@ data class StoandlConfig(
                          if (!cfg.alertsPairing) "pairing" else null,
                          if (!cfg.alertsBluetooth) "bluetooth" else null,
                          if (!cfg.alertsExtensions) "extensions" else null,
+                         if (!cfg.alertsPermissions) "permissions" else null,
                      ).takeIf { it.isNotEmpty() }?.let { ", alerts muted: ${it.joinToString("/")}" }.orEmpty()) +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
             }

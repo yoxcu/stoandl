@@ -10,6 +10,7 @@ import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.stoandlHttpClient
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
@@ -115,10 +116,7 @@ class WeatherSync(
 
     // Stable BlobDB key for the GPS-tracked current location (its coordinates change, but it is one entry).
     private val currentLocationKey = keyFor("stoandl::current-location")
-    // Cache the last reverse-geocode result keyed by coarse coordinates, to avoid hammering Nominatim
-    // (whose usage policy asks for ≤1 req/s) when the device is stationary.
-    private var reverseGeocodeCacheKey: String? = null
-    private var reverseGeocodeCacheName: String? = null
+    private val nominatim = NominatimReverseGeocoder(client)
 
     fun start() {
         // Immediate sync whenever a watch transitions into the connected state, so a freshly
@@ -224,7 +222,7 @@ class WeatherSync(
                     failedForecast(currentLocationKey, gpsFallbackName, isCurrentLocation = true)
                 } else {
                     val (lat, lon) = coords
-                    val name = (if (reverseGeocodeEnabled) reverseGeocode(lat, lon) else null) ?: gpsFallbackName
+                    val name = (if (reverseGeocodeEnabled) nominatim.nameAt(lat, lon) else null) ?: gpsFallbackName
                     runCatching { fetchAt(currentLocationKey, name, lat, lon, isCurrentLocation = true, imperial = imperial) }
                         .getOrElse {
                             log.warn { "Weather fetch failed for current location: ${it.message}" }
@@ -376,14 +374,19 @@ class WeatherSync(
     private fun dominantCode(codes: List<Int>): Int? =
         codes.groupingBy { it }.eachCount().entries
             .maxWithOrNull(compareBy({ it.value }, { it.key }))?.key
+}
 
-    /** Resolve a place name from coordinates via OSM Nominatim (free, no key). Cached by coarse
-     *  coordinates to respect Nominatim's usage policy. Returns null on any failure (caller falls
-     *  back to the configured GPS name). */
-    private suspend fun reverseGeocode(latitude: Double, longitude: Double): String? {
+/** Coordinates → place name via OSM Nominatim (free, no key), cached by coarse coordinates to respect
+ *  Nominatim's usage policy (≤1 req/s). Null on any failure. Shared by the GPS weather entry and the PKJS
+ *  weather interceptors; callers gate it on `weather.reverse_geocode`. */
+class NominatimReverseGeocoder(private val client: HttpClient) {
+    @Volatile private var lastKey: String? = null
+    @Volatile private var cacheName: String? = null
+
+    suspend fun nameAt(latitude: Double, longitude: Double): String? {
         // ~3 decimal places ≈ 100 m: stable enough to dedupe repeated lookups while standing still.
         val cacheKey = String.format(java.util.Locale.ROOT, "%.3f,%.3f", latitude, longitude)
-        if (cacheKey == reverseGeocodeCacheKey) return reverseGeocodeCacheName
+        if (cacheKey == lastKey) return cacheName
         return try {
             val body = client.get("https://nominatim.openstreetmap.org/reverse") {
                 parameter("lat", latitude)
@@ -397,8 +400,8 @@ class WeatherSync(
             val address = LenientJson.parseToJsonElement(body).jsonObject["address"]?.jsonObject
             val name = listOf("city", "town", "village", "municipality", "county")
                 .firstNotNullOfOrNull { address?.get(it)?.jsonPrimitive?.contentOrNull }
-            reverseGeocodeCacheKey = cacheKey
-            reverseGeocodeCacheName = name
+            lastKey = cacheKey
+            cacheName = name
             name
         } catch (e: Exception) {
             log.warn { "Reverse geocode failed for $cacheKey: ${e.message}" }

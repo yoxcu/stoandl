@@ -19,7 +19,7 @@ Nothing is unreachable.
 
 | Column | Meaning |
 | --- | --- |
-| **Kind** | `toggle` · `combo` · `text` · `int` · `list` — the widget both front-ends render from the schema |
+| **Kind** | `toggle` · `combo` · `text` · `int` · `list` — the widget the GUI renders from the schema |
 | **GUI** | ✓ = rendered on Settings → Daemon configuration; the alternative surface otherwise |
 | **Applies** | `live` = takes effect on write · `restart` = the daemon only reads it at startup (surfaced on the row) |
 | **Validated** | what the write path rejects beyond the type check |
@@ -160,7 +160,7 @@ The settings for phones that suspend whenever the display is off ([deep-sleep.md
 **Six keys are restart-required** — `notification.sync_to_watch`, `notification.catch_up_minutes`,
 `classic.discover`, `datalog.enabled`, `power.sleep_guard`, `power.sleep_guard_max_ms`. All of them
 decide startup wiring (a DI binding or the pinned `LibPebbleConfig`, a transport, a subscriber, the
-logind lock) that cannot be rebuilt safely at runtime. Both front-ends say so on the row.
+logind lock) that cannot be rebuilt safely at runtime. The GUI says so on the row.
 
 ---
 
@@ -215,7 +215,7 @@ constants, not policy — exposing them would be a knob with no right answer. Th
 battery-level alert today, which is the one event where a threshold *would* be meaningful; see
 [FIRMWARE-GAPS.md](../FIRMWARE-GAPS.md).
 
-**Test action.** `SendTestNotification` is reachable from both front-ends on **Alerts → Send test** (new
+**Test action.** `SendTestNotification` is reachable from the GUI on **Alerts → Send test** (new
 this session) and Settings → Debug → *Write notification…*.
 
 ---
@@ -246,7 +246,7 @@ left alone:
 key \t type \t label \t options \t desc \t group \t apply \t min \t max \t unit \t placeholder
 ```
 
-The first five are the original contract. Columns 6–11 were **appended**, and both front-ends index
+The first five are the original contract. Columns 6–11 were **appended**, and the GUI indexes
 positionally with a fallback per column, so an old client against a new daemon (reads five, ignores the
 rest) and a new client against an old daemon (missing columns → defaults) both work. `ConfigSchemaTest`
 pins the column count and order, and asserts no label, description, group or combo option can contain a

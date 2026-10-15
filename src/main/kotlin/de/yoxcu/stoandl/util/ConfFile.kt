@@ -19,6 +19,17 @@ object ConfFile {
      *  read the current file, compute new values, then [upsert] — atomic against other writers. */
     fun <T> withLock(block: () -> T): T = synchronized(lock) { block() }
 
+    /** The `key = value` pairs of [file] (`#` starts a comment; later keys win). Throws on a read error. */
+    fun read(file: File): Map<String, String> {
+        val map = HashMap<String, String>()
+        file.readLines().forEach { raw ->
+            val line = raw.substringBefore('#').trim()
+            val idx = line.indexOf('=')
+            if (idx > 0) map[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+        }
+        return map
+    }
+
     /**
      * Upsert [updates] into [file]: rewrite each matching `key = …` line in place (keeping its inline
      * `# comment`), append any keys not already present, and replace the file atomically (temp +

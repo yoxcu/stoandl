@@ -41,9 +41,9 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### Seven signals augment polling; no properties
+### Nine signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` now emits **seven D-Bus signals** as a reactive layer **on top of** the
+`de.yoxcu.stoandl.Control` now emits **nine D-Bus signals** as a reactive layer **on top of** the
 poll methods — they do not replace them:
 
 | Signal | D-Bus sig | Meaning | Client reaction |
@@ -54,6 +54,8 @@ poll methods — they do not replace them:
 | `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
 | `ExtensionStateChanged` | `ss` | per-extension runtime transition: `name` + `state` (`ready` / `exited` (restarting) / `quarantined`) — the unsolicited crash/quarantine the poke can't catch | show the live state (a `quarantined` ext otherwise polls as `running`) |
+| `PluginsChanged` | *(none)* | the set of plugins changed (plugins switched on/off, a plugin `.pbw` installed or removed, an extension's plugin came or went) | re-call `PluginList` |
+| `PermissionRequestsChanged` | *(none)* | the permission requests waiting for an answer changed | re-call `PermPending` |
 | `CalendarsChanged` | *(none)* | a calendar sync added/dropped calendars — after a source CRUD (the sync runs ~5 s later + CalDAV discovery) or a periodic re-read | re-call `ListCalendars` (+ `ListCalendarSources`); lets the GUI update when the data's ready, not race the async sync |
 
 The pokes carry no payload; the typed signals are `FirmwareProgress`/`LanguageProgress` (the live %, which a
@@ -89,7 +91,6 @@ Six types appear across the 91 methods and the signals:
 | `Int` | `i` | signed 32-bit int (`SetAppOrder`'s position, the health `offset`, the progress signals' `percent`) |
 | `Long` | `x` | signed 64-bit int (only the `sinceEpoch` of `BatteryHistory`/`BatteryActivity`/`BatteryPower`) |
 | `List<String>` | `as` | array of strings (one per record; fields tab-separated) |
-| `Unit` / no return | *(empty)* | no out-arg (only `WebviewClose`) |
 
 There are no struct, dict, variant, or object-path types on the control interface.
 
@@ -204,8 +205,7 @@ good for: [heartbeat-metrics.md](heartbeat-metrics.md).
 | `LaunchApp` | `(s) → s` | Launch app/face by UUID or name. `ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`. | `apps launch <name\|uuid>` |
 | `RemoveApp` | `(s) → s` | Uninstall app/face from the locker (system apps refused). | `apps remove <name\|uuid>` |
 | `SideloadApp` | `(s) → s` | Install a local `.pbw` (absolute daemon-side path). | `apps install <path.pbw>` (aliases `sideload`, `add`) |
-| `OpenConfig` | `(s) → s` | Config (Clay/PKJS) URL for a running app; empty string if none. The CLI proxies it over a local HTTP server. | `config [app]` |
-| `WebviewClose` | `(s) → ` *(void)* | Hand the saved settings JSON back to the running PKJS app after the config webview closes. | `config [app]` |
+| `OpenConfig` | `(s) → s` | Open the settings page of a PKJS app (name or UUID; launches it if needed). Returns a loopback `http://127.0.0.1:<port>/<token>/…` URL the daemon serves the page from (`data:` Clay pages decoded, `pebblejs://close` rewritten to the daemon), or empty string if none. The caller only opens it in a browser: Save goes from the page to the daemon to the app. The token is single-use and lapses after an hour or when the same app's page is opened again. | `config [app]` |
 | `RunningApp` | `() → s` | The app/face **currently on the watch's screen** (what's running now — may be a launched watchapp, distinct from the `active` watchface flag in `ListApps`). `ok:<title>\t<uuid>` / `none:` / `notready:`. | `watch running` |
 | `SetAppOrder` | `(s,i) → s` | Move the app/face matching `query` to 0-based locker position `order`; syncs to the watch menu via the locker BlobDB. `ok:`/`notfound:`/`ambiguous:`/`error:`. | `apps order <name\|uuid> <pos>` |
 | `RestoreSystemAppOrder` | `() → s` | Reset the system apps to their default locker order. | `apps order reset` |
@@ -339,6 +339,9 @@ not yet a tracked timestamp.
 | `GetCoreDump` | `(s) → s` | Fetch an existing coredump to the absolute path. `ok:<path>` / `none:` / `notready:` / `error:`. | `support --coredump` (no standalone verb) |
 | `WatchInfoText` | `() → s` | Watch metadata as a human-readable text block (model/fw/board/serial/language/battery/capabilities). `ok:<text>` / `notready:`. Returned **inline** (no file). | `support` (no standalone verb) |
 
+| `VoiceStatus` | `() → s` | Speech-to-text state: `off:`, `ready:<backend>\t<detail>` (backend `command` or `http`; detail = the command's program or the URL) or `unavailable:<reason>` (no libspeex, command not found, no URL). | `voice` / `voice status` |
+| `Transcribe` | `(s) → s` | Transcribe an audio file at the absolute daemon-side path (16-bit WAV, or Ogg/Opus) with the configured backend in `voice.language`. Blocks up to a minute. `ok:<ms>\t<text>` (ms first: the text may hold a tab) / `off:` / `unavailable:` / `error:`. With `voice.backend = http` the audio leaves the machine. | `voice test <file>` |
+
 > `screenshot`/`logs`/`coredump` write to a **daemon-side filesystem path** and return that path —
 > fine for a co-located CLI, a problem for a remote/sandboxed GUI (see gaps). `WatchInfoText` is the
 > exception: it returns content inline.
@@ -374,17 +377,32 @@ ack — `ok:` means "queued", not "done".
 | `ExtDisable` | `(s) → s` | Remove from `extensions.enabled` and stop (files kept). | `ext disable <name>` |
 | `ExtRestart` | `(s) → s` | Restart the extension's process. | `ext restart <name>` |
 | `ExtConfigSchema` | `(s) → s` | The extension's typed config schema (manifest `configSchema`) as a JSON array: `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`, or `notfound:`. | *(GUI)* |
-| `ExtOpenConfig` | `(s) → s` | The `url` config backend (a hosted settings page the GUI opens in a browser). Not implemented — stoandl has no embedded HTTP server — so it never returns a URL: `error:` for a schema-backed extension (use `ExtConfigSchema`), `none:`, or `notfound:`. Present for contract parity. | *(GUI)* |
+| `ExtOpenConfig` | `(s) → s` | The `url` config backend (a hosted settings page the GUI opens in a browser). Not implemented (no extension serves a page; `OpenConfig`'s `ConfigPageServer` only fronts PKJS apps), so it never returns a URL: `error:` for a schema-backed extension (use `ExtConfigSchema`), `none:`, or `notfound:`. Present for contract parity. | *(GUI)* |
 | `ExtGetConfig` | `(s) → s` | The extension's current settings (its `config` file) as a JSON object of string values: `ok:<json>` (or `ok:{}`), or `notfound:`. | *(GUI)* |
 | `ExtSetConfig` | `(s,s) → s` | Merge a JSON object of key→value into the extension's `config` file (atomic, comment- and unchanged-key-preserving), then restart it if running. `ok:`/`notfound:`/`error:`. | *(GUI)* |
+
+### Plugins and app permissions (`stoandl plugins`, `stoandl perms`)
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `PluginList` | `() → as` | Installed plugins while `plugins.enabled` is on (empty while off): `uuid\tkind\tname\tdescription\tsources\tactions`; kind ∈ {builtin, pbw, extension}; sources `category/item` and actions comma-separated. | `plugins [list]` |
+| `PluginRead` | `(sss) → s` | One envelope of `category/item`, preferably from a plugin uuid (empty = any): `ok:<envelope JSON>` / `off:` / `notfound:` / `notready:` / `error:`. Blocks up to 15 s. Acts for the user: callers' permission checks don't apply (logged). | `plugins read <category>/<item> [plugin]` |
+| `PluginInvoke` | `(sss) → s` | Invoke an action of a plugin (uuid or name) with JSON args: `ok:<text>` / `failed:<code> <message>` / `off:` / `notfound:` / `error:`. Acts for the user. | `plugins invoke <plugin> <action> [json]` |
+| `PermList` | `(s) → as` | The permissions an app (name or uuid) asked for or was given: `key\tstatus\tkind\tlabel\tlastUsedMs`; status ∈ {granted, denied, undecided}; kind ∈ {read, write, exfiltrating}. | `perms list <app>` |
+| `PermPending` | `() → as` | Requests waiting for an answer from apps running now: `appUuid\tappName\tkey\tlabel\trequestedAtMs`. | `perms [pending]` |
+| `PermSet` | `(sss) → s` | Answer a permission: `(app, key, allow|deny|reset)` → `ok:` / `notfound:` / `ambiguous:` / `error:`. | `perms allow|deny|reset <app> <key>` |
+
+`OpenConfig` also serves a `.pbw`'s own settings page (`configPage`, plugins on), which needs no running
+watchapp and talks to the app's PKJS and plugin while open; plugin-only apps are listed by `ListApps` with
+type `plugin`.
 
 ### Daemon config (`stoandl.conf` over D-Bus)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
-| `GetConfigSchema` | `() → as` | Schema for the GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder` (type ∈ {toggle, combo, text, int, list}; `options` is a CSV for combos; `apply` ∈ {live, restart}; `min`/`max`/`unit` are set for `int`; `placeholder` for `text`/`list`). Columns 6–11 were **appended** to the original 5-column contract, so an older client that indexes the first five positionally is unaffected. | `stoandl daemon list` |
-| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`). Read from the **live** config store (reloaded on every `SetConfig`/`SetSyncEnabled` write), so a value just written is reflected. | *(GUI)* |
-| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token>`, `notfound:` (unknown key), or `error:` (bad value / IO). Applied **live** for most keys: the write persists to `stoandl.conf`, reloads the config store, and re-reconciles the affected subsystem. Six keys decide startup wiring and cannot be re-applied at runtime (`notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `power.sleep_guard`, `power.sleep_guard_max_ms`, `datalog.enabled`; why each, in [settings-parity.md](settings-parity.md)); the schema marks them `apply=restart` and their `ok:` tail carries “(restart stoandl to apply)”. | `stoandl daemon set` |
+| `GetConfigSchema` | `() → as` | Schema for the GUI-exposed config keys, one row each: `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder` (type ∈ {toggle, combo, text, int, list, secret}; `options` is a CSV for combos; `apply` ∈ {live, restart}; `min`/`max`/`unit` are set for `int`; `placeholder` for `text`/`list`). Columns 6–11 were **appended** to the original 5-column contract, so an older client that indexes the first five positionally is unaffected. | `stoandl daemon list` |
+| `GetConfig` | `() → as` | Current values of those keys, one `key\tvalue` row each (combo value = an options label; toggle = `true`/`false`; a `secret` = `set` or empty, never the value). Read from the **live** config store (reloaded on every `SetConfig`/`SetSyncEnabled` write), so a value just written is reflected. | *(GUI)* |
+| `SetConfig` | `(s,s) → s` | Set one curated key `(key, value)` — value is a toggle's `true`/`false` or a combo's option label; mapped to the raw `stoandl.conf` token and upserted atomically. `ok:<key> = <token>`, `notfound:` (unknown key), or `error:` (bad value / IO). A `secret` key (`voice.api_key`) is stored in the secret store (keyring, else the 0600 `secrets` file, both out of backups), never in `stoandl.conf`; an empty value removes it; `ok:<key> stored|removed`. Applied **live** for most keys: the write persists to `stoandl.conf`, reloads the config store, and re-reconciles the affected subsystem. Six keys decide startup wiring and cannot be re-applied at runtime (`notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `power.sleep_guard`, `power.sleep_guard_max_ms`, `datalog.enabled`; why each, in [settings-parity.md](settings-parity.md)); the schema marks them `apply=restart` and their `ok:` tail carries “(restart stoandl to apply)”. | `stoandl daemon set` |
 
 The curated key set lives in `config/ConfigSchema.kt` (a small, hand-maintained subset, not the full
 config surface). `SetConfig` shares the atomic `key = value` writer + lock (`util/ConfFile.kt`) with the
@@ -519,7 +537,7 @@ level), `BatteryHistory`/`BatteryInsights` (trend + charging/voltage/time-to-emp
 *Locker list with active/system/sideloaded/config flags, launch/install/remove, Clay config.*
 
 **Satisfied by:** `ListApps` (list + **all four flags** `active|system|sideloaded|config` are
-present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` + `WebviewClose` (Clay round-trip).
+present), `LaunchApp`, `RemoveApp`, `SideloadApp`, `OpenConfig` (the daemon serves the page and carries Save back to the app).
 
 | Gap | Kind | Today | Proposed hook | Feasibility |
 |---|---|---|---|---|

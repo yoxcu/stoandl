@@ -37,7 +37,12 @@ private const val MAX_DEAD = 512
  * restarted plasmashell starts again at 1 — so the token carries that server's unique bus name.
  */
 internal sealed interface DesktopNotifRef {
-    data class Fdo(val owner: String?, val id: Long) : DesktopNotifRef
+    data class Fdo(val owner: String?, val id: Long) : DesktopNotifRef {
+        /** Whether a close reported by [server] for [id] is this notification. An unknown server on
+         *  either side can't be told apart, so only the id has to agree then. */
+        fun matches(server: String?, id: Long): Boolean =
+            this.id == id && (owner == null || server == null || owner == server)
+    }
     data class Portal(val backend: String, val appId: String, val id: String) : DesktopNotifRef
     data class Gtk(val appId: String, val id: String) : DesktopNotifRef
 
@@ -75,6 +80,11 @@ internal sealed interface DesktopNotifRef {
         }
     }
 }
+
+/** `NotificationClosed` reasons that mean the notification was dealt with: 2 dismissed by the user,
+ *  3 closed by `CloseNotification` (the app withdrew it, e.g. read elsewhere). 1 (expired) only moves a
+ *  popup into the history, and 4 (undefined) says nothing. */
+internal fun closesOnWatch(reason: Long): Boolean = reason == 2L || reason == 3L
 
 /** What the notification server can do for us beyond the spec, probed once per server instance. */
 internal data class ServerCaps(val invokeAction: Boolean, val invokeReply: Boolean) {
@@ -119,8 +129,19 @@ internal fun inlineReplyLabel(actions: List<Pair<String, String>>): String? =
  * the server reports closed (or an app withdrew) is remembered as dead, so a late reply fails at once
  * instead of reaching whatever reuses its id. Replies are delivered whether or not the screen is locked:
  * answering from the wrist while the phone stays in the pocket is the point.
+ *
+ * Dismissals travel the other way too: when the server reports a notification closed by the user or the
+ * app (`NotificationClosed` reason 2 or 3), or an app withdraws a portal/GTK one, its watch item is
+ * [retract]ed while [syncDismissals] is on. A popup that merely expired (reason 1) has moved to the
+ * history and stays.
  */
-class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
+class DesktopNotifOwner(
+    private val routeTable: NotifRouteTable,
+    /** `notification.sync_dismissals`, read per event. */
+    private val syncDismissals: () -> Boolean = { false },
+    /** Clears a watch item dismissed on the desktop ([WatchNotifier.retract]). */
+    private val retract: suspend (Uuid) -> Unit = {},
+) : NotifOwner {
     override val id = "desktop"
     private val log = KotlinLogging.logger {}
     @Volatile private var conn: DBusConnection? = null
@@ -133,13 +154,33 @@ class DesktopNotifOwner(private val routeTable: NotifRouteTable) : NotifOwner {
     )
 
     /** Monitor events that aren't new notifications: owner changes, closes and withdrawals. */
-    fun onEvent(e: NotificationEvent) {
+    suspend fun onEvent(e: NotificationEvent) {
         when (e) {
             is NotificationEvent.OwnerChanged -> noteOwner(e.owner)
-            is NotificationEvent.Closed -> synchronized(dead) { dead += deadKey(e.owner, e.id.toLong()) }
-            is NotificationEvent.Removed -> synchronized(dead) { dead += removedKey(e.source, e.appId, e.portalId) }
+            is NotificationEvent.Closed -> {
+                synchronized(dead) { dead += deadKey(e.owner, e.id.toLong()) }
+                if (closesOnWatch(e.reason.toLong())) retractMatching { it is DesktopNotifRef.Fdo && it.matches(e.owner, e.id.toLong()) }
+            }
+            is NotificationEvent.Removed -> {
+                synchronized(dead) { dead += removedKey(e.source, e.appId, e.portalId) }
+                retractMatching { ref ->
+                    when (ref) {
+                        is DesktopNotifRef.Portal -> e.source == NotifSource.PORTAL && ref.appId == e.appId && ref.id == e.portalId
+                        is DesktopNotifRef.Gtk -> e.source == NotifSource.GTK && ref.appId == e.appId && ref.id == e.portalId
+                        is DesktopNotifRef.Fdo -> false
+                    }
+                }
+            }
             is NotificationEvent.Posted -> {}
         }
+    }
+
+    /** The watch item for a desktop notification that went away, retracted when dismissals sync. No item
+     *  (never forwarded, already dismissed on the wrist, too old) means nothing to do. */
+    private suspend fun retractMatching(match: (DesktopNotifRef) -> Boolean) {
+        if (!syncDismissals()) return
+        val itemId = routeTable.findItem(id) { token -> DesktopNotifRef.decode(token)?.let(match) == true } ?: return
+        retract(itemId)
     }
 
     /** Record the current server owner; on a change every desktop route is stale, so drop them all. */

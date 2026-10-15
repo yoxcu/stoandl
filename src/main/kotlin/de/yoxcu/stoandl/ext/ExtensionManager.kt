@@ -3,6 +3,7 @@
 package de.yoxcu.stoandl.ext
 
 import de.yoxcu.stoandl.dbus.sendDesktopNotification
+import de.yoxcu.stoandl.imaging.ImageSource
 import de.yoxcu.stoandl.pebble.NotifAction
 import de.yoxcu.stoandl.pebble.NotifOwner
 import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
@@ -16,6 +17,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.disk.pbw.PbwApp
+import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.packets.AppMessage
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
@@ -24,6 +26,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.serialization.json.longOrNull
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
@@ -76,6 +81,12 @@ class ExtensionManager(
     /** Whether stoandl's own extension alerts may be posted (`alerts.enabled` + `alerts.extensions`,
      *  read live). Defaults to always-on so tests and any other caller keep the previous behaviour. */
     private val alertsAllowed: () -> Boolean = { true },
+    /** `notification.images`, read live: whether pictures attached with `notify` reach the watch. */
+    private val notificationImagesOn: () -> Boolean = { false },
+    /** Speech to text for `transcribe` (a VoiceControl result string: `ok:<ms>\t<text>`, `off:`, …). */
+    private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
+    /** Where an extension's plugin (declared in its `initialize` result) is registered and removed. */
+    private val pluginHost: ExtensionPluginHost? = null,
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
 
@@ -134,7 +145,8 @@ class ExtensionManager(
             return StartResult.NEEDS_CONFIG
         }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
-            onState = { state -> onExtensionState?.invoke(name, state) })
+            onState = { state -> onExtensionState?.invoke(name, state) },
+            notificationImagesOn = notificationImagesOn, transcribe = transcribe, pluginHost = pluginHost)
         running[name] = proc
         proc.launch()
         return StartResult.STARTED
@@ -516,6 +528,15 @@ private const val CONNECT_SETTLE_MS = 3_000L
 
 /** One supervised extension child: spawn → handshake → relay, restart-with-backoff on exit. Owns a
  *  child scope so [shutdown] cleanly stops the supervise loop, the inbound collectors, and the child. */
+/** Where extensions' plugins go: libpebble3's PluginRegistry in the daemon. */
+interface ExtensionPluginHost {
+    fun register(plugin: io.rebble.libpebblecommon.plugin.Plugin)
+    fun unregister(pluginUuid: Uuid)
+}
+
+/** How long a host → extension request (readSource, invokeAction) waits for its answer. */
+private const val REQUEST_TIMEOUT_MS = 15_000L
+
 private class ExtensionProcess(
     private val def: ExtensionDef,
     private val watchNotifier: WatchNotifier,
@@ -527,8 +548,17 @@ private class ExtensionProcess(
     // A graceful shutdown() doesn't emit — these are gated on !shuttingDown, which closes the narrow race
     // where the child exits at the same instant shutdown() lands (cancellation alone wouldn't suppress it).
     private val onState: (String) -> Unit = {},
+    private val notificationImagesOn: () -> Boolean = { false },
+    private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
+    private val pluginHost: ExtensionPluginHost? = null,
 ) {
     private val tag = def.name
+    // Host → extension requests (readSource, invokeAction) awaiting their reply, by JSON-RPC id. The
+    // initialize request uses id 0, so these start at 1.
+    private val nextRequestId = java.util.concurrent.atomic.AtomicLong(1)
+    private val pendingRequests = ConcurrentHashMap<Long, CompletableDeferred<JsonElement>>()
+    private val sourceChanges = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
+    @Volatile private var plugin: ExtensionPlugin? = null
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job)
     @Volatile private var writeChannel: Channel<String>? = null
@@ -543,13 +573,21 @@ private class ExtensionProcess(
     fun onWatchConnected() {
         if (!ready) return
         enqueue(buildJsonObject {
-            put("jsonrpc", "2.0"); put("method", "onWatchConnected"); put("params", buildJsonObject {})
+            put("jsonrpc", "2.0"); put("method", "onWatchConnected")
+            // Whether a picture attached to `notify` will show on this watch, so the extension can pick its
+            // own fallback (a preview watchapp) otherwise. Re-sent on every connect: a different watch may
+            // have connected.
+            put("params", buildJsonObject {
+                put("notificationImages", notificationImagesOn() &&
+                    connectedDevice()?.watchInfo?.capabilities?.contains(ProtocolCapsFlag.SupportsNotificationImages) == true)
+            })
         })
     }
 
     fun shutdown() {
         shuttingDown = true      // suppress the unsolicited onState emits — this stop is deliberate
         ready = false
+        pluginGone()
         writeChannel = null      // stop new enqueues before tearing down
         val p = proc
         job.cancel()             // cancels the supervise loop + writer/reader/collector coroutines
@@ -575,6 +613,7 @@ private class ExtensionProcess(
                     log.warn(e) { "[$tag] extension crashed: ${e.message}" }
                 }
                 ready = false
+                pluginGone()
                 if (!isActive) break
                 val uptime = System.currentTimeMillis() - startedAt
                 fastFailures = if (uptime >= STABLE_UPTIME_MS) 0 else fastFailures + 1
@@ -652,7 +691,17 @@ private class ExtensionProcess(
         val id = obj["id"]
         val params = obj["params"]?.jsonObject
         when {
+            method == null && (obj.containsKey("result") || obj.containsKey("error")) &&
+                id?.jsonPrimitive?.longOrNull?.let { pendingRequests.remove(it) }?.also { d ->
+                    obj["result"]?.let { d.complete(it) }
+                        ?: d.completeExceptionally(IllegalStateException(
+                            obj["error"]?.jsonObject?.str("message") ?: "the extension answered with an error"))
+                } != null -> {}
             method == null && obj.containsKey("result") -> handleResult(obj)
+            method == "sourceChanged" -> {
+                val c = params?.str("category"); val i = params?.str("item")
+                if (c != null && i != null) sourceChanges.tryEmit(c to i)
+            }
             method == "notify" -> handleNotify(id, params)
             method == "closeNotification" -> handleClose(params)
             method == "registerApp" -> handleRegisterApp(id, params)
@@ -660,14 +709,41 @@ private class ExtensionProcess(
             method == "launchApp" -> handleAppRunState(id, params, launch = true)
             method == "stopApp" -> handleAppRunState(id, params, launch = false)
             method == "installPbw" -> handleInstallPbw(id, params)
+            // Off the read loop: a transcription takes seconds.
+            method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
             method == "log" -> log.info { "[$tag] ${params?.str("message") ?: ""}" }
             method == "initialize" -> {}
             else -> log.debug { "[$tag] unhandled message: method=$method" }
         }
     }
 
+    /** Send a host → extension request and wait for its result (throws on an error reply or no answer). */
+    private suspend fun request(method: String, params: JsonObject): JsonElement {
+        val id = nextRequestId.getAndIncrement()
+        val reply = CompletableDeferred<JsonElement>()
+        pendingRequests[id] = reply
+        enqueue(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("method", method); put("params", params) })
+        return try {
+            withTimeoutOrNull(REQUEST_TIMEOUT_MS) { reply.await() } ?: error("$tag didn't answer $method within ${REQUEST_TIMEOUT_MS / 1000} s")
+        } finally {
+            pendingRequests.remove(id)
+        }
+    }
+
+    private fun pluginGone() {
+        pendingRequests.values.forEach { it.completeExceptionally(IllegalStateException("$tag stopped")) }
+        pendingRequests.clear()
+        plugin?.let { p -> pluginHost?.unregister(p.pluginUuid); plugin = null; log.info { "[$tag] plugin '${p.name}' removed" } }
+    }
+
     private fun handleResult(obj: JsonObject) {
         val manifest = obj["result"]?.jsonObject ?: return
+        ExtensionPluginManifest.parse(manifest["plugin"])?.let { m ->
+            val p = ExtensionPlugin(tag, m, manifest.str("name") ?: tag, ::request, sourceChanges)
+            plugin = p
+            pluginHost?.register(p)
+            log.info { "[$tag] serves plugin '${p.name}' (${p.pluginUuid}): sources ${p.sources.flatMap { s -> s.items.map { "${s.category}/$it" } }}, actions ${p.actions.map { it.name }}" }
+        }
         val caps = manifest["capabilities"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
         ready = true
         if (!shuttingDown) onState("ready")
@@ -700,14 +776,28 @@ private class ExtensionProcess(
             colorName = params.str("color"),
             vibeName = params.str("vibe"),
             itemId = requestedId,
+            // A picture: a data: URI (base64), a file: URI or an absolute path.
+            image = params.str("image")?.let(ImageSource::parse),
         )
         val itemId = watchNotifier.push(req, def.name, extToken)
         if (id != null) reply(id) { put("itemId", itemId?.toString()) }
     }
 
+    /** `transcribe {path, language?}` → `{text}`, or an error `off` / `unavailable: …` / the failure. The
+     *  daemon's speech-to-text (voice.*): the extension needs no engine, codec or egress of its own. */
+    private suspend fun handleTranscribe(id: JsonElement?, params: JsonObject?) {
+        val path = params?.str("path") ?: run { replyError(id, "transcribe: missing path"); return }
+        val result = transcribe(path, params.str("language"))
+        val colon = result.indexOf(':')
+        val kind = result.substring(0, colon.coerceAtLeast(0))
+        val body = result.substring(colon + 1)
+        if (kind == "ok") reply(id) { put("text", body.substringAfter('\t')) }
+        else replyError(id, if (kind == "off") "off" else "$kind: $body")
+    }
+
     private suspend fun handleClose(params: JsonObject?) {
         val itemId = params?.str("itemId")?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: return
-        watchNotifier.close(itemId)
+        watchNotifier.retract(itemId)
     }
 
     private fun connectedDevice(): ConnectedPebbleDevice? =

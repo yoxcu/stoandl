@@ -28,6 +28,16 @@ notification.sync_to_watch = false
 # notification is dropped host-side (calls and firmware prompts use their own paths and still get through).
 # `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
 notification.forward = true
+# Pictures a notification carries -- a photo from an extension (Matrix), a screenshot a desktop
+# notification links to, a web notification's image on Plasma -- are shown on watches that can
+# (Pebble Time 2 / Round 2, firmware 4.35+). Sender avatars are never sent. Local only, no egress; the
+# pictures are kept (at most 32) under ~/.cache/stoandl/images/notifications and deleted with the
+# notification, or all at once when this is switched off.
+notification.images = true
+# Clear a notification from the watch when it's dismissed elsewhere: closed in the desktop's or phone's
+# notification list, read in the app that posted it (when the app withdraws it), or closed by an
+# extension. A popup that only times out into the history stays on the watch. Local only, no egress.
+notification.sync_dismissals = true
 # Minutes a reconnecting watch looks back for notifications it hasn't received — the ones posted while
 # it was disconnected (a phone that drops the Bluetooth link on every suspend and wakes for a push
 # message, a watch out of range). Never older than the daemon's start or the watch's pairing; what the
@@ -59,6 +69,9 @@ alerts.pairing = true
 alerts.bluetooth = true
 # An installed extension requires configuration before it can start.
 alerts.extensions = true
+# An app asks for a permission (plugins.enabled): a prompt with Allow / Deny on the watch and the desktop.
+# Off: answer with `stoandl perms` or in the GUI; until answered, the app is refused.
+alerts.permissions = true
 
 # Telephony/dialer apps, by app name or desktop-entry id (exact, case-insensitive). While a call is
 # up their notifications are held back from the watch (the native call screen replaces them); their
@@ -134,6 +147,15 @@ weather.reverse_geocode = false
 # locations shown in the pin's detail view. Replicates the original Core app. On by default whenever
 # weather is enabled; set to false to keep the Weather app but leave the timeline clear.
 weather.pins = true
+# Weather for classic watchfaces. Many 2014–2016 watchfaces fetch weather from their phone-side
+# JavaScript via Yahoo's YQL API (shut down in 2019) or OpenWeatherMap 2.5 with a key that no longer
+# works, and show "--". When on, stoandl answers those requests itself from Open-Meteo, as the official
+# app does: Yahoo always; OpenWeatherMap only when OWM rejects the app's own key (401). A place name the
+# watchface sends is looked up with Open-Meteo's geocoding; a configured location of that name is used
+# without a lookup. Coordinates are named by weather.reverse_geocode (Nominatim) if on, else by a
+# weather.locations entry within 10 km. Off by default: it sends the coordinates or place name a
+# watchface asks about to Open-Meteo. Most such watchfaces also need geolocation.enabled.
+weather.intercept_pkjs = false
 
 # Calendar → watch timeline. Syncs upcoming events (yesterday … +7 days) as native calendar pins.
 # Disabled until you set at least one source below. Local .ics and discovery make no web requests;
@@ -174,6 +196,14 @@ calendar.caldav =
 
 # Minutes between calendar refreshes (also re-reads on local .ics change and `stoandl calendar sync`).
 calendar.sync_interval = 30
+
+# Calendar reminders: the watch buzzes before each event (the event's own reminders). false = pins only.
+calendar.reminders = true
+# Events you declined still become pins.
+calendar.show_declined = false
+# Vibration for every calendar reminder, by name: Standard, Pulses, Double, Triple, Bloom, Pips, Ole, SOS,
+# OhhhOh, Five, Two, None (the watch's display names work too). Empty = the watch's default.
+calendar.reminder_vibe =
 
 # ── Music control ────────────────────────────────────────────────────────────────────────────────
 # Bridge desktop media players (MPRIS) to the watch's native Music app: now-playing title/artist/
@@ -387,3 +417,39 @@ dnd.sync = off
 # (set homeserver/user_id/password_file/recovery_key_file; enable Secure Backup in NeoChat first), then:
 #     stoandl ext restart matrix  &&  stoandl notif mute neochat   # dedup NeoChat's bridged copy
 # See examples/extensions/matrix/README.md.
+
+# ── Voice (speech to text) ──────────────────────────────────────────────────────────────────────────
+# Turns the watch's dictation (voice replies to notifications, watchapps' dictation) and extensions' voice
+# notes (Matrix) into text. off = the watch says "Enable voice in the settings page". command = a local
+# speech engine (no egress): voice.command prints the transcript of {wav} (16 kHz mono WAV) in language
+# {lang}. http = an OpenAI-compatible transcription service (egress: the audio leaves this machine).
+# The watch's audio is decoded with libspeex (Alpine `speex`, Debian `libspeex1`); voice notes for a local
+# engine with libopus. See docs/voice.md for engines and models.
+voice.backend = off
+# Example (docs/voice.md): NVIDIA Parakeet v3 via whisper.cpp's parakeet-cli (Alpine community `whisper.cpp`,
+# Arch `whisper-cpp`); it detects the language itself and runs in a few seconds on a phone:
+#   voice.command = parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 --no-prints -f {wav}
+voice.command =
+# Example: a whisper.cpp whisper-server on this machine or the LAN, or a hosted service.
+#   voice.url = http://127.0.0.1:8080/v1/audio/transcriptions
+voice.url =
+voice.model =
+# The API key for voice.url is not stored here: set it with `stoandl daemon set voice.api_key <key>` or in
+# the GUI (kept in the keyring, or a private file next to this one).
+# The language you speak (de, en, …) or auto.
+voice.language = auto
+# Keep each dictation's audio in ~/.cache/stoandl/voice (debugging).
+voice.save_audio = false
+
+# ── Plugins ─────────────────────────────────────────────────────────────────────────────────────────
+# Phone-side data sources and actions watchfaces and watchapps use (the official app's plugin system):
+# built-in ones (weather, music, calendar, phone state, watch settings), the plugin a .pbw ships, and
+# extensions that serve sources. Turning this on also turns on app permissions for every watchapp's
+# PKJS: apps ask (on the watch, the desktop and in the GUI) before reading your data or sending it off
+# this machine. Off by default: no plugin code runs and nothing is fetched. See docs/plugins.md.
+plugins.enabled = false
+# When an app must ask before using a permission: ask_if_exfiltrating (only when the data could leave
+# this machine), always_ask, or never_ask (everything granted; explicit denials stand).
+plugins.permission_policy = ask_if_exfiltrating
+# Apps made before permissions keep internet access and what they declared, unless this is on.
+plugins.ask_legacy_apps = false

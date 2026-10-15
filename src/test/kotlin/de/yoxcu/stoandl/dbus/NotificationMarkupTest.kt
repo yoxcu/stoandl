@@ -85,3 +85,20 @@ class NotificationMarkupTest {
         assertEquals("", markupToPlainText("<b></b>"))
     }
 }
+
+class NotificationImageRefTest {
+    @kotlin.test.Test
+    fun `the first img src of a body`() {
+        kotlin.test.assertEquals("file:///tmp/x/image.png", firstImageSrc("hi <img src=\"file:///tmp/x/image.png\" alt=\"pic\"/>"))
+        kotlin.test.assertEquals("file:///a&b.png", firstImageSrc("<IMG alt='x' SRC='file:///a&amp;b.png'>"))
+        kotlin.test.assertNull(firstImageSrc("no image, a < b"))
+    }
+
+    @kotlin.test.Test
+    fun `an image file among x-kde-urls is an attachment`() {
+        val hints = mapOf("x-kde-urls" to org.freedesktop.dbus.types.Variant(arrayOf("file:///home/u/notes.txt", "file:///home/u/Screenshot_1.png"), "as"))
+        kotlin.test.assertEquals("file:///home/u/Screenshot_1.png", imageAttachment(hints))
+        kotlin.test.assertNull(imageAttachment(mapOf("x-kde-urls" to org.freedesktop.dbus.types.Variant(arrayOf("https://x/y.png"), "as"))))
+        kotlin.test.assertNull(imageAttachment(emptyMap<String, Any>()))
+    }
+}

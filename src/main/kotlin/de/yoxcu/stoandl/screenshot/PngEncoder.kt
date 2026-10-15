@@ -7,10 +7,10 @@ import java.util.zip.Deflater
 /**
  * A tiny, dependency-free PNG encoder for opaque ARGB images.
  *
- * Watch screenshots come out of libpebble3 as a row-major `IntArray` of `0xAARRGGBB` pixels. We deliberately
- * avoid `java.awt`/`javax.imageio`: the daemon's real home is musl/postmarketOS, where a headless JRE may not
- * ship the AWT native libs at all (the same portability reason btleplug was dropped). `java.util.zip` is
- * pure-JDK and always present, so we hand-roll the (very small) PNG container around a `Deflater` stream.
+ * Watch screenshots come out of libpebble3 as a row-major `IntArray` of `0xAARRGGBB` pixels. Writing needs
+ * no `java.desktop` at all: `java.util.zip` is pure-JDK and always present, so we hand-roll the (very small)
+ * PNG container around a `Deflater` stream. (Reading images goes through javax.imageio, which works on the
+ * headless JREs too, see [de.yoxcu.stoandl.imaging.ImageDecoder]; only JPEG needs the full JRE's libjavajpeg.)
  *
  * Output is 8-bit truecolour (colour type 2, no alpha — watch screens are opaque) with filter type 0 on every
  * scanline. Not optimised for size; screenshots are tiny (≤ 200×228), so it doesn't matter.

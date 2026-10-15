@@ -33,17 +33,16 @@ comparison with the other companion apps, and what's not yet implemented.
 ## Desktop / mobile GUI (optional)
 
 The daemon is fully headless — but there's also an optional **GUI** ([`gui/`](gui/), a separate repo:
-[yoxcu/stoandl-gui](https://github.com/yoxcu/stoandl-gui)) in two front-ends that install side by side:
-**[Kirigami](https://develop.kde.org/frameworks/kirigami/)** (Qt 6 / QML, for Plasma) and **GTK 4 /
-libadwaita** (for GNOME and Phosh). Both are pure D-Bus clients of the `de.yoxcu.stoandl.Control`
-interface — no code shared with the daemon — and **convergent**: the same app runs on a desktop and on a
-Linux phone. Five screens — **Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates,
+[yoxcu/stoandl-gui](https://github.com/yoxcu/stoandl-gui)) built with
+**[Kirigami](https://develop.kde.org/frameworks/kirigami/)** (Qt 6 / QML). It is a pure D-Bus client of
+the `de.yoxcu.stoandl.Control` interface — no code shared with the daemon — and **convergent**: the same
+app runs on a desktop and on a Linux phone. Five screens — **Watch, Health, Apps, Alerts, Settings** — cover pairing, firmware updates,
 the locker + extensions, health charts, battery insights, notification rules, calendars and the full
 `stoandl.conf`.
 
 **Screenshots, build & install:** see the GUI repo's README — it has
-[screenshots](https://github.com/yoxcu/stoandl-gui#screenshots), the native Qt 6 and GTK
-[builds](https://github.com/yoxcu/stoandl-gui#build), and **Flatpak** / postmarketOS `.apk`
+[screenshots](https://github.com/yoxcu/stoandl-gui#screenshots), the native Qt 6
+[build](https://github.com/yoxcu/stoandl-gui#build), and **Flatpak** / postmarketOS `.apk`
 [releases](https://github.com/yoxcu/stoandl-gui/releases).
 
 ## Compatibility

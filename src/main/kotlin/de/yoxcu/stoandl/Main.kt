@@ -2,6 +2,7 @@ package de.yoxcu.stoandl
 
 import co.touchlab.kermit.Logger
 import de.yoxcu.stoandl.battery.HeartbeatLayouts
+import de.yoxcu.stoandl.imaging.ImageDecoder
 import de.yoxcu.stoandl.dbus.NotificationEvent
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
@@ -38,12 +39,17 @@ import java.time.format.DateTimeFormatter
 
 private val log = KotlinLogging.logger {}
 
-private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall")
+/** How long the CLI waits for the daemon's answer (the daemon bounds each long call itself). */
+private const val CTL_REPLY_TIMEOUT_MS = 120_000L
+
+private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
 
 fun main(args: Array<String>) {
+    // Image decoding (javax.imageio) must never reach for a display, even in a desktop session.
+    System.setProperty("java.awt.headless", "true")
     if (args.isNotEmpty() && args[0] in HELP_FLAGS) {
         printUsage()
         return
@@ -65,6 +71,7 @@ fun main(args: Array<String>) {
 
     Logger.setLogWriters(KermitSlf4jWriter())
     log.info { "stoandl ${BuildInfo.version} starting" }
+    log.info { ImageDecoder.describe() }
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val notificationBus = MutableSharedFlow<NotificationEvent>(extraBufferCapacity = 64)
@@ -132,6 +139,9 @@ private fun printUsage() {
     row("firmware", "sideload check update status")
     row("language", "list install sideload status")
     row("screenshot", "[path]")
+    row("voice", "status · test <file>")
+    row("plugins", "list · read · invoke")
+    row("perms", "pending · list · allow · deny · reset")
     row("logs", "[path]")
     row("support", "[out.tar.gz]")
     row("reset", "recovery · factory")
@@ -167,6 +177,9 @@ private fun printVersion() {
 }
 
 private fun ctl(args: Array<String>) {
+    // dbus-java waits 20 s for a reply by default; Transcribe (a slow local engine) and the plugin reads
+    // can take longer, and the daemon bounds each of them itself.
+    org.freedesktop.dbus.messages.MethodCall.setDefaultTimeout(CTL_REPLY_TIMEOUT_MS)
     if (args.isEmpty()) {
         printUsage()
         return
@@ -202,7 +215,10 @@ private fun ctl(args: Array<String>) {
                     System.exit(1)
                     return
                 }
-                runConfigProxy(configUrl) { data -> control.WebviewClose(data) }
+                // The daemon serves the page and hands Save back to the app; we only open it.
+                println("Config URL: $configUrl")
+                try { ProcessBuilder("xdg-open", configUrl).start() } catch (_: Exception) {}
+                println("Press Save on the page to send the settings to the watch.")
             }
         }
         "daemon" -> ctlDaemon(args.drop(1))
@@ -330,6 +346,9 @@ private fun ctl(args: Array<String>) {
                 }
             }
         }
+        "voice" -> ctlVoice(args.drop(1))
+        "plugins" -> ctlPlugins(args.drop(1))
+        "perms" -> ctlPerms(args.drop(1))
         "screenshot" -> {
             // Resolve the target against THIS process's cwd and send an absolute path: the daemon writes
             // the file, and its cwd ($HOME) differs from the caller's. Default to a timestamped name;
@@ -2530,86 +2549,95 @@ private inline fun withControl(block: (StoandlControl) -> Unit) {
     }
 }
 
-private fun runConfigProxy(configUrl: String, onClose: (String) -> Unit) {
-    val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress(0), 0)
-    val port = (server.address as java.net.InetSocketAddress).port
-    val latch = java.util.concurrent.CountDownLatch(1)
-    var closedData = ""
+// ---- voice group (speech to text) --------------------------------------------------------------------
 
-    // Save capture. The config page's "close" target is rewritten (below) to point here, so clicking
-    // Save arrives as an ordinary HTTP GET with the settings JSON in ?d= — no pebblejs:// custom
-    // scheme to intercept. Clay percent-encodes the JSON (encodeURIComponent), which URLDecoder reverses.
-    server.createContext("/pebblejs-close") { exchange ->
-        if (exchange.requestMethod != "GET") {
-            exchange.sendResponseHeaders(405, -1); exchange.responseBody.close(); return@createContext
-        }
-        val q = exchange.requestURI.rawQuery ?: ""
-        closedData = if (q.startsWith("d=")) java.net.URLDecoder.decode(q.substring(2), "UTF-8") else ""
-        val body = ("<!doctype html><meta charset=\"utf-8\"><title>stoandl</title><body " +
-            "style=\"font-family:sans-serif;padding:2em\">Settings saved — you can close this tab.</body>")
-            .toByteArray(Charsets.UTF_8)
-        exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
-        exchange.sendResponseHeaders(200, body.size.toLong())
-        exchange.responseBody.write(body)
-        exchange.responseBody.close()
-        latch.countDown()
-    }
-
-    server.createContext("/") { exchange ->
-        if (exchange.requestMethod != "GET") {
-            exchange.sendResponseHeaders(405, -1); exchange.responseBody.close(); return@createContext
-        }
-        val content = try {
-            if (configUrl.startsWith("data:")) {
-                // Clay encodes the entire config page as a data URI
-                val commaIdx = configUrl.indexOf(',')
-                require(commaIdx >= 0) { "malformed data URI" }
-                val meta = configUrl.substring(5, commaIdx)
-                val encoded = configUrl.substring(commaIdx + 1)
-                if (meta.contains("base64", ignoreCase = true))
-                    java.util.Base64.getDecoder().decode(encoded).toString(Charsets.UTF_8)
-                else
-                    java.net.URLDecoder.decode(encoded, "UTF-8")
-            } else {
-                java.net.URI(configUrl).toURL().readText()
+/** `stoandl voice [status]` shows the speech-to-text backend; `stoandl voice test <file>` transcribes a WAV
+ *  or Ogg/Opus file with it (the daemon reads the file, so the path is made absolute here). */
+private fun ctlVoice(rest: List<String>) {
+    when (rest.firstOrNull() ?: "status") {
+        "status" -> withControl { control ->
+            val (kind, body) = splitStatus(control.VoiceStatus())
+            when (kind) {
+                "off" -> println("Voice: off (set voice.backend: stoandl daemon set voice.backend command)")
+                "ready" -> println("Voice: ready — ${body.replace('\t', ' ')}")
+                else -> { println("Voice: unavailable — $body"); System.exit(1) }
             }
-        } catch (e: Exception) {
-            System.err.println("Failed to fetch config page: ${e.message}")
-            exchange.sendResponseHeaders(502, -1); exchange.responseBody.close(); return@createContext
         }
-        // Redirect the config page's "close" target away from the pebblejs://close# custom scheme
-        // (which browsers refuse as an unknown protocol — the page can't post settings back) to a real
-        // localhost URL on this proxy. Clay builds the return URL as `returnTo + encodeURIComponent(json)`,
-        // so turning the trailing "#" into "?d=" lands the settings JSON in the query string (which the
-        // browser sends to the server) instead of the fragment (which it doesn't). Save then becomes a
-        // plain HTTP navigation — no Location/Navigation interception, works in every browser.
-        var page = content.replace("pebblejs://close#", "http://localhost:$port/pebblejs-close?d=")
-        // http(s) config pages need a <base> so their relative resources resolve; data: pages inline everything.
-        if (!configUrl.startsWith("data:")) {
-            val baseTag = "<base href=\"${configUrl.substringBeforeLast('/') + '/'}\">"
-            val headMatch = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(page)
-            page = if (headMatch != null)
-                page.substring(0, headMatch.range.last + 1) + "\n$baseTag\n" + page.substring(headMatch.range.last + 1)
-            else baseTag + page
+        "test" -> {
+            val file = rest.getOrNull(1)?.let { File(it).absoluteFile }
+                ?: run { System.err.println("Usage: stoandl voice test <file.wav|file.ogg>"); System.exit(2); return }
+            withControl { control ->
+                println("Transcribing ${file.name}…")
+                val (kind, body) = splitStatus(try { control.Transcribe(file.path) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+                when (kind) {
+                    "ok" -> { val (ms, text) = body.split('\t', limit = 2).let { it[0] to it.getOrElse(1) { "" } }; println(text.ifEmpty { "(no speech)" }); println("($ms ms)") }
+                    "off" -> { System.err.println("Voice is off (voice.backend)"); System.exit(1) }
+                    else -> { System.err.println("${kind.replaceFirstChar { it.uppercase() }}: $body"); System.exit(1) }
+                }
+            }
         }
-        val bytes = page.toByteArray(Charsets.UTF_8)
-        exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
-        exchange.sendResponseHeaders(200, bytes.size.toLong())
-        exchange.responseBody.write(bytes)
-        exchange.responseBody.close()
+        else -> { System.err.println("Usage: stoandl voice [status | test <file>]"); System.exit(2) }
     }
+}
 
-    server.executor = null
-    server.start()
+// ---- plugins and app permissions ---------------------------------------------------------------------
 
-    val localUrl = "http://localhost:$port/"
-    println("Config URL: $localUrl")
-    try {
-        ProcessBuilder("xdg-open", localUrl).start()
-    } catch (_: Exception) {}
-    println("Waiting for settings to be saved...")
-    latch.await()
-    server.stop(0)
-    onClose(closedData)
-    println("Settings saved.")
+private fun printStatusOrExit(resp: String) {
+    val (kind, body) = splitStatus(resp)
+    if (kind == "ok") println(body)
+    else { System.err.println("${kind.replaceFirstChar { it.uppercase() }}: $body"); System.exit(1) }
+}
+
+/** `stoandl plugins [list]`, `plugins read <category>/<item> [plugin]`, `plugins invoke <plugin> <action> [json]`. */
+private fun ctlPlugins(rest: List<String>) {
+    when (rest.firstOrNull() ?: "list") {
+        "list" -> withControl { control ->
+            val rows = control.PluginList().map { it.split('\t') }
+            if (rows.isEmpty()) { println("No plugins (plugins.enabled is off, or none installed)"); return@withControl }
+            rows.forEach { r ->
+                println("${r.getOrElse(2) { "?" }}  [${r.getOrElse(1) { "" }}]  ${r.getOrElse(0) { "" }}")
+                r.getOrNull(3)?.takeIf { it.isNotBlank() }?.let { println("    $it") }
+                r.getOrNull(4)?.takeIf { it.isNotBlank() }?.let { println("    sources: ${it.replace(",", ", ")}") }
+                r.getOrNull(5)?.takeIf { it.isNotBlank() }?.let { println("    actions: ${it.replace(",", ", ")}") }
+            }
+        }
+        "read" -> {
+            val what = rest.getOrNull(1)?.takeIf { '/' in it }
+                ?: run { System.err.println("Usage: stoandl plugins read <category>/<item> [plugin-uuid]"); System.exit(2); return }
+            withControl { control ->
+                printStatusOrExit(control.PluginRead(what.substringBefore('/'), what.substringAfter('/'), rest.getOrElse(2) { "" }))
+            }
+        }
+        "invoke" -> {
+            if (rest.size < 3) { System.err.println("Usage: stoandl plugins invoke <plugin> <action> [json-args]"); System.exit(2); return }
+            withControl { control -> printStatusOrExit(control.PluginInvoke(rest[1], rest[2], rest.getOrElse(3) { "" })) }
+        }
+        else -> { System.err.println("Usage: stoandl plugins [list | read <category>/<item> [plugin] | invoke <plugin> <action> [json]]"); System.exit(2) }
+    }
+}
+
+/** `stoandl perms [pending]`, `perms list <app>`, `perms allow|deny|reset <app> <permission>`. */
+private fun ctlPerms(rest: List<String>) {
+    when (val sub = rest.firstOrNull() ?: "pending") {
+        "pending" -> withControl { control ->
+            val rows = control.PermPending().map { it.split('\t') }
+            if (rows.isEmpty()) println("No permission requests waiting")
+            rows.forEach { r -> println("${r.getOrElse(1) { "?" }}: ${r.getOrElse(3) { "" }}  (${r.getOrElse(2) { "" }})") }
+        }
+        "list" -> {
+            val app = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl perms list <app>"); System.exit(2); return }
+            withControl { control ->
+                val rows = control.PermList(app).map { it.split('\t') }
+                if (rows.isEmpty()) println("No permissions recorded for '$app' (or no such app)")
+                rows.forEach { r -> println("%-10s %-13s %s  (%s)".format(r.getOrElse(1) { "" }, r.getOrElse(2) { "" }, r.getOrElse(3) { "" }, r.getOrElse(0) { "" })) }
+            }
+        }
+        "allow", "deny", "reset" -> {
+            if (rest.size < 3) { System.err.println("Usage: stoandl perms $sub <app> <permission>"); System.exit(2); return }
+            withControl { control -> printStatusOrExit(control.PermSet(rest[1], rest[2], sub)) }
+        }
+        else -> { System.err.println("Usage: stoandl perms [pending | list <app> | allow|deny|reset <app> <permission>]"); System.exit(2) }
+    }
 }

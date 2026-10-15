@@ -37,7 +37,7 @@ stoandl apps install app.pbw              # sideload a .pbw onto the connected w
 Most behaviour needs a watch and a session bus and is tested by hand from [TESTING.md](TESTING.md). The unit
 tests cover pure logic whose mistakes are silent: the settings schema against the config parser, the
 analytics-heartbeat layouts, firmware release selection and the downgrade handoff, iCal all-day dates,
-watch-pref ranges, the dialer-app match, the vCard folder walk, the notification monitor's reply matching, the notification layout (app-name placement, the per-app override file, body markup to plain text), and the Quiet Time schedule rule (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS and notification catch-up
+watch-pref ranges, the dialer-app match, the vCard folder walk, the notification monitor's reply matching, the notification layout (app-name placement, the per-app override file, body markup to plain text), the call monitor's signal order, the Quiet Time schedule rule, the config-page server's `data:` decoding, close rewrite and Save round trip and its plugin-page bridge, the process runner's deadline, desktop→watch dismissal and the route table, the libpebble3 config projection, MPRIS seek, the image pipeline (decode, EXIF, crop/scale, the notification picture store, album art), voice (Speex frames → decoder → backend → watch result, WAV, Ogg demux), extension-served plugins, plugin secrets, phone state and permission wording, the OAuth connectors and the PKJS weather interceptors (daemon, `src/test`); PPoG, the Koin graph, PKJS on GraalJS and notification catch-up
 (fork jvmTest).
 
 ## Architecture
@@ -78,7 +78,7 @@ Pebble watch over BLE/PPoG
 
 The dependency is a patched fork of upstream [`coredevices/libpebble3`](https://github.com/coredevices/libpebble3) (`yoxcu/libpebble3`), included as a git submodule at `libs/libpebble3`. It tracks `coredevices/master` directly and is wired via Gradle composite build in `settings.gradle.kts` — no Maven publish needed. After cloning, run `git submodule update --init --recursive`.
 
-The submodule follows fork branch **`stoandl-bump`**: the fork rebased as a linear history onto upstream `e6b5138e`, plus the deep-sleep commits. It replaces the old branch `stoandl` (base `e4180ffc`) once it passes the hardware pass in TESTING §5.33; then `.gitmodules` goes back to `stoandl`. Push the fork branch, and the `gui` submodule's branch, **before** pushing a stoandl commit that records them: CI builds every push to `main` and every tag (`git submodule update --init --depth 1 libs/libpebble3`), and the APKBUILD downloads the recorded commit's archive from `yoxcu/libpebble3`, so a gitlink GitHub doesn't have yet breaks the build. [FIRMWARE-GAPS.md §3](FIRMWARE-GAPS.md) is the runbook for the next bump.
+The submodule follows fork branch **`stoandl-bump`**: the fork rebased as a linear history onto upstream `ec2156cc` (2026-10-15; the plugin and permission series), plus the deep-sleep commits. The previous base `e6b5138e` passed TESTING §5.33 by daily use; its tip is tagged `stoandl-bump-e6b5138e` as the bisect baseline. The branch replaces the old `stoandl` (base `e4180ffc`) once the re-bump's hardware rows (TESTING §5.44) pass; then `.gitmodules` goes back to `stoandl`. Push the fork branch, and the `gui` submodule's branch, **before** pushing a stoandl commit that records them: CI builds every push to `main` and every tag (`git submodule update --init --depth 1 libs/libpebble3`), and the APKBUILD downloads the recorded commit's archive from `yoxcu/libpebble3`, so a gitlink GitHub doesn't have yet breaks the build. [FIRMWARE-GAPS.md §3](FIRMWARE-GAPS.md) is the runbook for the next bump.
 
 The fork adds: a pure-BlueZ D-Bus BLE backend + GATT server, a Bluetooth Classic (RFCOMM/SPP) transport for classic-era watches, PPoG handshake/reconnect fixes for Linux BLE, BlueZ pairing/bonding, and a GraalJS PKJS runtime for watchapp companion JS. It builds the JVM target. The Android-SDK-only modules sit behind one gate in its `settings.gradle.kts`: an SDK (`ANDROID_HOME` or `sdk.dir`), a Gradle at or above AGP's minimum (9.5 for AGP 9.3.1), and a standalone build, so they are never on inside stoandl's composite. The iOS targets are kept (they're load-bearing for the Room codegen).
 
@@ -111,11 +111,11 @@ The service unit sets `DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so it finds th
 
 ## GUI / D-Bus contract
 
-The daemon's public control surface — for the CLI and the GUI (the `gui/` submodule, which ships a
-Kirigami and a GTK front-end) — is the single D-Bus interface `de.yoxcu.stoandl.Control` (session bus,
+The daemon's public control surface — for the CLI and the GUI (the `gui/` submodule, a Kirigami
+front-end) — is the single D-Bus interface `de.yoxcu.stoandl.Control` (session bus,
 name `de.yoxcu.stoandl`, path `/de/yoxcu/stoandl`), defined in `dbus/StoandlControl.kt` and implemented
-by `StoandlControlImpl` in `PebbleIntegration.kt`. The **methods are the source of truth**; seven
-signals (`WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `CalendarsChanged`,
+by `StoandlControlImpl` in `PebbleIntegration.kt`. The **methods are the source of truth**; nine
+signals (`WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `CalendarsChanged`, `PluginsChanged`, `PermissionRequestsChanged`,
 `ExtensionsChanged`, `ExtensionStateChanged`) are a reactive layer on top, and there are no properties.
 The daemon isn't D-Bus-activated, so a client can miss a signal: it re-reads the method when the name
 appears and keeps a slow fallback poll. Long-running ops (pair, firmware flash, language install)

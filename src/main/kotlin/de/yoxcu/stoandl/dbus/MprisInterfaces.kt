@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.dbus
 
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.interfaces.DBusInterface
+import org.freedesktop.dbus.messages.DBusSignal
 
 // MPRIS (Media Player Remote Interfacing Specification) lives on the session bus. Each media player
 // owns a well-known name `org.mpris.MediaPlayer2.<suffix>` and exports its objects at a single shared
@@ -27,4 +28,11 @@ interface MprisPlayer : DBusInterface {
     fun PlayPause()
     fun Next()
     fun Previous()
+    /** Seek by [offset] microseconds, relative to the current position. */
+    fun Seek(offset: Long)
+
+    /** The position jumped (a seek, or a restart of the track); [position] in microseconds. */
+    class Seeked(path: String, position: Long) : DBusSignal(path, position) {
+        val position: Long = position
+    }
 }

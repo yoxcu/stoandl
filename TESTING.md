@@ -621,7 +621,7 @@ A bundle for the *wrong* board is the safe way to exercise the safety-check path
 | 5.11f | Latest skips backports ⚠️ UNVERIFIED | `firmware.github = true`, `stoandl firmware check` on a Core watch | `Latest available` is the highest PebbleOS release (v4.38.2 or newer), never a backport such as v4.27.3 or v4.30.3, even when GitHub marks the backport latest. |
 | 5.11g | Recovery is offered the highest release ⚠️ UNVERIFIED | `stoandl reset recovery`, let it reconnect in PRF, `stoandl firmware check` | `→ Update available` names the same highest release as 5.11f (not a backport); `stoandl firmware update` brings the watch back to normal firmware on that version. |
 | 5.11h | Built-in languages note ⚠️ UNVERIFIED | a Core watch on fw < 4.38.0 (< 4.37.0 on a Pebble 2 Duo), `stoandl firmware check`, then the update notification | `check` ends with `Note: this firmware no longer has the built-in German, French, …`, as does `firmware update` before its progress bar; the watch and desktop notifications add "It removes the built-in translations …". On 4.38.x → 4.38.y: no note. After a German watch updates, it shows English until a pack from pebbleos-translations is sideloaded. |
-| 5.11i | A watch in recovery is listed as `recovery` ⚠️ UNVERIFIED | `stoandl reset recovery`, let it reconnect in PRF; `stoandl watch list`; then the GUI's Watch tab and Settings → Debug (both front-ends) | `watch list` shows the watch as `recovery` (not `disconnected`). The GUI lists it as "In recovery"; in Settings → Debug, Core dump, Pull watch logs and Flash firmware from file… stay enabled (flashing a `.pbz` from there works), while Analytics heartbeat, Reboot to recovery, Write notification and Factory reset are disabled with a note that the watch is in recovery. |
+| 5.11i | A watch in recovery is listed as `recovery` ⚠️ UNVERIFIED | `stoandl reset recovery`, let it reconnect in PRF; `stoandl watch list`; then the GUI's Watch tab and Settings → Debug | `watch list` shows the watch as `recovery` (not `disconnected`). The GUI lists it as "In recovery"; in Settings → Debug, Core dump, Pull watch logs and Flash firmware from file… stay enabled (flashing a `.pbz` from there works), while Analytics heartbeat, Reboot to recovery, Write notification and Factory reset are disabled with a note that the watch is in recovery. |
 | 5.11c | Notify off | set `firmware.notify = false`, restart, connect with an update available | No watch notification; `firmware check`/`update` on the CLI still work. Log at startup: `Firmware update notifications off …`. |
 
 ---
@@ -992,7 +992,7 @@ trigger). Sideload with `stoandl apps install <app.pbw>`.
 |---|------|-----------------|----------|
 | 5.230 | Bridge bootstraps | launch the PKJS app on the watch | Log: `Pebble JS Bridge initialized.` and the app's own `console.log` output. The ES6 `startup.js` (classes, arrow fns, spread/rest, `Map`/`Set`) must run on GraalJS with no `PolyglotException`. |
 | 5.231 | `console.*` levels | app calls `console.log/warn/error/info/debug` | All levels appear in the log at the right severity (the console shim — `sendLog` with rest params — was the most-rewritten part of `startup.js`). |
-| 5.232 | Settings / config page | `stoandl config "<app>"` (or open settings from the watch) | The config URL opens; log `OpenConfig: got URL: …`. Exercises `PebbleEventListener`/`addEventListener`/`dispatchEvent`/`requestConfigurationUrl` — all rewritten from Rhino prototypes to ES6 `class`. |
+| 5.232 | Settings / config page | `stoandl config "<app>"` (or open settings from the watch) | The config URL opens; log `OpenConfig: got data:text/html;… page (… KiB)` (or the http(s) address). Exercises `PebbleEventListener`/`addEventListener`/`dispatchEvent`/`requestConfigurationUrl` — all rewritten from Rhino prototypes to ES6 `class`. |
 | 5.233 | Clay settings render + save | open a Clay-based config page, change a value, **Save** | The page renders, the value round-trips back to the app (`webviewClosed` → AppMessage). Clay's `tosource()` runs on GraalJS's DFA regex (fast). |
 | 5.234 | AppMessage round-trip | app `Pebble.sendAppMessage({...}, ack, nack)` and receives an inbound message | ACK fires the success callback, a dropped/late one fires NACK (the `appMessageAckCallbacks`/`nackCallbacks` paths — reverted from the fork's `ackCallback` rename back to upstream's names). Inbound `appmessage` event delivered. |
 | 5.235 | XHR | app issues an `XMLHttpRequest` (incl. an `arraybuffer` response if it has one) | Request completes, body/headers correct; `arraybuffer` decodes (the JVM `_xhrDecodeBase64` path — GraalJS has no `Uint8Array.fromBase64`). |
@@ -1034,7 +1034,7 @@ the unified watch matcher; this pass is the manual proxy for those.
 | 5.243 | Music control (MPRIS helpers) | play media; check now-playing on the watch; press play/pause/next/prev/volume | Title/**artist**/album show (artist via the collapsed `List`/`Array` branch); buttons drive the player; volume works (system or player per config). |
 | 5.244 | Weather location import (shared `runCommand`) | set `weather.location_source = command` (or `gnome`) with a working command; trigger a sync | Subprocess runs and locations import (`weather.location_command produced N location(s)`), unchanged. |
 | 5.245 | Install progress bar (`renderProgressBar`) | `stoandl firmware <file.pbz>` **or** `stoandl language install <locale>` | The `[####----]` bar renders and advances (now one shared renderer for both), then completes. |
-| 5.246 | Config / PKJS webview (`currentPkjsApps`) | `stoandl config "<pkjs app>"`, open then close the settings page | Config URL opens and close round-trips (`WebviewClose` → app); PKJS session enumeration unchanged. |
+| 5.246 | Config / PKJS webview (`currentPkjsApps`) | `stoandl config "<pkjs app>"`, open then close the settings page | Config URL opens and Save round-trips (`Config page for … closed (settings saved)` → app); PKJS session enumeration unchanged. |
 | 5.247 | Clean shutdown (`pairingAgent.unregister`) | `systemctl --user stop stoandl` (or Ctrl-C), then `stoandl watch pair` a watch afterwards | Shutdown logs no agent error and unregisters the BlueZ agent; a later `pair` still registers a fresh agent and completes MITM numeric-comparison pairing. |
 | 5.248 | Config parses with the new example keys (`conf.example`) | copy the updated `packaging/stoandl.conf.example` (now incl. `music.*`, `geolocation.enabled`, `language.download`) to the config path; restart | Daemon starts and parses every key — no `Unknown …` warning for the newly-documented keys. |
 
@@ -1371,7 +1371,7 @@ on; the new build installed. For M-f, a watch still on an older release, or old 
 | 5.29M-d | History backfills | compare `stoandl watch battery activity --since 7d` right after installing the new build | Hours captured **before** the update (while the layout was unknown) appear too — no gap at the update. |
 | 5.29M-e | HRM cross-check in one record | in 5.29M-a, read `settings_health_hrm_enabled` and `hrm_on_time_ms` | HR off (`settings_health_hrm_enabled 0`) ⇒ `hrm_on_time_ms` ≈ 0 in that same record. The cable-free HRM-offset check of §5.29L, without a second watch. |
 | 5.29M-f | Older releases still decode | with records from a pre-4.33 firmware on disk (or a watch on one): `stoandl watch battery heartbeat --all --watch <serial>` | The metric count matches that release (e.g. 92 for 527 B / v1 on 4.26–4.31, 91 for 523 B / v2 on 4.32); `battery_soc_pct` is sane — the battery block is read at that layout's own offsets. |
-| 5.29M-g | GUI Debug → Heartbeat page (Kirigami + GTK) | GUI: Settings → Debug → Heartbeat | Header shows size 567, version 3, the build-id and firmware, "known"; every metric listed, grouped by name prefix. New v3 prefixes (`unexpected`, `i2c`, `drv`) show as their own small groups. |
+| 5.29M-g | GUI Debug → Heartbeat page | GUI: Settings → Debug → Heartbeat | Header shows size 567, version 3, the build-id and firmware, "known"; every metric listed, grouped by name prefix. New v3 prefixes (`unexpected`, `i2c`, `drv`) show as their own small groups. |
 
 > **Sandbox note:** `compileKotlin` + `test` green (the two heartbeat test classes: 12 tests). The layouts
 > were derived from `/home/vscode/.cache/pebbleos-src` (every release tag's `analytics.def`, no
@@ -1438,7 +1438,7 @@ peripheral connections at once.
 ## 5.31 Settings parity: the full config schema, alerts.* and live-apply  ⚠️ UNVERIFIED (needs a watch for the alert/apply rows)
 
 The GUI Settings page is schema-driven: the daemon advertises `key type label options desc group apply
-min max unit placeholder` and both front-ends render whatever it says. This milestone grew the schema
+min max unit placeholder` and the GUI renders whatever it says. This milestone grew the schema
 from 23 keys / 2 widget kinds / 5 columns to 45 keys / 5 kinds (`toggle`, `combo`, `text`, `int`,
 `list`) / 11 columns, added the `alerts.*` family, added `stoandl daemon` as the CLI half, and fixed
 six keys that persisted but did nothing until a restart.
@@ -1732,11 +1732,16 @@ SleepGuard's `resumed`. Then run:
 
 ---
 
-## 5.33 libpebble3 on upstream `e6b5138e` (fork branch `stoandl-bump`)  ⚠️ UNVERIFIED (needs a watch; a classic watch and PKJS apps for some rows)
+## 5.33 libpebble3 on upstream `e6b5138e` (fork branch `stoandl-bump`)  ✅ Signed off by daily use (2026-10-15)
 
 The fork moved from its old base `e4180ffc` onto upstream `coredevices/libpebble3` `e6b5138e`
 (518 upstream commits; [FIRMWARE-GAPS.md §3](FIRMWARE-GAPS.md)). The submodule follows fork branch
-`stoandl-bump`; it becomes `stoandl` once this pass is green. Offline everything passes: the fork's
+`stoandl-bump`; it becomes `stoandl` once this pass is green.
+
+**Sign-off (2026-10-15).** The user ran `stoandl-bump` daily on the desktop and the phone with no regression
+(upgrade in place, restarts, suspend/resume and range, PKJS, firmware, weather, health and the wired
+features). That counts as this pass; individual rows were not ticked one by one. The old tip is tagged
+`stoandl-bump-e6b5138e` in the fork, as the bisect baseline for the re-bump onto upstream HEAD. Offline everything passes: the fork's
 jvmTest (PPoG, the whole Koin graph, PKJS on GraalJS, notification catch-up), the daemon tests, and a
 no-watch boot smoke that also migrated a v38 database to v47. These rows need hardware.
 
@@ -1846,6 +1851,20 @@ For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
 | 5.37i | Connection-parameter log (C1) | Any connect of a Time 2, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. (Builds before 2026-10-05 had no `ConnectionParams` logger in logback, so the line never showed.) |
 | 5.37j | Leftover connection-parameter keys | Restart with `ble.conn_params = off` (as the old conf.example shipped it) and `ble.conn_params_fast = 15,15,0,6000` still in the config; `stoandl daemon get ble.conn_params`; GUI → Settings → Deep sleep | Start: one WARN `ble.conn_params and ble.conn_params_fast are no longer read …`; the daemon starts normally. `get`: `No config key 'ble.conn_params'`. Deep sleep shows four rows, no connection parameters. |
 
+## 5.38 OnePlus 6 handoff 2026-10-02c: a withdrawn call stops ringing on the watch  ⚠️ UNVERIFIED (needs a watch, the phone and a second phone)
+
+`ModemManagerCallMonitor` handles ModemManager's call signals one at a time, in bus order
+(`ModemCallState`). Before this, each signal was handled in its own coroutine, and a slow `CallAdded`
+(the first contact-index load) could finish after the call's `StateChanged →7` and `CallDeleted`. The
+watch then rang for a call that no longer existed. Off-device: `ModemCallStateTest` (the
+handoff's signal order with a 300 ms lookup). Log: `tail -f /tmp/stoandl.log | grep -iE "ModemManager|Call |hangup|missed"`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.38a | Call withdrawn at once | With MultiSIM, answer an incoming call on the other phone within a second (or have the caller hang up while the phone starts ringing) | The watch stops ringing within 1 s of ModemManager's `call state changed: … -> terminated` (journal), or never starts. The log order is `CallAdded`, `StateChanged …3→7`, `CallDeleted`, and any `Call 0: state=3` line comes before the `3→7` line. No `Hangup(…) failed` WARN. A missed-call pin on the watch (kde-telephony-daemon's own `Missed call` notification may show as well, as for any missed call). |
+| 5.38b | Contact index at start | Restart stoandl, wait for startup, then call the phone | `Contact index loaded: …` is logged at startup, not at the first `CallAdded`; the caller's name shows. |
+| 5.38c | Regression: 5.7–5.12 | Ring, answer from the watch, hang up from the watch, decline, dial out, restart mid-call | As in 5b. |
+
 ## 5.39 Notification layout: app name placement, markup  ⚠️ UNVERIFIED (needs a watch; NeoChat rows need a Matrix account)
 
 The watch draws a card as Title (bold) → Subtitle (the largest bold font) → LocationName (small) → Body
@@ -1854,7 +1873,7 @@ subtitle; `notification.app_name` (`small` default, `subtitle`, `off`) and a per
 (`NotifSetAppName`, stored in `<configDir>/notification-app-name`) now decide. `Notify` bodies, and
 portal ones xdg-desktop-portal-kde shows (Plasma ≤ 6.6), are converted from markup to plain text.
 Off-device: `NotificationLayoutTest`, `AppNamePlacementsTest`, `NotificationMarkupTest` and the
-`notification.app_name` case in `ConfigSchemaTest`; the GUIs' mock smoke runs log each watch-card
+`notification.app_name` case in `ConfigSchemaTest`; the GUI's mock smoke run logs each watch-card
 preview (`stoandl-smoke: preview <placement>: title=… | small=… | …`). Use a Time 2 (Large text, where
 the subtitle font is biggest) and NeoChat in a group room; `Notification queued for watch: NeoChat –
 <title>` tells NeoChat's live format (title = room, body = `Sender: text`) from its push format (title =
@@ -1876,10 +1895,32 @@ the subtitle font is biggest) and NeoChat in a group room; `Notification queued 
 | 5.39l | Notification list preview | On the watch: Notifications app, after 5.39a | The NeoChat row's second line is the start of the message (it was "NeoChat" while the app name was the subtitle). |
 | 5.39m | Firmware-update card | With a firmware update pending (§5.11): for each `notification.app_name` (`small`, `subtitle`, `off`), `stoandl daemon set notification.app_name <value>`, then `systemctl --user restart stoandl` and let the watch reconnect (the alert is sent once per version per daemon run, §5.11b). Set it back to `small` afterwards | "Firmware update" (bold), "stoandl" as a small line / the subtitle / not at all, then the text and the Update action. |
 | 5.39n | Portal bodies on Plasma ≤ 6.6 | A Flatpak NeoChat on Plasma ≤ 6.6 (xdg-desktop-portal-kde shows portal notifications): send `Tom & Jerry <3` | The watch shows `Tom & Jerry <3` as the desktop popup does; no `&amp;`. |
-| 5.39o | Global choice on the Alerts page (GUIs) | Kirigami and GTK: Alerts → Forwarding → "App name on the watch"; pick Subtitle, Off, then Small line, each followed by `stoandl daemon get notification.app_name` and a NeoChat message. Then set it on Settings → Daemon configuration and go back to Alerts | The row opens on the stored value. Each pick toasts `App name · <choice>`; `get` agrees and the next message follows it. After the change on Settings, Alerts shows the new value. |
+| 5.39o | Global choice on the Alerts page (GUIs) | Kirigami: Alerts → Forwarding → "App name on the watch"; pick Subtitle, Off, then Small line, each followed by `stoandl daemon get notification.app_name` and a NeoChat message. Then set it on Settings → Daemon configuration and go back to Alerts | The row opens on the stored value. Each pick toasts `App name · <choice>`; `get` agrees and the next message follows it. After the change on Settings, Alerts shows the new value. |
 | 5.39p | Alerts preview, light and dark | Same row, in the light and then the dark theme | The card under the row follows each pick at once. It shows a #FF0055 banner with a bell, "Family" in bold, then "NeoChat" as a small line (Small line), a large bold line (Subtitle) or nowhere (Off), then "Alice: are we still on for tonight?" and "now". In both themes the card is white with black text and nothing is cut off. A screen reader reads "Watch preview: Family, NeoChat, …" and where the app name is. |
-| 5.39q | Per-app choices and preview (GUIs) | Kirigami and GTK: Alerts → NeoChat → its dialog: pick Notification color Blue, then Yellow; pick App name Subtitle, Off, Default, then Subtitle again, each followed by a NeoChat message and `stoandl notif list`; close and reopen the dialog. Then `stoandl notif style neochat --color Yellow` and reopen it | The card under App name shows "NeoChat". The banner turns blue with a white bell, then yellow with a black bell. The name moves as in 5.39p, and Default shows the Alerts choice, which the row's text names ("Default follows the Alerts page, now Small line."). Each App name pick applies to the next message and the list agrees (— after Default). On reopening, the colour combo shows Yellow and App name shows Subtitle, with "NeoChat" as the large bold line in the preview (the open-time preselection; Kirigami's colour combo used to show Default). After the CLI `Yellow` (pure yellow, not the dialog's Yellow = `ChromeYellow`) both GUIs show the colour as Default with a #FF0055 banner. Kirigami: the dialog opens without jumping and stderr has no `Binding loop detected for property "y"`. Set both back to Default. |
+| 5.39q | Per-app choices and preview (GUIs) | Kirigami: Alerts → NeoChat → its dialog: pick Notification color Blue, then Yellow; pick App name Subtitle, Off, Default, then Subtitle again, each followed by a NeoChat message and `stoandl notif list`; close and reopen the dialog. Then `stoandl notif style neochat --color Yellow` and reopen it | The card under App name shows "NeoChat". The banner turns blue with a white bell, then yellow with a black bell. The name moves as in 5.39p, and Default shows the Alerts choice, which the row's text names ("Default follows the Alerts page, now Small line."). Each App name pick applies to the next message and the list agrees (— after Default). On reopening, the colour combo shows Yellow and App name shows Subtitle, with "NeoChat" as the large bold line in the preview (the open-time preselection; Kirigami's colour combo used to show Default). After the CLI `Yellow` (pure yellow, not the dialog's Yellow = `ChromeYellow`) the GUI shows the colour as Default with a #FF0055 banner. Kirigami: the dialog opens without jumping and stderr has no `Binding loop detected for property "y"`. Set both back to Default. |
 | 5.39r | Preview matches the watch | After 5.39p, with each choice in turn, send a NeoChat message | The watch shows the lines in the preview's order, and the app name is on the same line as in the preview. Fonts and line breaks are only approximate. |
+
+## 5.40 Watchapp settings pages served by the daemon  ⚠️ UNVERIFIED (needs a watch and a configurable PKJS app)
+
+`OpenConfig` used to return the app's raw config URL. A Clay page is a `data:` URL (WarnWeather's is
+1.4 MB), which the GUIs showed as a percent-encoded error toast, and the GUIs never handed Save back to
+the app. The daemon now serves the page on `127.0.0.1` under a random token, with
+`pebblejs://close` rewritten to its own `/close?` endpoint, and passes Save to the app itself
+(`ConfigPageServer`). An injected script sends Save with `fetch` instead of navigating (Navigation
+API), so the tab keeps one history entry and may close itself. Headless Chromium 152 on the phone
+closed the tab and delivered the settings; the can't-close fallback (5.40b2) is untested. `WebviewClose` is gone; the CLI and the GUI only open the URL. Off-device:
+`ConfigPageServerTest`. Log: `tail -f /tmp/stoandl.log | grep -E "OpenConfig|Config page"`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.40a | Clay page from the GUI (the op6 report) | Kirigami on the phone: Apps & Faces → WarnWeather (or any Clay face) → Settings | The browser opens `http://127.0.0.1:<port>/<token>/?return_to=…` and shows the settings page, not a toast full of `%3C!DOCTYPE`. Log: `OpenConfig: got data:text/html;charset=utf-8 page (1442 KiB)`; no megabyte-long log line. |
+| 5.40b | Save reaches the watch and the tab closes | In 5.40a change a value, press Save | The page's own "saved" toast, then the tab closes by itself (Chromium; the browser window too if it was the only tab). Log: `Config page for <uuid> closed (settings saved)`; the face picks up the value (AppMessage). |
+| 5.40b2 | Tab that can't close itself | Open the URL from 5.40a by pasting it into a tab that already shows another page, then Save. Then Firefox and GNOME Web (they auto-close only if they have the Navigation API) | The tab stays and shows "Settings saved — you can close this tab."; the settings still arrive once. A browser without the Navigation API navigates to the same text. |
+| 5.40c | Token is single-use | Reload the saved tab, or open its `…/close?` URL again | "This settings page has already closed." The app gets nothing a second time. |
+| 5.40d | Reopen replaces | Open the settings twice without saving, Save in the first tab | First tab: "This settings page has expired. Open it again." The second tab still works. |
+| 5.40e | Loopback only | While a page is open: `ss -ltnp \| grep java` on the phone; from another machine, `curl http://<phone-ip>:<port>/` | Listens on `127.0.0.1:<port>` only; the remote curl is refused. About a second after the last page closes the port is gone. |
+| 5.40f | http(s) config page | An app whose config URL is a website (not Clay); change a value, Save | Images/scripts load (`<base>` = the site), the page reads its current settings from the URL's query/hash, and Save arrives as in 5.40b. |
+| 5.40g | CLI | `stoandl config "<app>"` | Prints `Config URL: http://127.0.0.1:…` and opens it, then exits; Save still reaches the watch (the daemon, not the CLI, receives it). |
 
 ## 5.41 GeoClue only while a fix is wanted  ⚠️ PARTLY VERIFIED (5.41a, 5.41e on the op6, 2026-10-08/09)
 
@@ -1903,6 +1944,142 @@ same GeoClue client). Off-device: `GeoClueLocationProviderTest`. Log (`STOANDL_L
 | 5.41d | First fix waits | Cold start (no recent fix), app requests location | The app gets a position on its first request (up to its `timeout`, 30 s when unset) instead of an immediate `No location fix available`. |
 | 5.41e | Suspend while held | Request a fix, suspend the phone within the minute, wake it after 5 min | On resume the client stops at once (`stopped` right after `resumed`), not a minute of awake time later. ✅ op6 overnight 2026-10-08/09 (`resumed` then `last fix before stopping` + `stopped` within 20 ms, 2–5 min after the start). |
 | 5.41f | Accuracy, not the first fix | WarnWeather ("Using GPS", exact) outdoors with no recent fix | `GeoClue exact fix: ±N m` with N ≤ 100 (not `±25000 m`), or `no exact fix within …, using the best one` indoors after the timeout; weather's `city fix` ≤ ±15000 m. |
+
+## 5.42 Notification parity: history actions, desktop → watch dismissal  ⚠️ UNVERIFIED (needs a watch)
+
+stoandl now advertises capability bit 3 (`SupportsTwoWayDismissal`; the firmware's ExtendedNotificationService),
+without which the firmware hides every action on a notification opened from its Notifications app
+(`WatchClaims`). Routes are kept 7 days / 2000 items instead of only until the popup closes. A notification
+dismissed on the desktop or phone is retracted on the watch (`notification.sync_dismissals`, default on):
+libpebble3's STATE_READ flag, which is the firmware's dismissed status bit. Off-device: `DismissalSyncTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.42a | Actions from history | `notify-send -A ok=OK hi there` on Plasma (or a NeoChat message); let the popup time out; open it from the watch's Notifications app, press Select | The action menu lists the app's actions, Mute and Dismiss. Dismiss closes the desktop notification. |
+| 5.42b | Reply from history | 5.42a with a NeoChat message on Plasma with InvokeReply (the phone) | Reply shows the canned list; the text reaches NeoChat. |
+| 5.42c | After a daemon restart | send a notification, `systemctl --user restart stoandl`, act on it from the history | Dismiss works; Reply or an app action shows "Not supported", no crash. |
+| 5.42d | Classic watch | 5.42a on the Time Steel | As 5.42a. |
+| 5.42e | Dismissed on the desktop | send a notification, dismiss it in the GNOME message list or Plasma's history | The watch copy leaves its notification list within a few seconds. Log: `Notification <id> dismissed elsewhere; cleared on the watch`. |
+| 5.42f | Popup timeout only | send a notification, let the popup expire, don't touch it | The watch keeps it. |
+| 5.42g | Read in the app | a NeoChat message, then read it in NeoChat on the phone (NeoChat withdraws the notification); or a Matrix extension message read elsewhere (re-runs 5.27i) | The watch copy clears. |
+| 5.42h | No echo | dismiss on the wrist | The desktop notification closes; the log shows no `dismissed elsewhere` line for that item. |
+| 5.42i | Switch off | `stoandl daemon set notification.sync_dismissals false` (or the GUI toggle), repeat 5.42e | The watch keeps the notification. |
+
+## 5.43 Calendar knobs and music seek  ⚠️ UNVERIFIED (needs a watch)
+
+libpebble3's calendar options are now stoandl keys (`calendar.reminders`, `calendar.show_declined`,
+`calendar.reminder_vibe`), projected live into its config (`libPebbleConfigOf`). MPRIS players that can
+seek but not skip get seeks from the watch's next/previous, and `Seeked` refreshes the progress.
+Off-device: `LibPebbleConfigProjectionTest`, `MprisSkipTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.43a | Reminders off | an event with a reminder in 10 min; `stoandl daemon set calendar.reminders false` | The pin stays, the reminder doesn't buzz. Back to `true`: the reminder returns at the next calendar sync. |
+| 5.43b | Declined events and vibe | decline an event in the calendar; set `calendar.show_declined true` and `calendar.reminder_vibe Pulses` | The declined event appears as a pin; the next reminder buzzes in the Pulses pattern. |
+| 5.43c | Seek-only player | a podcast in Kasts or GNOME Podcasts (or `mpv` on a single file), open the watch's Music app | The watch shows fast-forward/rewind; next/previous seek ±15 s (log `MPRIS seek +15s → …`). A music player with a queue still skips tracks. |
+| 5.43d | Desktop seek | seek in the desktop player | The watch's progress bar jumps with it within a second or two. |
+
+## 5.44 libpebble3 re-bump to upstream `ec2156cc`  ⚠️ UNVERIFIED (needs a watch)
+
+The fork is rebased onto upstream `ec2156cc` (47 more commits: plugins, app permissions, plugin WebSockets and
+secure storage, the weather pin kind, the built-in languages removed). Room goes from schema 47 to 49 on the
+first start, one way: `stoandl backup` first. Offline: fork jvmTest 371 green, daemon tests green, a boot smoke
+migrated a v47 database to v49 with every CLI read command answering and a notification queued. Plugins stay
+off (`enablePlugins=false`), so the permission layer only gates PKJS geolocation, timeline tokens and pins.
+The previous tip is tagged `stoandl-bump-e6b5138e` for bisecting.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.44a | Upgrade v47 → v49 | install over the op6's current setup, restart | No Room, Koin or `AppPermission` errors; the watch connects without a re-pair; `apps list` and `notif list` (mutes) unchanged. |
+| 5.44b | PKJS with permissions in place | a geolocation app (`geolocation.enabled = true`), a timeline-pin app, a configurable app; then one installed over the developer connection | The fix arrives, the pin appears, the config page opens. No `PERMISSION_DENIED`, no "isn't installed". |
+| 5.44c | Weather pin titles | firmware ≥ 4.39 with a non-English language pack; `weather.pins = true` | Sunrise and Sunset pins are titled in the watch's language (the pins now carry `WeatherPinKind`). On firmware < 4.39 they stay English, no error on the watch. |
+| 5.44d | Language pref | `stoandl settings language`; a stale `watch.language = German` in stoandl.conf | Lists only Custom (Language Pack) and English; the stale line logs an invalid-value warning and is ignored. |
+| 5.44e | Quick pass | 5.33b (restart while linked), 5.33d (suspend and range), 5.33e (classic), 5.33f (PKJS) | As there. |
+
+## 5.45 Pictures in notifications, album art  ⚠️ UNVERIFIED (needs a Pebble Time 2 or Round 2)
+
+stoandl advertises SupportsImageFetch and serves the imaging endpoint: notification pictures from
+`NotificationImageStore` (attachments only; `notification.images`) and album art from the player's local
+`mpris:artUrl` (`imaging/AlbumArt`). Decoding is ImageIO; the apk depends on `openjdk25-jre` for JPEG.
+Off-device: `ImagingTest`, `NotificationImageRefTest`. Log (`STOANDL_LOG=DEBUG`): `grep -i image /tmp/stoandl.log`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.45a | Decoders on the phone | install the new apk (pulls in `openjdk25-jre`), start the daemon | Log `Images: png gif bmp jpeg`. On a JRE without libjavajpeg: `Images: png gif bmp (no JPEG: …)`, no crash. |
+| 5.45b | Matrix photo | Matrix extension running; send an image to a room from another account | The watch notification shows the photo below the text; `onWatchConnected` logged `notificationImages=true`. On the Time Steel the notification has the Preview action instead. |
+| 5.45c | Screenshot notification | Plasma (the phone): take a screenshot with Spectacle | The "Screenshot saved" notification shows the screenshot on the watch. |
+| 5.45d | Web notification image | Chromium on Plasma: a page posting `new Notification(t, {image: …})` | The image shows on the watch; the body text has no `<img>` markup. |
+| 5.45e | Switch off | `stoandl daemon set notification.images false`, repeat 5.45b | No picture; `~/.cache/stoandl/images/notifications` is empty. |
+| 5.45f | Dismiss deletes | dismiss a picture notification on the wrist, and another on the desktop | Its `<itemId>.png` is gone from the cache directory. |
+| 5.45g | Album art | watch Settings → Music → album art on; play a track in Elisa (embedded cover), then Firefox (a page with media art) | The Music app shows the cover within a few seconds; skipping tracks updates it. Spotify (web URL only): no cover, no error. |
+| 5.45h | Late art | start a stream whose player publishes the cover a moment after the title (Firefox, Chromium) | The cover appears without reopening the Music app. |
+| 5.45i | Daemon restart | send a picture notification, restart the daemon, open the notification from the watch's history | The picture still loads (served from the cache). |
+
+## 5.46 Voice dictation  ⚠️ UNVERIFIED (needs a watch with a microphone: Time 2, Pebble 2 Duo, Time Steel)
+
+`StoandlTranscriptionProvider` decodes the watch's Speex frames (FFM libspeex) and runs `voice.backend`:
+`command` (a local engine, `{wav}`/`{lang}`) or `http` (OpenAI-compatible, key in the secret store).
+Off-device: `VoiceTest` (firmware-identical Speex frames → decoder → a command backend → the watch result).
+Log: `grep -i voice /tmp/stoandl.log`; transcripts at DEBUG only. Firmware before 4.39 shows "Error
+occurred" instead of "Missed that" for an empty result.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.46a | Off | default config; on the watch: a notification → Reply → Voice | The watch says "Enable voice in the settings page of the Pebble app"; log `Voice session refused` is absent (canServeSession false without a backend). |
+| 5.46b | Status | `apk add whisper.cpp` (or the engine from docs/voice.md), download a model, set `voice.backend command` and `voice.command`; `stoandl voice` | `Voice: ready — command whisper-cli`. Without libspeex: `unavailable: libspeex.so.1 not found`. |
+| 5.46c | File test | `stoandl voice test sample.wav` (16 kHz or 48 kHz, German) | The transcript and the time; the same on the phone. **Record** the time for a 10 s clip on the op6 and the desktop. |
+| 5.46d | Reply by voice | NeoChat message on the phone (Plasma InvokeReply) or a Matrix extension message; Reply → Voice → speak → confirm | Log `Voice: Speex 1.2.1, 16000 Hz…`, then `Voice: N s audio, backend=command, M ms, K words`; the text reaches the chat. **Record** the encoder line (Time Steel too). |
+| 5.46e | Nothing said | Voice, say nothing, let it stop | "Missed that. Try again." (fw ≥ 4.39) |
+| 5.46f | Cancel early | Voice, press Back at once | No hang: `no audio within 3 s` in the log; the next dictation works. |
+| 5.46g | Slow engine | a command that sleeps 20 s | The watch shows "Error occurred" after about 14 s; log `took longer than 14 s`. |
+| 5.46h | HTTP | `whisper-server --inference-path /v1/audio/transcriptions` on the desktop; `voice.backend http`, `voice.url`; 5.46d from the phone | Works as 5.46d. With the server stopped: "No internet connection" on the watch. |
+| 5.46i | API key | `stoandl daemon set voice.api_key sk-…` (or the GUI's Voice section) against a hosted service | `stoandl daemon list` shows the key as `set`; `stoandl.conf` doesn't contain it; dictation works. Remove: the GUI's Remove button / `daemon set voice.api_key ""`. |
+| 5.46j | Watchapp dictation | a watchapp using `dictation_session_create` | It gets the transcript. |
+| 5.46k | Matrix voice note | send a voice message to a room the extension watches | The notification first shows "🎤 Voice message", then its text (same notification, replaced). With voice off: stays as it was. |
+
+## 5.47 Weather for classic watchfaces (PKJS interceptors)  ⚠️ UNVERIFIED (needs a watch and a Yahoo / OWM 2.5 watchface)
+
+`YahooWeatherInterceptor` and `OpenWeather25Interceptor` (`weather/PkjsWeatherInterceptors.kt`) answer
+`query.yahooapis.com/v1/public/yql` and `api.openweathermap.org/data/2.5/weather?lat&lon` from Open-Meteo
+(`OpenMeteoNow`). Off-device: `PkjsWeatherInterceptorsTest` (URL parsing, both JSON shapes, units, the
+off switch, OWM pass-through). Find a watchface's API: unzip the .pbw, `grep -E 'yahooapis|openweathermap'
+pebble-js-app.js`. Log (`STOANDL_LOG=DEBUG`): `grep -E 'Yahoo weather|OWM 2.5|Open-Meteo' /tmp/stoandl.log`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.47a | Off | default config; install Weather Land (`1f0b0701-cc8f-47ec-86e7-7181397f9a25`) with `geolocation.enabled = true` | Unchanged: the watchface shows no weather; no `Yahoo weather` line; nothing to open-meteo.com. |
+| 5.47b | Yahoo, standard response | `stoandl daemon set weather.intercept_pkjs true`; relaunch Weather Land | Temperature and condition appear; `Yahoo weather for 1f0b0701-… answered from Open-Meteo (<name>)`. The temperature matches the Weather app's current location within a degree or two. |
+| 5.47c | Yahoo, °F | switch the watchface's setting to Fahrenheit (or a `u="f"` app) | The temperature is in °F. |
+| 5.47d | Yahoo, per-day response | a Yahoo watchface not in the 3-UUID list whose query has no `limit 1` | Today's condition plus forecast days, no error, no "--". |
+| 5.47e | Yahoo, typed place | a watchface whose settings take a city name (e.g. "Springfield, Illinois") | That city's weather; a `weather.locations` name answers with no request to geocoding-api.open-meteo.com. |
+| 5.47f | Place name | 5.47b with `weather.reverse_geocode = true`, then false | On: the city from Nominatim. Off: the `weather.locations` entry within 10 km, else "Unknown". |
+| 5.47g | OWM 2.5, dead key | an OWM 2.5 watchface with its embedded key | `OWM 2.5 key of … rejected (401) — answering from Open-Meteo`; temperature shown in the app's unit (Kelvin apps convert themselves). |
+| 5.47h | OWM 2.5, working key | same watchface with a valid personal key in its settings | OWM's own reply (no `rejected` line; DEBUG `answered by OpenWeatherMap (HTTP 200)`). |
+| 5.47i | Live toggle | `daemon set weather.intercept_pkjs false` while running; relaunch 5.47b | Back to 5.47a with no restart. |
+
+## 5.48 Plugins and app permissions  ⚠️ UNVERIFIED (needs a watch; plugin pbws from upstream test-apps)
+
+`plugins.enabled` turns on libpebble3's PluginRegistry and AppPermissions; stoandl adds the GraalJS
+JsEngine (fork), the built-ins (Weather port, Music, Phone state, cached Calendar), extension-served
+plugins, plugin secure storage on the SecretStore, permission prompts and the V2 settings-page bridge.
+Off-device: `PluginsTest`, `ConfigPageBridgeTest`, the fork's `JsEngineTest` (stocks plugin on GraalJS);
+a boot smoke lists the six built-ins. Pack the examples: `scripts/pack-plugin-pbw.py test-apps/<name>`
+in an upstream checkout.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.48a | Off | default config: `stoandl plugins` | "No plugins"; an existing PKJS app (geolocation, timeline pins) behaves as before, no prompts. |
+| 5.48b | Built-ins | `daemon set plugins.enabled true`; `stoandl plugins`; `plugins read weather/location`, `music/track` (something playing), `phone/phone_state` (on the op6) | Six built-ins listed; weather instances match the Weather app; the track is the MPRIS one; battery % and Wi-Fi/Cellular and the cell generation on the phone. |
+| 5.48c | Dashboard app | install upstream's plugin-test (Plugin Demo: Dashboard) watchapp; set tiles to weather temperature, phone battery, music title | Tiles show the values and follow changes (music title on skip). |
+| 5.48d | Weather face | install weather-face | It shows the built-in weather plugin's temperature and condition image. |
+| 5.48e | Third-party plugin | install the plugin-only stocks pbw; `stoandl config Stocks` | The settings page opens in the browser, lists tickers (live messaging); `plugins read finance/stock` returns prices after the Internet permission is allowed. |
+| 5.48f | Permission prompt | a manifest-v2 app that needs a new domain or Location | Watch: "<App> asks" with Allow/Deny; desktop notification with the same; GUI banner. Allow on the wrist → the app works, both prompts disappear. Deny → refused (`PERMISSION_DENIED`). |
+| 5.48g | Answer elsewhere | 5.48f, answer with `stoandl perms allow …` | The watch and desktop prompts are retracted. |
+| 5.48h | Secure storage | hue: pair a bridge from its settings page; restart the daemon | The bridge key survives (keyring or secrets file); removing the app removes it (`secret-tool search` / secrets file). |
+| 5.48i | Extension plugin | an extension with a `plugin` block (docs/extensions.md) | Listed as kind `extension`; `plugins read` gets its envelope; `sourceChanged` updates a subscribed watchapp; stopping the extension removes it. |
+| 5.48j | Calendar egress | a CalDAV calendar, the dashboard subscribed to calendar/event for 10 min | One CalDAV fetch per `calendar.sync_interval`, not one a minute (log). |
+| 5.48k | Suspend | phone suspended for an hour with a subscribed watchface | After resume the values refresh within a minute (no stuck stale data). |
+| 5.48l | OAuth (own app) | register a Todoist app (redirect `http://127.0.0.1:47811/oauth`), write `~/.config/stoandl/oauth/todoist.conf`, install the todoist plugin pbw, sign in from its settings page | The browser opens Todoist's consent page; after it, "Signed in"; the plugin lists tasks; after the access token expires it refreshes without a new sign-in. Without the file: the plugin reports it can't sign in. |
 
 ---
 

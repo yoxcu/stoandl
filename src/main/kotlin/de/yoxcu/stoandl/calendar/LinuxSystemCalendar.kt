@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import java.io.File
 import java.nio.file.FileSystems
@@ -27,6 +28,8 @@ import java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
 import java.nio.file.StandardWatchEventKinds.ENTRY_DELETE
 import java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY
 import java.util.concurrent.TimeUnit
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
@@ -136,7 +139,22 @@ class LinuxSystemCalendar(
         val rc = byPlatformId[calendar.platformId]
             ?: run { getCalendars(); byPlatformId[calendar.platformId] }
             ?: return emptyList()
-        val events = rc.fetchEvents(startDate, endDate) // already defensive: returns empty on failure
+        // The calendar plugin asks every minute for the next few days; a remote calendar (CalDAV, iCal URL)
+        // would make that a network round trip a minute. Answer from the last fetch while nothing changed
+        // (no tick, file change or manual sync since) and its window covers the request.
+        val gen = generation.get()
+        eventCache[calendar.platformId]?.let { c ->
+            if (c.generation == gen && c.start <= startDate && c.end >= endDate) {
+                return c.events.filter { it.endTime > startDate && it.startTime < endDate }
+            }
+        }
+        // Fetch a window covering both callers (the pin sync's yesterday … +6 d, the plugin's now … +7 d).
+        val now = Clock.System.now()
+        val fetchStart = minOf(startDate, now - 1.days)
+        val fetchEnd = maxOf(endDate, now + 8.days)
+        val all = rc.fetchEvents(fetchStart, fetchEnd) // already defensive: returns empty on failure
+        eventCache[calendar.platformId] = CachedEvents(gen, fetchStart, fetchEnd, all)
+        val events = all.filter { it.endTime > startDate && it.startTime < endDate }
         onSync?.invoke()
         log.info { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
         log.debug {
@@ -153,7 +171,13 @@ class LinuxSystemCalendar(
         // "enable sync at the source" concept like Android's CalendarContract.
     }
 
-    override fun registerForCalendarChanges(): Flow<Unit> = merge(ticker(), fileWatch(), manualTrigger)
+    /** Bumped by every change signal: cached events from before it are stale. */
+    private val generation = java.util.concurrent.atomic.AtomicLong()
+    private class CachedEvents(val generation: Long, val start: Instant, val end: Instant, val events: List<CalendarEvent>)
+    private val eventCache = java.util.concurrent.ConcurrentHashMap<String, CachedEvents>()
+
+    override fun registerForCalendarChanges(): Flow<Unit> =
+        merge(ticker(), fileWatch(), manualTrigger).onEach { generation.incrementAndGet() }
 
     override fun hasPermission(): Boolean = true
 

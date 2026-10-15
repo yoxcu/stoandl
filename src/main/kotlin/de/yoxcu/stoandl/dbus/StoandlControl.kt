@@ -53,11 +53,12 @@ interface StoandlControl : DBusInterface {
 
     /** Reset the system apps to their default locker order. Returns `ok:<msg>` or `notready:<msg>`. */
     fun RestoreSystemAppOrder(): String
-    /** Returns the configuration URL for the running PKJS app matching [app] (name or UUID).
-     *  Returns empty string if no matching app is running or it has no config page. */
+    /** Open the settings page of the PKJS app matching [app] (name or UUID; "" = the running one),
+     *  launching it first if needed. Returns a loopback `http://127.0.0.1:<port>/<token>/…` URL the
+     *  daemon serves the page from, for the caller to open in a browser; Save on the page goes
+     *  straight back to the app. Returns empty string if there's no such configurable app or it
+     *  didn't answer in time. */
     fun OpenConfig(app: String): String
-    /** Signal the running PKJS app that the config webview closed with [data]. */
-    fun WebviewClose(data: String)
 
     /** Debug: inject a synthetic incoming (ringing) call so the watch shows the native call
      *  screen. The watch's Answer button transitions it to an active call; Decline/Hangup ends
@@ -363,6 +364,15 @@ interface StoandlControl : DBusInterface {
      *  `notready:<msg>` (no watch), or `error:<msg>` (timeout, watch busy, or write failed). */
     fun TakeScreenshot(path: String): String
 
+    /** Speech to text: `off:`, `ready:<backend>\t<detail>` (backend `command` or `http`) or
+     *  `unavailable:<reason>` (no libspeex, the command not found, no URL). */
+    fun VoiceStatus(): String
+
+    /** Transcribe the audio file at the absolute [path] (a 16-bit WAV, or Ogg/Opus) with the configured
+     *  backend, in `voice.language`. Blocks (up to a minute). Returns `ok:<ms>\t<text>`, `off:`,
+     *  `unavailable:<reason>` or `error:<msg>`. With the http backend the audio leaves this machine. */
+    fun Transcribe(path: String): String
+
     /** Dump the watch's firmware logs to the absolute [path] as text. Blocks until the (multi-generation)
      *  transfer completes — a handful of seconds. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`. */
     fun GatherLogs(path: String): String
@@ -499,6 +509,34 @@ interface StoandlControl : DBusInterface {
      *  it has no config, or `notfound:`. Kept for contract parity; wire it up if a URL backend is added. */
     fun ExtOpenConfig(name: String): String
 
+    // --- Plugins and app permissions (`stoandl plugins`, `stoandl perms`) ---------------------------
+
+    /** Installed plugins while `plugins.enabled` is on (empty while off), one record each:
+     *  `uuid\tkind\tname\tdescription\tsources\tactions`. kind ∈ {builtin, pbw, extension}; sources are
+     *  `category/item`, comma-separated; actions are names, comma-separated. Re-read on [PluginsChanged]. */
+    fun PluginList(): List<String>
+
+    /** One reading of the source `category/item`, preferably from [plugin] (a uuid; empty = any plugin that
+     *  serves it): `ok:<envelope JSON>`, `off:`, `notfound:`, `notready:` or `error:`. Blocks up to 15 s. Acts
+     *  for the user, so the callers' permission checks don't apply (logged). */
+    fun PluginRead(category: String, item: String, plugin: String): String
+
+    /** Invoke [action] of [plugin] (uuid or name) with [argsJson] (a JSON object, or empty): `ok:<text>`,
+     *  `failed:<code> <message>`, `off:`, `notfound:` or `error:`. Blocks. Acts for the user. */
+    fun PluginInvoke(plugin: String, action: String, argsJson: String): String
+
+    /** The permissions [app] (name or uuid) asked for or was given: `key\tstatus\tkind\tlabel\tlastUsedMs`.
+     *  status ∈ {granted, denied, undecided}; kind ∈ {read, write, exfiltrating}. */
+    fun PermList(app: String): List<String>
+
+    /** Requests waiting for an answer, from apps running now: `appUuid\tappName\tkey\tlabel\trequestedAtMs`.
+     *  Re-read on [PermissionRequestsChanged]. */
+    fun PermPending(): List<String>
+
+    /** Answer [key] for [app] (name or uuid): [decision] ∈ {allow, deny, reset}. `ok:`, `notfound:`,
+     *  `ambiguous:` or `error:`. */
+    fun PermSet(app: String, key: String, decision: String): String
+
     /** Per-feature sync/bridge status for the GUI Settings/Sync screen: one tab-separated
      *  `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health,
      *  dnd}, reflecting live runtime state. `available` is false for weather/calendar when no source is
@@ -577,6 +615,13 @@ interface StoandlControl : DBusInterface {
      *  install/uninstall (or a settings change that stops/starts it), incl. from the CLI or another
      *  client. Re-call [ExtList]. The coarse companion to [ExtensionStateChanged]. */
     class ExtensionsChanged(path: String) : DBusSignal(path)
+
+    /** Poke: the set of plugins changed (plugins switched on/off, a plugin pbw installed or removed, an
+     *  extension's plugin came or went). Re-call [PluginList]. */
+    class PluginsChanged(path: String) : DBusSignal(path)
+
+    /** Poke: the requests waiting for an answer changed. Re-call [PermPending]. */
+    class PermissionRequestsChanged(path: String) : DBusSignal(path)
 
     /** Per-extension runtime state transition — the finer companion to [ExtensionsChanged] that surfaces
      *  UNSOLICITED changes the poll can't catch: [state] is `ready` (handshake done / running), `exited`

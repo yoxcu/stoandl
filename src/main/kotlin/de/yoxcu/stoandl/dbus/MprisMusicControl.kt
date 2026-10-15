@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.dbus
 
 import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.StoandlConfig
+import de.yoxcu.stoandl.imaging.AlbumArt
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -12,6 +13,7 @@ import io.rebble.libpebblecommon.music.PlaybackStatus
 import io.rebble.libpebblecommon.music.PlayerInfo
 import io.rebble.libpebblecommon.music.RepeatType
 import io.rebble.libpebblecommon.music.SystemMusicControl
+import io.rebble.libpebblecommon.music.matchesTruncated
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +22,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,11 +84,19 @@ class MprisMusicControl(
     private val _playbackState = MutableStateFlow<PlaybackStatus?>(null)
     override val playbackState: StateFlow<PlaybackStatus?> = _playbackState.asStateFlow()
 
-    // No album art yet: MPRIS carries `mpris:artUrl`, but serving it means fetching and encoding it for
-    // the watch (FIRMWARE-GAPS §4.3). With supportsAlbumArt=false MusicControlManager never registers its album-art handler.
-    override val supportsAlbumArt: Boolean = false
-    override suspend fun getAlbumArt(title: String, artist: String, width: Int, height: Int): EncodedImage? = null
-    override val albumArtUpdated: Flow<Unit> = emptyFlow()
+    // Album art from the player's own `mpris:artUrl` (file: or data:, never downloaded). The watch asks only
+    // while its "show album art" setting (musicShowAlbumArt) is on, and only on emery and gabbro.
+    private val albumArt = AlbumArt(scope)
+    override val supportsAlbumArt: Boolean = true
+    override val albumArtUpdated: Flow<Unit> = albumArt.updates
+
+    override suspend fun getAlbumArt(title: String, artist: String, width: Int, height: Int): EncodedImage? {
+        if (!enabled()) return null
+        val (track, url) = synchronized(lock) { targetBus?.let { players[it]?.currentTrack to artUrls[it] } } ?: return null
+        if (track == null || url == null) return null
+        if (!matchesTruncated(track.title, title) || !matchesTruncated(track.artist, artist)) return null
+        return albumArt.get(url, width, height)
+    }
 
     private fun enabled(): Boolean = configStore.current().musicControl
 
@@ -120,6 +129,7 @@ class MprisMusicControl(
     private val busToUnique = HashMap<String, String>()           // busName -> its owner's unique name
     private val identities = HashMap<String, String>()            // busName -> human player name (cached)
     private val startedPlayingAt = HashMap<String, Long>()        // busName -> when it last became Playing
+    private val artUrls = HashMap<String, String>()               // busName -> its track's mpris:artUrl
     @Volatile private var targetBus: String? = null
 
     init { start() }
@@ -163,6 +173,12 @@ class MprisMusicControl(
             val bus = sig.source?.let { src -> synchronized(lock) { uniqueToBus[src] } } ?: return@addSigHandler
             scope.launch(Dispatchers.IO) { refreshPlayer(bus) }
         }
+        // A seek changes Position without PropertiesChanged (MPRIS doesn't signal Position), so the
+        // watch's progress bar would drift until the next state change.
+        c.addSigHandler(MprisPlayer.Seeked::class.java) { sig ->
+            val bus = sig.source?.let { src -> synchronized(lock) { uniqueToBus[src] } } ?: return@addSigHandler
+            scope.launch(Dispatchers.IO) { refreshPlayer(bus) }
+        }
 
         enumerateExisting(c)
 
@@ -199,11 +215,17 @@ class MprisMusicControl(
     }
 
     private fun refreshPlayer(busName: String) {
+        val prevArt = synchronized(lock) { artUrls[busName] }
         val status = readStatus(busName)
         if (status == null) { removePlayer(busName); return }
         synchronized(lock) {
             if (!busToUnique.containsKey(busName)) return // removed meanwhile
             val prev = players.put(busName, status)
+            // Players often publish the cover a moment after the title (browsers write it to a file first):
+            // a pending album-art request for the same track looks again.
+            if (busName == targetBus && prev?.currentTrack == status.currentTrack && artUrls[busName] != prevArt) {
+                albumArt.changed()
+            }
             if (status.playbackState == PlaybackState.Playing && prev?.playbackState != PlaybackState.Playing) {
                 startedPlayingAt[busName] = System.currentTimeMillis()
             }
@@ -217,6 +239,7 @@ class MprisMusicControl(
             startedPlayingAt.remove(busName)
             identities.remove(busName)
             busToUnique.remove(busName)?.let { uniqueToBus.remove(it) }
+            artUrls.remove(busName)
         }
         log.info { "MPRIS player removed: $busName" }
         recompute()
@@ -262,7 +285,10 @@ class MprisMusicControl(
             PlaybackStatus(
                 playerInfo = PlayerInfo(packageId = busName.removePrefix(MPRIS_BUS_PREFIX), name = identityOf(busName)),
                 playbackState = state,
-                currentTrack = trackFromMetadata(unwrap(all["Metadata"]) as? Map<*, *>),
+                currentTrack = (unwrap(all["Metadata"]) as? Map<*, *>).also { meta ->
+                    val art = (meta?.get("mpris:artUrl")?.let(::unwrap) as? String)?.takeIf { it.isNotBlank() }
+                    synchronized(lock) { if (art != null) artUrls[busName] = art else artUrls.remove(busName) }
+                }.let(::trackFromMetadata),
                 playbackPositionMs = (asLong(unwrap(all["Position"])) ?: 0L) / 1000,
                 playbackRate = (unwrap(all["Rate"]) as? Number)?.toFloat() ?: 1.0f,
                 shuffle = (unwrap(all["Shuffle"]) as? Boolean) ?: false,
@@ -273,6 +299,11 @@ class MprisMusicControl(
                 },
                 // MPRIS volume is per-player 0.0..1.0; many players (e.g. browsers) omit it — default 100.
                 volume = volume?.let { (it * 100).roundToInt().coerceIn(0, 100) } ?: 100,
+                skipSeeksWithinTrack = skipSeeksWithinTrack(
+                    canNext = (unwrap(all["CanGoNext"]) as? Boolean) ?: true,
+                    canPrevious = (unwrap(all["CanGoPrevious"]) as? Boolean) ?: true,
+                    canSeek = (unwrap(all["CanSeek"]) as? Boolean) ?: false,
+                ),
             )
         } catch (e: Exception) {
             log.debug { "MPRIS readStatus($busName) failed: ${e.message}" }
@@ -322,8 +353,14 @@ class MprisMusicControl(
     override fun play() = control("play") { it.Play() }
     override fun pause() = control("pause") { it.Pause() }
     override fun playPause() = control("playPause") { it.PlayPause() }
-    override fun nextTrack() = control("next") { it.Next() }
-    override fun previousTrack() = control("previous") { it.Previous() }
+    // A player that can seek but has no next/previous (a podcast or audiobook app, a single video) gets a
+    // seek instead, and the watch shows fast-forward/rewind icons for it (skipSeeksWithinTrack).
+    override fun nextTrack() =
+        if (_playbackState.value?.skipSeeksWithinTrack == true) control("seek +${SEEK_STEP_US / 1_000_000}s") { it.Seek(SEEK_STEP_US) }
+        else control("next") { it.Next() }
+    override fun previousTrack() =
+        if (_playbackState.value?.skipSeeksWithinTrack == true) control("seek -${SEEK_STEP_US / 1_000_000}s") { it.Seek(-SEEK_STEP_US) }
+        else control("previous") { it.Previous() }
     // System/master volume when `music.volume = system` (and a backend was found), else the active
     // player's volume. Resolved live so a `music.volume` change takes effect without a restart.
     override fun volumeUp() { if (enabled()) systemVol()?.up(scope) ?: adjustPlayerVolume(VOLUME_STEP) }
@@ -458,3 +495,12 @@ class SystemVolume private constructor(
         } catch (_: Exception) { false }
     }
 }
+
+/** How far the watch's next/previous seek in a player that only seeks (microseconds, MPRIS units). */
+private const val SEEK_STEP_US = 15_000_000L
+
+/** Whether next/previous should seek within the track: the player can seek but can't change track.
+ *  MPRIS has no per-direction rewind/fast-forward, so both buttons switch together, and a player that
+ *  omits CanGoNext/CanGoPrevious keeps plain skipping. */
+internal fun skipSeeksWithinTrack(canNext: Boolean, canPrevious: Boolean, canSeek: Boolean): Boolean =
+    canSeek && !canNext && !canPrevious

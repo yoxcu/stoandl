@@ -235,10 +235,7 @@ internal object SqliteNative {
     }
 
     /** `$XDG_CACHE_HOME/stoandl` (default `~/.cache/stoandl`): per-user, regenerable, and not in backups. */
-    private fun cacheDir(): File {
-        val xdg = System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotBlank() }
-        return File(xdg ?: (System.getProperty("user.home") + "/.cache"), "stoandl")
-    }
+    private fun cacheDir(): File = de.yoxcu.stoandl.util.CacheDirs.root()
 
     /** Whether this JVM runs on musl — its libc *is* its loader, `ld-musl-<arch>.so.1`. Null if unknown. */
     private fun runsOnMusl(): Boolean? = try {

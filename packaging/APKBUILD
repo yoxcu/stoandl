@@ -13,8 +13,12 @@ url="https://github.com/yoxcu/stoandl"
 arch="noarch"   # pure-Java fat JAR — same artifact runs on any arch with a JDK 25 JRE
 license="GPL-3.0-or-later"
 # Runtime: a Java 25 JRE (libpebble3's BT Classic transport uses java.lang.foreign, final on
-# JDK 22+), plus BlueZ for the BLE GATT server and a D-Bus session bus.
-depends="openjdk25-jre-headless bluez dbus"
+# JDK 22+), plus BlueZ for the BLE GATT server and a D-Bus session bus. The full openjdk25-jre, not
+# -headless: only it has libjavajpeg, which JPEG decoding needs (notification pictures, album art).
+# The daemon still runs headless (java.awt.headless=true); the package adds a few X11 client libs.
+# speex: decodes the watch's dictation audio; opus: voice notes for a local speech engine (both FFM,
+# tiny). The speech engine itself is the user's choice (e.g. community/whisper.cpp), see docs/voice.md.
+depends="openjdk25-jre speex opus bluez dbus"
 # Build: BOTH JDKs. Gradle 8.14 cannot run on JDK 25 (its launcher hard-fails on class major 69),
 # so the build runs on JDK 21 while the Kotlin jvmToolchain(25) auto-detects openjdk25-jdk under
 # /usr/lib/jvm and emits JDK 25 bytecode. The Gradle wrapper downloads Gradle + the Kotlin/libpebble3

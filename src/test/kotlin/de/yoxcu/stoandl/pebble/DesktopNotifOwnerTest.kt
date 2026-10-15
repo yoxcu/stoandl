@@ -78,7 +78,7 @@ class DesktopNotifOwnerTest {
     }
 
     @Test
-    fun `an owner change drops desktop routes, the first report does not`() {
+    fun `an owner change drops desktop routes, the first report does not`() = kotlinx.coroutines.runBlocking {
         val t = NotifRouteTable()
         val owner = DesktopNotifOwner(t)
         val a = Uuid.random()

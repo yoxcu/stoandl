@@ -137,10 +137,18 @@ friction without real security, so it was dropped — `extensions.enabled` is th
   "title":"Alice","body":"dinner?","subtitle":"#weekend",
   "iconCode":"NotificationGeneric","color":"Red","vibe":"double",  // optional; per-app override wins
   "actions":[{"id":"archive","label":"Archive"}],
-  "reply":{"cannedReplies":["OK","On my way","Later"],"label":"Reply"}}}
+  "reply":{"cannedReplies":["OK","On my way","Later"],"label":"Reply"},
+  "image":"data:image/png;base64,iVBOR…"}}  // optional picture: data: URI, file: URI or absolute path
 // host -> ext (result)
 {"jsonrpc":"2.0","id":7,"result":{"itemId":"e3b0c442-…"}}   // daemon-issued correlation id
 ```
+
+`image` (optional) is a picture shown in the notification on watches that can (Pebble Time 2 / Round 2,
+firmware 4.35+) while `notification.images` is on: PNG, GIF or BMP, and JPEG where the JRE has it. The
+daemon decodes and stores it once and the watch pulls it, sized for its screen, when the card shows.
+`onWatchConnected` carries `{"notificationImages": true|false}`: whether a picture will show on the watch
+that just connected (re-sent on every connect), so an extension can use its own fallback otherwise (the
+Matrix extension's Preview watchapp).
 
 `subtitle` (optional) is the large bold line under the title, and it is always kept. The app name
 follows `notification.app_name` (or the app's own override, `stoandl notif style <app> --app-name`): by
@@ -160,7 +168,9 @@ Callbacks (host→ext notifications, dispatched **async** — never blocking the
 {"method":"onDismiss","params":{"extToken":"room!abc:42","itemId":"e3b0…"}}
 ```
 
-`closeNotification {itemId}` lets a child proactively clear a notif (message read elsewhere).
+`closeNotification {itemId}` lets a child proactively clear a notif (message read elsewhere). The watch marks
+the item dismissed (libpebble3 `markNotificationRead`, whose STATE_READ flag is the firmware's *dismissed*
+status bit), which takes it out of the watch's notification list.
 
 ### AppMessage / watchapp companion
 
@@ -203,9 +213,52 @@ or the dictated transcript — comes back in the action invocation's attributes;
 and delivers `onReply{text}`. Named non-reply actions are `Generic` actions returning `onAction{action}`.
 Degrades correctly: mic-less hardware shows only the canned list; voice falls back to canned.
 
-> **Voice caveat:** stoandl's `TranscriptionProvider` is currently a NoOp, so dictation yields nothing
-> until a real provider is injected via Koin — a separate, additive gap. Canned replies work today with
-> no dependency.
+> **Voice:** dictation needs `voice.backend` set in stoandl (a local speech engine or an HTTP service,
+> [docs/voice.md](voice.md)); with it off the watch says "Enable voice in the settings page". The
+> dictated text reaches `onReply` exactly like a canned reply.
+
+### Serving plugin sources and actions
+
+An extension can serve [plugin](plugins.md) data to watchfaces and watchapps. It declares a `plugin` block
+in its `initialize` result, in the same shape as a `.pbw`'s plugin manifest:
+
+```jsonc
+// ext -> host: the initialize result
+{"jsonrpc":"2.0","id":0,"result":{"name":"Matrix","capabilities":["notify"],
+  "plugin":{"description":"Rooms with unread messages",
+    "sources":[{"category":"messages","items":["room"],"properties":{"name":["shortText"],"unread":["numericValue","shortText"]},
+                "supportsMultiple":true,"callerPermissions":[{"name":"Notifications"}],"suggestedRefreshIntervalSec":60}],
+    "actions":[{"name":"mark_read","targets":["messages/room"],"callerPermissions":[{"name":"Notifications"}]}]}}}
+// host -> ext: a read (when something subscribes, on sourceChanged, and every suggestedRefreshIntervalSec)
+{"jsonrpc":"2.0","id":5,"method":"readSource","params":{"category":"messages","item":"room","properties":["name","unread"]}}
+{"jsonrpc":"2.0","id":5,"result":{"instances":[{"instanceId":"!abc","properties":{"name":{"shortText":{"text":"Family"}},
+  "unread":{"numericValue":{"value":3},"shortText":{"text":"3"}}}}]}}
+// host -> ext: an action
+{"jsonrpc":"2.0","id":6,"method":"invokeAction","params":{"action":"mark_read","args":{"instanceId":"!abc"}}}
+{"jsonrpc":"2.0","id":6,"result":{"ok":true,"text":"Marked read","refreshed":["messages/room"]}}
+// ext -> host: the data changed, read again
+{"jsonrpc":"2.0","method":"sourceChanged","params":{"category":"messages","item":"room"}}
+```
+
+The plugin's uuid is stable per extension name unless the block sets `"uuid"`. It is listed as kind
+`extension` (`stoandl plugins`, the GUI's Plugins segment) and goes away while the extension isn't running.
+An installed extension is trusted; its `callerPermissions` decide what a watchapp must be granted to read
+or invoke. Requests time out after 15 s.
+
+### transcribe (speech to text for the extension)
+
+```jsonc
+// ext -> host (request); the file is read by the daemon, WAV or Ogg/Opus
+{"jsonrpc":"2.0","id":21,"method":"transcribe","params":{"path":"/tmp/voice-note.ogg","language":"de"}}
+// host -> ext
+{"jsonrpc":"2.0","id":21,"result":{"text":"bin gleich da"}}
+{"jsonrpc":"2.0","id":21,"error":{"message":"off"}}              // voice.backend = off
+{"jsonrpc":"2.0","id":21,"error":{"message":"unavailable: voice.command is empty"}}
+```
+
+The daemon's own speech-to-text (`voice.*`), so an extension needs no engine, codec or network access of
+its own. `language` defaults to `voice.language`. Up to a minute; answered asynchronously. The Matrix
+extension uses it for voice notes.
 
 The per-notification handler returns an **immediate optimistic** `TimelineActionResult(true, ResultSent,
 "Sent")` to the watch and fires `onReply`/`onAction` to the child **asynchronously** (the child then
@@ -261,7 +314,7 @@ def on_incoming_dm(room, sender, text):           # called from sync_loop
     rid = next_id()
     send({"jsonrpc":"2.0","id":rid,"method":"notify","params":{
         "extToken":room,"appName":"Matrix","title":sender,"body":text,
-        "reply":{"cannedReplies":["OK","On my way","Later"],"allowVoice":True}}})
+        "reply":{"cannedReplies":["OK","On my way","Later"]}}})
     # read the {id:rid,result:{itemId}} reply in the reader loop and set rooms[itemId]=room
 ```
 
@@ -319,9 +372,9 @@ Everything new lives in the stoandl outer repo: `ExtensionManager` (supervisor �
 writer-Channel+Mutex, backoff, timeouts, stderr→logback, init buffering), the extracted `pushToWatch`
 helper, the one `itemId→owner` route map, the typed-tagged AppMessage codec, and the `Ext*` CLI methods.
 
-**Two optional, named hooks** only if reality bites: (1) make per-item action overrides survive
-reconnect without re-push (only if the §"deferred" re-push proves lossy on hardware); (2) a real
-`TranscriptionProvider` for voice (an independent gap — canned replies need nothing).
+**One optional, named hook** only if reality bites: make per-item action overrides survive reconnect
+without re-push (only if the §"deferred" re-push proves lossy on hardware). (The voice
+`TranscriptionProvider` gap is closed: `voice/StoandlTranscriptionProvider`.)
 
 ## Phased plan (each phase shippable)
 
@@ -366,17 +419,19 @@ in use only for one-shot notifications like FirmwareControl's Update button). Ow
 (`NotifOwnerRegistry`), and the owner-opaque token (desktop: the D-Bus id; extension: its conversation
 token) is carried *in* the route, so `onReply`/`onAction`/`onDismiss` need no per-owner map.
 
-**Firmware reality (confirmed on PebbleOS 4.x):** the watch presents a notification's action menu
-**only while it is the live/incoming notification**. From the notification history/list, Select is a
-no-op and no `InvokeAction` is emitted. So notification actions are inherently "while it's on screen,"
-and the route table is **in-memory** — a route never needs to outlive the daemon (you can't act on an
-old notification regardless). This is also why an always-available trigger like find-my-phone is a
-**watchapp**, not a notification.
+**Actions from the history.** The firmware offers a notification's action menu from the watch's
+Notifications app only when the phone advertises capability bit 3 (`SupportsTwoWayDismissal`, the
+firmware's ExtendedNotificationService; `notification_window.c` `prv_should_show_action_in_action_menu`).
+stoandl advertises it (`WatchClaims`), so actions work on old notifications too. Routes are in memory,
+bounded to 7 days and 2000 items; after a daemon restart a history item's Dismiss still works and its
+other actions answer "Not supported". (Before stoandl advertised the bit, the menu appeared only on the
+live popup, which these docs once called a firmware limit.)
 
-Dismiss uses `markForDeletion` (not `markNotificationRead`, which re-inserts the record with a changed
-hash and makes the BlobDB re-sync it — so a dismissal would bounce back); this makes dismissals stick.
-(A watch-local "hold-select" clear that doesn't round-trip can still resync — "clear all" is the
-reliable clear.) A messaging extension can pass a stable `replace_id` so re-sends replace the same item.
+A wrist Dismiss uses `markForDeletion`: the watch already removed the item, so it only leaves our sync set.
+A dismissal *elsewhere* (the desktop closed it, `closeNotification`) uses `markNotificationRead` instead,
+whose STATE_READ flag is the firmware's dismissed status bit; the firmware applies that status-only update
+to an item it has and ignores it for one it doesn't, so nothing bounces back. A messaging extension can
+pass a stable `replace_id` so re-sends replace the same item.
 
 Mid-session, a `notify()` issued before the BlobDB finishes negotiating is dropped
 (`onlyInsertAfter=true`); the `onWatchConnected` settle delay is the mitigation.

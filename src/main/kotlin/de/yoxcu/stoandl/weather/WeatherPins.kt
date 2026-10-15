@@ -7,6 +7,7 @@ import io.rebble.libpebblecommon.SystemAppIDs.WEATHER_APP_UUID
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.entity.buildTimelinePin
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
+import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.weather.WeatherLocationData
 import io.rebble.libpebblecommon.weather.WeatherType
@@ -97,6 +98,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         insertPin(
             uuid = slot.dayUuid,
             title = "Sunrise",
+            kind = PIN_KIND_SUNRISE,
             subtitle = subtitle,
             part = forecast.day,
             timestamp = forecast.sunrise,
@@ -107,6 +109,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         insertPin(
             uuid = slot.nightUuid,
             title = "Sunset",
+            kind = PIN_KIND_SUNSET,
             subtitle = subtitle,
             part = forecast.night,
             timestamp = forecast.sunset,
@@ -120,6 +123,7 @@ internal class WeatherPins(private val libPebble: LibPebble) {
     private fun insertPin(
         uuid: Uuid,
         title: String,
+        kind: UByte,
         subtitle: String,
         part: DayPart,
         timestamp: Instant,
@@ -133,6 +137,9 @@ internal class WeatherPins(private val libPebble: LibPebble) {
             layout = TimelineItem.Layout.WeatherPin
             attributes {
                 title { title }
+                // Firmware >= 4.39 titles the pin by kind, in the watch's language; libpebble3 drops the
+                // attribute for a watch that doesn't advertise SupportsUnknownTimelineAttributes.
+                uByte(TimelineAttribute.WeatherPinKind) { kind }
                 subtitle { subtitle }
                 body { part.phrase }
                 tinyIcon { part.type.toWeatherIcon() }
@@ -184,3 +191,7 @@ private fun WeatherType.toWeatherIcon(): TimelineIcon = when (this) {
     WeatherType.RainAndSnow -> TimelineIcon.RainingAndSnowing
     WeatherType.Unknown -> TimelineIcon.TimelineWeather
 }
+
+/** `TimelineAttribute.WeatherPinKind` values (firmware `WeatherPinKind`; the official app's sunrise/sunset). */
+internal const val PIN_KIND_SUNRISE: UByte = 1u
+internal const val PIN_KIND_SUNSET: UByte = 2u

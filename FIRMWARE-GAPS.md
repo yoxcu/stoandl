@@ -162,7 +162,7 @@ battery heartbeat --all`, `HeartbeatMetrics`); `docs/heartbeat-metrics.md` lists
   - **Done, to be tested (TESTING 5.30b).** `conf.example` and `docs/configuration.md` say what `textStyle`
     sizes on each firmware (notifications up to 4.36, the whole UI on 4.37, the UI but not notifications on
     4.38.0, a one-shot notification seed from 4.38.1), and `WatchPrefsControl` appends that to the pref's
-    description (libpebble3 has none), so `stoandl settings` and both GUIs show it. The PebbleOS issue is not filed.
+    description (libpebble3 has none), so `stoandl settings` and the GUI show it. The PebbleOS issue is not filed.
 - **Dead backlight prefs.** `lightDynamicIntensity` and `dynBacklightMinThreshold` are rejected by every current
   fw, and each rejected row is resent on every connect (`BlobDB.kt:374-384`). Hide them with a small deny-list
   pre-bump, or just take the bump, which removes them. Drop the GUI section-rule special cases (`qml:75`,
@@ -293,7 +293,7 @@ Not behaviour-neutral: `sideloadFirmware` now takes the PRF route for a downgrad
   drops *new* batches when full, and malformed batches are dropped. Re-test §5.8.
 - **`WatchPrefsControl.kt:105,161,169,180`.** Add an `is ScheduleWatchPref` branch to each: parse via
   `QuietTimeSchedule.parse`, type `schedule`, allowed `HH:MM-HH:MM`, format `encode()`. Add the type to
-  `docs/dbus-interface.md` (ListWatchPrefs record), `gui/tools/mock_stoandl.py` and both GUIs (§4.1).
+  `docs/dbus-interface.md` (ListWatchPrefs record), `gui/tools/mock_stoandl.py` and the GUI (§4.1).
 - **Removed pref ids.** `lightDynamicIntensity`, `langEnglish` and `dynBacklightMinThreshold`: remove them from
   the conf example, GUI section rules and the mock. A pinned `watch.langEnglish` will log "Unknown watch pref";
   mention it in the release notes.
@@ -337,10 +337,10 @@ Extra Large text, notification text size and the new vibe patterns are **not** i
 
 - **Zero code.** Bool/Enum prefs render generically: `dndAutoDismiss` (fw ≥4.37), QT weekday/weekend schedule
   toggles, `musicShowAlbumArt`, `lightPreset`, `lightDynamicMode`, `unitsWind`, `language`.
-- **Needs work: the `schedule` type.** It needs a time-range widget in the Kirigami page and GTK
-  `settings.rs`. Until then both show a read-only fallback row.
+- **Needs work: the `schedule` type.** It needs a time-range widget in the Kirigami page (the GTK
+  front-end was retired 2026-10-15). Until then it shows a read-only fallback row.
   - **Done, to be tested (TESTING 5.33j).** The daemon lists and sets it (type `schedule`, `HH:MM-HH:MM`,
-    `settings set` and `watch.*`). Both GUIs edit it as a validated text row under its `…Enabled` switch
+    `settings set` and `watch.*`). The GUI edits it as a validated text row under its `…Enabled` switch
     (stoandl-gui `9f2d2d6`).
 - **Optional polish:**
   - Show the schedule hours only while their toggle is on.
@@ -371,6 +371,11 @@ meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
 
 ### 4.3 Album art: ~1–1.5 d
 
+**Done, to be tested (TESTING 5.45, 2026-10-15).** Local art only (the player's `file:`/`data:` `mpris:artUrl`;
+no download, decided with the user), decoded once by `imaging/AlbumArt`, ImageIO as the decoder, the APKBUILD
+on `openjdk25-jre` for JPEG. The firmware asks only from 4.36 on emery/gabbro with `musicShowAlbumArt` on;
+the notes below are the original plan.
+
 - **Wire path.** The watch pulls over Imaging endpoint `0x35` (AlbumArt), and only on emery (166×166) and
   gabbro (260×260). It asks only when all three hold: `musicShowAlbumArt` is on, the phone advertises
   SupportsImageFetch (17), and something is playing.
@@ -391,6 +396,11 @@ meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
 - **No `music.album_art` host key.** The watch pref is the switch; a host key would duplicate it.
 
 ### 4.4 Notification images: ~2–3 d, shares the decoder with §4.3
+
+**Done, to be tested (TESTING 5.45, 2026-10-15).** `notification.images` (on/off, default on, decided with the
+user), attachments only: an extension's `image`, the first image file in `x-kde-urls`, a Chromium body `<img>`
+on Plasma; never avatars. `NotificationImageStore` keeps a ≤300 px PNG per item. Firmware minimum is 4.35.0,
+not 4.36 (`a0f41c0eb`). The notes below are the original plan.
 
 - **Wire path.**
   1. The notification carries `TimelineAttribute` ImageAspectRatio `0x34` (gated on the watch's
@@ -420,7 +430,7 @@ meaning that today's `WeatherSync.kt:418` (thunderstorm → HeavyRain) loses.
   - **Implemented with the bump (daemon), to be tested (TESTING 5.11e):** `FirmwareStatus` reports
     `prf:<version>`, `FirmwareControl` re-sideloads the `.pbz` when that watch reconnects in PRF,
     `UpdateFirmware` answers `busy:` and `maybeNotify` stays quiet meanwhile, and the CLI follows the flash
-    across the reconnect. Both GUIs follow the `prf` phase through the reconnect and show "Rebooting into
+    across the reconnect. The GUI follows the `prf` phase through the reconnect and shows "Rebooting into
     recovery to downgrade…" (stoandl-gui `017a83f`).
 - **Optional anywhere: digest check.** The GitHub API returns `digest: sha256:…` per asset; verify downloads
   with it. This needs no bump.
@@ -483,10 +493,12 @@ ones a user sees); the others still need stoandl work.
 
 ### 5.3 Music
 
+**Done, to be tested (TESTING 5.43c–d, 2026-10-15).**
+
 - **Handle MPRIS `Seeked`.** Position emits no `PropertiesChanged`, so desktop seeks leave the watch's progress
-  wrong. The fw re-polls (`GetAllInfo`) only on connect.
-- **Seek instead of skip.** When a player can seek but not skip (podcasts, audiobooks), seek ±15 s. The watch's
-  FF/rewind icons (`skipSeeksWithinTrack`) need the bump.
+  wrong. The fw re-polls (`GetAllInfo`) only on connect. `MprisMusicControl` re-reads the player on `Seeked`.
+- **Seek instead of skip.** When a player can seek but not skip (podcasts, audiobooks), seek ±15 s, and
+  `skipSeeksWithinTrack` gives the watch its FF/rewind icons (`skipSeeksWithinTrack()`, `MprisSkipTest`).
 
 ### 5.4 Health
 
@@ -510,7 +522,7 @@ ones a user sees); the others still need stoandl work.
 - **GitHub release assets.** Still attached. eng-dash publishing (`b23a71ec`) was added *alongside*;
   `getafix_evt` bundles were dropped (pre-production board).
 - **Long-track progress bar.** A fw 32-bit overflow; stoandl's µs → ms conversions are fine.
-- **Health on any Quick Launch.** It is a locker system app, so both GUIs list it.
+- **Health on any Quick Launch.** It is a locker system app, so the GUI lists it.
 - **`.pbl` install flow.** Unchanged by the fw i18n rework (PutBytes FILE `lang`).
 - **Notification send/dismiss contract.** Unchanged upstream: `sendDeletions = false`, `insertOrReplace`,
   action dispatch.

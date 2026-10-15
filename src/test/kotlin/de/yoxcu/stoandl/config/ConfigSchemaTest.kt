@@ -327,9 +327,13 @@ class ConfigSchemaTest {
             val hi = f.max ?: Int.MAX_VALUE
             (if (n < hi) n + 1 else n - 1).coerceIn(lo, hi).toString().takeIf { it != current }
         }
+        // A secret never goes through stoandl.conf (the daemon stores it in the secret store).
+        "secret" -> null
         // Structured text/list fields need a value their own validator accepts.
         else -> when (f.key) {
             "weather.locations" -> "Testville:1.5:2.5"
+            "voice.url" -> "http://127.0.0.1:8080/v1/audio/transcriptions"
+            "voice.language" -> "de"
             "firmware.github_repo" -> "example/fork"
             "firmware.cohorts_url" -> "https://example.invalid"
             else -> if (current == "zz-test") null else "zz-test"
@@ -355,7 +359,8 @@ class ConfigSchemaTest {
                 when (val r = f.parse(h)) {
                     is ConfigParse.Err -> Unit
                     is ConfigParse.Ok -> {
-                        assertTrue('#' !in r.token, "${f.key}: accepted '$h' → token has '#'")
+                        // A secret never reaches stoandl.conf (applyGuiConfig refuses it), so '#' is fine there.
+                        if (f.type != "secret") assertTrue('#' !in r.token, "${f.key}: accepted '$h' → token has '#'")
                         assertTrue('\n' !in r.token && '\r' !in r.token, "${f.key}: accepted '$h' → token has a newline")
                     }
                 }

@@ -75,6 +75,10 @@ data class IncomingNotification(
     val actions: List<Pair<String, String>> = emptyList(),
     /** FDO: the `transient` hint — a passing notice the server keeps out of its history. */
     val transient: Boolean = false,
+    /** FDO: a picture the notification is about, as a `file:` URI or path: the first image file in the
+     *  `x-kde-urls` hint (KNotification `setUrls`, e.g. Spectacle's screenshot). Sender avatars
+     *  (`image-data`, `image-path`, portal/GTK icons) are deliberately not taken. */
+    val attachment: String? = null,
 )
 
 /** What the passive monitor reports. */
@@ -98,6 +102,7 @@ private data class PendingNotify(
     val desktopEntry: String?,
     val actions: List<Pair<String, String>>,
     val transient: Boolean,
+    val attachment: String?,
     val atMs: Long,
 )
 
@@ -122,6 +127,22 @@ internal fun parseNotifyActions(raw: Any?): List<Pair<String, String>> {
 /** A string-valued entry of an `a{sv}` map (Notify hints, a portal/GTK notification dict). */
 internal fun dictString(dict: Any?, key: String): String? =
     ((dict as? Map<*, *>)?.get(key)?.let(::unwrapVariant) as? String)?.takeIf { it.isNotEmpty() }
+
+/** File types the image pipeline decodes, by extension. */
+private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "bmp")
+
+/** The first local image file among a Notify's `x-kde-urls` (KNotification `setUrls`), or null. */
+internal fun imageAttachment(hints: Any?): String? {
+    val urls = when (val v = (hints as? Map<*, *>)?.get("x-kde-urls")?.let(::unwrapVariant)) {
+        is List<*> -> v
+        is Array<*> -> v.asList()
+        else -> return null
+    }
+    return urls.asSequence().filterIsInstance<String>().firstOrNull { u ->
+        (u.startsWith("file:") || u.startsWith("/")) &&
+            u.substringAfterLast('/').substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+    }
+}
 
 /** A boolean entry of an `a{sv}` map. The spec types hints like `transient` as `b`; some senders use an integer. */
 internal fun dictBool(dict: Any?, key: String): Boolean =
@@ -237,6 +258,7 @@ internal class NotificationMonitorState(
             desktopEntry = dictString(params.getOrNull(6), "desktop-entry"),
             actions = parseNotifyActions(params.getOrNull(5)),
             transient = dictBool(params.getOrNull(6), "transient"),
+            attachment = imageAttachment(params.getOrNull(6)),
             atMs = now,
         )
     }
@@ -265,7 +287,7 @@ internal class NotificationMonitorState(
             emit(NotificationEvent.Posted(IncomingNotification(
                 id, p.appName, p.summary, p.body,
                 source = NotifSource.FDO, owner = server, appId = p.desktopEntry, actions = p.actions,
-                transient = p.transient,
+                transient = p.transient, attachment = p.attachment,
             )))
         }
     }

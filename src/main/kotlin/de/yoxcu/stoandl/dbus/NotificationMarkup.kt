@@ -16,6 +16,7 @@ private val TAG = Regex(
     """<(/?)([A-Za-z][A-Za-z0-9]*)((?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=`]+))?)*+)\s*/?>""",
 )
 private val ALT = Regex("""(?:^|\s)alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>=`]+))""", RegexOption.IGNORE_CASE)
+private val SRC = Regex("""(?:^|\s)src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>=`]+))""", RegexOption.IGNORE_CASE)
 private val ENTITY = Regex("""&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|(amp|lt|gt|quot|apos|nbsp));""")
 
 // &nbsp; as a plain space: that is what the watch fonts can draw.
@@ -45,4 +46,16 @@ internal fun markupToPlainText(markup: String): String {
         val cp = if (dec.isNotEmpty()) dec.toInt() else hex.toInt(16)
         if (cp == 0 || cp > 0x10FFFF || cp in 0xD800..0xDFFF) m.value else String(Character.toChars(cp))
     }
+}
+
+/** The `src` of the first `<img>` in a markup body, entity-decoded: Chromium puts a web notification's
+ *  image there (`<img src="file://…">`) on servers that advertise `body-images` (Plasma). */
+internal fun firstImageSrc(markup: String): String? {
+    if ("<img" !in markup && "<IMG" !in markup) return null
+    for (m in TAG.findAll(markup)) {
+        if (m.groupValues[1].isNotEmpty() || !m.groupValues[2].equals("img", ignoreCase = true)) continue
+        val src = SRC.find(m.groupValues[3])?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() } ?: continue
+        return markupToPlainText(src)
+    }
+    return null
 }

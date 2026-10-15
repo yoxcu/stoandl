@@ -33,6 +33,15 @@ notification another app posted, so stoandl then closes it on GNOME Shell's own 
 same ids (_to be tested_; `notify-send` never showed the problem because its ids aren't live any more).
 Portal and GTK notifications are removed with their backend's `RemoveNotification` (_to be tested_).
 
+Desktop → watch (`notification.sync_dismissals`, default on, _to be tested_, [TESTING §5.42](TESTING.md)):
+a notification closed by the user or its app on the desktop or phone (`NotificationClosed` reason 2 or 3),
+or withdrawn through the portal or GTK, is dismissed on the watch too. A popup that only times out into
+the history stays. Extensions' `closeNotification` (message read elsewhere) takes the same path.
+
+Actions from the watch's history: stoandl advertises capability bit 3, so Reply, Mute, app actions and
+Dismiss are offered on a notification opened from the watch's Notifications app, not only on the popup
+(_to be tested_, [TESTING §5.42](TESTING.md)).
+
 ### App / watchface management
 
 Manage the watch locker — list, launch, install (`.pbw`) and remove apps & watchfaces.
@@ -209,7 +218,10 @@ now-playing (title/artist/album, play state, position) plus play/pause, next/pre
 the watch. Volume drives the master/output level by default (auto-detected `wpctl`/`pactl`/`amixer`,
 configurable) or the active player's own MPRIS volume (`music.volume`). Follows the actively-playing
 player; `playerctld` is skipped so it doesn't duplicate. On by default (`music.enabled`); local-only,
-no egress, no command — it just tracks whatever's playing.
+no egress, no command — it just tracks whatever's playing. A player that can seek but can't change
+track (a podcast or audiobook app, a single video) gets ±15 s seeks from next/previous instead, and the
+watch shows fast-forward/rewind for it; a seek on the desktop updates the watch's progress at once
+(_to be tested_, [TESTING §5.43](../TESTING.md)).
 
 _Hardware-verified. Note: stoandl must identify as `OSType.Android` in the PhoneAppVersion handshake
 (`PebbleIntegration` overrides the JVM default `OSType.Unknown`) — the firmware gates its music path
@@ -283,6 +295,10 @@ _Implemented — to be tested ([TESTING.md §5.56a, §5.33l](../TESTING.md)):_ a
 UTC midnight of their date, which the watch expects (east of UTC they landed on the previous day), and with the libpebble3 bump a reminder offers Dismiss/Snooze on the watch.
 
 See [configuration.md](configuration.md#calendar).
+
+Reminders, declined events and the reminder vibration are configurable (`calendar.reminders`,
+`calendar.show_declined`, `calendar.reminder_vibe`), live without a restart (_to be tested_,
+[TESTING §5.43](../TESTING.md)).
 
 ### Watch screenshot
 
@@ -569,7 +585,7 @@ _Implemented — to be tested ([TESTING.md §5.11e–5.11h](../TESTING.md)):_ "l
 release, so a backport marked latest (v4.27.3, v4.30.3) no longer hides the newest firmware or gets
 flashed onto a watch in recovery. Flashing an **older** `.pbz` onto a dual-slot Core watch goes through
 recovery: the watch reboots into PRF, and stoandl flashes the same file there when it reconnects (the
-CLI and both GUIs follow it; `firmware update` answers `busy:` meanwhile). An update that crosses 4.38.0
+CLI and the GUI follow it; `firmware update` answers `busy:` meanwhile). An update that crosses 4.38.0
 (4.37.0 on a Pebble 2 Duo) says that the built-in translations go away and points to
 `stoandl language sideload`.
 
@@ -580,16 +596,13 @@ what's still pending. Test plan: [TESTING.md](../TESTING.md).
 
 ### libpebble3 on current upstream
 
-The libpebble3 fork now sits on upstream `coredevices/libpebble3` `e6b5138e` (fork branch
-`stoandl-bump`), 518 commits newer than before. What it changes for stoandl users is noted under each
-feature above: the newer watch prefs and the Quiet Time hours, health v14 minute records and the
-workout kcal, the watch's sleep card, non-ASCII weather locations, calendar reminder Dismiss/Snooze,
-PKJS timeline pins and XHR fixes, and downgrades through recovery. The database moves from schema 38
-to 47 on the first start, one way, so take a `stoandl backup` before upgrading. BLE now registers
-its GATT application at the first connect instead of when Bluetooth comes up. Everything passes
-offline (the fork's 281 JVM tests, the daemon's tests, a boot smoke that migrates an old database);
-the hardware pass is _to be tested_ ([TESTING.md §5.33](../TESTING.md)). The fork branch becomes
-`stoandl` once it passes. Runbook and decisions: [FIRMWARE-GAPS.md §3](../FIRMWARE-GAPS.md).
+The libpebble3 fork sits on upstream `coredevices/libpebble3` `ec2156cc` (fork branch `stoandl-bump`,
+re-bumped 2026-10-15 from `e6b5138e`, which passed its hardware pass by daily use). The re-bump brings the
+plugin and app-permission machinery (off until stoandl's plugin support lands), the weather pin kind
+(Sunrise/Sunset pins titled in the watch's language on firmware ≥ 4.39) and drops the built-in watch
+languages the firmware removed in 4.38 (Custom and English remain; use a language pack). The database moves
+from schema 47 to 49 on the first start, one way, so take a `stoandl backup` before upgrading. Offline
+everything passes; the hardware rows are _to be tested_ ([TESTING.md §5.44](../TESTING.md)).
 
 ### Reply to desktop notifications
 
@@ -760,6 +773,62 @@ to `connect() starting` is unchanged: bluetoothd's drop delivery plus libpebble3
 settle. The log line `connected and services resolved (N ms after connect())` shows the time. _To be
 tested ([TESTING.md §5.32h](../TESTING.md))._
 
+### Pictures in notifications and album art
+
+On watches that show pictures (Pebble Time 2 / Round 2, emery and gabbro), stoandl serves them over the
+watch's imaging endpoint, as the official app does:
+
+- **Notification pictures** (`notification.images`, default on): a photo an extension attaches (the Matrix
+  extension sends image messages' thumbnails), the first image file a desktop notification links in
+  `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma. Sender avatars are not sent.
+  Firmware 4.35+. Pictures are kept (at most 32, ≤300 px) in `~/.cache/stoandl/images/notifications` and
+  deleted with the notification.
+- **Album art** in the Music app: the cover the player publishes (`mpris:artUrl` as a local file or a
+  `data:` URI: Elisa, Firefox, Chromium, mpv-mpris, Lollypop, …), never downloaded, so players that only
+  give a web URL (Spotify) show none. Switched on the watch (Settings → Music → album art), firmware 4.36+.
+
+Decoding uses Java's ImageIO: PNG, GIF and BMP everywhere, JPEG with the full JRE (`openjdk25-jre` on
+Alpine/postmarketOS, which the package depends on; the daemon logs `Images: png gif bmp jpeg` at start).
+_To be tested_: [TESTING §5.45](../TESTING.md).
+
+### Voice dictation
+
+The watch's microphone works as on the official app: Voice in a notification's Reply menu, and the
+dictation API watchapps use. stoandl decodes the watch's Speex audio (libspeex) and hands it to a
+speech-to-text backend of your choice (`voice.backend`, off by default): a **local engine** run as a
+command (whisper.cpp's `whisper-cli`, `parakeet-cli`, or any script printing the text; no audio leaves
+the machine), or an **OpenAI-compatible HTTP service** (a `whisper-server` on the LAN, or a hosted one with
+an API key kept in the keyring). The text goes back to the watch within its 15 s window and from there to
+the reply path, like a canned reply (Plasma with InvokeReply, extensions' `onReply`). `stoandl voice test
+<file>` transcribes a file through the same backend. Extensions get `transcribe`: the Matrix extension
+puts the text of voice notes into their notification. Engines and models for old hardware:
+[voice.md](voice.md). _To be tested_: [TESTING §5.46](../TESTING.md).
+
+### Weather for classic watchfaces
+
+Hundreds of 2014–2016 watchfaces fetch weather from their PebbleKit JS: Yahoo's YQL weather API, shut
+down in 2019, or OpenWeatherMap 2.5 with an embedded key that has since been revoked. On their own they
+show "--". As the official app does, stoandl answers these requests itself (libpebble3's PKJS HTTP
+interceptor hook), from Open-Meteo instead of Core's weather service: Yahoo's place and forecast queries
+in Yahoo's JSON shape, in °C or °F as asked, with stoandl-issued place ids for the follow-up query; and
+OpenWeatherMap's current-weather call, which still goes to OWM first with the app's own key and is
+answered from Open-Meteo only when OWM refuses the key (in Kelvin, metric or imperial as asked). Place
+names come from `weather.locations` within 10 km, or Nominatim with `weather.reverse_geocode`. Off by
+default (`weather.intercept_pkjs`): it sends the coordinates or place a watchface asks about to a web
+service; most of these watchfaces also need `geolocation.enabled`. Ported from the official app (GPLv3).
+_To be tested — needs a watch and one of these watchfaces. [TESTING §5.47](../TESTING.md)._
+
+### Plugins
+
+The official app's plugin system (phone-side data sources and actions for watchfaces and watchapps, with
+app permissions), on the computer: built-in Weather, Music, Calendar, Phone (battery, Wi-Fi/cellular),
+Watch Settings and Watch State; the plugin a `.pbw` ships, run in GraalJS; and extensions that serve
+sources over their pipe. Permission requests are asked on the watch and the desktop (Allow / Deny), and
+answered in the GUI or with `stoandl perms`; plugins' secure storage is in the keyring. A `.pbw`'s own
+settings page talks to its plugin while open, through the daemon's page server. Off by default
+(`plugins.enabled`). OAuth sign-in (store broker) isn't available. [plugins.md](plugins.md). _To be
+tested_: [TESTING §5.48](../TESTING.md).
+
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
@@ -854,11 +923,7 @@ once a token exists: emit it into `proxyTokenProvider` and flip `lanDevConnectio
 
 ### Voice / dictation
 
-*Not planned until reply works.* Dictation isn't a standalone feature: the watch mic only ever feeds
-the **Response** action, so it depends entirely on *Send text / reply* above being in place first
-(there's nowhere to deliver dictated text otherwise). Only then is it a contained add-on (Pebble voice
-protocol + an opt-in STT backend). Transcription provider is currently stubbed (`Failed`).
-
+Moved to "Implemented — to be tested" (Voice dictation).
 ### Battery level over Bluetooth Classic
 
 `stoandl watch battery` works over BLE but not Classic, and this is **structural, not just unwired**.

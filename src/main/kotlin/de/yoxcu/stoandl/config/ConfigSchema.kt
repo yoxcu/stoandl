@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.config
 
 import de.yoxcu.stoandl.notification.AppNamePlacement
 import de.yoxcu.stoandl.util.ConfFile
+import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import java.io.File
 
 /**
@@ -56,7 +57,9 @@ sealed interface ConfigParse {
 
 data class ConfigField(
     val key: String,
-    /** `toggle` | `combo` | `text` | `int` | `list`. */
+    /** `toggle` | `combo` | `text` | `int` | `list` | `secret`. A `secret` is never in stoandl.conf: it lives
+     *  in the secret store (keyring, else a 0600 file) under [secretRef]; `GetConfig` shows only `set` or
+     *  empty, and writing an empty value removes it. */
     val type: String,
     /** Section header the GUI groups this key under (display only). */
     val group: String,
@@ -78,6 +81,9 @@ data class ConfigField(
      *  error message, or null when the value is acceptable. Runs on the already-trimmed input. */
     val validate: ((String) -> String?)? = null,
 ) {
+    /** The secret store reference of a `secret` key. */
+    val secretRef: String get() = "config:$key"
+
     /** CSV of option labels for `GetConfigSchema` (empty for every non-combo kind). */
     val options: String get() = choices.joinToString(",") { it.label }
 
@@ -119,6 +125,8 @@ data class ConfigField(
                 if (hi != null && n > hi) return ConfigParse.Err("$key must be at most $hi")
                 ConfigParse.Ok(n.toString())
             }
+            "secret" -> if (t.contains('\n') || t.contains('\r')) ConfigParse.Err("$key: must be a single line")
+                else ConfigParse.Ok(t)
             "list" -> {
                 confSafe(t)?.let { return ConfigParse.Err("$key: $it") }
                 // Normalise to the `a,b,c` form StoandlConfig.list() reads back, dropping blanks.
@@ -164,6 +172,9 @@ private fun text(
     read: (StoandlConfig) -> String,
 ) = ConfigField(key, "text", group, label, desc, apply, read = read, placeholder = placeholder, validate = validate)
 
+private fun secret(key: String, group: String, label: String, desc: String, placeholder: String = "") =
+    ConfigField(key, "secret", group, label, desc, ConfigApply.LIVE, placeholder = placeholder)
+
 private fun int(
     key: String, group: String, label: String, desc: String, min: Int, max: Int, unit: String = "",
     apply: ConfigApply = ConfigApply.LIVE, read: (StoandlConfig) -> Int,
@@ -208,6 +219,8 @@ private fun httpUrlValid(v: String): String? {
 
 // --- The GUI-exposed keys, in display order --------------------------------------------------------
 
+private const val G_PLUGINS = "Plugins"
+private const val G_VOICE = "Voice"
 private const val G_NOTIF = "Notifications"
 private const val G_ALERTS = "stoandl alerts"
 private const val G_CALLS = "Calls & contacts"
@@ -248,6 +261,12 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Push the per-app list and mute states to the watch's BlobDB. Current firmware surfaces no " +
             "per-app notification UI, so this normally changes nothing — mute is enforced host-side.",
         apply = ConfigApply.RESTART) { it.notificationSyncToWatch },
+    toggle("notification.images", G_NOTIF, "Pictures on the watch",
+        "Photos and screenshots a notification carries are shown on watches that can (Pebble Time 2 / " +
+            "Round 2, firmware 4.35+). Sender avatars are never sent. Off deletes the stored pictures.") { it.notificationImages },
+    toggle("notification.sync_dismissals", G_NOTIF, "Clear dismissed notifications from the watch",
+        "When a notification is closed on the desktop or phone (or its app withdraws it), it is removed " +
+            "from the watch too. A popup that only times out stays.") { it.notificationSyncDismissals },
     int("notification.catch_up_minutes", G_NOTIF, "Catch up after a disconnect",
         "A reconnecting watch also gets the notifications it missed that are at most this old (never from " +
             "before the daemon started or the watch was paired). 0 = only ones posted after it reconnected.",
@@ -269,6 +288,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Alert when another app's Bluetooth scan is monopolising the adapter and blocking reconnects") { it.alertsBluetooth },
     toggle("alerts.extensions", G_ALERTS, "Extension problems",
         "Alert when an installed extension needs configuring before it can start") { it.alertsExtensions },
+    toggle("alerts.permissions", G_ALERTS, "Permission requests",
+        "When an app asks for a permission (plugins on), prompt with Allow and Deny on the watch and the desktop") { it.alertsPermissions },
 
     // --- Calls & contacts ---
     list("call.dialer_apps", G_CALLS, "Dialer apps",
@@ -312,6 +333,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Name the GPS location via OSM Nominatim (sends coordinates to a web service)") { it.weatherReverseGeocode },
     toggle("weather.pins", G_WEATHER, "Weather timeline pins",
         "Add sunrise/sunset pins for the primary location") { it.weatherPins },
+    toggle("weather.intercept_pkjs", G_WEATHER, "Weather for classic watchfaces",
+        "Answer the dead Yahoo / OpenWeatherMap 2.5 weather APIs old watchfaces call, from Open-Meteo " +
+            "(sends the watchface's coordinates or place name to a web service)") { it.weatherInterceptPkjs },
 
     // --- Calendar ---
     toggle("calendar.discover", G_CALENDAR, "Auto-discover local calendars",
@@ -319,6 +343,61 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     int("calendar.sync_interval", G_CALENDAR, "Re-read interval",
         "How often calendars are re-read (also rolls the timeline window forward)",
         min = 5, max = 1440, unit = "min") { it.calendarSyncIntervalMinutes.toIntClamped() },
+    toggle("calendar.reminders", G_CALENDAR, "Event reminders",
+        "The watch buzzes before an event (its own reminders). Off = pins only.") { it.calendarReminders },
+    toggle("calendar.show_declined", G_CALENDAR, "Show declined events",
+        "Events you declined still appear on the timeline") { it.calendarShowDeclined },
+    combo("calendar.reminder_vibe", G_CALENDAR, "Reminder vibration",
+        "The vibration for every calendar reminder", choices =
+            listOf(ConfigChoice("Watch default", "") { it.calendarReminderVibe == null }) +
+            // Value = the enum name (comma-free for the CSV options column); the config also takes the
+            // display name.
+            DefaultVibePattern.entries.map { p ->
+                ConfigChoice(p.displayName.replace(",", ""), p.name) { c ->
+                    c.calendarReminderVibe.let { v -> v.equals(p.name, ignoreCase = true) || v.equals(p.displayName, ignoreCase = true) }
+                }
+            }),
+
+    // --- Plugins ---
+    toggle("plugins.enabled", G_PLUGINS, "Plugins",
+        "Phone-side data and actions for watchfaces and watchapps: built-in (weather, music, calendar, " +
+            "phone, watch settings), from installed apps, and from extensions. Turns on app permissions too: " +
+            "apps then ask before reading your data or sending it anywhere.") { it.pluginsEnabled },
+    combo("plugins.permission_policy", G_PLUGINS, "When apps ask",
+        "When an app must ask before using a permission", choices = listOf(
+        ConfigChoice("If data could leave this machine", "ask_if_exfiltrating") {
+            it.pluginsPermissionPolicy == StoandlConfig.PermissionPolicyMode.ASK_IF_EXFILTRATING },
+        ConfigChoice("Always", "always_ask") { it.pluginsPermissionPolicy == StoandlConfig.PermissionPolicyMode.ALWAYS_ASK },
+        ConfigChoice("Never", "never_ask") { it.pluginsPermissionPolicy == StoandlConfig.PermissionPolicyMode.NEVER_ASK },
+    )),
+    toggle("plugins.ask_legacy_apps", G_PLUGINS, "Ask older apps too",
+        "Apps made before permissions are asked as well, instead of keeping internet access and what they " +
+            "declared") { it.pluginsAskLegacyApps },
+
+    // --- Voice ---
+    combo("voice.backend", G_VOICE, "Speech to text",
+        "Turns the watch's dictation (voice replies, watchapps) and voice notes into text. Local runs a " +
+            "speech engine on this computer; HTTP sends the audio to an OpenAI-compatible service.", choices = listOf(
+        ConfigChoice("Off", "off") { it.voiceBackend == StoandlConfig.VoiceBackend.OFF },
+        ConfigChoice("Local command", "command") { it.voiceBackend == StoandlConfig.VoiceBackend.COMMAND },
+        ConfigChoice("HTTP service", "http") { it.voiceBackend == StoandlConfig.VoiceBackend.HTTP },
+    )),
+    text("voice.command", G_VOICE, "Local command",
+        "A command printing the transcript of {wav} (16 kHz mono WAV) in language {lang} (a code or auto)",
+        placeholder = "parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 --no-prints -f {wav}") { it.voiceCommand },
+    text("voice.url", G_VOICE, "HTTP endpoint",
+        "OpenAI-compatible transcription URL (whisper.cpp whisper-server, speaches, LocalAI, a hosted service)",
+        placeholder = "http://127.0.0.1:8080/v1/audio/transcriptions",
+        validate = { v -> if (v.isEmpty()) null else httpUrlValid(v) }) { it.voiceUrl },
+    text("voice.model", G_VOICE, "HTTP model", "The model the service should use, if it asks for one",
+        placeholder = "whisper-1") { it.voiceModel },
+    secret("voice.api_key", G_VOICE, "HTTP API key",
+        "Sent as a Bearer token; kept in the keyring (or a private file), never in stoandl.conf"),
+    text("voice.language", G_VOICE, "Language", "The language you speak: a code such as de or en, or auto",
+        placeholder = "auto",
+        validate = { v -> if (v == "auto" || v.matches(Regex("[a-z]{2,3}"))) null else "expected a language code (de, en, …) or auto" }) { it.voiceLanguage },
+    toggle("voice.save_audio", G_VOICE, "Keep recordings",
+        "Save each dictation as a WAV in ~/.cache/stoandl/voice (for debugging)") { it.voiceSaveAudio },
 
     // --- Music ---
     toggle("music.enabled", G_MUSIC, "Music control",
@@ -431,6 +510,7 @@ fun guiConfigField(key: String): ConfigField? = GUI_CONFIG_FIELDS.firstOrNull { 
  */
 fun applyGuiConfig(key: String, value: String, confFile: File): String {
     val field = guiConfigField(key) ?: return "notfound:no config key '$key'"
+    if (field.type == "secret") return "error:$key is a secret, kept out of ${confFile.name}"
     val token = when (val p = field.parse(value)) {
         is ConfigParse.Ok -> p.token
         is ConfigParse.Err -> return "error:${p.message}"

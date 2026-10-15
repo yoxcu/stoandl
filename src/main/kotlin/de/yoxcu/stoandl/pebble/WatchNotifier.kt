@@ -4,8 +4,10 @@ package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.DEFAULT_CANNED_REPLIES
+import de.yoxcu.stoandl.imaging.ImageSource
 import de.yoxcu.stoandl.notification.AppNamePlacements
 import de.yoxcu.stoandl.notification.NotificationFilters
+import de.yoxcu.stoandl.notification.NotificationImageStore
 import de.yoxcu.stoandl.notification.watchFields
 import de.yoxcu.stoandl.notification.watchText
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -28,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The single choke point through which **every** notification reaches the watch — the passive desktop
@@ -36,9 +39,9 @@ import kotlin.uuid.Uuid
  * in which attribute ([watchFields]), and records a [NotifRoute] per item so [WatchActionRouter] can route
  * the watch-side action/reply/dismiss back to whoever sent it.
  *
- * Routes are persisted ([NotifRouteTable]) and owners resolved by id ([NotifOwnerRegistry]), so a
- * notification's actions keep working across a daemon restart (the route survives; the owner re-
- * registers under the same id; the owner-opaque token travels in the route).
+ * Routes live in memory ([NotifRouteTable], bounded by age and count) and owners are resolved by id
+ * ([NotifOwnerRegistry]); the owner-opaque token travels in the route. After a daemon restart a wrist
+ * Dismiss still works (it needs no route); other actions on an older item answer "Not supported".
  */
 data class NotifAction(val id: String, val label: String)
 /** A Reply (Response) action. An empty [cannedReplies] means `notification.canned_replies`; [label] is the
@@ -49,6 +52,8 @@ data class ReplySpec(val cannedReplies: List<String> = emptyList(), val label: S
 private const val MAX_CANNED_BYTES = 512
 /** Longest action title we send (bytes, UTF-8). */
 private const val MAX_ACTION_TITLE_BYTES = 64
+/** How long a notification waits for its picture to be decoded and stored. */
+private const val IMAGE_STORE_TIMEOUT_MS = 3_000L
 
 /** Keep whole canned replies (in order, blanks dropped) while the NUL-joined UTF-8 fits [maxBytes]; the
  *  first one that doesn't fit ends the list (a cut-off reply would be sent cut off). */
@@ -91,6 +96,9 @@ data class NotifRequest(
     // The desktop `transient` hint: a passing notice (network changes, volume, …) the server itself
     // doesn't keep. Not forwarded unless an allow filter whitelists it.
     val transient: Boolean = false,
+    // A picture the notification carries (a photo, a screenshot), shown on watches that support it while
+    // notification.images is on. Never a sender avatar.
+    val image: ImageSource? = null,
 )
 
 /**
@@ -111,9 +119,9 @@ interface NotifOwner {
 class ActionRefused(val wristText: String, message: String) : Exception(message)
 
 /** Per-item routing info recorded at send time, consumed by [WatchActionRouter]. (Action ids are UByte
- *  on the wire but stored as Int.) In-memory only: the firmware presents the action menu solely on the
- *  *live* notification, never from the history, so a route never needs to outlive the daemon — once a
- *  notification scrolls out of the active view its actions can't be invoked regardless. */
+ *  on the wire but stored as Int.) The watch offers the action menu from its notification history too
+ *  (stoandl advertises SupportsTwoWayDismissal, see [watchClaims]), so a route has to outlive the popup:
+ *  [NotifRouteTable] keeps it for [ROUTE_TTL_MS]. */
 data class NotifRoute(
     val ownerId: String,
     val ownerToken: String? = null,
@@ -130,17 +138,59 @@ class NotifOwnerRegistry {
     fun get(id: String): NotifOwner? = owners[id]
 }
 
-/** `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]. */
-class NotifRouteTable {
-    private val routes = ConcurrentHashMap<String, NotifRoute>()  // key = itemId.toString()
-    fun put(itemId: Uuid, route: NotifRoute) { routes[itemId.toString()] = route }
-    fun get(itemId: Uuid): NotifRoute? = routes[itemId.toString()]
-    fun remove(itemId: Uuid) { routes.remove(itemId.toString()) }
+/** How long a route outlives its notification's send: the watch keeps notifications in its history for
+ *  days, and an action from there needs the route. */
+internal const val ROUTE_TTL_MS = 7L * 24 * 60 * 60 * 1000
+/** Most routes kept; the oldest go first. */
+internal const val MAX_ROUTES = 2000
+
+/**
+ * `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]: the one record of
+ * which watch items are alive and who owns them. Bounded by age ([ttlMs]) and count ([maxRoutes]), so a
+ * long-running daemon doesn't grow it forever.
+ */
+class NotifRouteTable(
+    private val ttlMs: Long = ROUTE_TTL_MS,
+    private val maxRoutes: Int = MAX_ROUTES,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private data class Entry(val route: NotifRoute, val atMs: Long)
+    // Insertion order = send order (put re-inserts), so the eldest entry is always first.
+    private val routes = LinkedHashMap<Uuid, Entry>()
+
+    fun put(itemId: Uuid, route: NotifRoute) = synchronized(routes) {
+        routes.remove(itemId)
+        routes[itemId] = Entry(route, now())
+        prune()
+    }
+
+    fun get(itemId: Uuid): NotifRoute? = synchronized(routes) { prune(); routes[itemId]?.route }
+
+    fun remove(itemId: Uuid) = synchronized(routes) { routes.remove(itemId); Unit }
+
     /** Drop every route of [ownerId] (their tokens went stale); returns how many. */
-    fun removeOwner(ownerId: String): Int {
+    fun removeOwner(ownerId: String): Int = synchronized(routes) {
         var n = 0
-        routes.entries.removeIf { (it.value.ownerId == ownerId).also { hit -> if (hit) n++ } }
-        return n
+        routes.entries.removeIf { (it.value.route.ownerId == ownerId).also { hit -> if (hit) n++ } }
+        n
+    }
+
+    /** The newest live item of [ownerId] whose token matches [token], if any: how an owner finds the watch
+     *  item for something it learns about later (the desktop closed a notification). */
+    fun findItem(ownerId: String, token: (String?) -> Boolean): Uuid? = synchronized(routes) {
+        prune()
+        routes.entries.lastOrNull { it.value.route.ownerId == ownerId && token(it.value.route.ownerToken) }?.key
+    }
+
+    val size: Int get() = synchronized(routes) { routes.size }
+
+    private fun prune() {
+        val cutoff = now() - ttlMs
+        val it = routes.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (routes.size > maxRoutes || e.value.atMs < cutoff) it.remove() else break
+        }
     }
 }
 
@@ -167,6 +217,8 @@ class WatchNotifier(
     private val filters: NotificationFilters,
     // Per-app overrides of notification.app_name (where the app name goes on the card).
     private val appNames: AppNamePlacements,
+    // Pictures attached to notifications, served when the watch pulls them. Null in tests.
+    private val images: NotificationImageStore? = null,
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -264,7 +316,10 @@ class WatchNotifier(
             r.copy(cannedReplies = canned, label = trimUtf8(r.label.ifBlank { "Reply" }, MAX_ACTION_TITLE_BYTES))
         }
         val styled = app
-        val fixedId = req.itemId
+        // The id is fixed before building: a picture is stored under it and the watch asks for it by id.
+        // A given id (re-send) replaces the same item, even across daemon restarts.
+        val itemId = req.itemId ?: Uuid.random()
+        val imageAspect = req.image?.let { storeImage(itemId, it, cfg.notificationImages) }
         // Like styles: an app's own placement applies only while per-app settings are on.
         val placement = styled?.let { appNames.get(it.packageName) } ?: cfg.notificationAppName
         val fields = watchFields(req.appName, req.title, req.subtitle, req.body, placement)
@@ -274,10 +329,12 @@ class WatchNotifier(
             parentId = SystemAppIDs.ANDROID_NOTIFICATIONS_UUID,
             timestamp = Clock.System.now(),
         ) {
-            // Stable id (when given) → a re-send replaces the same item instead of duplicating.
-            if (fixedId != null) itemID = fixedId
+            itemID = itemId
             attributes {
                 watchText(fields)
+                // The watch reserves this band and pulls the picture when the card shows (libpebble3 drops
+                // the attribute for watches without notification images).
+                imageAspect?.let { a -> uByte(TimelineAttribute.ImageAspectRatio) { a } }
                 // Explicit per-notification style wins, else the per-app store, else the app-name icon.
                 tinyIcon { perAppIcon(req.iconCode ?: styled?.iconCode, req.appName) }
                 perAppColor(req.colorName ?: styled?.colorName)?.let { c -> backgroundColor { c.toPebbleColor() } }
@@ -310,6 +367,7 @@ class WatchNotifier(
         if (lp == null) {
             log.warn { "No watch connection; notification from ${req.appName} dropped" }
             routeTable.remove(notif.itemId)
+            images?.remove(notif.itemId)
             return null
         }
         try {
@@ -318,25 +376,46 @@ class WatchNotifier(
         } catch (e: Exception) {
             log.warn(e) { "Failed to send notification from ${req.appName} to watch" }
             routeTable.remove(notif.itemId)
+            images?.remove(notif.itemId)
             return null
         }
         log.info { "Notification queued for watch: ${req.appName} – ${req.title}" }
         return notif.itemId
     }
 
-    /** Clear a notification from the watch (a source's proactive `closeNotification`). Marks it deleted
-     *  rather than read so it doesn't re-sync (same reasoning as the Dismiss path). */
-    suspend fun close(itemId: Uuid) {
-        runCatching { timelineNotifDao.markForDeletion(itemId) }
+    /** Store [image] for [itemId] when images are on; the aspect to announce, or null to send it without.
+     *  Bounded, so one huge file can't hold up the notification. */
+    private suspend fun storeImage(itemId: Uuid, image: ImageSource, enabled: Boolean): UByte? {
+        val store = images ?: return null
+        if (!enabled) return null
+        return withTimeoutOrNull(IMAGE_STORE_TIMEOUT_MS) { store.put(itemId, image) }
+            .also { if (it == null) log.info { "Notification $itemId goes out without its image (unreadable or too slow)" } }
+    }
+
+    /**
+     * Clear a notification from the watch because it was dismissed elsewhere (the desktop closed it, an
+     * extension's `closeNotification`). Sets the item's STATE_READ flag, which libpebble3 re-syncs: on the
+     * wire that flag is the firmware's *dismissed* status bit, and the firmware applies a status-only
+     * insert to an item it has (removing it from the notification list) and ignores it for one it doesn't.
+     * markForDeletion would do nothing here: notifications never send BlobDB deletions.
+     */
+    suspend fun retract(itemId: Uuid) {
         routeTable.remove(itemId)
+        images?.remove(itemId)
+        val lp = libPebbleRef.get()
+        try {
+            if (lp != null) lp.markNotificationRead(itemId) else timelineNotifDao.markNotificationRead(itemId)
+            log.info { "Notification $itemId dismissed elsewhere; cleared on the watch" }
+        } catch (e: Exception) {
+            log.warn(e) { "Couldn't clear notification $itemId on the watch" }
+        }
     }
 }
 
 /**
  * The single [PlatformNotificationActionHandler] for the daemon. Looks up the [NotifRoute] for the
- * acted-on item, resolves its owner via [NotifOwnerRegistry], and dispatches: Dismiss → remove the
- * notification (markForDeletion — NOT markNotificationRead, which would re-insert and re-sync) +
- * [NotifOwner.onDismiss]; the Mute action → host-side per-app mute; the Reply action → extract the
+ * acted-on item, resolves its owner via [NotifOwnerRegistry], and dispatches: Dismiss → drop the route,
+ * then take the item out of our sync set (the watch already removed it) + [NotifOwner.onDismiss]; the Mute action → host-side per-app mute; the Reply action → extract the
  * chosen canned/dictated text and [NotifOwner.onReply]; a named Generic action → [NotifOwner.onAction].
  * Per-item overrides registered via `sendNotification(notif, handlers)` (e.g. FirmwareControl's Update
  * button) still take precedence upstream in libpebble3 and never reach here.
@@ -346,6 +425,7 @@ class WatchActionRouter(
     private val owners: NotifOwnerRegistry,
     private val notifAppDao: NotificationAppRealDao?,
     private val timelineNotifDao: TimelineNotificationRealDao,
+    private val images: NotificationImageStore? = null,
 ) : PlatformNotificationActionHandler {
     private val log = KotlinLogging.logger {}
 
@@ -360,16 +440,17 @@ class WatchActionRouter(
         if (action.type == TimelineItem.Action.Type.Dismiss ||
             action.type == TimelineItem.Action.Type.AncsDismiss
         ) {
-            // Delete (not just mark-read): markNotificationRead re-inserts the record with a changed
-            // hash, which the BlobDB re-syncs — so a dismissed notification would reappear. Marking it
-            // deleted removes it from our sync set so the dismissal sticks.
+            // The watch has removed the item already; take it out of our sync set so nothing re-sends it.
+            // The route goes first: closing the desktop original makes the server report the close, and
+            // with no route left that report finds nothing to retract (no echo back to the watch).
+            routeTable.remove(itemId)
+            images?.remove(itemId)
             runCatching { timelineNotifDao.markForDeletion(itemId) }
             try {
                 route?.let { owners.get(it.ownerId)?.onDismiss(itemId, it.ownerToken) }
             } catch (e: Exception) {
                 log.warn(e) { "onDismiss failed for $itemId" }
             }
-            routeTable.remove(itemId)
             return TimelineActionResult(true, TimelineIcon.ResultDismissed, "Dismissed")
         }
 
