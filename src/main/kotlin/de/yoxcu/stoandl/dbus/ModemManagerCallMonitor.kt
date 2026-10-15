@@ -1,12 +1,9 @@
-@file:OptIn(kotlin.ExperimentalUnsignedTypes::class)
-
 package de.yoxcu.stoandl.dbus
 
 import de.yoxcu.stoandl.calls.MissedCallLog
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -17,12 +14,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import de.yoxcu.stoandl.util.openSystemBus
 import org.freedesktop.dbus.connections.impl.DBusConnection
+import org.freedesktop.dbus.errors.UnknownObject
 import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.interfaces.Properties
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
-import kotlin.random.Random
-import kotlin.random.nextUInt
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -34,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
  * it), so this opens its own connection. Call objects appear under each modem's `…Modem.Voice`
  * interface; we subscribe to the `CallAdded`/`CallDeleted`/`Call.StateChanged` signals across all
  * modems (filtering by object path is unnecessary — a single watch can only sensibly surface one
- * call at a time) and translate state transitions into [Call] instances.
+ * call at a time) and hand them, in bus order, to [ModemCallState], which turns them into [Call]s.
  *
  * Answer/Hangup from the watch are wired back through the [Call] callbacks to `Accept()`/`Hangup()`
  * on the matching `org.freedesktop.ModemManager1.Call` object.
@@ -54,17 +49,21 @@ class ModemManagerCallMonitor(
     private val log = KotlinLogging.logger {}
 
     @Volatile private var conn: DBusConnection? = null
-    // Stable per-call cookie for the PhoneControl protocol, keyed by call object path.
-    private val cookies = ConcurrentHashMap<String, UInt>()
-    @Volatile private var activePath: String? = null
-    // Per-call bookkeeping for missed-call detection (incoming + never answered).
-    private val tracks = ConcurrentHashMap<String, CallTrack>()
 
-    private class CallTrack(val number: String, val name: String?, val incoming: Boolean) {
-        @Volatile var answered: Boolean = false
-    }
+    private val calls = ModemCallState(
+        readState = ::readState,
+        readNumber = ::readNumber,
+        resolveName = ::resolveName,
+        publish = { libPebble.currentCall.value = it },
+        recordMissed = missedCallLog::record,
+        accept = ::accept,
+        hangup = ::hangup,
+    )
 
     fun start() {
+        scope.launch(Dispatchers.IO) { calls.run() }
+        // Load the contact index now, not on the first call's CallAdded, so the watch rings sooner.
+        scope.launch(Dispatchers.IO) { contactResolver.preload() }
         scope.launch {
             while (coroutineContext.isActive) {
                 try {
@@ -86,20 +85,21 @@ class ModemManagerCallMonitor(
         conn = c
         log.info { "ModemManager call monitor: connected to system bus" }
 
+        // dbus-java runs these on its one signal thread, in bus order; posting keeps that order.
         c.addSigHandler(ModemVoice.CallAdded::class.java) { sig ->
             val callPath = sig.call.path
             log.info { "ModemManager: CallAdded $callPath" }
-            scope.launch(Dispatchers.IO) { handleState(callPath, readState(callPath)) }
+            calls.post(CallEvent.Added(callPath))
         }
         c.addSigHandler(ModemVoice.CallDeleted::class.java) { sig ->
             val callPath = sig.call.path
             log.info { "ModemManager: CallDeleted $callPath" }
-            scope.launch { endCall(callPath) }
+            calls.post(CallEvent.Deleted(callPath))
         }
         c.addSigHandler(ModemCall.StateChanged::class.java) { sig ->
             val callPath = sig.path
             log.info { "ModemManager: StateChanged $callPath ${sig.oldState}→${sig.newState}" }
-            scope.launch(Dispatchers.IO) { handleState(callPath, sig.newState) }
+            calls.post(CallEvent.StateChanged(callPath, sig.newState))
         }
 
         // Pick up a call already in progress (e.g. the daemon restarted mid-call).
@@ -120,56 +120,13 @@ class ModemManagerCallMonitor(
                     val voice = c.getRemoteObject(MM_BUS_NAME, modemPath.path, ModemVoice::class.java)
                     voice.ListCalls().forEach { callPath ->
                         log.info { "ModemManager: existing call ${callPath.path}" }
-                        scope.launch(Dispatchers.IO) { handleState(callPath.path, readState(callPath.path)) }
+                        calls.post(CallEvent.Added(callPath.path))
                     }
                 }
             }
         } catch (e: Exception) {
             log.warn { "ModemManager: could not enumerate existing calls: ${e.message}" }
         }
-    }
-
-    private fun handleState(callPath: String, state: Int) {
-        if (state == MMCallState.TERMINATED) {
-            endCall(callPath)
-            return
-        }
-        val number = readNumber(callPath)
-        val name = resolveName(number)
-        val cookie = cookieFor(callPath)
-        // Track for missed-call detection. RINGING_IN/WAITING = incoming; DIALING/RINGING_OUT =
-        // outgoing; ACTIVE marks the call answered (whichever direction).
-        when (state) {
-            MMCallState.RINGING_IN, MMCallState.WAITING ->
-                tracks.computeIfAbsent(callPath) { _ -> CallTrack(number, name, incoming = true) }
-            MMCallState.DIALING, MMCallState.RINGING_OUT ->
-                tracks.computeIfAbsent(callPath) { _ -> CallTrack(number, name, incoming = false) }
-            MMCallState.ACTIVE ->
-                tracks.computeIfAbsent(callPath) { _ -> CallTrack(number, name, incoming = false) }.answered = true
-        }
-        val call = when (state) {
-            MMCallState.RINGING_IN, MMCallState.WAITING -> Call.RingingCall(
-                contactName = name, contactNumber = number, cookie = cookie,
-                onCallEnd = { hangup(callPath) },
-                onCallAnswer = { accept(callPath) },
-            )
-            MMCallState.DIALING, MMCallState.RINGING_OUT -> Call.DialingCall(
-                contactName = name, contactNumber = number, cookie = cookie,
-                onCallEnd = { hangup(callPath) },
-            )
-            MMCallState.ACTIVE -> Call.ActiveCall(
-                contactName = name, contactNumber = number, cookie = cookie,
-                onCallEnd = { hangup(callPath) },
-            )
-            MMCallState.HELD -> Call.HoldingCall(
-                contactName = name, contactNumber = number, cookie = cookie,
-                onCallEnd = { hangup(callPath) },
-            )
-            else -> return // UNKNOWN — leave current state untouched
-        }
-        activePath = callPath
-        libPebble.currentCall.value = call
-        log.info { "Call ${callPath.substringAfterLast('/')}: state=$state name=${name ?: "?"} number=$number" }
     }
 
     /** vCard lookup first; fall back to a recent dialer-notification title (if it isn't just the
@@ -179,23 +136,6 @@ class ModemManagerCallMonitor(
         val fallback = dialerNameCache.recent() ?: return null
         return fallback.takeIf { it.isNotBlank() && it.filter(Char::isDigit) != number.filter(Char::isDigit) }
     }
-
-    private fun endCall(callPath: String) {
-        cookies.remove(callPath)
-        // An incoming call that ended without ever being answered is a missed call.
-        tracks.remove(callPath)?.let { t ->
-            if (t.incoming && !t.answered) missedCallLog.record(t.number, t.name)
-        }
-        // Only clear if this is the call we're currently showing (a stale TERMINATED for an
-        // already-replaced call must not wipe a newer ringing call).
-        if (activePath == null || activePath == callPath) {
-            activePath = null
-            libPebble.currentCall.value = null
-        }
-    }
-
-    private fun cookieFor(callPath: String): UInt =
-        cookies.computeIfAbsent(callPath) { _ -> Random.nextUInt() }
 
     private fun accept(callPath: String) {
         log.info { "[call] watch answered → ModemManager Accept($callPath)" }
@@ -209,7 +149,11 @@ class ModemManagerCallMonitor(
     private fun hangup(callPath: String) {
         log.info { "[call] hangup → ModemManager Hangup($callPath)" }
         scope.launch(Dispatchers.IO) {
-            try { callObj(callPath)?.Hangup() } catch (e: Exception) {
+            try { callObj(callPath)?.Hangup() } catch (e: UnknownObject) {
+                // The call already ended and we missed it; end it here too.
+                log.info { "Hangup($callPath): the call is already gone" }
+                calls.post(CallEvent.Deleted(callPath))
+            } catch (e: Exception) {
                 log.warn { "Hangup($callPath) failed: ${e.message}" }
             }
         }

@@ -41,6 +41,11 @@ class ContactResolver(
         }?.value
     }
 
+    /** Build the index ahead of the first [resolve], which an incoming call would otherwise wait for. */
+    fun preload() {
+        if (enabled) reloadIfChanged()
+    }
+
     private fun reloadIfChanged() {
         val files = vcardFiles()
         val sig = files.joinToString("|") { "${it.path}:${it.lastModified()}:${it.length()}" }
