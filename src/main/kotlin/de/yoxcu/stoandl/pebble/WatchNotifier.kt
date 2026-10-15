@@ -122,6 +122,7 @@ class ActionRefused(val wristText: String, message: String) : Exception(message)
  *  on the wire but stored as Int.) The watch offers the action menu from its notification history too
  *  (stoandl advertises SupportsTwoWayDismissal, see [watchClaims]), so a route has to outlive the popup:
  *  [NotifRouteTable] keeps it for [ROUTE_TTL_MS]. */
+@kotlinx.serialization.Serializable
 data class NotifRoute(
     val ownerId: String,
     val ownerToken: String? = null,
@@ -147,32 +148,63 @@ internal const val MAX_ROUTES = 2000
 /**
  * `itemId → route` table, written by [WatchNotifier] and read by [WatchActionRouter]: the one record of
  * which watch items are alive and who owns them. Bounded by age ([ttlMs]) and count ([maxRoutes]), so a
- * long-running daemon doesn't grow it forever.
+ * long-running daemon doesn't grow it forever. [NotifRouteStore] keeps it across restarts ([snapshot],
+ * [restore], [onChange]).
  */
 class NotifRouteTable(
     private val ttlMs: Long = ROUTE_TTL_MS,
     private val maxRoutes: Int = MAX_ROUTES,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    /** A route and when it was recorded. */
+    data class Saved(val itemId: Uuid, val route: NotifRoute, val atMs: Long)
+
     private data class Entry(val route: NotifRoute, val atMs: Long)
     // Insertion order = send order (put re-inserts), so the eldest entry is always first.
     private val routes = LinkedHashMap<Uuid, Entry>()
 
-    fun put(itemId: Uuid, route: NotifRoute) = synchronized(routes) {
-        routes.remove(itemId)
-        routes[itemId] = Entry(route, now())
-        prune()
+    /** Runs after every change (put, remove, removeOwner; not age pruning), outside the table's lock. */
+    @Volatile var onChange: () -> Unit = {}
+
+    fun put(itemId: Uuid, route: NotifRoute) {
+        synchronized(routes) {
+            routes.remove(itemId)
+            routes[itemId] = Entry(route, now())
+            prune()
+        }
+        onChange()
     }
 
     fun get(itemId: Uuid): NotifRoute? = synchronized(routes) { prune(); routes[itemId]?.route }
 
-    fun remove(itemId: Uuid) = synchronized(routes) { routes.remove(itemId); Unit }
+    fun remove(itemId: Uuid) {
+        if (synchronized(routes) { routes.remove(itemId) } != null) onChange()
+    }
 
     /** Drop every route of [ownerId] (their tokens went stale); returns how many. */
-    fun removeOwner(ownerId: String): Int = synchronized(routes) {
-        var n = 0
-        routes.entries.removeIf { (it.value.route.ownerId == ownerId).also { hit -> if (hit) n++ } }
-        n
+    fun removeOwner(ownerId: String): Int {
+        val n = synchronized(routes) {
+            var n = 0
+            routes.entries.removeIf { (it.value.route.ownerId == ownerId).also { hit -> if (hit) n++ } }
+            n
+        }
+        if (n > 0) onChange()
+        return n
+    }
+
+    /** The live routes, oldest first. */
+    fun snapshot(): List<Saved> = synchronized(routes) {
+        prune()
+        routes.map { (id, e) -> Saved(id, e.route, e.atMs) }
+    }
+
+    /** Put back routes saved before a restart. Any route recorded since wins over a saved one for the same item. */
+    fun restore(saved: List<Saved>) = synchronized(routes) {
+        val live = LinkedHashMap(routes)
+        routes.clear()
+        for (s in saved.sortedBy { it.atMs }) if (s.itemId !in live) routes[s.itemId] = Entry(s.route, s.atMs)
+        routes.putAll(live)
+        prune()
     }
 
     /** The newest live item of [ownerId] whose token matches [token], if any: how an owner finds the watch

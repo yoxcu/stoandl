@@ -433,6 +433,7 @@ class PebbleIntegration(
     // schedulers ride on; see [SleepGuard]. Built in init() right after Koin (before the syncers that
     // take its resume signal), started once libPebble is up.
     private var sleepGuard: SleepGuard? = null
+    private var routeStore: NotifRouteStore? = null
     // Built before the sleep guard (libpebble3's graph needs it first); it reaches the guard when a session starts.
     private val voiceProvider by lazy {
         StoandlTranscriptionProvider(voiceBackends, configStore) { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} }
@@ -532,6 +533,9 @@ class PebbleIntegration(
             syncDismissals = { configStore.current().notificationSyncDismissals },
             retract = watchNotifier::retract,
         )
+        // Routes survive a daemon restart: wrist actions from the watch's history keep working.
+        routeStore = NotifRouteStore(File(CacheDirs.root(), "notification-routes.json"), routeTable, scope, desktopOwner::routeEpoch)
+        desktopOwner.resumeRoutes(routeStore?.load())
         val notifOwners = NotifOwnerRegistry().apply { register(desktopOwner) }
         val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao, notificationImages)
         // Extension supervisor: constructed now (so the control service can reach it); started below.
@@ -777,6 +781,7 @@ class PebbleIntegration(
         pairingAgent.unregister()
         // Drop the logind delay lock now rather than when the JVM's pipes close.
         sleepGuard?.stop()
+        routeStore?.flush()
     }
 
     /**

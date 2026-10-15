@@ -183,6 +183,30 @@ class DesktopNotifOwner(
         retract(itemId)
     }
 
+    /**
+     * What a saved desktop route stays valid for: this session bus. Its id is new with every bus (a reboot,
+     * a new login), while unique names start over, so a token's server name could then match a different
+     * server. On the same bus a restarted server is caught at action time ([sameServer]). Null when the bus
+     * can't say, which makes saved routes count as stale.
+     */
+    fun routeEpoch(): String? = busId()
+
+    /** Drop the desktop routes restored from before a restart unless they were saved on this bus ([routeEpoch]). */
+    fun resumeRoutes(saved: String?) {
+        if (saved != null && saved == busId()) return
+        val n = routeTable.removeOwner(id)
+        if (n > 0) log.info { "Dropped $n restored desktop route(s): they belong to an earlier session" }
+    }
+
+    @Volatile private var cachedBusId: String? = null
+
+    private fun busId(): String? = cachedBusId ?: try {
+        session().getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java).GetId()
+            .also { cachedBusId = it }
+    } catch (_: Exception) {
+        null
+    }
+
     /** Record the current server owner; on a change every desktop route is stale, so drop them all. */
     private fun noteOwner(owner: String?) {
         val prev = lastOwner
