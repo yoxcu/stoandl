@@ -297,6 +297,8 @@ private val WRIST_ARM_GRACE = 20.seconds
 // and it MUST be the same watch that reconnects to confirm the update, so the follower must not rotate
 // the goal to a sibling during the reboot gap.
 private val WRIST_OP_GRACE = 2.minutes
+/** The longest [PebbleIntegration] keeps the phone awake for one firmware or language transfer. */
+private val TRANSFER_AWAKE_MAX = 30.minutes
                                            // (in place, via replaces_id — it updates, never stacks)
 // The OTHER broken-bond direction: the host lost the BlueZ pairing (e.g. `bluetoothctl remove`) while
 // libpebble still wants the watch. It can never reconnect without a fresh pair, so once it's been
@@ -703,6 +705,7 @@ class PebbleIntegration(
             },
         ).start()
         sleepGuard?.start()
+        startTransferKeepAwake()
         startScanLoop()
         startAutoConnect()
         startWristFollower()
@@ -2349,6 +2352,38 @@ class PebbleIntegration(
     // Last time a firmware/language op was seen active (ms). Read by the wrist-follower to hold the goal
     // across an update's reboot gap; see [WRIST_OP_GRACE]. Written from the status collectors above.
     @Volatile private var lastWatchOpMs = 0L
+
+    /**
+     * Keep the phone awake while a firmware or language pack goes to the watch: a phone that suspends a
+     * second after each wake would otherwise move the transfer along only in bursts (it resumes, but takes
+     * many times longer). Held from the download to the end of the transfer; the watch's own reboot and
+     * install after it don't need the phone. Capped at [TRANSFER_AWAKE_MAX], so a status stuck by a bug
+     * can't keep the phone up for good.
+     */
+    private fun startTransferKeepAwake() {
+        fun transferring(status: String) = status.startsWith("downloading:") || status.startsWith("waiting:") ||
+            status.startsWith("inprogress:") || status.startsWith("installing:")
+        scope.launch {
+            var hold: AutoCloseable? = null
+            var cap: Job? = null
+            combine(firmwareControl.statusFlow(), languageControl.statusFlow()) { fw, lang ->
+                transferring(fw) || transferring(lang)
+            }.distinctUntilChanged().collect { busy ->
+                if (busy && hold == null) {
+                    val h = sleepGuard?.holdAwake("Firmware or language pack transfer to the watch") ?: return@collect
+                    hold = h
+                    cap = scope.launch {
+                        delay(TRANSFER_AWAKE_MAX)
+                        log.warn { "Watch transfer still running after ${TRANSFER_AWAKE_MAX.inWholeMinutes} min; letting the phone sleep again" }
+                        h.close()
+                    }
+                } else if (!busy) {
+                    cap?.cancel(); cap = null
+                    hold?.close(); hold = null
+                }
+            }
+        }
+    }
 
     private fun noteWatchOp(status: String) {
         if (status.startsWith("downloading:") || status.startsWith("waiting:") ||
