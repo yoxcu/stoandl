@@ -433,6 +433,10 @@ class PebbleIntegration(
     // schedulers ride on; see [SleepGuard]. Built in init() right after Koin (before the syncers that
     // take its resume signal), started once libPebble is up.
     private var sleepGuard: SleepGuard? = null
+    // Built before the sleep guard (libpebble3's graph needs it first); it reaches the guard when a session starts.
+    private val voiceProvider by lazy {
+        StoandlTranscriptionProvider(voiceBackends, configStore) { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} }
+    }
     // power.quiet_time_link_off: no watch link during the watch's scheduled Quiet Time; started before
     // libpebble3 connects anything, so a restart inside the window stays paused.
     private var quietTimeLink: QuietTimeLink? = null
@@ -486,7 +490,7 @@ class PebbleIntegration(
             appContext = AppContext(pluginSecrets = PluginSecretStore(secretStore)),
             tokenProvider = NoOpTokenProvider,
             proxyTokenProvider = MutableStateFlow(null),
-            transcriptionProvider = StoandlTranscriptionProvider(voiceBackends, configStore),
+            transcriptionProvider = voiceProvider,
             injectedPKJSHttpInterceptors = InjectedPKJSHttpInterceptors(listOf(
                 OpenWeather25Interceptor(interceptPkjs, openMeteoNow, pkjsPlaces, ktorPassThrough(pkjsWeatherHttp)),
                 YahooWeatherInterceptor(interceptPkjs, openMeteoNow, pkjsPlaces),
@@ -1601,7 +1605,7 @@ class PebbleIntegration(
      *  would roughly double the phone's awake time for nothing — the link drops again right after. Real
      *  deliveries still count: their PPoG packets and BlobDB records show up in [linkActivity]. */
     private fun pendingWatchWork(): String? {
-        val parts = listOfNotNull(quietTimeLink?.pendingDescription(), watchTraffic())
+        val parts = listOfNotNull(quietTimeLink?.pendingDescription(), voiceProvider.pendingDescription(), watchTraffic())
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
 

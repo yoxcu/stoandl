@@ -36,11 +36,20 @@ private class NoAudio : Exception("no audio")
  * Speex frames as they arrive ([SpeexDecoder]), then hands the speech to the configured backend
  * ([VoiceBackends]) within the firmware's 15 s result window. libpebble3 (VoiceSessionManager) does the
  * protocol; the transcript reaches the reply path as the Response action's text, like a canned reply.
+ *
+ * A phone suspends a second or two after each wake, also while the watch streams its audio, so a session
+ * holds the system awake ([keepAwake]) until the result is handed back, and reports itself as pending
+ * work ([pendingDescription]) to a suspend already under way.
  */
 class StoandlTranscriptionProvider(
     private val backends: VoiceBackends,
     private val configStore: ConfigStore,
+    private val keepAwake: (why: String) -> AutoCloseable = { AutoCloseable {} },
 ) : TranscriptionProvider {
+    @Volatile private var sessions = 0
+
+    /** "dictation" while a session runs, for the sleep guard's drain. */
+    fun pendingDescription(): String? = if (sessions > 0) "dictation" else null
 
     /** Off, or the backend or libspeex missing: the watch says "Enable voice in the settings page…". */
     override suspend fun canServeSession(): Boolean {
@@ -55,6 +64,15 @@ class StoandlTranscriptionProvider(
         audioFrames: Flow<UByteArray>,
         isNotificationReply: Boolean,
     ): TranscriptionResult {
+        synchronized(this) { sessions++ }
+        return try {
+            keepAwake("Voice dictation from the watch").use { session(encoderInfo, audioFrames) }
+        } finally {
+            synchronized(this) { sessions-- }
+        }
+    }
+
+    private suspend fun session(encoderInfo: VoiceEncoderInfo, audioFrames: Flow<UByteArray>): TranscriptionResult {
         val stt = backends.current() ?: return TranscriptionResult.Disabled
         if (encoderInfo !is VoiceEncoderInfo.Speex) return TranscriptionResult.Error("unsupported encoder $encoderInfo")
         log.info { "Voice: Speex ${encoderInfo.version}, ${encoderInfo.sampleRate} Hz, ${encoderInfo.bitRate} bps, frame ${encoderInfo.frameSize}" }

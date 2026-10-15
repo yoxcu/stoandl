@@ -144,6 +144,26 @@ class VoiceTest {
     }
 
     @Test
+    fun `a dictation keeps the system awake until its result is back`() = runBlocking {
+        assumeTrue(SpeexDecoder.available, "libspeex not installed")
+        val frames = firmwareFrames(1)
+        val cfg = config(StoandlConfig.VoiceBackend.COMMAND, "echo ok")
+        val held = mutableListOf<String>()
+        lateinit var provider: StoandlTranscriptionProvider
+        provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets(), models()), cfg) { why ->
+            held += "take"
+            AutoCloseable { held += "release" }
+        }
+        val info = VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320)
+        var pendingMidway: String? = null
+        val audio = flow { frames.forEach { emit(it.toUByteArray()) }; pendingMidway = provider.pendingDescription() }
+        assertIs<TranscriptionResult.Success>(provider.transcribe(info, audio, isNotificationReply = true))
+        assertEquals(listOf("take", "release"), held)
+        assertEquals("dictation", pendingMidway)
+        assertNull(provider.pendingDescription())
+    }
+
+    @Test
     fun `voice off, or no audio from the watch`() = runBlocking<Unit> {
         val off = config(StoandlConfig.VoiceBackend.OFF)
         val provider = StoandlTranscriptionProvider(VoiceBackends(off, secrets(), models()), off)

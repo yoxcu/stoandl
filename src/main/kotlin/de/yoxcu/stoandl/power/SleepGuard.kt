@@ -60,6 +60,9 @@ private const val LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
  * on sleep for any subject (`org.freedesktop.login1.inhibit-delay-sleep`: allow_any=yes), so this works
  * from the systemd user service.
  *
+ * [holdAwake] is the one exception to "delay, never block": a short sleep *block* around user-initiated
+ * work a suspend would break (a dictation), which the phone's fast-resuspend waits out before asking again.
+ *
  * The PrepareForSleep subscription (and [resumed]) works even with the lock disabled
  * (`power.sleep_guard = false`); if the system bus is unavailable the guard is inert.
  */
@@ -151,6 +154,24 @@ class SleepGuard(
         conn = null
     }
 
+    /**
+     * Keep the system awake while [why] runs: a logind sleep *block* until the returned handle is closed.
+     * Only for short, user-initiated work that a suspend would break: a dictation, whose audio arrives over
+     * up to 15 s and whose transcript the watch waits for. A suspend asked for meanwhile is refused (the
+     * phone's fast-resuspend waits for sleep blocks and asks again), so always close it. Independent of
+     * [start] and `power.sleep_guard`; a no-op handle when no inhibit tool is installed. If the JVM dies,
+     * `cat` sees EOF and the block goes with it.
+     */
+    fun holdAwake(why: String): AutoCloseable {
+        val p = spawn("block", why) ?: return AutoCloseable {}
+        log.debug { "sleep block taken: $why" }
+        return AutoCloseable {
+            runCatching { p.outputStream.close() }
+            p.destroy()
+            log.debug { "sleep block released: $why" }
+        }
+    }
+
     private suspend fun onPrepareForSleep() {
         generation++
         val t0 = TimeSource.Monotonic.markNow()
@@ -201,7 +222,7 @@ class SleepGuard(
     /** One attempt to take the delay lock; schedules the next one while logind still refuses it. */
     private suspend fun acquire(event: Event.Acquire) {
         if (event.generation != generation || lock?.isAlive == true) return
-        val p = spawn() ?: return
+        val p = spawn("delay", "Deliver pending notifications to the watch before suspend") ?: return
         // systemd-inhibit exits at once when logind refuses the lock; still alive = we hold it.
         val exited = withContext(Dispatchers.IO) { p.waitFor(ACQUIRE_SETTLE.inWholeMilliseconds, TimeUnit.MILLISECONDS) }
         if (!exited) {
@@ -224,14 +245,12 @@ class SleepGuard(
         }
     }
 
-    private fun spawn(): Process? {
+    private fun spawn(mode: String, why: String): Process? {
         val candidates = inhibitCmd?.let { listOf(it) } ?: listOf("systemd-inhibit", "elogind-inhibit")
         for (cmd in candidates) {
             try {
                 val p = ProcessBuilder(
-                    cmd, "--what=sleep", "--who=stoandl",
-                    "--why=Deliver pending notifications to the watch before suspend",
-                    "--mode=delay", "cat",
+                    cmd, "--what=sleep", "--who=stoandl", "--why=$why", "--mode=$mode", "cat",
                 ).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
                 inhibitCmd = cmd
                 return p
@@ -239,7 +258,7 @@ class SleepGuard(
                 // not installed — try the next one
             }
         }
-        log.warn { "Sleep guard: neither systemd-inhibit nor elogind-inhibit found — no delay lock" }
+        log.warn { "Sleep guard: neither systemd-inhibit nor elogind-inhibit found — no $mode lock" }
         return null
     }
 
