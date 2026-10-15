@@ -84,6 +84,18 @@ class VoiceTest {
     }
 
     @Test
+    fun `a Speex session decodes on whichever thread the frames arrive`() {
+        assumeTrue(SpeexDecoder.available, "libspeex not installed")
+        val frames = firmwareFrames(1)
+        // The watch's frames reach the decoder in a coroutine that hops between worker threads.
+        val s = assertNotNull(SpeexDecoder.open())
+        var decoded = 0
+        for (f in frames) Thread.ofPlatform().start { if (s.decodeFrame(f) != null) decoded++ }.join()
+        Thread.ofPlatform().start { s.close() }.join()
+        assertEquals(frames.size, decoded)
+    }
+
+    @Test
     fun `WAV round-trips and resamples`() {
         val pcm = ShortArray(800) { (it * 7).toShort() }
         val (back, rate) = assertNotNull(Wav.decode(Wav.encode(pcm, 8000)))

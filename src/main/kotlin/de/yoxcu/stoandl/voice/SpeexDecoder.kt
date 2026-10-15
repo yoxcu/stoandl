@@ -60,9 +60,11 @@ object SpeexDecoder {
     /** Whether libspeex could be loaded. */
     val available: Boolean get() = lib != null
 
-    /** One dictation's decoder state. Not thread-safe; [close] when done. */
+    /** One dictation's decoder state. One frame at a time, but from any thread: the watch's frames arrive in
+     *  a coroutine that resumes on whichever worker is free, so the arena is shared, not confined. [close]
+     *  when done. */
     class Session internal constructor(private val lib: Lib) : AutoCloseable {
-        private val arena = Arena.ofConfined()
+        private val arena = Arena.ofShared()
         private val dec: MemorySegment = lib.decInit.invoke(lib.getMode.invoke(SPEEX_MODEID_WB) as MemorySegment) as MemorySegment
         private val bits: MemorySegment = arena.allocate(SPEEX_BITS_BYTES)
         private val input: MemorySegment = arena.allocate(MAX_SPEEX_FRAME.toLong())
