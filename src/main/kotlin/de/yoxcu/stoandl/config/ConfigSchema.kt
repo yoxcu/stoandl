@@ -68,7 +68,9 @@ data class ConfigField(
     /** Whether a write takes effect immediately or needs a daemon restart — surfaced in the GUI. */
     val apply: ConfigApply,
     /** Combo options in display order; empty for every other kind. */
-    val choices: List<ConfigChoice> = emptyList(),
+    val fixedChoices: List<ConfigChoice> = emptyList(),
+    /** A combo whose options change at runtime (installed speech models): read on every use. */
+    val choicesOf: (() -> List<ConfigChoice>)? = null,
     /** Current value as the GUI sees it. Null only for a combo, whose value comes from [choices]. */
     val read: ((StoandlConfig) -> String)? = null,
     /** `int` only: inclusive bounds and the unit suffix the GUI shows next to the number. */
@@ -81,6 +83,9 @@ data class ConfigField(
      *  error message, or null when the value is acceptable. Runs on the already-trimmed input. */
     val validate: ((String) -> String?)? = null,
 ) {
+    /** The combo's options now. */
+    val choices: List<ConfigChoice> get() = choicesOf?.invoke() ?: fixedChoices
+
     /** The secret store reference of a `secret` key. */
     val secretRef: String get() = "config:$key"
 
@@ -164,7 +169,7 @@ private fun toggle(
 private fun combo(
     key: String, group: String, label: String, desc: String,
     apply: ConfigApply = ConfigApply.LIVE, choices: List<ConfigChoice>,
-) = ConfigField(key, "combo", group, label, desc, apply, choices = choices)
+) = ConfigField(key, "combo", group, label, desc, apply, fixedChoices = choices)
 
 private fun text(
     key: String, group: String, label: String, desc: String, placeholder: String = "",
@@ -218,6 +223,15 @@ private fun httpUrlValid(v: String): String? {
 }
 
 // --- The GUI-exposed keys, in display order --------------------------------------------------------
+
+/** The `voice.local_model` options: the installed speech models (read from disk each time), or a
+ *  placeholder while none is installed. */
+private fun installedModelChoices(): List<ConfigChoice> {
+    val dir = de.yoxcu.stoandl.voice.VoiceModels.defaultDir()
+    val installed = de.yoxcu.stoandl.voice.SPEECH_MODELS.filter { java.io.File(dir, it.file).isFile }
+    if (installed.isEmpty()) return listOf(ConfigChoice("No model installed", "") { true })
+    return installed.map { m -> ConfigChoice(m.name, m.id) { it.voiceLocalModel == m.id } }
+}
 
 private const val G_PLUGINS = "Plugins"
 private const val G_VOICE = "Voice"
@@ -376,21 +390,26 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
 
     // --- Voice ---
     combo("voice.backend", G_VOICE, "Speech to text",
-        "Turns the watch's dictation (voice replies, watchapps) and voice notes into text. Local runs a " +
-            "speech engine on this computer; HTTP sends the audio to an OpenAI-compatible service.", choices = listOf(
+        "Turns the watch's dictation (voice replies, watchapps) and voice notes into text. Local model runs " +
+            "a downloaded model on this computer; a custom command runs your own engine; HTTP sends the audio " +
+            "to an OpenAI-compatible service.", choices = listOf(
         ConfigChoice("Off", "off") { it.voiceBackend == StoandlConfig.VoiceBackend.OFF },
-        ConfigChoice("Local command", "command") { it.voiceBackend == StoandlConfig.VoiceBackend.COMMAND },
+        ConfigChoice("Local model", "local") { it.voiceBackend == StoandlConfig.VoiceBackend.LOCAL },
+        ConfigChoice("Custom command", "command") { it.voiceBackend == StoandlConfig.VoiceBackend.COMMAND },
         ConfigChoice("HTTP service", "http") { it.voiceBackend == StoandlConfig.VoiceBackend.HTTP },
     )),
-    text("voice.command", G_VOICE, "Local command",
+    ConfigField("voice.local_model", "combo", G_VOICE, "Model",
+        "The installed speech model the local engine uses (download one below)", ConfigApply.LIVE,
+        choicesOf = ::installedModelChoices),
+    text("voice.command", G_VOICE, "Custom command",
         "A command printing the transcript of {wav} (16 kHz mono WAV) in language {lang} (a code or auto)",
-        placeholder = "parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 --no-prints -f {wav}") { it.voiceCommand },
+        placeholder = "parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 -ng --no-prints -f {wav}") { it.voiceCommand },
     text("voice.url", G_VOICE, "HTTP endpoint",
         "OpenAI-compatible transcription URL (whisper.cpp whisper-server, speaches, LocalAI, a hosted service)",
         placeholder = "http://127.0.0.1:8080/v1/audio/transcriptions",
         validate = { v -> if (v.isEmpty()) null else httpUrlValid(v) }) { it.voiceUrl },
-    text("voice.model", G_VOICE, "HTTP model", "The model the service should use, if it asks for one",
-        placeholder = "whisper-1") { it.voiceModel },
+    text("voice.http_model", G_VOICE, "HTTP model", "The model the service should use, if it asks for one",
+        placeholder = "whisper-1") { it.voiceHttpModel },
     secret("voice.api_key", G_VOICE, "HTTP API key",
         "Sent as a Bearer token; kept in the keyring (or a private file), never in stoandl.conf"),
     text("voice.language", G_VOICE, "Language", "The language you speak: a code such as de or en, or auto",

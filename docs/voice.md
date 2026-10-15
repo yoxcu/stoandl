@@ -3,11 +3,13 @@
 stoandl turns the watch's dictation (Voice in a notification's Reply menu, watchapps' dictation API) and
 extensions' voice notes into text with the backend in `voice.backend`:
 
-- `command`: a local engine run per dictation. It gets a 16 kHz mono 16-bit WAV as `{wav}` and the language
+- `local` (recommended): a downloaded model run by whisper.cpp on this machine. Nothing leaves it. Set up
+  below; the GUI's Settings → Daemon configuration → Voice does the same with buttons.
+- `command`: your own engine run per dictation. It gets a 16 kHz mono 16-bit WAV as `{wav}` and the language
   as `{lang}` (`voice.language`: a code such as `de`, or `auto`) and prints the transcript on stdout. The
   command line runs through `sh`, so `~` and pipes work. Nothing leaves the machine.
 - `http`: an OpenAI-compatible endpoint (`voice.url`, `…/v1/audio/transcriptions`), optionally with
-  `voice.model` and an API key (`stoandl daemon set voice.api_key …`, kept in the keyring). The audio
+  `voice.http_model` and an API key (`stoandl daemon set voice.api_key …`, kept in the keyring). The audio
   leaves the machine.
 
 The watch waits 15 s for the result after you stop speaking; stoandl gives the engine 14. Check a setup
@@ -32,24 +34,41 @@ Not recommended: Whisper tiny/base for German (28 % / 18 % WER), Vosk small (fas
 needing a GPU. Moonshine (German model since 2026) and Canary-180M are promising but have no runtime
 on musl/postmarketOS yet.
 
-### Install
+### Set up (local model)
 
 ```sh
-# postmarketOS / Alpine edge (community), Arch (extra: whisper-cpp), Debian sid (whisper.cpp-tools)
-apk add whisper.cpp
-mkdir -p ~/.local/share/stoandl/stt
-wget -O ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin \
-  https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin
+# 1. The engine. postmarketOS / Alpine edge (community), Arch (extra: whisper-cpp), Debian sid (whisper.cpp-tools)
+sudo apk add whisper.cpp
+# 2. A model: the daemon downloads it into ~/.local/share/stoandl/stt and, when voice was off, switches to it
+stoandl voice models
+stoandl voice download parakeet-v3
+stoandl voice                        # Voice: ready — local Parakeet v3
+stoandl voice test clip.wav          # optional: any WAV or Ogg/Opus file
 ```
 
-### `voice.command` lines
+In the GUI, the Voice section offers the recommended model while none is installed, shows the download's
+progress, and its Model dropdown lists the downloaded models. The download from huggingface.co is the only
+network access; it happens only when you start it. `stoandl voice use <id>` switches between downloaded
+models, `stoandl voice remove <id>` deletes one.
+
+The local backend runs on the CPU (`-ng`), on the big cores of a big.LITTLE phone (`taskset`, Alpine
+`util-linux-misc`). Distro whisper.cpp builds enable Vulkan, and on GPUs without 16-bit storage (the OnePlus
+6's Adreno 630) it aborts loading the model; a short dictation gains little from a GPU anyway. To use one,
+run the engine yourself with the custom command backend.
+
+Measured on the OnePlus 6 (postmarketOS, whisper.cpp 1.9.4, Parakeet v3 q8_0): a 4 s English clip in 4.5 s,
+model load included.
+
+### `voice.command` lines (custom command)
+
+The local backend runs these for you; write your own only for another engine or other flags.
 
 ```
 # Parakeet v3 (ignores {lang}: it detects the language). On a big.LITTLE phone keep it on the big cores:
-voice.command = taskset -c 4-7 parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 --no-prints -f {wav}
+voice.command = taskset -c 4-7 parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 -ng --no-prints -f {wav}
 
 # Whisper small, audio context cut to the watch's 15 s, greedy decoding:
-voice.command = whisper-cli -m ~/.local/share/stoandl/stt/ggml-small-q8_0.bin -l {lang} -t 4 -ac 768 -bs 1 -bo 1 -nf -mc 0 -nt -np -f {wav}
+voice.command = whisper-cli -m ~/.local/share/stoandl/stt/ggml-small-q8_0.bin -l {lang} -t 4 -ng -ac 768 -bs 1 -bo 1 -nf -mc 0 -nt -np -f {wav}
 
 # Whisper large-v3-turbo on a fast machine:
 voice.command = whisper-cli -m ~/.local/share/stoandl/stt/ggml-large-v3-turbo-q8_0.bin -l {lang} -t 8 -mc 0 -nt -np -f {wav}

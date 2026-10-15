@@ -339,7 +339,11 @@ not yet a tracked timestamp.
 | `GetCoreDump` | `(s) → s` | Fetch an existing coredump to the absolute path. `ok:<path>` / `none:` / `notready:` / `error:`. | `support --coredump` (no standalone verb) |
 | `WatchInfoText` | `() → s` | Watch metadata as a human-readable text block (model/fw/board/serial/language/battery/capabilities). `ok:<text>` / `notready:`. Returned **inline** (no file). | `support` (no standalone verb) |
 
-| `VoiceStatus` | `() → s` | Speech-to-text state: `off:`, `ready:<backend>\t<detail>` (backend `command` or `http`; detail = the command's program or the URL) or `unavailable:<reason>` (no libspeex, command not found, no URL). | `voice` / `voice status` |
+| `VoiceStatus` | `() → s` | Speech-to-text state: `off:`, `ready:<backend>\t<detail>` (backend `local`, `command` or `http`; detail = the model's name, the command's program or the URL) or `unavailable:<reason>` (no libspeex, model not downloaded, whisper.cpp or the command not found, no URL). | `voice` / `voice status` |
+| `VoiceModels` | `() → as` | The speech-model catalog, one record each: `id\tname\tprogram\tsizeMb\tstate\trecommended\tengineOk\tnote`. `state` = `installed`, `available`, `downloading:<percent>` or `failed:<message>`; `program` = `parakeet-cli` / `whisper-cli`, `engineOk` whether it is on PATH. Poll it while downloading (no signal). | `voice models` |
+| `VoiceDownloadModel` | `(s) → s` | Start downloading the model with that id (one at a time; egress to huggingface.co, only on this call). When it lands and `voice.backend` is `off` or `local`, `voice.local_model` is set to it and the backend to `local`. `ok:` / `installed:` (already there; activates the same way) / `busy:` / `notfound:`. | `voice download <id>` |
+| `VoiceCancelDownload` | `() → s` | Stop the running download. `ok:` / `none:`. | `voice cancel` |
+| `VoiceRemoveModel` | `(s) → s` | Delete a downloaded model. `ok:` / `notfound:`. | `voice remove <id>` |
 | `Transcribe` | `(s) → s` | Transcribe an audio file at the absolute daemon-side path (16-bit WAV, or Ogg/Opus) with the configured backend in `voice.language`. Blocks up to a minute. `ok:<ms>\t<text>` (ms first: the text may hold a tab) / `off:` / `unavailable:` / `error:`. With `voice.backend = http` the audio leaves the machine. | `voice test <file>` |
 
 > `screenshot`/`logs`/`coredump` write to a **daemon-side filesystem path** and return that path —

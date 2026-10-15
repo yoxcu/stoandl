@@ -48,6 +48,7 @@ import de.yoxcu.stoandl.plugin.WeatherPlugin
 import de.yoxcu.stoandl.voice.StoandlTranscriptionProvider
 import de.yoxcu.stoandl.voice.VoiceBackends
 import de.yoxcu.stoandl.voice.VoiceControl
+import de.yoxcu.stoandl.voice.VoiceModels
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
 import de.yoxcu.stoandl.dnd.DndSync
@@ -366,8 +367,17 @@ class PebbleIntegration(
     private val secretStore: SecretStore =
         LayeredSecretStore(SecretServiceStore(), FileSecretStore(File(StoandlConfig.configDir(), "secrets")))
     /** Speech to text (`voice.*`): the watch's dictation, D-Bus Transcribe and extensions' transcribe. */
-    private val voiceBackends = VoiceBackends(configStore, secretStore)
-    private val voiceControl = VoiceControl(voiceBackends, configStore)
+    private val voiceBackends = VoiceBackends(configStore, secretStore, VoiceModels(scope))
+    private val voiceControl = VoiceControl(voiceBackends, configStore) { model ->
+        // A model downloaded from the GUI/CLI becomes the one in use, and voice comes on with it unless
+        // another backend (a custom command, HTTP) is set.
+        val c = configStore.current()
+        if (c.voiceBackend == StoandlConfig.VoiceBackend.OFF || c.voiceBackend == StoandlConfig.VoiceBackend.LOCAL) {
+            persistConfig("voice.local_model", model.id)
+            persistConfig("voice.backend", "local")
+            log.info { "Voice: using ${model.name}" }
+        }
+    }
     // libpebble3's Koin context, set in init(): for its DAOs.
     private val koinRef = AtomicReference<org.koin.core.Koin?>(null)
     private val pluginControl = PluginControl(
@@ -3043,6 +3053,10 @@ private class StoandlControlImpl(
     }
 
     override fun VoiceStatus(): String = voiceControl.status()
+    override fun VoiceModels(): List<String> = voiceControl.models.records()
+    override fun VoiceDownloadModel(id: String): String = voiceControl.download(id)
+    override fun VoiceCancelDownload(): String = voiceControl.models.cancelDownload()
+    override fun VoiceRemoveModel(id: String): String = voiceControl.models.remove(id)
 
     override fun Transcribe(path: String): String {
         log.info { "Transcribe: $path" }

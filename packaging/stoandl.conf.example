@@ -420,20 +420,24 @@ dnd.sync = off
 
 # ── Voice (speech to text) ──────────────────────────────────────────────────────────────────────────
 # Turns the watch's dictation (voice replies to notifications, watchapps' dictation) and extensions' voice
-# notes (Matrix) into text. off = the watch says "Enable voice in the settings page". command = a local
-# speech engine (no egress): voice.command prints the transcript of {wav} (16 kHz mono WAV) in language
-# {lang}. http = an OpenAI-compatible transcription service (egress: the audio leaves this machine).
+# notes (Matrix) into text. off = the watch says "Enable voice in the settings page". local = a downloaded
+# speech model run by whisper.cpp on this machine (no egress); `stoandl voice download parakeet-v3` (or the
+# GUI's Voice section) fetches one and switches to it. command = your own engine: voice.command prints the
+# transcript of {wav} (16 kHz mono WAV) in language {lang}. http = an OpenAI-compatible transcription
+# service (egress: the audio leaves this machine).
 # The watch's audio is decoded with libspeex (Alpine `speex`, Debian `libspeex1`); voice notes for a local
 # engine with libopus. See docs/voice.md for engines and models.
 voice.backend = off
+# voice.backend = local: the model's id (`stoandl voice models`), one that is downloaded.
+voice.local_model =
 # Example (docs/voice.md): NVIDIA Parakeet v3 via whisper.cpp's parakeet-cli (Alpine community `whisper.cpp`,
 # Arch `whisper-cpp`); it detects the language itself and runs in a few seconds on a phone:
-#   voice.command = parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 --no-prints -f {wav}
+#   voice.command = parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 -ng --no-prints -f {wav}
 voice.command =
 # Example: a whisper.cpp whisper-server on this machine or the LAN, or a hosted service.
 #   voice.url = http://127.0.0.1:8080/v1/audio/transcriptions
 voice.url =
-voice.model =
+voice.http_model =
 # The API key for voice.url is not stored here: set it with `stoandl daemon set voice.api_key <key>` or in
 # the GUI (kept in the keyring, or a private file next to this one).
 # The language you speak (de, en, …) or auto.

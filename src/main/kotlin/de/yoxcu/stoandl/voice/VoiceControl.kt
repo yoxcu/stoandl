@@ -9,8 +9,19 @@ import java.io.File
 const val FILE_TRANSCRIBE_TIMEOUT_MS = 60_000L
 
 /** The voice D-Bus methods (`VoiceStatus`, `Transcribe`) and extensions' `transcribe`, over [VoiceBackends]. */
-class VoiceControl(private val backends: VoiceBackends, private val configStore: ConfigStore) {
+class VoiceControl(
+    private val backends: VoiceBackends,
+    private val configStore: ConfigStore,
+    /** A downloaded model is ready: make it the one in use. */
+    private val onModelInstalled: (SpeechModel) -> Unit = {},
+) {
     fun status(): String = backends.status()
+
+    /** The speech models on this machine and in the catalog. */
+    val models: VoiceModels get() = backends.models
+
+    /** Download a catalog model (an explicit user request); it becomes the active one when done. */
+    fun download(id: String): String = backends.models.startDownload(id, onModelInstalled)
 
     /** Transcribe the file at [path]: `ok:<ms>\t<text>`, `off:`, `unavailable:<why>` or `error:<msg>`. Blocks. */
     fun transcribeBlocking(path: String, language: String? = null): String = runBlocking { transcribe(path, language) }

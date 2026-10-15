@@ -373,6 +373,23 @@ interface StoandlControl : DBusInterface {
      *  `unavailable:<reason>` or `error:<msg>`. With the http backend the audio leaves this machine. */
     fun Transcribe(path: String): String
 
+    /** The speech models stoandl can download and run, one record each:
+     *  `id\tname\tprogram\tsizeMb\tstate\trecommended\tprogramInstalled\tnote`; state ∈ installed, available,
+     *  `downloading:<percent>`, `failed:<message>`; recommended and programInstalled are true/false. Poll it while
+     *  a download runs. */
+    fun VoiceModels(): List<String>
+
+    /** Download a model from [VoiceModels] (one at a time); when it is in place it becomes `voice.local_model`
+     *  and, unless a custom command or HTTP is set, `voice.backend` turns to `local`. `ok:`, `installed:`,
+     *  `busy:` or `notfound:`. Downloads from huggingface.co (the user asked for it). */
+    fun VoiceDownloadModel(id: String): String
+
+    /** Stop the running download: `ok:` or `none:`. */
+    fun VoiceCancelDownload(): String
+
+    /** Delete a downloaded model: `ok:` or `notfound:`. */
+    fun VoiceRemoveModel(id: String): String
+
     /** Dump the watch's firmware logs to the absolute [path] as text. Blocks until the (multi-generation)
      *  transfer completes — a handful of seconds. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`. */
     fun GatherLogs(path: String): String

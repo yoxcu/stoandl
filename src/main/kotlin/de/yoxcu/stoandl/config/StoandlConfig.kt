@@ -162,12 +162,14 @@ data class StoandlConfig(
     /** Speech-to-text for the watch's dictation and extensions' voice notes: off, a local command, or an
      *  OpenAI-compatible HTTP endpoint (egress, opt-in). Read on every use. */
     val voiceBackend: VoiceBackend,
+    /** `voice.backend = local`: the id of an installed speech model (VoiceModels). */
+    val voiceLocalModel: String,
     /** `voice.backend = command`: a shell command line with `{wav}` and `{lang}`, printing the transcript. */
     val voiceCommand: String,
     /** `voice.backend = http`: the transcription endpoint (`…/v1/audio/transcriptions`). */
     val voiceUrl: String,
     /** `voice.backend = http`: the `model` form field, if the service wants one. */
-    val voiceModel: String,
+    val voiceHttpModel: String,
     /** Language of the speech: an ISO-639 code, or `auto`. */
     val voiceLanguage: String,
     /** Keep each dictation's audio as a WAV under `~/.cache/stoandl/voice` (debugging; privacy). */
@@ -311,8 +313,8 @@ data class StoandlConfig(
      *  never (everything granted, the user's explicit denials stand). */
     enum class PermissionPolicyMode { ASK_IF_EXFILTRATING, ALWAYS_ASK, NEVER_ASK }
 
-    /** Where speech is turned into text: nowhere, a local command, or an HTTP endpoint. */
-    enum class VoiceBackend { OFF, COMMAND, HTTP }
+    /** Where speech is turned into text: nowhere, an installed speech model, a custom command, or an HTTP endpoint. */
+    enum class VoiceBackend { OFF, LOCAL, COMMAND, HTTP }
 
     /** Which way desktop DND ↔ watch Quiet Time is mirrored: not at all, host→watch only, watch→host
      *  only, or both. */
@@ -386,9 +388,10 @@ data class StoandlConfig(
             calendarShowDeclined = false,
             calendarReminderVibe = null,
             voiceBackend = VoiceBackend.OFF,
+            voiceLocalModel = "",
             voiceCommand = "",
             voiceUrl = "",
-            voiceModel = "",
+            voiceHttpModel = "",
             voiceLanguage = "auto",
             voiceSaveAudio = false,
             pluginsEnabled = false,
@@ -503,13 +506,15 @@ data class StoandlConfig(
                 calendarShowDeclined = parseBool(map["calendar.show_declined"]),
                 calendarReminderVibe = map["calendar.reminder_vibe"]?.trim()?.takeIf { it.isNotEmpty() },
                 voiceBackend = when (map["voice.backend"]?.trim()?.lowercase()) {
+                    "local" -> VoiceBackend.LOCAL
                     "command" -> VoiceBackend.COMMAND
                     "http" -> VoiceBackend.HTTP
                     else -> VoiceBackend.OFF
                 },
+                voiceLocalModel = map["voice.local_model"]?.trim().orEmpty(),
                 voiceCommand = map["voice.command"]?.trim().orEmpty(),
                 voiceUrl = map["voice.url"]?.trim().orEmpty(),
-                voiceModel = map["voice.model"]?.trim().orEmpty(),
+                voiceHttpModel = map["voice.http_model"]?.trim().orEmpty(),
                 voiceLanguage = map["voice.language"]?.trim()?.takeIf { it.isNotEmpty() } ?: "auto",
                 voiceSaveAudio = parseBool(map["voice.save_audio"]),
                 pluginsEnabled = parseBool(map["plugins.enabled"]),

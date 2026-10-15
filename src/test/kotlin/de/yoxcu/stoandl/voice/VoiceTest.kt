@@ -27,6 +27,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** Dictation without a watch: Speex frames as the firmware sends them, WAV, the backends, the result. */
@@ -66,6 +67,7 @@ class VoiceTest {
     )
 
     private fun secrets() = FileSecretStore(Files.createTempFile("secrets", "").toFile())
+    private fun models() = VoiceModels(kotlinx.coroutines.GlobalScope, Files.createTempDirectory("stt").toFile())
 
     @Test
     fun `firmware Speex frames decode to 20 ms of 16 kHz audio each`() {
@@ -122,7 +124,7 @@ class VoiceTest {
         assumeTrue(SpeexDecoder.available, "libspeex not installed")
         val frames = firmwareFrames(1)
         val cfg = config(StoandlConfig.VoiceBackend.COMMAND, """sh -c 'test -s "$1" && echo Bin gleich da' x {wav}""")
-        val provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets()), cfg)
+        val provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets(), models()), cfg)
         assertTrue(provider.canServeSession())
         val info = VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320)
         val r = provider.transcribe(info, flow { frames.forEach { emit(it.toUByteArray()) } }, isNotificationReply = true)
@@ -132,12 +134,12 @@ class VoiceTest {
     @Test
     fun `voice off, or no audio from the watch`() = runBlocking<Unit> {
         val off = config(StoandlConfig.VoiceBackend.OFF)
-        val provider = StoandlTranscriptionProvider(VoiceBackends(off, secrets()), off)
+        val provider = StoandlTranscriptionProvider(VoiceBackends(off, secrets(), models()), off)
         assertEquals(false, provider.canServeSession())
-        assertEquals("off:", VoiceBackends(off, secrets()).status())
+        assertEquals("off:", VoiceBackends(off, secrets(), models()).status())
         assumeTrue(SpeexDecoder.available, "libspeex not installed")
         val on = config(StoandlConfig.VoiceBackend.COMMAND, "echo hi")
-        val silent = StoandlTranscriptionProvider(VoiceBackends(on, secrets()), on)
+        val silent = StoandlTranscriptionProvider(VoiceBackends(on, secrets(), models()), on)
         val r = silent.transcribe(VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320), flow { kotlinx.coroutines.awaitCancellation() }, true)
         assertIs<TranscriptionResult.Error>(r)
     }
@@ -161,4 +163,29 @@ class VoiceTest {
 
     private fun CacheVoiceDirEmpty(): Boolean =
         de.yoxcu.stoandl.util.CacheDirs.dir("voice").listFiles { f -> f.name.endsWith(".wav") && System.currentTimeMillis() - f.lastModified() < 10_000 }.isNullOrEmpty()
+
+    @Test
+    fun `a local model runs through its whisper-cpp program, pinned to the big cores`() {
+        val dir = Files.createTempDirectory("stt").toFile()
+        val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir)
+        val parakeet = assertNotNull(models.model("parakeet-v3"))
+        assertTrue(models.command(parakeet).contains("parakeet-cli -m '${dir.absolutePath}/ggml-parakeet-tdt-0.6b-v3-q8_0.bin'"))
+        assertTrue(models.command(assertNotNull(models.model("whisper-small"))).contains("-l {lang}"))
+        assertEquals(false, models.isInstalled(parakeet))
+        File(dir, parakeet.file).writeText("x")
+        assertEquals(listOf("parakeet-v3"), models.installed().map { it.id })
+        assertTrue(models.records().first().split('\t')[4] == "installed")
+        assertEquals("'it'\\''s'", VoiceModels.shellQuote("it's"))
+    }
+
+    @Test
+    fun `big cores are the fastest ones when the CPU mixes core types`() {
+        val sys = Files.createTempDirectory("cpu").toFile()
+        listOf(1766400L, 1766400L, 2803200L, 2803200L).forEachIndexed { i, f ->
+            File(sys, "cpu$i/cpufreq").apply { mkdirs() }.resolve("cpuinfo_max_freq").writeText("$f\n")
+        }
+        assertEquals("2,3", VoiceModels.bigCores(sys))
+        listOf(0, 1).forEach { File(sys, "cpu$it/cpufreq/cpuinfo_max_freq").writeText("2803200\n") }
+        assertNull(VoiceModels.bigCores(sys), "all cores alike: no pinning")
+    }
 }

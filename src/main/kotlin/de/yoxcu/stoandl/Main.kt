@@ -139,7 +139,7 @@ private fun printUsage() {
     row("firmware", "sideload check update status")
     row("language", "list install sideload status")
     row("screenshot", "[path]")
-    row("voice", "status · test <file>")
+    row("voice", "status · models · download · use · test")
     row("plugins", "list · read · invoke")
     row("perms", "pending · list · allow · deny · reset")
     row("logs", "[path]")
@@ -2551,14 +2551,15 @@ private inline fun withControl(block: (StoandlControl) -> Unit) {
 
 // ---- voice group (speech to text) --------------------------------------------------------------------
 
-/** `stoandl voice [status]` shows the speech-to-text backend; `stoandl voice test <file>` transcribes a WAV
- *  or Ogg/Opus file with it (the daemon reads the file, so the path is made absolute here). */
+/** `stoandl voice [status]` shows the speech-to-text backend; `models`/`download`/`use`/`remove`/`cancel`
+ *  manage the local speech models (a download makes the model the active one when voice was off or local);
+ *  `test <file>` transcribes a WAV or Ogg/Opus file (the daemon reads it, so the path is made absolute here). */
 private fun ctlVoice(rest: List<String>) {
     when (rest.firstOrNull() ?: "status") {
         "status" -> withControl { control ->
             val (kind, body) = splitStatus(control.VoiceStatus())
             when (kind) {
-                "off" -> println("Voice: off (set voice.backend: stoandl daemon set voice.backend command)")
+                "off" -> println("Voice: off (pick a model: stoandl voice models, then stoandl voice download <model>)")
                 "ready" -> println("Voice: ready — ${body.replace('\t', ' ')}")
                 else -> { println("Voice: unavailable — $body"); System.exit(1) }
             }
@@ -2578,7 +2579,53 @@ private fun ctlVoice(rest: List<String>) {
                 }
             }
         }
-        else -> { System.err.println("Usage: stoandl voice [status | test <file>]"); System.exit(2) }
+        "models" -> withControl { control ->
+            control.VoiceModels().map { it.split('\t') }.forEach { r ->
+                val state = r.getOrElse(4) { "" }
+                val mark = when {
+                    state == "installed" -> "installed"
+                    state.startsWith("downloading:") -> "downloading ${state.substringAfter(':')}%"
+                    state.startsWith("failed:") -> "failed: ${state.substringAfter(':')}"
+                    else -> "${r.getOrElse(3) { "?" }} MB"
+                }
+                val rec = if (r.getOrElse(5) { "" } == "true") " (recommended)" else ""
+                println("%-18s %-24s %s%s".format(r.getOrElse(0) { "" }, r.getOrElse(1) { "" }, mark, rec))
+                println("%-18s %s".format("", r.getOrElse(7) { "" }))
+                if (r.getOrElse(6) { "true" } != "true") println("%-18s needs ${r.getOrElse(2) { "" }} (install whisper.cpp)".format(""))
+            }
+        }
+        "download" -> {
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice download <model> (see stoandl voice models)"); System.exit(2); return }
+            withControl { control ->
+                val (kind, body) = splitStatus(control.VoiceDownloadModel(id))
+                if (kind != "ok") { println(body); if (kind != "installed") System.exit(1); return@withControl }
+                println(body)
+                // Follow the download until it lands (Ctrl-C leaves it running in the daemon).
+                while (true) {
+                    Thread.sleep(2000)
+                    val state = control.VoiceModels().map { it.split('\t') }.firstOrNull { it[0] == id }?.getOrNull(4) ?: break
+                    when {
+                        state.startsWith("downloading:") -> print("\r  ${state.substringAfter(':')}% ")
+                        state == "installed" -> { println("\r  done — ${splitStatus(control.VoiceStatus()).second.replace('\t', ' ')}"); break }
+                        state.startsWith("failed:") -> { println("\r  failed: ${state.substringAfter(':')}"); System.exit(1); return@withControl }
+                        else -> break
+                    }
+                }
+            }
+        }
+        "use" -> {
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice use <model>"); System.exit(2); return }
+            withControl { control ->
+                printStatusOrExit(control.SetConfig("voice.local_model", id))
+                printStatusOrExit(control.SetConfig("voice.backend", "local"))
+            }
+        }
+        "remove" -> {
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice remove <model>"); System.exit(2); return }
+            withControl { control -> printStatusOrExit(control.VoiceRemoveModel(id)) }
+        }
+        "cancel" -> withControl { control -> println(splitStatus(control.VoiceCancelDownload()).second) }
+        else -> { System.err.println("Usage: stoandl voice [status | models | download <model> | use <model> | remove <model> | cancel | test <file>]"); System.exit(2) }
     }
 }
 
