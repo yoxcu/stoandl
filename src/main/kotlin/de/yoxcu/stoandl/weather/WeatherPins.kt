@@ -5,6 +5,7 @@ package de.yoxcu.stoandl.weather
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs.WEATHER_APP_UUID
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.database.entity.TimelinePin
 import io.rebble.libpebblecommon.database.entity.buildTimelinePin
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
@@ -50,27 +51,48 @@ internal data class LocationForecast(
  * Pins are written via the public [LibPebble] timeline API ([LibPebble.insertOrReplace] /
  * [LibPebble.delete]); libpebble3 syncs them to the watch's Pin BlobDB.
  */
-internal class WeatherPins(private val libPebble: LibPebble) {
+internal class WeatherPins(
+    private val insert: (TimelinePin) -> Unit,
+    private val delete: (Uuid) -> Unit,
+) {
+    constructor(libPebble: LibPebble) : this(libPebble::insertOrReplace, libPebble::delete)
+
+    // What each pin slot last got, without its lastUpdated stamp: a pin is rewritten only when this changes.
+    // Every write is a BlobDB transfer plus a flash write on the watch, and a sync runs several times an hour.
+    private data class PinContent(
+        val title: String, val kind: UByte, val subtitle: String, val part: DayPart,
+        val timestamp: Instant, val location: String, val otherLocations: List<String>,
+    )
+    private val written = HashMap<Uuid, PinContent>()
+
 
     /** Insert/refresh pins from the latest fetch. The primary location is the first one that has
      *  forecast data (the GPS "current location", when enabled, sorts first), so a transient failure
      *  of one location doesn't wipe the timeline as long as another has data. */
+    @Synchronized
     fun sync(forecasts: List<LocationForecast>) {
         val primary = forecasts.firstOrNull { it.days.isNotEmpty() }
+        if (primary == null) {
+            // Every fetch failed (a 503, no network): the pins on the watch still hold the last forecast.
+            log.info { "Weather pins kept: no forecast this time" }
+            return
+        }
         val others = forecasts.filter { it !== primary && it.days.isNotEmpty() }
         val now = Clock.System.now()
+        val before = writes
         var pins = 0
         for (slot in PinDay.entries) {
             pins += buildForDay(primary, others, slot, now)
         }
-        log.info { "Weather pins updated: $pins pin(s) across ${PinDay.entries.size} day(s)" }
+        log.info { "Weather pins: $pins pin(s) across ${PinDay.entries.size} day(s), ${writes - before} changed" }
     }
 
     /** Remove all weather pins (used when pins are disabled, or weather is turned off). */
+    @Synchronized
     fun clear() {
         for (slot in PinDay.entries) {
-            libPebble.delete(slot.dayUuid)
-            libPebble.delete(slot.nightUuid)
+            remove(slot.dayUuid)
+            remove(slot.nightUuid)
         }
         log.info { "Weather pins cleared" }
     }
@@ -84,8 +106,8 @@ internal class WeatherPins(private val libPebble: LibPebble) {
     ): Int {
         val forecast = primary?.days?.getOrNull(slot.ordinal)
         if (primary == null || forecast == null) {
-            libPebble.delete(slot.dayUuid)
-            libPebble.delete(slot.nightUuid)
+            remove(slot.dayUuid)
+            remove(slot.nightUuid)
             return 0
         }
         // "high°/low°" — the same daily span shown on both the sunrise and sunset pins.
@@ -131,6 +153,8 @@ internal class WeatherPins(private val libPebble: LibPebble) {
         now: Instant,
         otherLocations: List<String>,
     ) {
+        val content = PinContent(title, kind, subtitle, part, timestamp, location, otherLocations)
+        if (written[uuid] == content) return
         val pin = buildTimelinePin(parentId = WEATHER_APP_UUID, timestamp = timestamp) {
             itemID = uuid
             duration = Duration.ZERO
@@ -157,8 +181,24 @@ internal class WeatherPins(private val libPebble: LibPebble) {
                 }
             }
         }
-        libPebble.insertOrReplace(pin)
+        insert(pin)
+        written[uuid] = content
+        removed -= uuid
+        writes++
     }
+
+    /** Pins written so far (for the log line and tests). */
+    internal var writes = 0
+        private set
+
+    private fun remove(uuid: Uuid) {
+        if (written.remove(uuid) == null && uuid in removed) return
+        delete(uuid)
+        removed += uuid
+    }
+
+    // Slots deleted since the last write: deleting an absent pin again would still be a watch transfer.
+    private val removed = HashSet<Uuid>()
 }
 
 /** The three timeline-pin day slots, each with a stable day/night pin UUID so re-syncs replace

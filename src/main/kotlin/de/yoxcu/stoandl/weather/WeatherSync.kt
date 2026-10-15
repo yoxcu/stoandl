@@ -247,8 +247,10 @@ class WeatherSync(
         }
 
         val results = tasks.awaitAll()
-        libPebble.updateWeatherData(results.map { it.appData })
         val populated = results.count { it.appData is WeatherLocationData.WeatherLocationDataPopulated }
+        // Nothing fetched (a 503, no network): leave the watch's Weather app on the last forecast rather than
+        // replacing it with empty entries; the retry below fills it in.
+        if (populated > 0) libPebble.updateWeatherData(results.map { it.appData })
         lastSyncOk = populated == results.size
         if (lastSyncOk) lastCompleteSyncMs = System.currentTimeMillis()
         log.info { "Weather updated: $populated/${results.size} location(s) populated (${if (imperial) "°F" else "°C"})" }
