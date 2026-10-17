@@ -40,7 +40,8 @@ four layouts the version byte did not change. Every decoded layout, as `Heartbea
 | 523 B | 1 | 4.20.0 | 91 | + `touch_driver_wake_cnt`, `settings_touch_enabled` |
 | 527 B | 1 | 4.26.0 (`31e3ea8e1`, 2026-07-14) | 92 | **+ `ppog_reversed` @467, same version byte** |
 | 523 B | 2 | 4.32.0 (`5ef38b9e9`, 2026-07-22) | 91 | **− `settings_power_mode`** (was @487), version bumped to 2 |
-| **567 B** | **3** | **4.33.0** (`df6d08bd`…`68415258`) | **101** | **ten metrics appended**, version bumped to 3; unchanged through 4.38.2 |
+| 567 B | 3 | 4.33.0 (`df6d08bd`…`68415258`) | 101 | ten metrics appended, version bumped to 3; unchanged through 4.38.4 |
+| **579 B** | **3** | **4.39.0** (`e971173e8`, `99a8ec309`) | **104** | **three metrics appended, same version byte**; unchanged through 4.41.1 |
 
 A row covers every later release up to the next row, backports included (v4.27.2/3 and v4.30.2/3 send
 527 B / v1). Untagged development builds between releases can send layouts that are not in the table
@@ -54,7 +55,8 @@ Consequences that have already bitten us:
    so insights kept replaying the last good decode (reporting 59 % while the watch was at 15 %).
 3. The 567 B / v3 record went unnoticed from fw 4.33.0 (2026-08-06) until the review of 2026-09-28:
    it had no row, so the power pie, drain bars and notification overlay were empty while the battery
-   block kept decoding through the structural fallback.
+   block kept decoding through the structural fallback. The 579 B record of fw 4.39.0 then did the
+   same again until the review of 2026-10-17.
 4. Before 4.13 even the battery block sat elsewhere (`battery_soc_pct` @94 in 4.10.0, @102 from
    4.13.0). No offset is stable across all releases, which is why stoandl reads every field
    **by name** through the layout and hardcodes none.
@@ -70,14 +72,14 @@ Consequences that have already bitten us:
 
 ## The metrics
 
-102 metrics across all releases; 101 in the current 567 B / v3 layout. Offsets are given for the four
-layouts since 4.20; `—` means the metric does not exist in that layout. For older releases run
+105 metrics across all releases; 104 in the current 579 B / v3 layout. Offsets are given for the
+layouts since 4.20 (the two v3 layouts share one column: 579 B only appends #103–105); `—` means the metric does not exist in that layout. For older releases run
 `tools/hb_layouts_from_source.py <PebbleOS> --offsets v4.10.0` (or the release in question). `since` is
 the first release whose `analytics.def` has the metric; records are decoded only from 4.10.0 on.
 ✅ marks the 28 the battery views read; `stoandl watch battery heartbeat --all` and the
 `HeartbeatMetrics` D-Bus method decode all of them.
 
-| # | metric | type | since | 523/v1 | 527/v1 | 523/v2 | **567/v3** | used |
+| # | metric | type | since | 523/v1 | 527/v1 | 523/v2 | **567·579/v3** | used |
 |---|--------|------|-------|-------:|-------:|-------:|-------:|:----:|
 | 1 | `memory_pct_max` | u32 | 4.9.158 | 29 | 29 | 29 | **29** |  |
 | 2 | `memory_largest_free_pct` | u32 | 4.9.177 | 33 | 33 | 33 | **33** |  |
@@ -181,6 +183,9 @@ the first release whose `analytics.def` has the metric; records are decoded only
 | 100 | `drv_init_fail_flags` | u32 | 4.33.0 | — | — | — | **553** |  |
 | 101 | `battery_soc_pct_min` | u32+scale | 4.33.0 | — | — | — | **557** |  |
 | 102 | `touch_gated_touchdown_count` | u32 | 4.33.0 | — | — | — | **563** |  |
+| 103 | `display_update_count` | u32 | 4.39.0 | — | — | — | **567** (579 B) |  |
+| 104 | `display_flush_time_ms` | u32 ms | 4.39.0 | — | — | — | **571** (579 B) |  |
+| 105 | `touch_driver_awake_time_ms` | u32 ms | 4.39.0 | — | — | — | **575** (579 B) |  |
 
 ## What's worth decoding next
 
@@ -260,6 +265,13 @@ face on their own.
 | `unexpected_reboot_count` | 1 on the first heartbeat after a reboot whose reason is in the error family (watchdog and above). A direct crash counter. |
 | `accel_stream_recovery_count`, `i2c_transfer_error_count`, `drv_init_fail_flags` | Driver health: accelerometer stream recoveries, I²C errors, and a bitmask of drivers that failed to initialise this boot. |
 | `touch_gated_touchdown_count` | Touches on the idle watchface that the interaction gate treated as accidental. |
+
+### New in 579 B / v3 (fw ≥ 4.39)
+
+| metric | why |
+| ------ | --- |
+| `display_update_count`, `display_flush_time_ms` | Frames flushed to the display and the time spent flushing them (update kickoff to completion) this hour. The display's share of drain, which the power model currently folds into `System`. |
+| `touch_driver_awake_time_ms` | Time the touch controller spent in active scan, estimated from the wake window after each interrupt. The touch share of drain on touch watches. |
 
 ### Gotchas when adding any of these
 

@@ -31,7 +31,7 @@ private val log = KotlinLogging.logger {}
  * the metrics of PebbleOS `analytics.def` in declaration order. Which metrics, and so every offset,
  * depends on the firmware release: [HeartbeatLayouts] holds the table and derives the offsets for
  * each released `(size, version)`, and everything here reads fields **by name** through it. On
- * current firmware (≥ 4.33.0) the record is 567 B / version 3 with 101 metrics.
+ * current firmware (≥ 4.39.0) the record is 579 B / version 3 with 104 metrics.
  *
  * [decode] reads the battery block (state of charge, voltage, time-to-empty, charge/discharge time).
  * [decodeActivity] reads the per-subsystem on-times, CPU residency and event counters behind the
@@ -335,7 +335,7 @@ class HeartbeatStore(
      * The most recent stored record for [serialQuery], with **every** metric its layout defines
      * decoded — the `Debug → Heartbeat` surface.
      *
-     * Reads from the stored raw blob, so it shows every metric (101 on fw ≥ 4.33) even for records
+     * Reads from the stored raw blob, so it shows every metric (104 on fw ≥ 4.39) even for records
      * that predate a layout being known (they decode as soon as the layout is added). Returns null when
      * the watch has no records at all; a record whose layout is unknown comes back with
      * [HeartbeatDump.known] false and no metrics, rather than guessed values.

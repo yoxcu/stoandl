@@ -31,7 +31,7 @@ class HeartbeatLayoutTest {
         HeartbeatLayouts.LAYOUTS.zipWithNext { a, b ->
             assertTrue(compareReleases(a.fw, b.fw) < 0, "${a.fw} is listed before ${b.fw}")
         }
-        assertEquals(567 to 3, HeartbeatLayouts.NEWEST.size to HeartbeatLayouts.NEWEST.version)
+        assertEquals(579 to 3, HeartbeatLayouts.NEWEST.size to HeartbeatLayouts.NEWEST.version)
     }
 
     @Test
@@ -68,6 +68,7 @@ class HeartbeatLayoutTest {
             (527 to 1) to listOf(102, 174, 198, 244, 302, 363, 475, 519),
             (523 to 2) to listOf(102, 174, 198, 244, 302, 363, 475, 515),
             (567 to 3) to listOf(102, 174, 198, 244, 302, 363, 475, 515),
+            (579 to 3) to listOf(102, 174, 198, 244, 302, 363, 475, 515),
         )
         assertEquals(golden.keys, HeartbeatLayouts.LAYOUTS.map { it.size to it.version }.toSet())
         for (l in HeartbeatLayouts.LAYOUTS) {
@@ -106,13 +107,28 @@ class HeartbeatLayoutTest {
     }
 
     @Test
+    fun fw439RecordAppendsThreeMetricsBehindV3() {
+        // fw 4.39.0 appended three u32s to the 567 B record and kept version 3.
+        val p = synthetic567().copyOf(579)
+        p.putU32(567, 7001); p.putU32(571, 7002); p.putU32(575, 7003)
+        val l = assertNotNull(HeartbeatLayouts.of(p))
+        assertEquals("4.39.0", l.fw)
+        val metrics = HeartbeatLayouts.decodeAll(p)
+        assertEquals(V3.map { it.name } + listOf("display_update_count", "display_flush_time_ms", "touch_driver_awake_time_ms"),
+            metrics.map { it.name })
+        assertEquals(listOf(7001L, 7002L, 7003L), metrics.takeLast(3).map { it.raw })
+        for ((i, f) in V3.withIndex()) if (f.kind == "U32") assertEquals(1000L + i, metrics[i].raw, f.name)
+        assertEquals(567 to 3, assertNotNull(HeartbeatLayouts.of(synthetic567())).let { it.size to it.version })
+    }
+
+    @Test
     fun unknownLayoutsAreRejectedNotMisdecoded() {
         val cases = listOf(
             567 to 2, 567 to 4, // right size, wrong version
             // fw 4.9.158 … 4.9.184: the struct's packed attribute was ignored, so these records are
             // naturally aligned (PebbleOS fac6968e) and match no packed layout.
             336 to 1, 472 to 1, 480 to 1, 504 to 1, 512 to 1, 520 to 1, 544 to 1, 552 to 1, 560 to 1,
-            531 to 3, 563 to 3, // v3 development builds between two releases
+            531 to 3, 563 to 3, 571 to 3, 575 to 3, // v3 development builds between two releases
             523 to 3, 568 to 3, 0 to 0,
         )
         for ((size, version) in cases) {
@@ -138,7 +154,7 @@ class HeartbeatLayoutTest {
     internal data class F(val off: Int, val name: String, val kind: String)
 
     internal companion object {
-        /** `tools/hb_layouts_from_source.py <PebbleOS> --offsets v4.33.0` (unchanged through v4.38.2). */
+        /** `tools/hb_layouts_from_source.py <PebbleOS> --offsets v4.33.0` (unchanged through v4.38.4). */
         val V3: List<F> = """
              29  memory_pct_max  U32
              33  memory_largest_free_pct  U32

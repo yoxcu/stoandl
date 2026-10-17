@@ -40,7 +40,7 @@ PebbleOS `src/fw/services/analytics/native.c`: a 29 B header, then every metric 
 `include/pbl/services/analytics/analytics.def` in declaration order. Which metrics a release emits —
 and so every offset — changes between releases; `HeartbeatLayout.kt` holds the metric table and
 derives the offsets for each released layout, and stoandl reads every field **by name** through it.
-On current firmware (≥ 4.33.0) the record is **567 B / version 3 with 101 metrics**:
+On current firmware (≥ 4.39.0) the record is **579 B / version 3 with 104 metrics**:
 
 ```
 header (29 B):  version:u8 @0 (=3) | timestamp:u64 @1 | build_id:u8[20] @9
@@ -49,12 +49,12 @@ battery block:  soc_pct:u32 @102 (÷ scale:u16 @106 = 100  → percent)
                 voltage:u32 @114 (÷ scale @118 = 1000  → volts)
                 voltage_delta:i32 @120 (÷ scale @124 = 1000)
                 tte_s:u32 @126 | charge_time_ms:u32 @130 | discharge_duration_ms:u32 @134
-total sizeof = 567 B  (== one uploadAnalyticsHeartbeat payload)
+total sizeof = 579 B  (== one uploadAnalyticsHeartbeat payload)
 ```
 
-The battery block is 7 of the 101 metrics. The richer views below read a further subset on demand
+The battery block is 7 of the 104 metrics. The richer views below read a further subset on demand
 (`HeartbeatStore.decodeActivity`, re-read from the stored raw blob so it **backfills across existing
-history**). Offsets on fw ≥ 4.20 (523, 527 and 567 B layouts):
+history**). Offsets on fw ≥ 4.20 (523, 527, 567 and 579 B layouts):
 
 ```
 subsystem on-time (TIMER, u32 ms):  backlight @138 | vibrator @146 | speaker @154 | hrm @174
@@ -98,7 +98,8 @@ records are kept raw only:
 | 523 B | 1 | 4.20.0 | 91 metrics |
 | 527 B | 1 | 4.26.0 (PebbleOS `31e3ea8e1`, 2026-07-14) | inserted `ppog_reversed` @467 (92 metrics). Of the fields the views read, only `connectivity_connected_time_ms` moves: 515 → 519 |
 | 523 B | 2 | 4.32.0 (PebbleOS `5ef38b9e9`, 2026-07-22) | removed `settings_power_mode` and bumped the version byte; back to 523 B with a different tail than 523 B / v1 |
-| **567 B** | **3** | **4.33.0** (through 4.38.2) | appended ten metrics (101); nothing the views read moved from 523 B / v2 |
+| 567 B | 3 | 4.33.0 (through 4.38.4) | appended ten metrics (101); nothing the views read moved from 523 B / v2 |
+| **579 B** | **3** | **4.39.0** (through 4.41.1) | appended three metrics (104) without a version bump; nothing the views read moved |
 
 ⚠️ **523 B/v1 and 523 B/v2 are the same size with different tail layouts** — which is exactly why
 upstream bumped the version byte, and why `HeartbeatLayouts` is keyed on `(size, version)` rather than
@@ -120,7 +121,8 @@ unknown `(size, version)` at INFO.
 (e.g. `connectivity_connected_time_ms`), so they cannot be validated in place. The power/activity view
 therefore stays strict and simply goes quiet until the layout is added — run
 `tools/hb_layouts_from_source.py` on the PebbleOS source and add the lines it prints (history
-backfills itself). This is what kept the views dark on fw 4.33.0 through 4.38.2.
+backfills itself). This is what kept the views dark on fw 4.33.0 through 4.38.2, and again on fw
+4.39.0 through 4.41.1.
 
 ## CLI
 
@@ -195,7 +197,7 @@ The heartbeat layout is verified from firmware source but **not yet on hardware*
 2. **They decode.** Records should show `decoded` values, not `UNDECODED`. An `UNDECODED (size=… version=…)`
    line means the running firmware's layout differs — grab `--raw`, note `size`/`version`, and add the
    layout from that release's `analytics.def` (`tools/hb_layouts_from_source.py`).
-   `stoandl watch battery heartbeat --all` should list every metric (101 on fw ≥ 4.33), not "not in
+   `stoandl watch battery heartbeat --all` should list every metric (104 on fw ≥ 4.39), not "not in
    the verified table".
 3. **Values match.** The decoded soc / voltage should track what the watch itself reports. Charging
    (`charge_time_ms > 0`) should flip when it's on the charger.

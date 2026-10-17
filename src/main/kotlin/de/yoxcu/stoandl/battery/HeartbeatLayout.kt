@@ -15,7 +15,7 @@ private val log = KotlinLogging.logger {}
  * release has, never hardcoded per field. A firmware that adds or removes a metric is one table line
  * plus one layout row, not an offset hunt.
  *
- * Derived from `analytics.def` at every PebbleOS release tag through v4.38.2 by
+ * Derived from `analytics.def` at every PebbleOS release tag through v4.41.1 by
  * `tools/hb_layouts_from_source.py`, which prints these lines. See `docs/heartbeat-metrics.md` for
  * the full map and `docs/battery-insights.md` for how it is used.
  *
@@ -213,6 +213,9 @@ internal object HeartbeatLayouts {
         M("drv_init_fail_flags", U32, since = "4.33.0"),
         M("battery_soc_pct_min", SCALED_U32, since = "4.33.0"),
         M("touch_gated_touchdown_count", U32, since = "4.33.0"),
+        M("display_update_count", U32, since = "4.39.0"),
+        M("display_flush_time_ms", U32, since = "4.39.0"),
+        M("touch_driver_awake_time_ms", U32, since = "4.39.0"),
     )
 
     /**
@@ -226,7 +229,9 @@ internal object HeartbeatLayouts {
      *  - `527 B / v1` (4.26.0) added `ppog_reversed` @467 without touching the version byte.
      *  - `523 B / v2` (4.32.0) removed `settings_power_mode` and bumped the version: back to 523 B
      *    with a different tail than `523 B / v1`, which is why the key is the pair and not the size.
-     *  - `567 B / v3` (4.33.0, unchanged through 4.38.2) appended ten metrics.
+     *  - `567 B / v3` (4.33.0, unchanged through 4.38.4) appended ten metrics.
+     *  - `579 B / v3` (4.39.0, unchanged through 4.41.1) appended three without touching the version
+     *    byte again.
      *
      * Untagged development builds between releases can emit layouts that are not here; they are
      * rejected, not decoded.
@@ -238,6 +243,7 @@ internal object HeartbeatLayouts {
         Layout(size = 527, version = 1, fw = "4.26.0"),
         Layout(size = 523, version = 2, fw = "4.32.0"),
         Layout(size = 567, version = 3, fw = "4.33.0"),
+        Layout(size = 579, version = 3, fw = "4.39.0"),
     )
 
     private val byKey: Map<Pair<Int, Int>, Layout> = LAYOUTS.associateBy { it.size to it.version }
