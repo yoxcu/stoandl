@@ -19,6 +19,7 @@ import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -82,9 +83,14 @@ class FirmwareControl(
         get() = GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
     private val cohorts: CohortsFirmwareSource get() = CohortsFirmwareSource(config.firmwareCohortsUrl)
 
-    // Set to the asset name while a bundle is downloading (before the on-device flash begins), so
-    // [status] can report "downloading" in the gap where the device is still Idle.
-    @Volatile private var preparing: String? = null
+    /** An online update before the watch takes over: downloading, or the reason it stopped there. */
+    private sealed interface Prep {
+        data class Downloading(val name: String) : Prep
+        data class Failed(val reason: String) : Prep
+    }
+
+    // [status] reports this while the device is still Idle; cleared once a flash starts.
+    private val prep = MutableStateFlow<Prep?>(null)
 
     // [maybeNotify] throttling: when we last hit the network, and the version we last notified about
     // (so a reconnect on the same day, or a second day with no new release, doesn't re-notify).
@@ -161,6 +167,7 @@ class FirmwareControl(
     /** Every flash goes through here, so a downgrade that ends in a PRF reboot knows its `.pbz`. */
     private fun flash(dev: CommonConnectedDevice, pbz: String) {
         droppedDowngrade.value = null
+        prep.value = null
         lastFlash.set(Flash(dev.serial, pbz))
         dev.sideloadFirmware(Path(pbz))
     }
@@ -180,14 +187,16 @@ class FirmwareControl(
     /** Map a [FirmwareUpdateStatus] to the status-prefixed string (shared by [status] and [statusFlow]).
      *  For `InProgress` it samples the current percentage; [statusFlow] re-emits live as that ticks. */
     private fun statusString(dev: CommonConnectedDevice, st: FirmwareUpdateStatus): String = when (st) {
-        is FirmwareUpdateStatus.NotInProgress.Idle ->
-            st.lastFailure?.let { "failed:${it.message ?: it::class.simpleName ?: "firmware update failed"}" }
+        is FirmwareUpdateStatus.NotInProgress.Idle -> when (val p = prep.value) {
+            is Prep.Downloading -> "downloading:${p.name}"
+            is Prep.Failed -> "failed:${p.reason}"
+            null -> st.lastFailure?.let { "failed:${it.message ?: it::class.simpleName ?: "firmware update failed"}" }
                 ?: droppedDowngrade.value?.takeIf { it.serial == dev.serial }?.let {
                     "failed:The watch came back on its normal firmware without the downgrade to ${it.version}; " +
                         "sideload the .pbz again to retry"
                 }
-                ?: preparing?.let { "downloading:$it" }
                 ?: "idle:"
+        }
         is FirmwareUpdateStatus.NotInProgress.ErrorStarting -> "failed:${st.error}"
         is FirmwareUpdateStatus.WaitingToStart -> "waiting:"
         is FirmwareUpdateStatus.InProgress -> "inprogress:${(st.progress.value * 100).toInt().coerceIn(0, 100)}"
@@ -263,6 +272,7 @@ class FirmwareControl(
             // A dropped downgrade is noted by another collector of the same `watches` emission, so
             // re-evaluate when it lands rather than depend on which of the two ran first.
             .combine(droppedDowngrade) { dev, _ -> dev }
+            .combine(prep) { dev, _ -> dev }
             .flatMapLatest { dev ->
                 if (dev == null) return@flatMapLatest flowOf("notready:")
                 when (val st = dev.firmwareUpdateState) {
@@ -340,22 +350,29 @@ class FirmwareControl(
     }
 
     private fun startFlash(update: CheckResult.Update): String {
-        if (preparing != null) return "busy:A firmware update is already being prepared"
-        preparing = update.bundle.name
+        if (prep.value is Prep.Downloading) return "busy:A firmware update is already being prepared"
+        prep.value = Prep.Downloading(update.bundle.name)
         droppedDowngrade.value = null  // a new flash starts here, not at flash() after the download
         scope.launch {
+            val name = update.bundle.name
             try {
                 val file = update.bundle.download()
-                if (file == null) {
-                    log.warn { "Firmware download failed for ${update.bundle.name}; aborting update" }
-                    return@launch
+                val dev = device()
+                if (dev == null) {
+                    log.warn { "Watch disconnected before flashing $name" }
+                    prep.value = Prep.Failed("The watch disconnected before $name could be flashed; update again")
+                } else {
+                    flash(dev, file.absolutePath)
                 }
-                device()?.let { flash(it, file.absolutePath) }
-                    ?: log.warn { "Watch disconnected before flashing ${update.bundle.name}" }
+            } catch (e: CancellationException) {
+                prep.value = null
+                throw e
+            } catch (e: FirmwareDownloadException) {
+                log.warn { "Firmware update ($name): ${e.message}" }
+                prep.value = Prep.Failed(e.message ?: "Couldn't download $name")
             } catch (e: Exception) {
-                log.warn(e) { "Firmware update (${update.bundle.name}) failed" }
-            } finally {
-                preparing = null
+                log.warn(e) { "Firmware update ($name) failed" }
+                prep.value = Prep.Failed(e.message ?: "Firmware update failed")
             }
         }
         return "ok:${update.board}\t${update.current}\t${update.latest}\t${update.bundle.name}"

@@ -41,29 +41,28 @@ internal object FirmwareHttp {
         null
     }
 
-    /** Download [url] to a temp `.pbz` file (logged as [label]). Returns the file, or null on failure. */
-    suspend fun downloadToTempPbz(url: String, label: String): File? = withContext(Dispatchers.IO) {
+    /** Download [url] to a temp `.pbz` file (logged as [label]). Throws [FirmwareDownloadException]. */
+    suspend fun downloadToTempPbz(url: String, label: String): File = withContext(Dispatchers.IO) {
         val out = File.createTempFile("stoandl-fw-", ".pbz")
         out.deleteOnExit()
-        try {
+        val status = try {
             val req = HttpRequest.newBuilder(URI.create(url))
                 .header("User-Agent", USER_AGENT)
                 .timeout(Duration.ofMinutes(2))
                 .GET()
                 .build()
-            val resp = client.send(req, BodyHandlers.ofFile(out.toPath()))
-            if (resp.statusCode() !in 200..299) {
-                log.warn { "Firmware download failed: HTTP ${resp.statusCode()} for $url" }
-                out.delete()
-                null
-            } else {
-                log.info { "Downloaded $label (${out.length()} bytes)" }
-                out
-            }
+            client.send(req, BodyHandlers.ofFile(out.toPath())).statusCode()
         } catch (e: Exception) {
             log.warn(e) { "Failed to download firmware from $url" }
             out.delete()
-            null
+            throw FirmwareDownloadException("Couldn't download $label: ${e.message ?: e::class.simpleName}")
         }
+        if (status !in 200..299) {
+            log.warn { "Firmware download failed: HTTP $status for $url" }
+            out.delete()
+            throw FirmwareDownloadException("Couldn't download $label: HTTP $status")
+        }
+        log.info { "Downloaded $label (${out.length()} bytes)" }
+        out
     }
 }

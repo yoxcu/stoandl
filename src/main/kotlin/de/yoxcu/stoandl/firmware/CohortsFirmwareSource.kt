@@ -60,7 +60,7 @@ class CohortsFirmwareSource(
                         // we still surface the build — FirmwareControl offers it rather than hide it.
                         FirmwareSource.Resolution.Found(
                             normal.friendlyVersion.ifBlank { "(unknown)" },
-                            firmwareBundle(name, normal.url),
+                            firmwareBundle(name, normal.url, normal.sha256.ifBlank { null }),
                         )
                     }
                 } catch (e: Exception) {
@@ -80,5 +80,6 @@ class CohortsFirmwareSource(
     private data class FwEntry(
         val url: String = "",
         @SerialName("friendlyVersion") val friendlyVersion: String = "",
+        @SerialName("sha-256") val sha256: String = "",
     )
 }

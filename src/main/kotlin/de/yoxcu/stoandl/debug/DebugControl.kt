@@ -5,10 +5,14 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
+import kotlin.time.Duration.Companion.seconds
 
 private val log = KotlinLogging.logger {}
+
+private val PING_TIMEOUT = 10.seconds
 
 /**
  * Watch reset operations off libpebble3's [io.rebble.libpebblecommon.connection.ConnectedPebble.Debug]:
@@ -68,14 +72,16 @@ class DebugControl(
      * Round-trip liveness check: send a PING with a random cookie and await the echoed cookie,
      * reporting latency. Unlike the BLE link state (up/down), this exercises the full PPoG/protocol
      * path end-to-end — useful to tell a healthy link from a wedged one, and the latency is handy in
-     * the support bundle. Blocks briefly on the round-trip.
+     * the support bundle. Blocks on the round-trip for at most [PING_TIMEOUT]: a wedged link must not
+     * hold the D-Bus thread.
      */
     fun ping(): String {
         val dev = device() ?: return "notready:No watch connected"
         val cookie = Random.nextInt().toUInt()
         return try {
             val startNs = System.nanoTime()
-            val echoed = runBlocking { dev.sendPing(cookie) }
+            val echoed = runBlocking { withTimeoutOrNull(PING_TIMEOUT) { dev.sendPing(cookie) } }
+                ?: return "error:No answer from ${dev.displayName()} within ${PING_TIMEOUT.inWholeSeconds} s (the link may be wedged)"
             val ms = (System.nanoTime() - startNs) / 1_000_000
             if (echoed == cookie) "ok:Ping round-trip $ms ms (${dev.displayName()})"
             else "error:Ping cookie mismatch (sent $cookie, got $echoed)"

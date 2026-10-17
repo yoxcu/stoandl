@@ -587,7 +587,9 @@ flashed onto a watch in recovery. Flashing an **older** `.pbz` onto a dual-slot 
 recovery: the watch reboots into PRF, and stoandl flashes the same file there when it reconnects (the
 CLI and the GUI follow it; `firmware update` answers `busy:` meanwhile). An update that crosses 4.38.0
 (4.37.0 on a Pebble 2 Duo) says that the built-in translations go away and points to
-`stoandl language sideload`.
+`stoandl language sideload`. A download is checked against the SHA-256 the source publishes (GitHub's
+asset digest, the cohorts `sha-256`) before it reaches the watch, and a failed or damaged download shows
+as `failed:` with the reason instead of falling back to idle (TESTING §5.11i).
 
 ## Implemented — to be tested
 

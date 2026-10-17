@@ -41,10 +41,10 @@ class GithubFirmwareSource(
             log.warn(e) { "Failed to read the release list of $repo" }
             return FirmwareSource.Resolution.Unreachable("Couldn't read the GitHub releases of $repo")
         } ?: return FirmwareSource.Resolution.NoFirmware
-        return FirmwareSource.Resolution.Found(newest.tag, firmwareBundle(newest.asset.name, newest.asset.url))
+        return FirmwareSource.Resolution.Found(newest.tag, firmwareBundle(newest.asset.name, newest.asset.url, newest.asset.sha256))
     }
 
-    internal data class Asset(val name: String, val url: String)
+    internal data class Asset(val name: String, val url: String, val sha256: String? = null)
     internal data class Release(val tag: String, val asset: Asset)
 
     /** The most recent releases, newest first, as the raw API response. Null on any failure. */
@@ -84,7 +84,7 @@ class GithubFirmwareSource(
             val prefix = "normal_${boardRevision}_"
             return assets.firstOrNull {
                 it.name.startsWith(prefix) && it.name.endsWith(".pbz") && !it.name.contains("_slot")
-            }?.let { Asset(it.name, it.browserDownloadUrl) }
+            }?.let { Asset(it.name, it.browserDownloadUrl, it.digest.takeIf { d -> d.startsWith("sha256:") }?.removePrefix("sha256:")) }
         }
     }
 
@@ -92,6 +92,8 @@ class GithubFirmwareSource(
     private data class GhAsset(
         val name: String = "",
         @SerialName("browser_download_url") val browserDownloadUrl: String = "",
+        /** `sha256:<hex>`, which GitHub computes for every asset uploaded since mid-2025. */
+        val digest: String = "",
     )
 
     internal companion object {
