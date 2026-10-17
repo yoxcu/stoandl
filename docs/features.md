@@ -112,8 +112,9 @@ _Implemented — to be tested ([TESTING.md §5.33j](../TESTING.md), 5.30b):_ the
 newer prefs: the Quiet Time weekday/weekend hours (`dndWeekdaySchedule`, a `HH:MM-HH:MM` window that
 needs its `…Enabled` switch on), `dndAutoDismiss`, `lightPreset`, `lightDynamicMode`, `unitsWind` and
 `language`; `langEnglish`, `lightDynamicIntensity` and `dynBacklightMinThreshold` are gone. The
-notification timeout can't be set below 15 s (shorter ones vanish without a vibe). From fw 4.38.1
-`textStyle` only seeds the watch's notification text size once, and its description says so.
+notification timeout can't be set below 15 s (shorter ones vanish without a vibe). Text size is
+two settings, `systemTextSize` and `notifTextSize` (upstream PR #443, cherry-picked), which the phone can
+set from fw 4.39; the old `textStyle` is gone.
 
 ### Bluetooth Classic transport
 

@@ -524,15 +524,14 @@ watch.lightAmbientThreshold = 200
 watch.clock24h = true
 watch.qlUp = Music
 watch.qlBack = off
-watch.textStyle = Larger   # fw < 4.38.1, see below
+watch.systemTextSize = Larger   # fw >= 4.39, see below
+watch.notifTextSize = SameAsSystem
 ```
 
-`textStyle` (Text Size) sizes different things per firmware. Up to PebbleOS 4.36 it sizes notifications
-and the timeline; on 4.37 the whole system UI, notifications included; on 4.38.0 the system UI, while
-notifications have their own size that the phone can't set. From 4.38.1 the system size is a separate
-setting too (the phone can't set it either), and `textStyle` only seeds the notification size once, on a
-watch that has never stored one. So on 4.38.1 and later a pin here does nothing: set the sizes on the
-watch.
+Text size is two settings: `systemTextSize` (menus and the launcher) and `notifTextSize` (notifications;
+`SameAsSystem` follows the system size). The phone can set them from PebbleOS 4.39 on; older firmware
+ignores both, so set the size on the watch there. Extra Large is set on the watch only (libpebble3 has
+no value for it). The old `textStyle` key is gone: a `watch.textStyle` pin is ignored.
 
 Values are parsed per the setting's type: booleans (`true`/`false`), numbers (validated against the
 setting's range), enums (by name — `stoandl settings` shows the choices), quick-launch (an app name/UUID, or

@@ -38,19 +38,20 @@ class WatchPrefsControlTest {
         assertEquals(listOf("clock24h"), written.map { it.pref.id }, "the bad pin is skipped, the rest applied")
     }
 
-    /** fw 4.38.1 made `textStyle` a one-shot seed; libpebble3 has no description to say so. */
+    /** Only fw 4.39+ syncs the split text sizes; libpebble3's description doesn't say so. */
     @Test
-    fun `the text size pref says it only seeds the watch from 4_38_1`() {
+    fun `the text size pref says which firmware it needs`() {
         val row = control.list().single().split('\t')
-        assertEquals("textStyle", row[0])
-        assertContains(row[7], "4.38.1")
+        assertEquals("systemTextSize", row[0])
+        assertContains(row[7], "Text size for system menus")
+        assertContains(row[7], "4.39")
     }
 
     private fun fakeLibPebble(): LibPebble =
         Proxy.newProxyInstance(LibPebble::class.java.classLoader, arrayOf(LibPebble::class.java)) { proxy, method, args ->
             when (method.name) {
                 "setWatchPref" -> written.add(args!![0] as WatchPreference<*>).let { null }
-                "getWatchPrefs" -> flowOf(listOf(WatchPreference(EnumWatchPref.TextSize, null)))
+                "getWatchPrefs" -> flowOf(listOf(WatchPreference(EnumWatchPref.SystemTextSize, null)))
                 "toString" -> "fake LibPebble"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args?.firstOrNull()

@@ -348,11 +348,11 @@ Drives the watch's settings BlobDB (quick-launch, ambient-light threshold, backl
 | 5.24 | Range check | `stoandl settings set lightAmbientThreshold 99999` | Non-zero exit; `lightAmbientThreshold must be 1..4096 …`. |
 | 5.25 | Set bool | `stoandl settings set clock24h true` | Clock switches to 24h on the watch. |
 | 5.26 | Quick launch by name | `stoandl settings set qlUp "Music"` | Holding Up on the watch launches Music. `off` clears it. Bad name → `no single app matching …`. |
-| 5.27 | Enum by name | `stoandl settings set textStyle Larger` (fw < 4.38.1; on newer fw use `menuScrollVibeBehavior`) | Text size changes; a bad value lists the allowed names. |
+| 5.27 | Enum by name | `stoandl settings set systemTextSize Larger` (fw ≥ 4.39; on older fw use `menuScrollVibeBehavior`) | Text size changes; a bad value lists the allowed names. |
 | 5.28 | Config applied on connect | put `watch.clock24h = true` in stoandl.conf, restart, reconnect | Log: `Applied watch pref clock24h = true`; watch shows 24h. |
 | 5.29 | Config is authoritative | with `watch.clock24h = true` set, change it on the watch, reconnect | Reverts to 24h (config wins). |
 | 5.30 | Unknown id | `stoandl settings set nope 1` | `Unknown watch pref 'nope' …`, non-zero. |
-| 5.30b | Text Size note ⚠️ UNVERIFIED | `stoandl settings textStyle`, then the GUI's watch settings | The description says what it sizes per firmware (≤ 4.36 notifications and timeline, 4.37 the whole UI, 4.38.0 the UI but not notifications) and that from PebbleOS 4.38.1 it only seeds the notification size once; on a 4.38.1+ watch, `settings set textStyle Larger` indeed changes nothing visible. |
+| 5.30b | Split text size ⚠️ UNVERIFIED | on a fw ≥ 4.39 watch: `stoandl settings set systemTextSize Larger`, then `settings set notifTextSize Smaller`; then the GUI's watch settings | Menus get larger and notifications smaller, independently; `notifTextSize SameAsSystem` makes notifications follow the menu size. Both rows say they need PebbleOS 4.39 (Display & backlight, Notifications). A size picked on the watch reads back here (Extra Large shows as Larger). |
 
 ---
 
