@@ -131,7 +131,6 @@ import io.rebble.libpebblecommon.database.entity.NotificationAppItem
 import io.rebble.libpebblecommon.di.PlatformConfig
 import io.rebble.libpebblecommon.di.initKoin
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
-import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.DataLoggingOutgoingPacket
@@ -2489,41 +2488,8 @@ private const val DIALER_CALL_WAIT_MS = 1_500L
 internal fun isDialerApp(dialerApps: List<String>, appName: String, appId: String?): Boolean =
     dialerApps.any { it.equals(appName, ignoreCase = true) || (appId != null && it.equals(appId, ignoreCase = true)) }
 
-/**
- * Host-side mute decision for a tracked app, mirroring the relevant parts of libpebble3's
- * Android `decideNotification`. A temporary mute ([NotificationAppItem.muteExpiration], set by
- * `notif mute <app> 1h`) takes precedence: muted until it expires, then delivered. Otherwise the
- * [MuteState] applies — `Always` mutes, `Never`/`Exempt` deliver, and `Weekdays`/`Weekends` are
- * day-of-week bitmasks (bit i = day, Sunday=0) tested against the host's current local day.
- */
-// Per-app notification styling (set via `stoandl notif style`), applied to the outgoing notification
-// at send time — host-side, watch-visible, independent of any BlobDB app-sync.
-// Named vibration presets (shared with the `notif styles` CLI listing). Each is an on/off-millisecond
-// pattern; perAppVibe also accepts a raw CSV of the same.
-internal val VIBE_PRESETS: Map<String, List<UInt>> = mapOf(
-    "short" to listOf(120u),
-    "long" to listOf(500u),
-    "double" to listOf(100u, 100u, 100u),
-    "triple" to listOf(80u, 80u, 80u, 80u, 80u),
-    "pulse" to listOf(60u, 140u, 60u, 140u, 60u),
-)
-
-internal fun perAppColor(name: String?): TimelineColor? = name?.let { TimelineColor.findByName(it) }
-
-internal fun perAppIcon(code: String?, appName: String): TimelineIcon {
-    if (code != null) {
-        TimelineIcon.entries.firstOrNull { it.name.equals(code, ignoreCase = true) }?.let { return it }
-        TimelineIcon.fromCode(code)?.let { return it }
-    }
-    return iconForApp(appName)
-}
-
-/** A named preset (`short`/`double`/…) or a raw CSV of on/off millisecond durations (`100,50,100`). */
-internal fun perAppVibe(spec: String?): List<UInt>? {
-    if (spec == null) return null
-    VIBE_PRESETS[spec.lowercase()]?.let { return it }
-    return spec.split(',').mapNotNull { it.trim().toUIntOrNull() }.takeIf { it.isNotEmpty() }
-}
+internal fun perAppIcon(code: String?, appName: String): TimelineIcon =
+    code?.let(::timelineIconOf) ?: iconForApp(appName)
 
 
 
@@ -3609,6 +3575,8 @@ private class StoandlControlImpl(
     override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
         notificationAppsControl?.setStyle(query, color, icon, vibe)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
+    override fun NotifStyleChoices(): List<String> = notifStyleChoices()
 
     override fun NotifSetAppName(query: String, placement: String): String =
         notificationAppsControl?.setAppName(query, placement)

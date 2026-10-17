@@ -5,7 +5,6 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.NotificationConfig
 import io.rebble.libpebblecommon.WatchConfig
-import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import io.rebble.libpebblecommon.permissions.PermissionPolicy
 import kotlin.time.Duration.Companion.minutes
 
@@ -47,8 +46,4 @@ fun libPebbleConfigOf(cfg: StoandlConfig): LibPebbleConfig = LibPebbleConfig(
 
 /** A vibe pattern as libpebble3 stores it: a built-in one (by display name or enum name, any case) in
  *  its display spelling, since the lookup is exact; any other name (a custom pattern) as written. */
-internal fun vibePatternName(name: String): String {
-    val n = name.trim()
-    return DefaultVibePattern.entries.firstOrNull { it.displayName.equals(n, ignoreCase = true) || it.name.equals(n, ignoreCase = true) }
-        ?.displayName ?: n
-}
+internal fun vibePatternName(name: String): String = defaultVibeOf(name)?.displayName ?: name.trim()

@@ -27,7 +27,7 @@ import de.yoxcu.stoandl.calendar.ICalParser
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
 import de.yoxcu.stoandl.notification.AppNamePlacement
-import de.yoxcu.stoandl.pebble.VIBE_PRESETS
+import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -1795,8 +1795,8 @@ private fun printNotifStyles() {
     println("   default = follow notification.app_name)")
     println()
 
-    println("Vibe presets (--vibe):")
-    VIBE_PRESETS.forEach { (name, pat) -> println("  %-8s %s ms".format(name, pat.joinToString(","))) }
+    println("Vibrations (--vibe):")
+    DefaultVibePattern.entries.forEach { println("  %-14s %s ms".format(it.displayName, it.pattern.joinToString(","))) }
     println("  (or a custom CSV of on/off milliseconds, e.g. 100,50,100)")
     println()
 

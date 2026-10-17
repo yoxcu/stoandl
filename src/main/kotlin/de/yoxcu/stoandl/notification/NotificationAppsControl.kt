@@ -1,5 +1,8 @@
 package de.yoxcu.stoandl.notification
 
+import de.yoxcu.stoandl.pebble.normalizeColor
+import de.yoxcu.stoandl.pebble.normalizeIcon
+import de.yoxcu.stoandl.pebble.normalizeVibe
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
@@ -80,18 +83,21 @@ class NotificationAppsControl(
 
     /**
      * Set a per-app background [color] name, [icon] (a TimelineIcon enum name like
-     * `NotificationSlack`), and/or [vibe] (a preset `short`/`long`/`double`/`triple`/`pulse`, or a
-     * CSV of on/off ms). Applied to the app's outgoing notifications host-side. For each value: an
-     * empty string leaves it unchanged; `default`/`none`/`clear` resets it. Unknown color/icon/vibe
-     * values are stored but fall back to the default at send time.
+     * `NotificationSlack`), and/or [vibe] (a DefaultVibePattern name like `Double`, or a CSV of on/off
+     * ms). Applied to the app's outgoing notifications host-side. For each value: an empty string
+     * leaves it unchanged; `default`/`none`/`clear` resets it. A name the watch can't show is refused,
+     * and nothing is changed.
      */
     fun setStyle(query: String, color: String, icon: String, vibe: String): String = try {
         resolveSingle(query) { app ->
-            val newColor = resolveStyle(color, app.colorName)
-            val newIcon = resolveStyle(icon, app.iconCode)
-            val newVibe = resolveStyle(vibe, app.vibePatternName)
-            runBlocking { dao.updateAppState(app.packageName, newVibe, newColor, newIcon) }
-            "ok:Updated style for ${app.name} (color=${newColor ?: "default"}, icon=${newIcon ?: "default"}, vibe=${newVibe ?: "default"})"
+            val newColor = resolveStyle(color, app.colorName, ::normalizeColor)
+                ?: return@resolveSingle unknown("colour", color)
+            val newIcon = resolveStyle(icon, app.iconCode, ::normalizeIcon)
+                ?: return@resolveSingle unknown("icon", icon)
+            val newVibe = resolveStyle(vibe, app.vibePatternName, ::normalizeVibe)
+                ?: return@resolveSingle unknown("vibration", vibe)
+            runBlocking { dao.updateAppState(app.packageName, newVibe.value, newColor.value, newIcon.value) }
+            "ok:Updated style for ${app.name} (color=${newColor.value ?: "default"}, icon=${newIcon.value ?: "default"}, vibe=${newVibe.value ?: "default"})"
         }
     } catch (e: Exception) {
         log.warn(e) { "notif setStyle failed" }
@@ -128,11 +134,19 @@ class NotificationAppsControl(
         }
     }
 
-    private fun resolveStyle(arg: String, current: String?): String? = when (arg.trim().lowercase()) {
-        "" -> current
-        "default", "none", "clear" -> null
-        else -> arg.trim()
-    }
+    /** A style value to store: [Kept] wrapping the stored value (null = the default), or null when
+     *  [arg] names nothing the watch can show. */
+    private fun resolveStyle(arg: String, current: String?, normalize: (String) -> String?): Kept? =
+        when (arg.trim().lowercase()) {
+            "" -> Kept(current)
+            "default", "none", "clear" -> Kept(null)
+            else -> normalize(arg)?.let(::Kept)
+        }
+
+    private class Kept(val value: String?)
+
+    private fun unknown(what: String, arg: String) =
+        "error:Unknown $what '${arg.trim()}' (stoandl notif styles lists them)"
 
     private fun NotificationAppItem.matches(query: String): Boolean =
         name.contains(query, ignoreCase = true) || packageName.contains(query, ignoreCase = true)

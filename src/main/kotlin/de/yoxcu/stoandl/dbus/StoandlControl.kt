@@ -440,9 +440,15 @@ interface StoandlControl : DBusInterface {
 
     /** Set per-app notification styling for the app matching [query], applied host-side to its
      *  outgoing notifications: [color] (a TimelineColor name), [icon] (a TimelineIcon enum name), and
-     *  [vibe] (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off ms). For each
-     *  value: empty = leave unchanged; `default` = reset. Status-prefixed return. */
+     *  [vibe] (a built-in vibration's name, see [NotifStyleChoices], or a CSV of on/off ms). For each
+     *  value: empty = leave unchanged; `default` = reset. An unknown name is refused (`error:`) and
+     *  nothing changes. Status-prefixed return. */
     fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
+
+    /** What a per-app style picker offers, one record per choice: `kind \t value \t label`, kind
+     *  `vibe` (every built-in vibration) or `icon` (a curated set; [NotifSetStyle] takes any
+     *  TimelineIcon). `value` is what [NotifSetStyle] takes and [NotifList] reports. Static. */
+    fun NotifStyleChoices(): List<String>
 
     /** Set where the app matching [query] shows its name on the watch, overriding `notification.app_name`
      *  for it: [placement] `small` (a small line under the title), `subtitle` (the large bold subtitle,
