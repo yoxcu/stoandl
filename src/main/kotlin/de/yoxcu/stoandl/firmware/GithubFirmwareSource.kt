@@ -27,30 +27,40 @@ private val log = KotlinLogging.logger {}
 class GithubFirmwareSource(
     private val repo: String,
     private val includePrereleases: Boolean,
+    /** The GitHub REST API root; a seam so tests can serve the release list locally. */
+    private val apiBase: String = "https://api.github.com",
 ) : FirmwareSource {
     override val label: String get() = "GitHub ($repo)"
     override val disabledHint: String =
         "GitHub firmware updates are off (set firmware.github = true in stoandl.conf)"
+    override val cacheKey: String get() = "github:$apiBase/$repo:prereleases=$includePrereleases"
 
+    /**
+     * The highest qualifying release among the newest [RELEASES_PER_PAGE]; only when none of those ships
+     * a bundle for the board does it look again through [RELEASES_PER_PAGE_WIDE], the old page size.
+     */
     override suspend fun resolve(boardRevision: String): FirmwareSource.Resolution {
-        val body = releasesJson()
-            ?: return FirmwareSource.Resolution.Unreachable("Couldn't reach GitHub ($repo)")
-        val newest = try {
-            newestRelease(body, boardRevision, includePrereleases)
-        } catch (e: Exception) {
-            log.warn(e) { "Failed to read the release list of $repo" }
-            return FirmwareSource.Resolution.Unreachable("Couldn't read the GitHub releases of $repo")
-        } ?: return FirmwareSource.Resolution.NoFirmware
-        return FirmwareSource.Resolution.Found(newest.tag, firmwareBundle(newest.asset.name, newest.asset.url, newest.asset.sha256))
+        for (perPage in listOf(RELEASES_PER_PAGE, RELEASES_PER_PAGE_WIDE)) {
+            val body = releasesJson(perPage)
+                ?: return FirmwareSource.Resolution.Unreachable("Couldn't reach GitHub ($repo)")
+            val newest = try {
+                newestRelease(body, boardRevision, includePrereleases)
+            } catch (e: Exception) {
+                log.warn(e) { "Failed to read the release list of $repo" }
+                return FirmwareSource.Resolution.Unreachable("Couldn't read the GitHub releases of $repo")
+            } ?: continue
+            return FirmwareSource.Resolution.Found(newest.tag, firmwareBundle(newest.asset.name, newest.asset.url, newest.asset.sha256))
+        }
+        return FirmwareSource.Resolution.NoFirmware
     }
 
     internal data class Asset(val name: String, val url: String, val sha256: String? = null)
     internal data class Release(val tag: String, val asset: Asset)
 
-    /** The most recent releases, newest first, as the raw API response. Null on any failure. */
-    private suspend fun releasesJson(): String? = withContext(Dispatchers.IO) {
+    /** The [perPage] most recent releases, newest first, as the raw API response. Null on any failure. */
+    private suspend fun releasesJson(perPage: Int): String? = withContext(Dispatchers.IO) {
         try {
-            getText("https://api.github.com/repos/$repo/releases?per_page=$RELEASES_PER_PAGE")
+            getText("$apiBase/repos/$repo/releases?per_page=$perPage")
         } catch (e: Exception) {
             log.warn(e) { "Failed to fetch releases from $repo" }
             null
@@ -59,10 +69,10 @@ class GithubFirmwareSource(
 
     private fun getText(url: String): String? {
         val resp = FirmwareHttp.getText(url, "application/vnd.github+json") ?: return null
-        return if (resp.statusCode() in 200..299) {
-            resp.body()
+        return if (resp.status in 200..299) {
+            resp.body
         } else {
-            log.warn { "GitHub API HTTP ${resp.statusCode()} for $url" }
+            log.warn { "GitHub API HTTP ${resp.status} for $url" }
             null
         }
     }
@@ -97,7 +107,16 @@ class GithubFirmwareSource(
     )
 
     internal companion object {
-        private const val RELEASES_PER_PAGE = 30
+        /**
+         * The release list is about 0.25 MB per release, so this is most of a check's cost. The newest
+         * release for a board is normally the first or second listed; what pushes it down are backports
+         * (v4.27.3, v4.30.3, v4.9.142.4 …), pre-releases and board-specific releases published after it,
+         * which [newestRelease] skips. Ten leaves room for a batch of those.
+         */
+        internal const val RELEASES_PER_PAGE = 10
+
+        /** The second look when the first page has nothing for the board (a board-specific gap). */
+        internal const val RELEASES_PER_PAGE_WIDE = 30
 
         /**
          * Pick, from a `/releases` response [body], the highest-versioned release ([FirmwareTag] order)

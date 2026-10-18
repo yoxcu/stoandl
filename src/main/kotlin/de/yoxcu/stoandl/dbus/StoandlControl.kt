@@ -353,8 +353,15 @@ interface StoandlControl : DBusInterface {
      *  `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>\t<changelogUrl>` (the 7th field
      *  is the PebbleOS changelog page, for a GUI "What's new" link — a constant, present on both `ok:`
      *  branches), `noasset:<board>\t<current>\t<source>`, or `disabled:`/`notready:`/`error:`. Requires
-     *  the matching source enabled — `firmware.github` or `firmware.cohorts` (opt-in egress). */
+     *  the matching source enabled — `firmware.github` or `firmware.cohorts` (opt-in egress).
+     *  The answer is cached for 3 h per source, board and running firmware (a failure for 1 min), and
+     *  concurrent callers share one lookup; [CheckFirmwareForce] bypasses the cache. */
     fun CheckFirmware(): String
+
+    /** [CheckFirmware], but asks the source afresh instead of answering from the cache (and refreshes
+     *  the cache). For an explicit user refresh (`stoandl firmware check --refresh`, a GUI "Check now"),
+     *  not for automatic checks. Same replies as [CheckFirmware]. */
+    fun CheckFirmwareForce(): String
 
     /** Check the matching source and, if newer firmware is available for the watch's board, download
      *  and start flashing it. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once started (poll

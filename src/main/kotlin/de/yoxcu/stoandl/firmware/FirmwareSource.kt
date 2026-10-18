@@ -14,6 +14,10 @@ interface FirmwareSource {
     /** Message telling the user how to enable this source, shown when its config gate is off. */
     val disabledHint: String
 
+    /** Identity for [FirmwareControl]'s check cache: two sources with the same key resolve the same
+     *  board identically, so it carries every setting that changes the answer (repo, pre-releases, URL). */
+    val cacheKey: String
+
     /** Look up the latest firmware for [boardRevision]. Never throws — failures map to [Resolution]. */
     suspend fun resolve(boardRevision: String): Resolution
 

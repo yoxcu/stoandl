@@ -651,9 +651,13 @@ rejected by the safety check, so this can't flash a bundle your watch won't acce
 ### Online check / update (opt-in egress)
 
 ```sh
-stoandl firmware check     # is newer firmware available for this watch?
-stoandl firmware update    # download the matching bundle and flash it
+stoandl firmware check              # is newer firmware available for this watch?
+stoandl firmware check --refresh    # the same, ignoring the daemon's 3 h check cache
+stoandl firmware update             # download the matching bundle and flash it
 ```
+
+The daemon keeps a check's answer for 3 hours per source, board and running firmware, shared by the
+CLI, the GUI and the update notification; `--refresh` asks again, and `update` always does.
 
 These fetch firmware over the network and are **off by default**. The source is chosen automatically
 by the watch's generation, so the two switches are independent — enable whichever matches your watch

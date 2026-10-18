@@ -582,6 +582,7 @@ bundle is refused before flashing — no fork change).
 ```sh
 stoandl firmware sideload <file.pbz>   # (a) flash a local firmware bundle (shows a progress bar)
 stoandl firmware check                 # (b) is newer firmware available for this watch?
+stoandl firmware check --refresh       # (b) the same, skipping the 3 h check cache
 stoandl firmware update                # (b) download the matching build and flash it
 stoandl firmware status                # current firmware-update state
 ```
@@ -613,6 +614,18 @@ CLI and the GUI follow it; `firmware update` answers `busy:` meanwhile). An upda
 `stoandl language sideload`. A download is checked against the SHA-256 the source publishes (GitHub's
 asset digest, the cohorts `sha-256`) before it reaches the watch, and a failed or damaged download shows
 as `failed:` with the reason instead of falling back to idle (TESTING §5.11i).
+
+_Implemented — to be tested ([TESTING.md §5.11j–5.11l](../TESTING.md)):_ **the check is cached.** A
+GitHub check downloaded the whole release list (5–7 MB, 8–9 s on a OnePlus 6) every time, and the GUI
+asked on every Watch page. Now the daemon keeps the answer for **3 hours** per source, board and running
+firmware (a failed check for 1 minute), `firmware check`, the GUI and the connect-time notification
+share it, and simultaneous checks wait for one lookup instead of each downloading. The request asks for
+gzip and revalidates with the release list's ETag (a 304 saves the transfer, but unauthenticated it
+still counts against GitHub's 60/h limit), and reads the newest 10 releases instead of 30, looking
+through 30 only when those 10 have nothing for the board (two requests then). `firmware check --refresh`
+(D-Bus `CheckFirmwareForce`) skips the cache; `firmware update` and the daily connect-time notification
+always ask afresh. A refresh that fails (GitHub answers 403 once the hourly budget is used up) keeps
+answering a good result that is still fresh instead of an error. A new flash changes the running version, so the next check after it is fresh too.
 
 ## Implemented — to be tested
 

@@ -906,7 +906,7 @@ private fun stdinIsTerminal(): Boolean =
 private fun ctlFirmware(rest: List<String>) {
     val sub = rest.firstOrNull()
     if (sub == null) {
-        System.err.println("Usage: stoandl firmware <sideload <file.pbz> | check | update | status>")
+        System.err.println("Usage: stoandl firmware <sideload <file.pbz> | check [--refresh] | update | status>")
         System.exit(1); return
     }
     // `firmware sideload <file>` is the explicit verb; `firmware <file>` still works (handled below).
@@ -916,7 +916,11 @@ private fun ctlFirmware(rest: List<String>) {
     withControl { control ->
         when (sub) {
             "check" -> {
-                val resp = try { control.CheckFirmware() } catch (e: Exception) {
+                // --refresh skips the daemon's 3 h check cache (and refreshes it).
+                val refresh = "--refresh" in rest.drop(1)
+                val resp = try {
+                    if (refresh) control.CheckFirmwareForce() else control.CheckFirmware()
+                } catch (e: Exception) {
                     System.err.println("Error: ${e.message}"); System.exit(1); return
                 }
                 printFirmwareCheck(resp)

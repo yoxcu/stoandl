@@ -44,6 +44,10 @@
          DEBUG shows when the location radios are held on (TESTING.md §5.41). -->
     <logger name="de.yoxcu.stoandl.location" level="${logLevel}"/>
 
+    <!-- Firmware check cache (`Firmware check for <board> answered from the cache`, `Not modified: <url>`):
+         honor STOANDL_LOG so DEBUG shows whether a check went to the network (TESTING.md §5.11j–l). -->
+    <logger name="de.yoxcu.stoandl.firmware" level="${logLevel}"/>
+
     <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
     <logger name="PrivatePKJSInterface" level="INFO"/>
     <logger name="CompanionAppLifecycleManager" level="INFO"/>

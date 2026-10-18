@@ -33,6 +33,7 @@ class CohortsFirmwareSource(
     private val baseUrl: String,
 ) : FirmwareSource {
     override val label: String = "cohorts.rebble.io"
+    override val cacheKey: String get() = "cohorts:$baseUrl"
     override val disabledHint: String =
         "Rebble cohorts firmware updates are off (set firmware.cohorts = true in stoandl.conf)"
 
@@ -46,11 +47,11 @@ class CohortsFirmwareSource(
                 )
             when {
                 // 400 is the service's "no firmware row for this hardware" signal, not an error.
-                resp.statusCode() == 400 -> FirmwareSource.Resolution.NoFirmware
-                resp.statusCode() !in 200..299 ->
-                    FirmwareSource.Resolution.Unreachable("Rebble cohorts HTTP ${resp.statusCode()}")
+                resp.status == 400 -> FirmwareSource.Resolution.NoFirmware
+                resp.status !in 200..299 ->
+                    FirmwareSource.Resolution.Unreachable("Rebble cohorts HTTP ${resp.status}")
                 else -> try {
-                    val normal = LenientJson.decodeFromString<CohortResponse>(resp.body()).fw?.normal
+                    val normal = LenientJson.decodeFromString<CohortResponse>(resp.body).fw?.normal
                     if (normal == null || normal.url.isBlank()) {
                         FirmwareSource.Resolution.NoFirmware
                     } else {

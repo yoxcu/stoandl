@@ -3153,8 +3153,12 @@ private class StoandlControlImpl(
 
     override fun FirmwareStatus(): String = firmwareControl.status()
 
-    override fun CheckFirmware(): String = try {
-        runBlocking { firmwareControl.check() }
+    override fun CheckFirmware(): String = checkFirmware(force = false)
+
+    override fun CheckFirmwareForce(): String = checkFirmware(force = true)
+
+    private fun checkFirmware(force: Boolean): String = try {
+        runBlocking { firmwareControl.check(force) }
     } catch (e: Exception) {
         log.warn(e) { "CheckFirmware failed" }
         "error:${e.message ?: "firmware check failed"}"

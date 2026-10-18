@@ -21,6 +21,8 @@ import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +34,8 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.io.files.Path
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -74,14 +78,31 @@ class FirmwareControl(
      * watch notification is sent.
      */
     private val notifyDesktop: ((summary: String, body: String, actionLabel: String, onAction: () -> Unit) -> Unit)? = null,
+    /** Test seam: the source for a Core (`true`) or classic watch instead of the configured ones. */
+    private val sourceOverride: ((core: Boolean) -> FirmwareSource)? = null,
+    /** Test seam: the clock behind [CHECK_TTL_MS]. */
+    private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     private val config: StoandlConfig get() = configOf()
 
     // Stateless value holders (repo/URL + a suspend resolve()), so they're rebuilt per use rather than
-    // cached — that's what lets a live firmware.github_repo / firmware.cohorts_url edit take effect.
-    private val github: GithubFirmwareSource
-        get() = GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
-    private val cohorts: CohortsFirmwareSource get() = CohortsFirmwareSource(config.firmwareCohortsUrl)
+    // cached — that's what lets a live firmware.github_repo / firmware.cohorts_url edit take effect. The
+    // answers are cached instead, under each source's cacheKey (see [resolveShared]).
+    private fun sourceFor(core: Boolean): FirmwareSource = sourceOverride?.invoke(core)
+        ?: if (core) GithubFirmwareSource(config.firmwareGithubRepo, config.firmwareGithubPrereleases)
+        else CohortsFirmwareSource(config.firmwareCohortsUrl)
+
+    /**
+     * The check cache: what a source last answered for a board, per running firmware. A check downloads
+     * the GitHub release list (megabytes before gzip) and the GUI asks on every Watch page, so
+     * [check]/[update]/[maybeNotify] share one answer for [CHECK_TTL_MS] ([ERROR_TTL_MS] for a failure)
+     * and one in-flight lookup per key. The running version is part of the key, so a flash re-checks.
+     */
+    private data class CheckKey(val source: String, val board: String, val firmware: String)
+    private class CachedCheck(val resolution: FirmwareSource.Resolution, val atMs: Long)
+    private val checkLock = Mutex()
+    private val checkCache = HashMap<CheckKey, CachedCheck>()                              // under checkLock
+    private val checksInFlight = HashMap<CheckKey, Deferred<FirmwareSource.Resolution>>()  // under checkLock
 
     /** An online update before the watch takes over: downloading, or the reason it stopped there. */
     private sealed interface Prep {
@@ -285,13 +306,14 @@ class FirmwareControl(
     }
 
     /**
-     * Check the matching source for the latest firmware for the connected watch's board.
+     * Check the matching source for the latest firmware for the connected watch's board, answered from
+     * the check cache unless [force] (an explicit refresh: `firmware check --refresh`, `CheckFirmwareForce`).
      * Returns `ok:<board>\t<current>\t<latest>\t<asset>\t<yes|no>\t<source>\t<changelogUrl>` (yes =
      * newer than running; the 7th field is the PebbleOS changelog page for the GUI's "What's new" link
      * and is the same on both `ok:` branches), `noasset:<board>\t<current>\t<source>` when the source
      * ships nothing for this board, or `disabled:`/`notready:`/`error:`.
      */
-    suspend fun check(): String = when (val r = doCheck()) {
+    suspend fun check(force: Boolean = false): String = when (val r = doCheck(force)) {
         is CheckResult.Disabled -> "disabled:${r.hint}"
         CheckResult.NoWatch -> "notready:No watch connected"
         is CheckResult.Error -> "error:${r.message}"
@@ -305,13 +327,16 @@ class FirmwareControl(
      * it and start flashing. Returns `ok:<board>\t<current>\t<latest>\t<asset>` once the
      * download+flash is kicked off (poll [status] to follow it), `uptodate:<msg>`, `noasset:<msg>`,
      * `busy:<msg>` (also while a downgrade waits for recovery), or `disabled:`/`notready:`/`error:`.
+     *
+     * Always asks the source afresh (and refreshes the cache): an update is explicit and about to
+     * download megabytes anyway, so it must not act on a cached "up to date" from before a release.
      */
     suspend fun update(): String {
         val dev = device()
         pendingDowngrade.get()?.takeIf { dev != null && it.serial == dev.serial }?.let {
             return "busy:A downgrade to ${it.version} is pending: stoandl flashes it once the watch is in recovery"
         }
-        return updateTo(doCheck())
+        return updateTo(doCheck(force = true))
     }
 
     private fun updateTo(check: CheckResult): String = when (val r = check) {
@@ -339,7 +364,9 @@ class FirmwareControl(
             val now = System.currentTimeMillis()
             if (lastCheckMs != 0L && now - lastCheckMs < minIntervalMs) return
             lastCheckMs = now
-            val res = doCheck()
+            // Forced: the cache may hold an answer the GUI fetched up to CHECK_TTL_MS ago, from before
+            // a release, and this runs once a day. A lookup already in flight is still joined.
+            val res = doCheck(force = true)
             if (res is CheckResult.Update && res.latest != lastNotifiedVersion) {
                 sendUpdateNotification(res)
                 lastNotifiedVersion = res.latest
@@ -381,20 +408,21 @@ class FirmwareControl(
     /**
      * Resolve the latest firmware for the connected watch from the source matching its generation:
      * Core devices → GitHub ([GithubFirmwareSource]), classic / Rebble devices → cohorts.rebble.io
-     * ([CohortsFirmwareSource]). Each source is independently opt-in.
+     * ([CohortsFirmwareSource]). Each source is independently opt-in. [force] skips the check cache.
      */
-    private suspend fun doCheck(): CheckResult {
+    private suspend fun doCheck(force: Boolean = false): CheckResult {
         val dev = device() ?: return CheckResult.NoWatch
         val platform = dev.watchInfo.platform
         val core = platform.isCoreDevice()
-        val source = if (core) github else cohorts
+        val source = sourceFor(core)
         val enabled = if (core) config.firmwareGithub else config.firmwareCohorts
         if (!enabled) return CheckResult.Disabled(source.disabledHint)
 
         val running = dev.watchInfo.runningFwVersion
         val current = running.stringVersion
         val board = platform.revision
-        return when (val r = source.resolve(board)) {
+        val key = CheckKey(source.cacheKey, board, if (running.isRecovery) "$current/prf" else current)
+        return when (val r = resolveShared(source, key, force)) {
             is FirmwareSource.Resolution.Unreachable -> CheckResult.Error(r.message)
             FirmwareSource.Resolution.NoFirmware -> CheckResult.NoAsset(board, current, source.label)
             is FirmwareSource.Resolution.Found ->
@@ -404,6 +432,56 @@ class FirmwareControl(
                     CheckResult.UpToDate(board, current, r.version, source.label)
                 }
         }
+    }
+
+    /**
+     * [source]'s answer for [key]: from the check cache while it is fresh (unless [force]), else from the
+     * lookup already in flight for the key, else from a new one. The lookup runs in [scope], not in the
+     * caller, so a D-Bus caller that gives up doesn't cancel it for the others, and it fills the cache
+     * whoever started it. A forced call still joins a lookup in flight: that one is fresh too. A lookup
+     * that fails while the cache still holds a fresh good answer answers that one and keeps it.
+     */
+    private suspend fun resolveShared(source: FirmwareSource, key: CheckKey, force: Boolean): FirmwareSource.Resolution {
+        val lookup = checkLock.withLock {
+            if (!force) checkCache[key]?.takeIf { isFresh(it) }?.let {
+                log.debug { "Firmware check for ${key.board} answered from the cache" }
+                return it.resolution
+            }
+            // isActive: a lookup cancelled with the daemon's scope never removed itself.
+            checksInFlight[key]?.takeIf { it.isActive } ?: run {
+                scope.async {
+                    val r = try {
+                        source.resolve(key.board)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        log.warn(e) { "Firmware lookup for ${key.board} failed" }
+                        FirmwareSource.Resolution.Unreachable(e.message ?: "firmware check failed")
+                    }
+                    checkLock.withLock {
+                        checksInFlight.remove(key)
+                        checkCache.values.removeAll { !isFresh(it) }
+                        // A failed refresh (GitHub's 403 once the unauthenticated 60/h are used up, a
+                        // network blip) doesn't throw away a good answer that is still fresh: that one
+                        // is kept and answered instead.
+                        val kept = checkCache[key]?.takeIf { r is FirmwareSource.Resolution.Unreachable && it.resolution !is FirmwareSource.Resolution.Unreachable }
+                        if (kept != null) {
+                            log.warn { "Firmware lookup for ${key.board} failed (${(r as FirmwareSource.Resolution.Unreachable).message}); keeping the answer from ${(nowMs() - kept.atMs) / 60_000} min ago" }
+                            kept.resolution
+                        } else {
+                            checkCache[key] = CachedCheck(r, nowMs())
+                            r
+                        }
+                    }
+                }.also { checksInFlight[key] = it }
+            }
+        }
+        return lookup.await()
+    }
+
+    private fun isFresh(c: CachedCheck): Boolean {
+        val ttl = if (c.resolution is FirmwareSource.Resolution.Unreachable) ERROR_TTL_MS else CHECK_TTL_MS
+        return nowMs() - c.atMs < ttl
     }
 
     /**
@@ -469,6 +547,17 @@ class FirmwareControl(
     }
 
     companion object {
+        /**
+         * How long a firmware check answer is reused. PebbleOS releases a few times a month, so three
+         * hours costs little freshness while the GUI asks on every Watch page. The daily connect-time
+         * notification ([maybeNotify]) and [update] skip the cache and ask the source afresh (and
+         * refresh it).
+         */
+        const val CHECK_TTL_MS = 3 * 60 * 60 * 1000L
+
+        /** How long a failed check is reused: enough to stop hammering an unreachable source. */
+        const val ERROR_TTL_MS = 60 * 1000L
+
         /**
          * Whether to offer [candidate] over the [running] firmware. We offer when the watch is in recovery
          * (PRF) — it needs a normal-firmware reflash to leave it, regardless of version, which is why the
