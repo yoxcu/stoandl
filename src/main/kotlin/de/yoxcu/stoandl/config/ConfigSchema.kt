@@ -434,6 +434,15 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         ConfigChoice("Custom command", "command") { it.voiceBackend == StoandlConfig.VoiceBackend.COMMAND },
         ConfigChoice("HTTP service", "http") { it.voiceBackend == StoandlConfig.VoiceBackend.HTTP },
     )),
+    combo("voice.fallback_backend", G_VOICE, "Fallback",
+        "Tried when speech to text isn't ready, fails, hears nothing or takes too long; it uses the settings " +
+            "below. For a dictation the first backend then gets 7 of the watch's 14 seconds. HTTP sends the " +
+            "audio to the service.", choices = listOf(
+        ConfigChoice("None", "off") { it.voiceFallbackBackend == StoandlConfig.VoiceBackend.OFF },
+        ConfigChoice("Local model", "local") { it.voiceFallbackBackend == StoandlConfig.VoiceBackend.LOCAL },
+        ConfigChoice("Custom command", "command") { it.voiceFallbackBackend == StoandlConfig.VoiceBackend.COMMAND },
+        ConfigChoice("HTTP service", "http") { it.voiceFallbackBackend == StoandlConfig.VoiceBackend.HTTP },
+    )),
     ConfigField("voice.local_model", "combo", G_VOICE, "Model",
         "The installed speech model the local engine uses (download one below)", ConfigApply.LIVE,
         choicesOf = ::installedModelChoices),

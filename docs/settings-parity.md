@@ -120,6 +120,21 @@ repeated edits from starving the sync.
 | Key | Kind | GUI | Applies | Why | Default |
 | --- | --- | --- | --- | --- | --- |
 | `apps.order_faces_by_last_used` | toggle | ✓ | live | projected into libpebble3's `WatchConfig`, which `Locker` reads per activation | `false` (keeps today's order; the official app turns it on at first run) |
+
+### Voice
+
+| Key | Kind | GUI | Applies | Validated | Default |
+| --- | --- | --- | --- | --- | --- |
+| `voice.backend` | combo | ✓ | live | off/local/command/http | `Off` |
+| `voice.fallback_backend` | combo | ✓ | live | off/local/command/http; uses the same settings below | `None` |
+| `voice.local_model` | combo | ✓ | live | an installed model (options read per use) | _(none installed)_ |
+| `voice.command` | text | ✓ | live | — | _(empty)_ |
+| `voice.url` | text | ✓ | live | `http(s)://…` | _(empty)_ |
+| `voice.http_model` | text | ✓ | live | — | _(empty)_ |
+| `voice.api_key` | secret | ✓ | live | single line; keyring (or a 0600 file), never `stoandl.conf` | _(unset)_ |
+| `voice.language` | text | ✓ | live | a language code or `auto` | `auto` |
+| `voice.save_audio` | toggle | ✓ | live | — | `false` |
+
 ### Music · Health · Battery
 
 | Key | Kind | GUI | Applies | Validated | Default |

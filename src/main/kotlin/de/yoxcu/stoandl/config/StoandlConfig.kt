@@ -186,6 +186,9 @@ data class StoandlConfig(
     /** Speech-to-text for the watch's dictation and extensions' voice notes: off, a local command, or an
      *  OpenAI-compatible HTTP endpoint (egress, opt-in). Read on every use. */
     val voiceBackend: VoiceBackend,
+    /** `voice.fallback_backend`: tried when [voiceBackend] isn't ready, fails, hears nothing or runs out of its
+     *  share of the time; uses the same per-backend settings. OFF (or the same as [voiceBackend]) = none. */
+    val voiceFallbackBackend: VoiceBackend,
     /** `voice.backend = local`: the id of an installed speech model (VoiceModels). */
     val voiceLocalModel: String,
     /** `voice.backend = command`: a shell command line with `{wav}` and `{lang}`, printing the transcript. */
@@ -422,6 +425,7 @@ data class StoandlConfig(
             calendarShowDeclined = false,
             calendarReminderVibe = null,
             voiceBackend = VoiceBackend.OFF,
+            voiceFallbackBackend = VoiceBackend.OFF,
             voiceLocalModel = "",
             voiceCommand = "",
             voiceUrl = "",
@@ -547,12 +551,8 @@ data class StoandlConfig(
                 calendarReminders = map["calendar.reminders"]?.let { parseBool(it) } ?: true,
                 calendarShowDeclined = parseBool(map["calendar.show_declined"]),
                 calendarReminderVibe = map["calendar.reminder_vibe"]?.trim()?.takeIf { it.isNotEmpty() },
-                voiceBackend = when (map["voice.backend"]?.trim()?.lowercase()) {
-                    "local" -> VoiceBackend.LOCAL
-                    "command" -> VoiceBackend.COMMAND
-                    "http" -> VoiceBackend.HTTP
-                    else -> VoiceBackend.OFF
-                },
+                voiceBackend = parseVoiceBackend(map["voice.backend"]),
+                voiceFallbackBackend = parseVoiceBackend(map["voice.fallback_backend"]),
                 voiceLocalModel = map["voice.local_model"]?.trim().orEmpty(),
                 voiceCommand = map["voice.command"]?.trim().orEmpty(),
                 voiceUrl = map["voice.url"]?.trim().orEmpty(),
@@ -695,6 +695,13 @@ data class StoandlConfig(
 
         private fun parseBool(raw: String?): Boolean =
             raw?.trim()?.lowercase() in setOf("true", "yes", "1", "on")
+
+        private fun parseVoiceBackend(raw: String?): VoiceBackend = when (raw?.trim()?.lowercase()) {
+            "local" -> VoiceBackend.LOCAL
+            "command" -> VoiceBackend.COMMAND
+            "http" -> VoiceBackend.HTTP
+            else -> VoiceBackend.OFF
+        }
 
         private fun parseDefaultMute(raw: String?): String = when (val v = raw?.trim()?.lowercase()) {
             null, "" -> "never"

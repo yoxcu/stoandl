@@ -465,6 +465,10 @@ dnd.sync = off
 # The watch's audio is decoded with libspeex (Alpine `speex`, Debian `libspeex1`); voice notes for a local
 # engine with libopus. See docs/voice.md for engines and models.
 voice.backend = off
+# A second engine (local, command or http; the same settings below) for when voice.backend isn't ready, fails,
+# hears nothing or is too slow: the first then gets 7 of the watch's 14 seconds, the fallback the rest.
+# off = none. http sends the audio off this machine.
+voice.fallback_backend = off
 # voice.backend = local: the model's id (`stoandl voice models`), one that is downloaded.
 voice.local_model =
 # Example (docs/voice.md): NVIDIA Parakeet v3 via whisper.cpp's parakeet-cli (Alpine community `whisper.cpp`,

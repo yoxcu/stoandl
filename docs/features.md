@@ -898,6 +898,11 @@ the reply path, like a canned reply (Plasma with InvokeReply, extensions' `onRep
 puts the text of voice notes into their notification. Engines and models for old hardware:
 [voice.md](voice.md). _To be tested_: [TESTING §5.46](../TESTING.md).
 
+_Implemented — to be tested ([TESTING §5.46l](../TESTING.md)):_ a fallback engine (`voice.fallback_backend`,
+none by default) answers when the first one isn't ready, fails, hears nothing or runs out of time. As in the
+official app, the first engine then gets 7 of the 14 seconds the watch waits and the fallback the rest; file
+transcriptions (`stoandl voice test`, voice notes) fall back too.
+
 ### Weather for classic watchfaces
 
 Hundreds of 2014–2016 watchfaces fetch weather from their PebbleKit JS: Yahoo's YQL weather API, shut

@@ -15,6 +15,19 @@ extensions' voice notes into text with the backend in `voice.backend`:
 The watch waits 15 s for the result after you stop speaking; stoandl gives the engine 14. Check a setup
 without a watch: `stoandl voice` (status) and `stoandl voice test clip.wav`.
 
+## Fallback
+
+`voice.fallback_backend` (`off` by default) names a second engine, with the same per-engine settings
+(`voice.local_model`, `voice.command`, `voice.url`, …), so a local model and a `whisper-server` on the LAN can
+back each other up. It runs after the first engine, on the same audio, when that one isn't ready (no model
+downloaded, no URL), fails, is unreachable, hears nothing, or doesn't answer within its share of the time.
+Like the official app's speech router, a dictation's first engine gets the 14 s minus 7 s kept for the
+fallback, which also gets whatever the first didn't use; a file transcription keeps 7 s of its minute. When
+both fail, the watch shows the fallback's error ("No internet connection" when it was unreachable); when the
+first heard nothing and the fallback fails, it says "Missed that". With a fallback set, `stoandl voice`
+shows both (`ready — local Parakeet v3 then http http://…`), or the fallback alone when the first isn't
+ready.
+
 The watch's audio is decoded with libspeex (Alpine `speex`, Debian `libspeex1`, Arch `speex`), voice notes
 for a local engine with libopus (`opus`). The postmarketOS/Alpine package depends on both.
 
