@@ -17,9 +17,9 @@ import org.freedesktop.dbus.types.Variant
  *
  * Only the handful of members [de.yoxcu.stoandl.secret.SecretServiceStore] needs are declared. We use
  * the `plain` session algorithm (no transport encryption): the session bus is a local AF_UNIX socket
- * and the spec marks `plain` as RECOMMENDED-to-be-supported by every server. The headless/locked case
- * (a user service started before any interactive login) is handled by the store, not here — any call
- * that would need an interactive prompt is treated as "unavailable" and falls back to the file store.
+ * and the spec marks `plain` as RECOMMENDED-to-be-supported by every server. Unlocking a locked item
+ * goes through a [SecretPrompt], which the store runs with a short deadline (see
+ * [de.yoxcu.stoandl.secret.SecretServiceStore]).
  *
  * Spec: https://specifications.freedesktop.org/secret-service/latest/
  */
@@ -48,8 +48,8 @@ class SearchItemsResult(
     @field:Position(1) val locked: List<DBusPath>,
 ) : Tuple()
 
-/** `(ao unlocked, o prompt)` from [SecretService.Unlock] — a non-`/` prompt path means an interactive
- *  unlock would be required (not possible headless). */
+/** `(ao unlocked, o prompt)` from [SecretService.Unlock] — a non-`/` prompt path means the unlock
+ *  finishes only once that [SecretPrompt] completes. */
 class UnlockResult(
     @field:Position(0) val unlocked: List<DBusPath>,
     @field:Position(1) val prompt: DBusPath,
@@ -78,4 +78,13 @@ interface SecretCollection : DBusInterface {
 interface SecretItem : DBusInterface {
     fun GetSecret(session: DBusPath): SecretValue
     fun Delete(): DBusPath
+}
+
+/** A pending operation that may need the user: `Prompt` starts it, `Completed(b dismissed, v result)`
+ *  is signalled on the prompt's own path when it ends. Servers that hold the login password (ksecretd
+ *  with PAM, gnome-keyring) complete an unlock prompt without showing anything. */
+@DBusInterfaceName("org.freedesktop.Secret.Prompt")
+interface SecretPrompt : DBusInterface {
+    fun Prompt(windowId: String)
+    fun Dismiss()
 }

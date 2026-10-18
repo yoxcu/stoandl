@@ -4,15 +4,25 @@ import de.yoxcu.stoandl.dbus.SECRETS_BUS_NAME
 import de.yoxcu.stoandl.dbus.SECRETS_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.SecretCollection
 import de.yoxcu.stoandl.dbus.SecretItem
+import de.yoxcu.stoandl.dbus.SecretPrompt
 import de.yoxcu.stoandl.dbus.SecretService
 import de.yoxcu.stoandl.dbus.SecretValue
 import de.yoxcu.stoandl.util.softOpenSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.freedesktop.dbus.DBusPath
 import org.freedesktop.dbus.connections.impl.DBusConnection
+import org.freedesktop.dbus.interfaces.DBusSigHandler
+import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
+import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.Variant
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 private val log = KotlinLogging.logger {}
+
+private const val PROMPT_IFACE = "org.freedesktop.Secret.Prompt"
+private const val PROMPT_TIMEOUT_MS = 5_000L
 
 /**
  * [SecretStore] backed by the freedesktop Secret Service (the system keyring) over the session bus.
@@ -21,8 +31,12 @@ private val log = KotlinLogging.logger {}
  * secret ops are rare (once per CalDAV account at each sync, plus user-initiated edits), so this avoids
  * holding/leaking a long-lived connection and any staleness. ALL failure modes throw (so
  * [LayeredSecretStore] falls back to the file store): the service isn't running, there's no default
- * collection, or the collection/item is LOCKED and unlocking would need an interactive prompt a
- * headless daemon can't answer. We never call `Prompt.Prompt()`.
+ * collection, or the collection is LOCKED and its unlock prompt doesn't complete within
+ * [PROMPT_TIMEOUT_MS]. Reading runs the unlock prompt like libsecret does: KWallet locks an idle
+ * wallet, and ksecretd then answers every lookup with a prompt that, when the wallet password comes
+ * from the login (PAM), completes on its own. On a desktop it can show the keyring's unlock dialog; a
+ * prompt nobody answers in time is dismissed. Writing into a locked collection still fails over to the
+ * file store.
  *
  * The secret VALUE only ever goes in the `(oayays)` Secret struct; the lookup attributes (`a{ss}`,
  * stored in cleartext by the server) carry only `{service: stoandl, ref: <ref>}`.
@@ -42,9 +56,11 @@ class SecretServiceStore : SecretStore {
             val items = found.unlocked.ifEmpty {
                 if (found.locked.isEmpty()) return@withConnection null
                 val unlocked = service.Unlock(found.locked)
-                // A non-`/` prompt means an interactive unlock — not possible headless; treat as absent.
-                if (unlocked.prompt.path != "/") return@withConnection null
-                unlocked.unlocked
+                when {
+                    unlocked.prompt.path == "/" -> unlocked.unlocked
+                    runPrompt(conn, unlocked.prompt) -> service.SearchItems(attrs(ref)).unlocked
+                    else -> return@withConnection null
+                }
             }
             val itemPath = items.firstOrNull()?.path ?: return@withConnection null
             val item = conn.getRemoteObject(SECRETS_BUS_NAME, itemPath, SecretItem::class.java)
@@ -98,6 +114,36 @@ class SecretServiceStore : SecretStore {
     }
 
     private fun attrs(ref: String) = mapOf("service" to "stoandl", "ref" to ref)
+
+    /** Run [prompt] and wait for its `Completed` signal: true when it completed undismissed, false when
+     *  dismissed or not done within [PROMPT_TIMEOUT_MS] (then it is dismissed, so no dialog lingers). */
+    private fun runPrompt(conn: DBusConnection, prompt: DBusPath): Boolean {
+        val done = CompletableFuture<Boolean>()
+        // No sender in the rule: dbus-java matches it against the unique name, so a well-known one never fires.
+        val rule = DBusMatchRuleBuilder.create()
+            .withType("signal")
+            .withInterface(PROMPT_IFACE)
+            .withMember("Completed")
+            .withPath(prompt.path)
+            .build()
+        val handler = DBusSigHandler<DBusSignal> { msg ->
+            done.complete(msg.getParameters()?.getOrNull(0) == false)
+        }
+        conn.addGenericSigHandler(rule, handler)
+        val remote = conn.getRemoteObject(SECRETS_BUS_NAME, prompt.path, SecretPrompt::class.java)
+        return try {
+            remote.Prompt("")
+            done.get(PROMPT_TIMEOUT_MS, TimeUnit.MILLISECONDS).also { ok ->
+                log.debug { "Keyring unlock prompt ${if (ok) "completed" else "dismissed"}" }
+            }
+        } catch (e: TimeoutException) {
+            log.info { "Keyring unlock prompt not answered within ${PROMPT_TIMEOUT_MS / 1000} s; dismissed" }
+            runCatching { remote.Dismiss() }
+            false
+        } finally {
+            runCatching { conn.removeGenericSigHandler(rule, handler) }
+        }
+    }
 
     private fun DBusConnection.service(): SecretService =
         getRemoteObject(SECRETS_BUS_NAME, SECRETS_OBJECT_PATH, SecretService::class.java)
