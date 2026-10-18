@@ -2311,6 +2311,17 @@ sizes, nor the keys whitelisted in 4.22–4.37) to older firmware, which rejects
 | 5.64d | Older firmware | a watch on fw < 4.41.0: `watch.dndNotificationBacklight = false` in stoandl.conf, restart, reconnect twice; then `settings set dndNotificationBacklight false` | One INFO `Not applying watch pref dndNotificationBacklight: needs PebbleOS 4.41 or later, the watch runs v4.40.x`, later connects at DEBUG; no `Rejecting non-whitelisted setting` in the watch logs (`stoandl logs`), and with `STOANDL_LOG=DEBUG` a `Not sending watch pref dndNotificationBacklight` instead of an insert. `settings set` answers `ok:… needs PebbleOS 4.41 or later, the watch runs v4.40.x; it syncs once the watch is updated`. Other pins still apply. |
 | 5.64e | After the update | update that watch to ≥ 4.41.0 and reconnect | The stored value reaches the watch (5.64b's behaviour) without setting it again. |
 
+## 5.65 GUI responsiveness, daemon side  ⚠️ UNVERIFIED (needs a watch)
+
+The daemon half of the GUI performance fixes (the firmware check cache is 5.11j–5.11l). Slow
+`de.yoxcu.stoandl.Control` methods are logged so a frozen GUI leaves a trace. Unit test:
+`SlowCallLogTest` (also over a private dbus-daemon).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.65a | Slow call warning | with `firmware.github = true`, `stoandl firmware check --refresh` on a slow link (or `stoandl screenshot`) | The journal has one `WARN … D-Bus StoandlControl.CheckFirmwareForce took <n> ms` (or `TakeScreenshot`), with no arguments. |
+| 5.65b | No noise below 500 ms | open every GUI tab and page, toggle some settings | No `D-Bus StoandlControl.… took` lines for the quick methods (ListWatches, GetConfig, ListApps …). |
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

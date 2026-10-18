@@ -41,6 +41,13 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
+Every method call is timed: one that takes 500 ms or longer logs
+`WARN … D-Bus StoandlControl.<Method> took <n> ms` (the object is exported through a timing proxy,
+`dbus/SlowCallLog.kt`; no arguments are logged, and nothing below the threshold). A GUI that calls on
+its UI thread freezes for that long, so this is where to look first when it does. Methods that block
+by design (`CheckFirmwareForce` with a slow network, `TakeScreenshot`, `GatherLogs`, `Transcribe`)
+show up there too.
+
 ### Nine signals augment polling; no properties
 
 `de.yoxcu.stoandl.Control` now emits **nine D-Bus signals** as a reactive layer **on top of** the

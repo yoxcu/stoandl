@@ -79,6 +79,7 @@ import de.yoxcu.stoandl.dbus.STOANDL_DESKTOP_ONLY_APP
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.sendDesktopNotification
+import de.yoxcu.stoandl.dbus.timeSlowCalls
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -2192,7 +2193,9 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() })
+            // Exported through timeSlowCalls, which logs any method that takes SLOW_DBUS_CALL_MS or longer.
+            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, timeSlowCalls(StoandlControl::class.java, control))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
