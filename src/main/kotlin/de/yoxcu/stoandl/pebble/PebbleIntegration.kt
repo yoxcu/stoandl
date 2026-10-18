@@ -3617,6 +3617,10 @@ private class StoandlControlImpl(
         notificationAppsControl?.setAppName(query, placement)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
 
+    override fun NotifSetImages(query: String, mode: String): String =
+        notificationAppsControl?.setImages(query, mode)
+            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+
     override fun SendTestNotification(title: String, body: String): String {
         libPebbleRef.get() ?: return "notready:libPebble not ready"
         val t = title.ifBlank { "Test notification" }

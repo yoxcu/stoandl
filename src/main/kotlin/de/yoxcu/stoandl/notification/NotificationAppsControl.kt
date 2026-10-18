@@ -40,9 +40,10 @@ class NotificationAppsControl(
     // The user's named vibes, so `setStyle` takes them like the built-ins.
     private val customVibes: suspend () -> CustomVibes = { emptyMap() },
 ) {
-    /** Each entry tab-separated: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpoch \t appName`
-     *  (empty string for an unset style field; `appName` is the app's own placement token, empty when it
-     *  follows `notification.app_name`). One row per known app. */
+    /** Each entry tab-separated: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpoch \t appName
+     *  \t images` (empty string for an unset style field; `appName` is the app's own placement token, empty
+     *  when it follows `notification.app_name`; `images` is `off` when the app's pictures are off, empty when
+     *  it follows `notification.images`). One row per known app. */
     fun list(): List<String> = try {
         val now = Clock.System.now()
         runBlocking { dao.allApps() }.map { app ->
@@ -54,6 +55,7 @@ class NotificationAppsControl(
                 app.vibePatternName.orEmpty(),
                 app.lastNotified.instant.epochSeconds.toString(),
                 appNames.get(app.packageName)?.token.orEmpty(),
+                if (app.sendImages) "" else "off",
             ).joinToString("\t")
         }
     } catch (e: Exception) {
@@ -128,8 +130,24 @@ class NotificationAppsControl(
         "error:${e.message ?: "failed"}"
     }
 
+    /**
+     * Turn pictures off for the app matching [query] (`off`), or back to following `notification.images`
+     * (`on`/`default`). Stored in libpebble3's per-app `sendImages` column; the global key still has to be
+     * on for any picture to go out. Applies from the app's next notification.
+     */
+    fun setImages(query: String, mode: String): String = try {
+        val send = parseImagesMode(mode) ?: return "error:Unknown images setting '${mode.trim()}' (use on|off|default)"
+        resolveSingle(query) { app ->
+            runBlocking { dao.updateAppSendImages(app.packageName, send) }
+            if (send) "ok:Images for ${app.name} follow notification.images" else "ok:Images for ${app.name}: off"
+        }
+    } catch (e: Exception) {
+        log.warn(e) { "notif setImages failed" }
+        "error:${e.message ?: "failed"}"
+    }
+
     /** Resolve [query] to exactly one tracked app and run [onMatch], or return the empty/ambiguous
-     *  status string. Shared by [setMute], [setStyle] and [setAppName]. */
+     *  status string. Shared by [setMute], [setStyle], [setAppName] and [setImages]. */
     private fun resolveSingle(query: String, onMatch: (NotificationAppItem) -> String): String {
         val matches = runBlocking { dao.allApps() }.resolve(query)
         return when {
@@ -204,6 +222,14 @@ class NotificationAppsControl(
     }
 
     companion object {
+        /** `notif images` argument → the per-app `sendImages` value: `on`/`default` (and the reset words) follow
+         *  the global switch, `off` turns the app's pictures off; null for anything else. */
+        internal fun parseImagesMode(mode: String): Boolean? = when (mode.trim().lowercase()) {
+            "off", "false", "no" -> false
+            "on", "true", "yes", "", in STYLE_RESET_WORDS -> true
+            else -> null
+        }
+
         private val DURATION_RE = Regex("""^(\d+)\s*([smhd])$""")
 
         /** Parse `90s`/`30m`/`2h`/`1d` into a [Duration]; null if not a recognised duration. */

@@ -97,9 +97,13 @@ data class NotifRequest(
     // doesn't keep. Not forwarded unless an allow filter whitelists it.
     val transient: Boolean = false,
     // A picture the notification carries (a photo, a screenshot), shown on watches that support it while
-    // notification.images is on. Never a sender avatar.
+    // notification.images is on and the app's own images switch isn't off. Never a sender avatar.
     val image: ImageSource? = null,
 )
+
+/** Whether a notification's picture goes out: `notification.images` on, and the app's own switch (`notif
+ *  images`, libpebble3's `sendImages`) not off. [app] is null while per-app settings are off. */
+internal fun sendsImages(imagesOn: Boolean, app: NotificationAppItem?): Boolean = imagesOn && app?.sendImages != false
 
 /**
  * Who sent a notification and what to do when the user acts on it on the wrist. [token] is the
@@ -353,7 +357,7 @@ class WatchNotifier(
         // The id is fixed before building: a picture is stored under it and the watch asks for it by id.
         // A given id (re-send) replaces the same item, even across daemon restarts.
         val itemId = req.itemId ?: Uuid.random()
-        val imageAspect = req.image?.let { storeImage(itemId, it, cfg.notificationImages) }
+        val imageAspect = req.image?.let { storeImage(itemId, it, sendsImages(cfg.notificationImages, styled)) }
         // Like styles: an app's own placement applies only while per-app settings are on.
         val placement = styled?.let { appNames.get(it.packageName) } ?: cfg.notificationAppName
         val fields = watchFields(req.appName, req.title, req.subtitle, req.body, placement)

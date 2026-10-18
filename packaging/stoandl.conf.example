@@ -33,7 +33,8 @@ notification.forward = true
 # notification links to, a web notification's image on Plasma -- are shown on watches that can
 # (Pebble Time 2 / Round 2, firmware 4.35+). Sender avatars are never sent. Local only, no egress; the
 # pictures are kept (at most 32) under ~/.cache/stoandl/images/notifications and deleted with the
-# notification, or all at once when this is switched off.
+# notification, or all at once when this is switched off. One app's pictures can stay off while this is
+# on: `stoandl notif images <app> off` (needs notification.per_app).
 notification.images = true
 # Clear a notification from the watch when it's dismissed elsewhere: closed in the desktop's or phone's
 # notification list, read in the app that posted it (when the app withdraws it), or closed by an

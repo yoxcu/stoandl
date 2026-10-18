@@ -255,15 +255,17 @@ and `_`, and wins over a locker app of the same title), and a schedule `HH:MM-HH
 | `NotifVibeTest` | `(s) → s` | Buzz the connected watch with a vibration `(spec)`: a built-in or custom name, a CSV of on/off ms, or `default` (the watch's own). Sent as a short "Vibration test" notification **outside** the notification pipeline (like the official app's test), so mute, filters, `notification.forward` and per-app styles don't apply; Quiet Time on the watch still silences it. `notready:` with no watch connected; `error:` for an unknown name or a firmware without custom vibrations (before 4.9.97, which would buzz only its default). | `notif vibe-test <name\|ms,ms,…\|default>` |
 | `NotifSetAppName` | `(s,s) → s` | Where the app matching `query` shows its name on the watch `(query, placement)`, overriding `notification.app_name` for it: `small` / `subtitle` / `off`; `default` (or empty, `none`, `clear`) drops the override. Applies while `notification.per_app` is on. `ok:` / `notfound:` / `ambiguous:` / `error:Unknown app-name placement …`. Live. | `notif style <app> --app-name <small\|subtitle\|off\|default>` |
 | `SendTestNotification` | `(s,s) → s` | Debug: inject a synthetic notification `(title, body)` to the watch through the normal send path (per-app mute, style and filters all apply) — the notification-pipeline counterpart of `FakeCallRing`. `ok:`/`error:`/`notready:`. | `notif test [title] [body]` |
+| `NotifSetImages` | `(s,s) → s` | Turn pictures off for the app matching `query` while `notification.images` stays on `(query, mode)`: `off`, or `on`/`default` (also empty, `none`, `clear`) to follow `notification.images` again. Stored in libpebble3's per-app `sendImages` column; applies while `notification.per_app` is on. `ok:` / `notfound:` / `ambiguous:` / `error:Unknown images setting …`. Live. | `notif images <app> on\|off\|default` |
 | `NotifListFilters` | `() → as` | Global notification filters, one record each: `pattern\taction` (`action` ∈ `allow`/`block`). | `notif filter list` |
 | `NotifAddFilter` | `(s,s) → s` | Add a global filter `(pattern, action)`. `pattern` is a Java regex (inline flags like `(?i)` work), matched against appName + title + body; `action` `allow`/`block` (anything not `allow` ⇒ `block`). `ok:added <action> filter` / `error:empty pattern` / `error:invalid regex …`. Applied **live** (no restart). | `notif filter add <regex> [allow\|block]` |
 | `NotifRemoveFilter` | `(s) → s` | Remove a global filter by exact `pattern`. `ok:filter removed` / `notfound:`. Live. | `notif filter remove <regex>` |
 
-`NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds \t appNamePlacement`
-(`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`; an unset style field is
-empty; `appNamePlacement` is the app's own placement `small`/`subtitle`/`off`, empty = it follows
-`notification.app_name`). The 7th column was appended, so a client that reads six positionally is
-unaffected.
+`NotifList` record: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds \t appNamePlacement
+\t images` (`muteLabel` ∈ `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`; an unset style
+field is empty; `appNamePlacement` is the app's own placement `small`/`subtitle`/`off`, empty = it follows
+`notification.app_name`; `images` is `off` when the app's pictures are off (`NotifSetImages`), empty = it
+follows `notification.images`). The 7th and 8th columns were appended, so a client that reads fewer
+positionally is unaffected.
 
 `stoandl notif style <app>` calls `NotifSetStyle` only when `--color`, `--icon` or `--vibe` is given and
 `NotifSetAppName` only for `--app-name`, so one command can set both.
@@ -443,7 +445,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` · `accountId`(owning source id, `discover`, or empty) |
 | `ListCalendarSources` | `id`(`caldav:`/`ical:`/`ics:`…) · `type`(caldav/ical/ics) · `url` · `username` · `label` — never the password |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
-| `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` · `appNamePlacement`(small/subtitle/off, empty = global) |
+| `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` · `appNamePlacement`(small/subtitle/off, empty = global) · `images`(off, empty = global) |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `NotifStyleChoices` | `kind`(vibe/icon) · `value` · `label`; a vibe adds `ms,ms,…` · `builtin`/`custom` |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` · `author` · `version` |

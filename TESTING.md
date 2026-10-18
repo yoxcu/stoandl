@@ -2035,6 +2035,7 @@ Off-device: `ImagingTest`, `NotificationImageRefTest`. Log (`STOANDL_LOG=DEBUG`)
 | 5.45g | Album art | watch Settings → Music → album art on; play a track in Elisa (embedded cover), then Firefox (a page with media art) | The Music app shows the cover within a few seconds; skipping tracks updates it. Spotify (web URL only): no cover, no error. |
 | 5.45h | Late art | start a stream whose player publishes the cover a moment after the title (Firefox, Chromium) | The cover appears without reopening the Music app. |
 | 5.45i | Daemon restart | send a picture notification, restart the daemon, open the notification from the watch's history | The picture still loads (served from the cache). |
+| 5.45j | Per-app images off | `notification.per_app = true`; `stoandl notif images Spectacle off`; `stoandl notif list`; take a screenshot; then `stoandl notif images Spectacle default` and another (or the **Send images** switch in Alerts → Spectacle) | `ok:Images for Spectacle: off`; IMAGES shows `off` (— for every other app); the notification arrives without the picture while a Matrix photo (5.45b) still shows one. After `default`: `ok:Images for Spectacle follow notification.images`, the list shows —, the picture is back. `stoandl notif images Spectacle huge` → `error:Unknown images setting 'huge' (use on\|off\|default)`. The setting survives a daemon restart. |
 
 ## 5.46 Voice dictation  ⚠️ UNVERIFIED (needs a watch with a microphone: Time 2, Pebble 2 Duo, Time Steel)
 

@@ -42,7 +42,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `notification.app_name` | string | `small` | Where a notification's app name goes on the watch: `small` (a small line under the title), `subtitle` (the large bold line under the title) or `off`. A source's own subtitle (an extension's) keeps the subtitle slot, and the app name is left out when it would repeat the title or that subtitle. An app can override it (`stoandl notif style <app> --app-name`, see [Per-app notification settings](#per-app-notification-settings)). Also used for stoandl's own firmware-update notification. |
 | `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
 | `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
-| `notification.images` | bool | `true` | Show pictures a notification carries on watches that can (Pebble Time 2 / Round 2, firmware 4.35+): a photo an extension attaches (Matrix), the first image file in a desktop notification's `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma (`<img>` in the body). Sender avatars (`image-data`, portal/GTK icons) are never sent. The pictures are kept, at most 32, in `~/.cache/stoandl/images/notifications`, deleted with their notification, and all deleted when this is switched off. Local only. Read live. |
+| `notification.images` | bool | `true` | Show pictures a notification carries on watches that can (Pebble Time 2 / Round 2, firmware 4.35+): a photo an extension attaches (Matrix), the first image file in a desktop notification's `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma (`<img>` in the body). Sender avatars (`image-data`, portal/GTK icons) are never sent. The pictures are kept, at most 32, in `~/.cache/stoandl/images/notifications`, deleted with their notification, and all deleted when this is switched off. An app can keep its own pictures off (`stoandl notif images <app> off`, see [Per-app notification settings](#per-app-notification-settings)). Local only. Read live. |
 | `notification.sync_dismissals` | bool | `true` | Clear a notification from the watch when it's dismissed on the desktop or phone: closed by the user or the app (`NotificationClosed` reason 2 or 3), withdrawn through the portal or `org.gtk.Notifications`, or closed by an extension. A popup that only times out (reason 1) stays. The watch marks the item dismissed. Read live. |
 | `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
 | `alerts.enabled` | bool | `true` | Master switch for the desktop alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup) — as opposed to forwarded app notifications. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
@@ -161,6 +161,7 @@ stoandl notif unmute Slack             # deliver again
 stoandl notif mute-all  / unmute-all   # apply to every tracked app
 stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
 stoandl notif style NeoChat --app-name off   # where this app's name goes (small / subtitle / off / default)
+stoandl notif images Spectacle off     # no pictures from this app (on / default follow notification.images)
 stoandl notif styles                   # list every available colour, icon, vibe preset and app-name place (offline)
 stoandl notif vibe-test double         # buzz the watch with a vibration (a name, ms,ms,… or default)
 stoandl notif vibe-add "Work" 100,50,100,50,400   # a named custom vibration (on/off ms)
@@ -211,6 +212,12 @@ choose which text goes where. With `small` (the default) a NeoChat message shows
 shows an app's own setting in the APP NAME column (— = it follows `notification.app_name`). The
 overrides live in `<configDir>/notification-app-name`, one `app⇥place` line each, and apply only while
 `notification.per_app` is on, like the styles.
+
+**Pictures per app** (`notif images <app> off`) keep one app's pictures off while `notification.images`
+stays on (the official app's per-app switch, stored in libpebble3's per-app record); `on` or `default`
+follows `notification.images` again, and with `notification.images` off no app sends any. `stoandl notif
+list` shows `off` in the IMAGES column (— = it follows the global key). Applies while
+`notification.per_app` is on.
 
 **Markup in the message.** Desktop notifications (`Notify`) carry markup: apps escape `&` and `<` as
 `&amp;` and `&lt;` (NeoChat does) and may send `<b>` or links. stoandl turns the body into plain text

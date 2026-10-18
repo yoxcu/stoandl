@@ -1086,7 +1086,7 @@ private fun renderProgressBar(label: String, pct: Int) {
     System.out.flush()
 }
 
-/** Dispatch `stoandl notif ...`: `styles` (offline), else `list`/`mute`/`unmute`/`mute-all`/`unmute-all`/`style`. */
+/** Dispatch `stoandl notif ...`: `styles` (offline), else `list`/`mute`/`unmute`/`mute-all`/`unmute-all`/`style`/`images`. */
 private fun ctlNotif(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
     // `styles` lists the available colours/icons/vibes — generated from the enums, fully offline
@@ -1185,6 +1185,17 @@ private fun ctlNotif(rest: List<String>) {
                     })
                 }
             }
+            // An app's pictures off while notification.images stays on, or back to following it.
+            "images" -> {
+                val query = rest.getOrNull(1)
+                val mode = rest.getOrNull(2)
+                if (query.isNullOrBlank() || mode.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl notif images <app> on|off|default  (on and default follow notification.images)"); System.exit(1); return
+                }
+                handleStatusResponse(try { control.NotifSetImages(query, mode) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
             // Global allow/block notification filters (regex on app/title/body). `allow` is a whitelist
             // that bypasses block filters, the forwarding switch and per-app mute; `block` drops a match.
             "filter", "filters" -> {
@@ -1232,7 +1243,7 @@ private fun ctlNotif(rest: List<String>) {
                 }
             }
             else -> {
-                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|filter <list|add|remove>>")
+                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|images <app> on|off|default|vibes|vibe-test <v>|vibe-add <name> <ms,…>|vibe-remove <name>|filter <list|add|remove>>")
                 System.exit(1)
             }
         }
@@ -1969,8 +1980,8 @@ private fun printNotifList(rows: List<String>) {
         println("No notification apps tracked yet — they're added as desktop apps notify (needs notification.per_app = true).")
         return
     }
-    val fmt = "%-22s %-13s %-10s %-18s %-8s %-8s %s"
-    println(fmt.format("APP", "MUTE", "COLOR", "ICON", "VIBE", "APP NAME", "LAST"))
+    val fmt = "%-22s %-13s %-10s %-18s %-8s %-8s %-6s %s"
+    println(fmt.format("APP", "MUTE", "COLOR", "ICON", "VIBE", "APP NAME", "IMAGES", "LAST"))
     rows.sortedBy { it.substringBefore('\t').lowercase() }.forEach { rec ->
         val f = rec.split('\t')
         val name = f.getOrElse(0) { "" }
@@ -1982,11 +1993,14 @@ private fun printNotifList(rows: List<String>) {
         val epoch = f.getOrElse(5) { "0" }.toLongOrNull() ?: 0L
         // Empty (shown as —, like the other defaults) = the app follows notification.app_name.
         val appName = f.getOrElse(6) { "" }.ifEmpty { "—" }
-        println(fmt.format(name.take(22), mute, color.take(10), icon.take(18), vibe.take(8), appName, relativeAge(epoch)))
+        // `off`, or — for an app following notification.images.
+        val images = f.getOrElse(7) { "" }.ifEmpty { "—" }
+        println(fmt.format(name.take(22), mute, color.take(10), icon.take(18), vibe.take(8), appName, images, relativeAge(epoch)))
     }
     println()
     println("  Mute:   stoandl notif mute <app> [always|weekdays|weekends|1h|2d]")
     println("  Style:  stoandl notif style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]")
+    println("  Images: stoandl notif images <app> on|off|default")
 }
 
 private fun relativeAge(epochSeconds: Long): String {

@@ -823,6 +823,10 @@ watch's imaging endpoint, as the official app does:
   `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma. Sender avatars are not sent.
   Firmware 4.35+. Pictures are kept (at most 32, ≤300 px) in `~/.cache/stoandl/images/notifications` and
   deleted with the notification.
+- **Per-app pictures** (`stoandl notif images <app> off`, or **Send images** in the app's dialog on the
+  GUI's Alerts page): one app's pictures stay off while `notification.images` is on, the official app's
+  per-app switch (libpebble3's `sendImages` column). `on`/`default` follows `notification.images` again.
+  Needs `notification.per_app`. _To be tested_: [TESTING §5.45j](../TESTING.md).
 - **Album art** in the Music app: the cover the player publishes (`mpris:artUrl` as a local file or a
   `data:` URI: Elisa, Firefox, Chromium, mpv-mpris, Lollypop, …), never downloaded, so players that only
   give a web URL (Spotify) show none. Switched on the watch (Settings → Music → album art), firmware 4.36+.

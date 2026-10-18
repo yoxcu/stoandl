@@ -449,7 +449,8 @@ interface StoandlControl : DBusInterface {
      *  `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpochSeconds \t appNamePlacement`
      *  (muteLabel is one of `never`/`always`/`weekdays`/`weekends` or `muted-until <instant>`; an unset
      *  style field is empty; appNamePlacement is the app's own `small`/`subtitle`/`off`, empty when it
-     *  follows `notification.app_name`). Empty until an app notifies while per-app notifications are on. */
+     *  follows `notification.app_name`), then `\t images`: `off` when the app's pictures are off ([NotifSetImages]),
+     *  empty when it follows `notification.images`. Empty until an app notifies while per-app notifications are on. */
     fun NotifList(): List<String>
 
     /** Set the mute state for the app matching [query] (substring of name/package). [spec] is
@@ -491,6 +492,11 @@ interface StoandlControl : DBusInterface {
      *  when the source has none) or `off`; `default` (or empty) drops the override. Applies while per-app
      *  notifications are on. Status-prefixed return (`ok:`/`notfound:`/`ambiguous:`/`error:`). */
     fun NotifSetAppName(query: String, placement: String): String
+
+    /** Turn pictures off for the app matching [query] while `notification.images` stays on: [mode] `off`, or
+     *  `on`/`default` to follow `notification.images` again (libpebble3's per-app `sendImages`). Applies while
+     *  per-app notifications are on. Status-prefixed return (`ok:`/`notfound:`/`ambiguous:`/`error:`). */
+    fun NotifSetImages(query: String, mode: String): String
 
     /** List the global notification filters (a host-side allow/block list applied at the send choke
      *  point, independent of per-app mute). Each entry is tab-separated `pattern \t action` where action
