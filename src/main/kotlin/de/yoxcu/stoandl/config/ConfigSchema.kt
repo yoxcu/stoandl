@@ -368,6 +368,11 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("weather.intercept_pkjs", G_WEATHER, "Weather for classic watchfaces",
         "Answer the dead Yahoo / OpenWeatherMap 2.5 weather APIs old watchfaces call, from Open-Meteo " +
             "(sends the watchface's coordinates or place name to a web service)") { it.weatherInterceptPkjs },
+    toggle("weather.place_search", G_WEATHER, "Find locations by name",
+        "Look a city up by name to add it to the locations (`stoandl weather search`, or the search under " +
+            "this section). Sends the typed name to Open-Meteo's geocoder; works only while weather sync is on.") {
+        it.weatherPlaceSearch
+    },
 
     // --- Calendar ---
     toggle("calendar.discover", G_CALENDAR, "Auto-discover local calendars",

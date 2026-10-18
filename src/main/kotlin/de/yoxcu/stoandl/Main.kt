@@ -132,7 +132,7 @@ private fun printUsage() {
     row("daemon", "list · get/set <key> [value]")
     println("Sync")
     row("sync", "list · enable/disable <service>")
-    row("weather", "push weather to the watch now")
+    row("weather", "[sync] · search <city> [--add [n]]")
     row("calendar", "list sources sync enable disable add remove passwd dump")
     row("health", "[days] hr sync activities dump")
     row("datalog", "list dump tail")
@@ -250,12 +250,7 @@ private fun ctl(args: Array<String>) {
             }
         }
         "watch" -> ctlWatch(args.drop(1))
-        "weather" -> withControl { control ->
-            val resp = try { control.SyncWeather() } catch (e: Exception) {
-                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-            }
-            handleStatusResponse(resp)
-        }
+        "weather" -> ctlWeather(args.drop(1))
         "settings" -> ctlSettings(args.drop(1))
         "health" -> ctlHealth(args.drop(1))
         "calendar" -> {
@@ -399,6 +394,82 @@ private fun handleStatusResponse(resp: String) {
         System.exit(1)
     }
 }
+
+/** `stoandl weather [sync]` pushes weather now; `weather search <city> [--add [n]] [--as <label>]` looks
+ *  the city up (Open-Meteo, gated by weather.place_search) and with `--add` stores result n (default 1). */
+private fun ctlWeather(rest: List<String>) {
+    when (rest.firstOrNull() ?: "sync") {
+        "sync" -> withControl { control ->
+            val resp = try { control.SyncWeather() } catch (e: Exception) {
+                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+            }
+            handleStatusResponse(resp)
+        }
+        "search" -> {
+            val opts = parseWeatherSearchArgs(rest.drop(1)) ?: run {
+                System.err.println("Usage: stoandl weather search <city> [--add [n]] [--as <label>]")
+                System.exit(1); return
+            }
+            withControl { control ->
+                val resp = try { control.SearchWeatherPlace(opts.query) } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                val (status, body) = splitStatus(resp)
+                if (status != "ok") { System.err.println(body.ifEmpty { status }); System.exit(1); return }
+                val places = body.lines().map { it.split('\t') }.filter { it.size >= 3 }
+                val pick = opts.add
+                if (pick == null) {
+                    places.forEachIndexed { i, p ->
+                        val where = listOf(p.getOrElse(3) { "" }, p.getOrElse(4) { "" }).filter { it.isNotEmpty() }
+                        println("%2d  %s%s  (%s, %s)".format(i + 1, p[0],
+                            if (where.isEmpty()) "" else ", " + where.joinToString(", "), p[1], p[2]))
+                    }
+                    println("Add one with: stoandl weather search ${shellQuote(opts.query)} --add <n>")
+                    return@withControl
+                }
+                val p = places.getOrNull(pick - 1) ?: run {
+                    System.err.println("No result $pick (found ${places.size})"); System.exit(1); return
+                }
+                val lat = p[1].toDoubleOrNull()
+                val lon = p[2].toDoubleOrNull()
+                if (lat == null || lon == null) { System.err.println("Bad coordinates in result $pick"); System.exit(1); return }
+                val added = try { control.AddWeatherLocation(opts.label ?: p[0], lat, lon) } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                handleStatusResponse(added)
+            }
+        }
+        else -> {
+            System.err.println("Usage: stoandl weather [sync | search <city> [--add [n]] [--as <label>]]")
+            System.exit(1)
+        }
+    }
+}
+
+internal data class WeatherSearchArgs(val query: String, val add: Int?, val label: String?)
+
+/** `<words…> [--add [n]] [--as <label>]`; null when the query is missing or an option is malformed. */
+internal fun parseWeatherSearchArgs(args: List<String>): WeatherSearchArgs? {
+    val words = mutableListOf<String>()
+    var add: Int? = null
+    var label: String? = null
+    var i = 0
+    while (i < args.size) {
+        when (val a = args[i]) {
+            "--add" -> {
+                val n = args.getOrNull(i + 1)?.toIntOrNull()
+                if (n != null) { if (n < 1) return null; add = n; i++ } else add = 1
+            }
+            "--as" -> { label = args.getOrNull(i + 1)?.takeIf { it.isNotBlank() } ?: return null; i++ }
+            else -> words += a
+        }
+        i++
+    }
+    val query = words.joinToString(" ").trim()
+    return if (query.isEmpty()) null else WeatherSearchArgs(query, add, label)
+}
+
+private fun shellQuote(s: String): String = if (s.all { it.isLetterOrDigit() || it in "-_." }) s else "'" + s.replace("'", "'\\''") + "'"
 
 /** Print the editable calendar sources (CalDAV accounts / iCal feeds / .ics paths) with their ids — the
  *  handle for `calendar add|remove|passwd`. The password is never shown (write-only). */

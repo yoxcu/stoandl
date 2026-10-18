@@ -248,7 +248,8 @@ default, `weather.pins = false` disables just the pins. Temperatures are in the 
 (`stoandl health profile set units metric|imperial`), which fw 4.37+ also uses for its weather warnings.
 
 ```sh
-stoandl weather   # force a refresh now
+stoandl weather                          # force a refresh now
+stoandl weather search Lyon [--add [n]]  # find a city, add it (weather.place_search; to be tested)
 ```
 
 _Hardware-verified. (Watch firmware only surfaces the next ~2–3 days of timeline, so the furthest
@@ -856,6 +857,18 @@ names come from `weather.locations` within 10 km, or Nominatim with `weather.rev
 default (`weather.intercept_pkjs`): it sends the coordinates or place a watchface asks about to a web
 service; most of these watchfaces also need `geolocation.enabled`. Ported from the official app (GPLv3).
 _To be tested — needs a watch and one of these watchfaces. [TESTING §5.47](../TESTING.md)._
+
+### Weather city search
+
+Add a weather location by name instead of looking up its coordinates: `stoandl weather search Lyon` lists
+the matches from Open-Meteo's geocoder (most populous first, with region, country and coordinates), and
+`--add [n]` stores match *n* (default 1) in `weather.locations`, applied live; `--as <label>` names it on the
+watch. A location of the same name is replaced, so re-adding moves it. The GUI has the same search under
+Settings → Daemon configuration → Weather (*Find a location*; Enter or **Search** looks up, **Add** stores).
+It is a web request, so it is off by default (`weather.place_search`) and refused while weather sync is
+off; only the typed name is sent, and only when you search. D-Bus `SearchWeatherPlace` /
+`AddWeatherLocation`. Off-device: `WeatherPlacesTest`, `WeatherSearchArgsTest`.
+_Implemented — to be tested ([TESTING.md §4.18](../TESTING.md))._
 
 ### Plugins
 

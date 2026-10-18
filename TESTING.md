@@ -262,6 +262,21 @@ with `/usr/libexec/geoclue-2.0/demos/where-am-i` (or `where-am-i` from the `geoc
 | 4.16 | Not allow-listed | remove the `[stoandl]` block, restart | Log warns GeoClue init failed with the geoclue.conf hint; fixed `weather.locations` still sync. |
 | 4.17 | GPS only | `weather.gps = true`, no `weather.locations` | Weather sync still starts; once a fix lands the watch shows the current location alone. |
 
+### 4c. City search (`stoandl weather search`)  ⚠️ UNVERIFIED (needs network; 4.18f a watch)
+
+Offline: `WeatherPlacesTest`, `WeatherSearchArgsTest`. Start with `weather.place_search` at its default (off).
+
+| # | Test | Command / Step | Expected |
+|---|------|----------------|----------|
+| 4.18a | Off by default | `stoandl weather search Berlin` | `Place search is off: it sends the name to Open-Meteo's geocoder. Turn on weather.place_search`, exit 1. No `geocoding-api.open-meteo.com` connection (`ss -tnp` / the log). |
+| 4.18b | Weather off | `stoandl daemon set weather.place_search true`, `stoandl sync disable weather`, search again | `Weather sync is off (weather.enabled)`; no request. `stoandl sync enable weather` afterwards. |
+| 4.18c | Search | `stoandl weather search Frankfurt` | A numbered list, most populous first: `1  Frankfurt am Main, Hesse, Germany  (50.1155, 8.6842)`, then Frankfurt (Oder) …, and the `--add <n>` hint. |
+| 4.18d | Add | `stoandl weather search Frankfurt --add 2` | `Added Frankfurt (Oder) (…)`; `stoandl daemon get weather.locations` ends with that entry; the log shows weather re-applied (no restart). |
+| 4.18e | Replace, label | `stoandl weather search Berlin --add --as Home`, then `stoandl weather search Paris --add --as home` | First `Added Home …`, then `Updated home …`: one entry named `home` at Paris's coordinates, the others unchanged and in order. |
+| 4.18f | On the watch | after 4.18d, `stoandl weather` | The watch's Weather app lists the new place. |
+| 4.18g | No match / offline | `stoandl weather search Xqzzyv`; then with the network down, `stoandl weather search Berlin` | `No place called "…" found (or Open-Meteo couldn't be reached)`, exit 1, within ~8 s. |
+| 4.18h | GUI | Settings → Daemon configuration → Weather: with *Find locations by name* off, the *Find a location* card says search is off; turn it on, type `Lyon`, press Enter, **Add** on the first result | A toast `Added Lyon (…)`; the *Locations* row shows the entry. Leaving the field without Enter sends nothing. |
+
 ---
 
 ## 5. Phone calls & telephony  ⚠️ UNVERIFIED

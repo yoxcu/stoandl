@@ -69,6 +69,7 @@ import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
 import de.yoxcu.stoandl.location.LiveGeolocation
 import de.yoxcu.stoandl.weather.WeatherSync
+import de.yoxcu.stoandl.weather.WeatherPlaces
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.rebble.libpebblecommon.calls.SystemCallLog
@@ -2090,6 +2091,11 @@ class PebbleIntegration(
         if (guiConfigField(key) == null) "notfound:no config key '$key'"
         else persistConfig(key, value)
 
+    // City search for weather.locations; its own HTTP client, built on the first search.
+    private val weatherPlaces by lazy {
+        WeatherPlaces(OpenMeteoNow(stoandlHttpClient()), configStore::current) { persistConfig("weather.locations", it) }
+    }
+
     /** The live actuation behind the GUI Sync/Settings screens, delegated to by [StoandlControlImpl]. */
     private val syncControl = object : SyncControl {
         override fun status(): List<String> = buildSyncStatus()
@@ -2100,6 +2106,9 @@ class PebbleIntegration(
             "${f.key}\t$v"
         }
         override fun setConfig(key: String, value: String): String = setConfigLive(key, value)
+        override fun searchWeatherPlace(query: String): String = runBlocking { weatherPlaces.search(query) }
+        override fun addWeatherLocation(name: String, latitude: Double, longitude: Double): String =
+            weatherPlaces.add(name, latitude, longitude)
         override fun listCalendarSources(): List<String> = CalendarSources.list(configStore.current())
         override fun addCalendarSource(type: String, url: String, username: String, password: String): String =
             crudCalendarSource { CalendarSources.add(type, url, username, password, configStore, StoandlConfig.configFile(), secretStore) }
@@ -2888,6 +2897,10 @@ internal interface SyncControl {
     fun getConfig(): List<String>
     /** Persist + live-apply a single GUI config key. */
     fun setConfig(key: String, value: String): String
+    /** Geocode a place name for `weather.locations` (gated on weather.enabled + weather.place_search). */
+    fun searchWeatherPlace(query: String): String
+    /** Upsert a `weather.locations` entry by name; persists + re-applies weather. */
+    fun addWeatherLocation(name: String, latitude: Double, longitude: Double): String
     /** Editable calendar sources as `id\ttype\turl\tusername\tlabel` records (never the password). */
     fun listCalendarSources(): List<String>
     /** Add a calendar source ([type] ∈ caldav/ical/ics); persists + re-syncs. `ok:<id>\t<backend>`. */
@@ -2985,6 +2998,11 @@ private class StoandlControlImpl(
             "error:${e.message ?: "weather sync failed"}"
         }
     }
+
+    override fun SearchWeatherPlace(query: String): String = syncControl.searchWeatherPlace(query)
+
+    override fun AddWeatherLocation(name: String, latitude: Double, longitude: Double): String =
+        syncControl.addWeatherLocation(name, latitude, longitude)
 
     override fun SyncCalendar(): String {
         val cal = calendarSyncRef.get()

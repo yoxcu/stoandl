@@ -84,6 +84,8 @@ All `weather.*` keys reconcile through `applyWeather()`, which tears down and re
 | `weather.gps_desktop_id` | text | ✓ | live¹ | — | `stoandl` |
 | `weather.reverse_geocode` | toggle | ✓ | live | — | `false` |
 | `weather.pins` | toggle | ✓ | live | — | `true` |
+| `weather.intercept_pkjs` | toggle | ✓ | live | — (opt-in egress) | `false` |
+| `weather.place_search` | toggle | ✓ | live | — (opt-in egress; needs weather sync on) | `false` |
 | `weather.enabled` | toggle | Sync screen | live | `SetSyncEnabled("weather", …)` | `true` |
 
 ¹ Also used as the GeoClue identity for **watchapp** geolocation. `LiveGeolocation` used to cache its

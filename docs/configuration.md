@@ -68,6 +68,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
 | `weather.pins` | bool | `true` | Also emit weather **timeline pins** (a sunrise + sunset pin per day, today … +2 days) for the primary location. On by default whenever weather is enabled; set `false` to keep the Weather app but leave the timeline clear. |
 | `weather.intercept_pkjs` | bool | `false` | Answer the weather APIs classic watchfaces call from PKJS (Yahoo YQL, dead since 2019; OpenWeatherMap 2.5 when OWM rejects the app's own key) from Open-Meteo, in the shape each API returned. Place names are looked up with Open-Meteo geocoding (a `weather.locations` name answers without a lookup); coordinates are named via `weather.reverse_geocode` if on, else the nearest `weather.locations` entry within 10 km. Off by default — it sends the watchface's coordinates or place name to a web service. Location-based watchfaces also need `geolocation.enabled`. Read live. |
+| `weather.place_search` | bool | `false` | Let `stoandl weather search <city>` and the GUI's *Find a location* look a city up by name (Open-Meteo geocoding) to add it to `weather.locations`; the found coordinates are rounded to 4 decimals and a same-named entry is replaced. Off by default — it sends the typed name to a web service, and only when you search. Refused while `weather.enabled` is off. Read live. |
 | `weather.enabled` | bool | `true` | Master switch for weather sync, flipped live by the Sync screen (`SetSyncEnabled("weather", …)`). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
 | `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
 | `apps.order_faces_by_last_used` | bool | `false` | Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3 `orderWatchfacesByLastUsed`, which the official app turns on at first run). Off by default so the order you set (`stoandl apps order`, the GUI) stays as it was. Live. |
@@ -273,6 +274,13 @@ weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278
 weather.interval = 30
 ```
 
+**Finding coordinates.** With `weather.place_search = true` (off by default: it is a web request),
+`stoandl weather search <city>` lists matching places from Open-Meteo's geocoder and
+`stoandl weather search <city> --add [n] [--as <label>]` adds match *n* (default the first) to
+`weather.locations`, replacing an entry of the same name and applying it live. The GUI offers the same
+search under its Weather settings. The search is refused while weather sync is off, and nothing is sent
+until you search.
+
 **Units.** There is no weather unit setting: temperatures are sent in the watch's own units, the
 metric/imperial choice that also sets the Health app's distances. Change it with
 `stoandl health profile set units imperial` (or `metric`); weather refreshes in the new unit straight
@@ -367,6 +375,7 @@ and off by default:
 |---------|--------------|------------------|
 | [Open-Meteo](https://open-meteo.com/) | location coordinates | only when `weather.locations` or `weather.gps` is set |
 | [OSM Nominatim](https://nominatim.openstreetmap.org/) | GPS coordinates | only when `weather.reverse_geocode = true` |
+| [Open-Meteo geocoding](https://open-meteo.com/en/docs/geocoding-api) | the place name you type | only when you run `stoandl weather search` (or search in the GUI) with `weather.place_search = true` and `weather.enabled` on |
 
 GeoClue (location) is a local system service, not a web call; importing a location from your DE
 (`weather.location_source`) is local too (GSettings / your command). PKJS/Clay pages can make their own

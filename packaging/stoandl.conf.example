@@ -158,6 +158,10 @@ weather.pins = true
 # weather.locations entry within 10 km. Off by default: it sends the coordinates or place name a
 # watchface asks about to Open-Meteo. Most such watchfaces also need geolocation.enabled.
 weather.intercept_pkjs = false
+# Find a city by name to add to weather.locations (`stoandl weather search <city> --add`, or the search in
+# the GUI's Weather settings). Off by default: it sends the name you type to Open-Meteo's geocoder, only
+# when you search. Refused while weather sync is off (weather.enabled).
+weather.place_search = false
 
 # Calendar → watch timeline. Syncs upcoming events (yesterday … +7 days) as native calendar pins.
 # Disabled until you set at least one source below. Local .ics and discovery make no web requests;

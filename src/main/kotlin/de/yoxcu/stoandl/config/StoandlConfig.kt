@@ -118,6 +118,10 @@ data class StoandlConfig(
      *  the app's own key is rejected) from Open-Meteo. Off by default: it fetches weather (and, for a typed
      *  place name, a geocoding lookup) for whatever coordinates or place a watchapp sends. */
     val weatherInterceptPkjs: Boolean,
+    /** Let `stoandl weather search` / the GUI look a place name up with Open-Meteo's geocoder to add it to
+     *  [weatherLocations]. Off by default (it sends the typed name to a web service), and refused while
+     *  [weatherEnabled] is off. */
+    val weatherPlaceSearch: Boolean,
     /** Expose the device's GeoClue2 position to watchapps via libpebble3's `SystemGeolocation` hook,
      *  so PKJS apps' `navigator.geolocation` and location-aware sports/GPS watchapps get a fix. Uses
      *  the same GeoClue identity as weather ([weatherGpsDesktopId] / `weather.gps_desktop_id`). Off by
@@ -381,6 +385,7 @@ data class StoandlConfig(
             weatherReverseGeocode = false,
             weatherPins = true,
             weatherInterceptPkjs = false,
+            weatherPlaceSearch = false,
             geolocation = false,
             watchPrefs = emptyMap(),
             musicControl = true,
@@ -496,6 +501,7 @@ data class StoandlConfig(
                 weatherReverseGeocode = parseBool(map["weather.reverse_geocode"]),
                 weatherPins = map["weather.pins"]?.let { parseBool(it) } ?: true,
                 weatherInterceptPkjs = parseBool(map["weather.intercept_pkjs"]),
+                weatherPlaceSearch = parseBool(map["weather.place_search"]),
                 geolocation = parseBool(map["geolocation.enabled"]),
                 // `watch.<prefId> = value` keys are applied to the watch's settings BlobDB.
                 watchPrefs = map.entries

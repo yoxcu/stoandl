@@ -85,6 +85,16 @@ interface StoandlControl : DBusInterface {
      *  not enabled (no `weather.locations` configured). */
     fun SyncWeather(): String
 
+    /** Look a place up by name with Open-Meteo's geocoder: `ok:` + one `name\tlat\tlon\tregion\tcountry`
+     *  record per line, most likely first; `none:` (no match or unreachable); `disabled:<why>` unless
+     *  `weather.enabled` and `weather.place_search` are both on (it is a web request); `error:`. */
+    fun SearchWeatherPlace(query: String): String
+
+    /** Add a `weather.locations` entry [name] at [latitude]/[longitude] (e.g. a [SearchWeatherPlace]
+     *  record), replacing one of the same name; persisted and applied live like `SetConfig`. No egress.
+     *  `ok:<message>` / `error:`. */
+    fun AddWeatherLocation(name: String, latitude: Double, longitude: Double): String
+
     /** List the watch's advanced settings (WatchPrefs). Each entry is a tab-separated record:
      *  `id \t type \t current \t default \t allowed \t flags \t name \t description`. */
     fun ListWatchPrefs(): List<String>

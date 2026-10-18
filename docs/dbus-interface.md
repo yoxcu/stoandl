@@ -274,12 +274,14 @@ forwarding switch (`notification.forward`), *and* per-app mute; `block` drops th
 are stored in a dedicated file `<configDir>/notification-filters` (one `action⇥pattern` line each) and
 are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immediately, no restart.
 
-### Sync — service on/off + force-sync triggers (`stoandl sync`/`weather`/`calendar`/`health`)
+### Sync — service on/off + force-sync triggers, weather city search (`stoandl sync`/`weather`/`calendar`/`health`)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `SetSyncEnabled` | `(s,b) → s` | Turn a sync service on/off at **runtime** (no daemon restart). `service` ∈ {notifications, weather, calendar, music, health, dnd}. Persists the backing config key **and** starts/stops the live service. `dnd` maps the boolean to its 4-way mode (`false` → `off`; `true` → the direction an earlier `false` replaced in this daemon run, else `both`; the direction is still set via `SetConfig dnd.sync`). `ok:<service> enabled\|disabled` / `notfound:` (unknown service) / `error:`. | `sync enable <service>` / `sync disable <service>` |
 | `SyncWeather` | `() → s` | Fetch weather now and push to the watch. `error:` if weather isn't enabled. | `weather` |
+| `SearchWeatherPlace` | `(s) → s` | Look a place name up with Open-Meteo's geocoder (a web request): `ok:` followed by one `name\tlat\tlon\tregion\tcountry` record per line (newline-separated, most populous first; coordinates rounded to 4 decimals, the name already cleaned for `weather.locations`); `none:` (no match, or Open-Meteo unreachable within 8 s); `disabled:<why>` unless `weather.enabled` **and** `weather.place_search` are on (then nothing is sent); `error:` (empty query). | `weather search <city>` |
+| `AddWeatherLocation` | `(s,d,d) → s` | Add `(name, latitude, longitude)` to `weather.locations`, replacing an entry of the same name (case-insensitive); persisted and applied live through the `SetConfig` path. No egress, no gate. `ok:Added\|Updated <name> (<lat>, <lon>)` / `error:` (empty name, coordinates out of range, or the write refused). | `weather search <city> --add [n] [--as <label>]` |
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
@@ -597,6 +599,7 @@ notification filters.*
 | Quiet-hours (scheduled mute window) | action | **dropped — superseded by `dnd.sync`** (which mirrors desktop DND ↔ the watch's native Quiet Time); a separate host-side time-window subsystem would be redundant | *(none — dropped)* | **not pursued** |
 | Force-sync for **music** and **notifications** | action | **no `SyncMusic`/`SyncNotifications`** (both are continuous push by design) | `SyncMusic() → s` (re-enumerate MPRIS + re-push) / `SyncNotifications() → s`, or omit from the screen | **wiring-only if wanted** — `MprisMusicControl` has `enumerateExisting()`/`recompute()`; arguably unnecessary |
 | Music/MPRIS state for the screen (active player, playing?) | data | **done** — `MusicStatus() → s` (`playing\|paused\tplayer\ttrack`); the Sync screen's Music row shows now-playing | `MusicStatus() → s` | **done** — reads `MprisMusicControl.playbackState`; refreshed on page open |
+| Weather location by city name | action | **done** — `SearchWeatherPlace(s) → s` + `AddWeatherLocation(s,d,d) → s`; the GUI's Weather settings has a *Find a location* card (gated by `weather.place_search`, off by default) | *(covered)* | **implemented** |
 | DND ↔ Quiet Time sync state + mode (`dnd.sync`) | property + action | live on/off via `SetSyncEnabled("dnd", …)` (false → `off`, true → the direction before, else `both`); the **direction** mode is set via `SetConfig dnd.sync` and read via `GetSyncStatus` (mode string in `lastSync`) | *(covered)* | **implemented (live)** |
 
 ### Screen 5 — System
