@@ -109,57 +109,6 @@ class HeartbeatStore(
     }
 
     /**
-     * Decode the battery block, or null when the layout isn't trusted (see class docs).
-     *
-     * A known `(size, version)` is read at its own offsets under the normal guard. An unknown one
-     * is NOT given up on — that is what left records stranded when the record grew on 2026-07-14,
-     * and it made insights silently replay a stale decode for days. Instead it is read at the
-     * newest known layout's offsets (the battery block has not moved since fw 4.13, because every
-     * metric since has been added behind it) and must prove itself there. The block is
-     * *self-describing*: each scaled metric carries its scale as a `u16` right after the value. So
-     * BOTH scale pairs must equal their compile-time constants (100/100 and 1000/1000), soc and
-     * voltage must be physically plausible, and charge+discharge must add up to roughly the one-hour
-     * reporting interval. Passing seven independent structural constraints at once is
-     * verification, not a guess; failing any one of them still refuses.
-     */
-    private fun decode(p: ByteArray, rx: Long): BatterySnapshot? {
-        val known = HeartbeatLayouts.of(p)
-        val l = known ?: HeartbeatLayouts.NEWEST
-        // Wire scale fields must match the compile-time constants (a mismatch signals layout drift).
-        if (l.scale(p, SOC) != 100 || l.scale(p, VOLTAGE) != 1000) return null
-        val soc = (l.u32(p, SOC) ?: return null) / 100.0
-        val voltage = (l.u32(p, VOLTAGE) ?: return null) / 1000.0
-        if (soc !in 0.0..100.0) return null
-        if (voltage !in VOLT_MIN..VOLT_MAX) return null
-        val chargeMs = l.u32(p, CHARGE_MS) ?: return null
-        val dischargeMs = l.u32(p, DISCHARGE_MS) ?: return null
-        if (known == null) {
-            // Unknown layout: only accept on the stricter self-validation described above.
-            if (l.scale(p, SOC_DROP) != 100 || l.scale(p, VOLTAGE_DELTA) != 1000) return null
-            if (chargeMs + dischargeMs !in INTERVAL_MIN_MS..INTERVAL_MAX_MS) return null
-            val key = p.size to (p[0].toInt() and 0xFF)
-            if (warnedUnknown.add(key)) {
-                log.info {
-                    "analytics heartbeat layout ${key.first}B/v${key.second} is not in the verified table; " +
-                        "the battery block validated structurally so insights still work, but the " +
-                        "power/activity view needs the layout added (tools/hb_layouts_from_source.py)"
-                }
-            }
-        }
-        return BatterySnapshot(
-            watchTs = p.u64le(1),
-            socPct = soc,
-            voltage = voltage,
-            voltageDelta = (l.i32(p, VOLTAGE_DELTA) ?: return null) / 1000.0,
-            tteSeconds = l.u32(p, "battery_tte_s") ?: 0L,
-            chargeMs = chargeMs,
-            dischargeMs = dischargeMs,
-            charging = chargeMs > 0,
-            rxTs = rx,
-        )
-    }
-
-    /**
      * Decode the richer subsystem-activity + event-counter fields (drop / power / notifications), or
      * null when the layout isn't trusted. Same trust gate as [decode] plus the CPU-percent scale
      * field, but no structural fallback: these fields reach past the region that moves between
@@ -482,6 +431,57 @@ class HeartbeatStore(
         /** One-hour reporting interval, with slack for a partial first record after boot. */
         private const val INTERVAL_MIN_MS = 1_800_000L // 0.5 h
         private const val INTERVAL_MAX_MS = 5_040_000L // 1.4 h
+
+        /**
+         * Decode the battery block, or null when the layout isn't trusted (see class docs).
+         *
+         * A known `(size, version)` is read at its own offsets under the normal guard. An unknown one
+         * is NOT given up on — that is what left records stranded when the record grew on 2026-07-14,
+         * and it made insights silently replay a stale decode for days. Instead it is read at the
+         * newest known layout's offsets (the battery block has not moved since fw 4.13, because every
+         * metric since has been added behind it) and must prove itself there. The block is
+         * *self-describing*: each scaled metric carries its scale as a `u16` right after the value. So
+         * BOTH scale pairs must equal their compile-time constants (100/100 and 1000/1000), soc and
+         * voltage must be physically plausible, and charge+discharge must add up to roughly the one-hour
+         * reporting interval. Passing seven independent structural constraints at once is
+         * verification, not a guess; failing any one of them still refuses.
+         */
+        internal fun decode(p: ByteArray, rx: Long): BatterySnapshot? {
+            val known = HeartbeatLayouts.of(p)
+            val l = known ?: HeartbeatLayouts.NEWEST
+            // Wire scale fields must match the compile-time constants (a mismatch signals layout drift).
+            if (l.scale(p, SOC) != 100 || l.scale(p, VOLTAGE) != 1000) return null
+            val soc = (l.u32(p, SOC) ?: return null) / 100.0
+            val voltage = (l.u32(p, VOLTAGE) ?: return null) / 1000.0
+            if (soc !in 0.0..100.0) return null
+            if (voltage !in VOLT_MIN..VOLT_MAX) return null
+            val chargeMs = l.u32(p, CHARGE_MS) ?: return null
+            val dischargeMs = l.u32(p, DISCHARGE_MS) ?: return null
+            if (known == null) {
+                // Unknown layout: only accept on the stricter self-validation described above.
+                if (l.scale(p, SOC_DROP) != 100 || l.scale(p, VOLTAGE_DELTA) != 1000) return null
+                if (chargeMs + dischargeMs !in INTERVAL_MIN_MS..INTERVAL_MAX_MS) return null
+                val key = p.size to (p[0].toInt() and 0xFF)
+                if (warnedUnknown.add(key)) {
+                    log.info {
+                        "analytics heartbeat layout ${key.first}B/v${key.second} is not in the verified table; " +
+                            "the battery block validated structurally so insights still work, but the " +
+                            "power/activity view needs the layout added (tools/hb_layouts_from_source.py)"
+                    }
+                }
+            }
+            return BatterySnapshot(
+                watchTs = p.u64le(1),
+                socPct = soc,
+                voltage = voltage,
+                voltageDelta = (l.i32(p, VOLTAGE_DELTA) ?: return null) / 1000.0,
+                tteSeconds = l.u32(p, "battery_tte_s") ?: 0L,
+                chargeMs = chargeMs,
+                dischargeMs = dischargeMs,
+                charging = chargeMs > 0,
+                rxTs = rx,
+            )
+        }
 
         /** Remembers which unknown `(size, version)` pairs we have already logged about. */
         private val warnedUnknown = java.util.concurrent.ConcurrentHashMap.newKeySet<Pair<Int, Int>>()

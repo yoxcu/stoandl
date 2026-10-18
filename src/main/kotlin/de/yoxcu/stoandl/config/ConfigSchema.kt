@@ -329,6 +329,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Alert when an installed extension needs configuring before it can start") { it.alertsExtensions },
     toggle("alerts.permissions", G_ALERTS, "Permission requests",
         "When an app asks for a permission (plugins on), prompt with Allow and Deny on the watch and the desktop") { it.alertsPermissions },
+    toggle("alerts.battery_full", G_ALERTS, "Watch fully charged",
+        "Alert on the watch and the desktop when a watch on the charger reaches 100 %. Classic-era watches " +
+            "report their charge once an hour, so theirs can come up to an hour late.") { it.alertsBatteryFull },
 
     // --- Calls & contacts ---
     list("call.dialer_apps", G_CALLS, "Dialer apps",

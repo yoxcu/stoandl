@@ -85,6 +85,10 @@ alerts.extensions = true
 # An app asks for a permission (plugins.enabled): a prompt with Allow / Deny on the watch and the desktop.
 # Off: answer with `stoandl perms` or in the GUI; until answered, the app is refused.
 alerts.permissions = true
+# A connected watch reached 100 % on the charger (once per charge: re-armed at 97 % or below). Shown
+# on the watch and the desktop, as in the official app. Classic-era watches report their charge once
+# an hour (analytics heartbeat), so theirs can come up to an hour late.
+alerts.battery_full = true
 
 # Telephony/dialer apps, by app name or desktop-entry id (exact, case-insensitive). While a call is
 # up their notifications are held back from the watch (the native call screen replaces them); their

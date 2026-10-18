@@ -62,6 +62,7 @@ import de.yoxcu.stoandl.notification.NotificationAppsControl
 import de.yoxcu.stoandl.icons.AppIconExtractor
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
 import de.yoxcu.stoandl.support.LogsControl
+import de.yoxcu.stoandl.battery.BatteryFullAlert
 import de.yoxcu.stoandl.battery.BatteryStore
 import de.yoxcu.stoandl.battery.HeartbeatStore
 import de.yoxcu.stoandl.datalog.DatalogStore
@@ -344,6 +345,7 @@ class PebbleIntegration(
     // the GATT-level series is a fallback started/stopped by applyBattery. Both null when disabled.
     private val batteryStoreRef = AtomicReference<BatteryStore?>(null)
     private val heartbeatStoreRef = AtomicReference<HeartbeatStore?>(null)
+    private val batteryFullAlert = BatteryFullAlert(::announceBatteryFull)
     private val watchPrefsControlRef = AtomicReference<WatchPrefsControl?>(null)
     private val calendarSyncRef = AtomicReference<LinuxSystemCalendar?>(null)
     // Held for the daemon lifetime so its host-DND backend (bus connection / gsettings monitor) and
@@ -494,7 +496,7 @@ class PebbleIntegration(
         val interceptPkjs = { configStore.current().weatherInterceptPkjs }
         val koin = initKoin(
             defaultConfig = libPebbleConfig,
-            webServices = StoandlWebServices(heartbeatStoreRef),
+            webServices = StoandlWebServices(heartbeatStoreRef, batteryFullAlert::onHeartbeat),
             // Plugins' secure storage on our secret store (keyring, else the 0600 secrets file).
             appContext = AppContext(pluginSecrets = PluginSecretStore(secretStore)),
             tokenProvider = NoOpTokenProvider,
@@ -755,6 +757,7 @@ class PebbleIntegration(
         applyHealth()
         // Battery insights: capture the hourly analytics heartbeat (primary) + a GATT-level fallback.
         applyBattery()
+        batteryFullAlert.start(libPebble.watches, scope)
         // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
         // injected (on the first watch connect); nothing to start here, just report the state.
         log.info {
@@ -1446,6 +1449,20 @@ class PebbleIntegration(
     private fun alertsAllow(perEvent: (StoandlConfig) -> Boolean): Boolean {
         val cfg = config
         return cfg.alertsEnabled && perEvent(cfg)
+    }
+
+    /** `alerts.battery_full`: a watch reached 100 %. The desktop copy is not bridged; the watch gets its own
+     *  through [WatchNotifier] (so per-app mute of "stoandl" applies there). */
+    private fun announceBatteryFull(watchName: String) {
+        if (!alertsAllow { it.alertsBatteryFull }) return
+        val title = "Watch fully charged"
+        val body = "$watchName is fully charged"
+        scope.launch {
+            sendDesktopNotification(title, body, appName = STOANDL_DESKTOP_ONLY_APP, icon = "battery-full-charged")
+            runCatching {
+                watchNotifier.push(NotifRequest(appName = "stoandl", title = title, body = body), ownerId = "desktop", ownerToken = null)
+            }.onFailure { log.warn(it) { "battery-full watch notification failed" } }
+        }
     }
 
     /**
@@ -2573,9 +2590,11 @@ internal fun isMutedNow(item: NotificationAppItem, now: kotlin.time.Instant): Bo
 // No Rebble account / remote locker / cloud analytics in standalone mode — every remote method is a
 // no-op EXCEPT uploadAnalyticsHeartbeat: the watch's hourly analytics heartbeat (the same blob the
 // official app forwards to its cloud) reaches us here, and instead of dropping it we hand it to the
-// local [HeartbeatStore] (when battery.heartbeat is on) to decode the battery fields — no egress.
+// local [HeartbeatStore] (when battery.heartbeat is on) to decode the battery fields, and to the
+// battery-full alert (a Classic watch's only battery level) — no egress.
 private class StoandlWebServices(
     private val heartbeatStoreRef: AtomicReference<HeartbeatStore?>,
+    private val onHeartbeat: (payload: ByteArray, serial: String) -> Unit,
 ) : WebServices {
     override suspend fun fetchLocker() = null
     // "removed from remote" is trivially true, so Locker.removeApp() proceeds to delete the local entry.
@@ -2587,6 +2606,7 @@ private class StoandlWebServices(
     override fun uploadMemfaultChunk(chunk: ByteArray, watchInfo: WatchInfo) {}
     override fun uploadAnalyticsHeartbeat(payload: ByteArray, watchInfo: WatchInfo) {
         heartbeatStoreRef.get()?.record(payload, watchInfo.serial, watchInfo.runningFwVersion.stringVersion)
+        onHeartbeat(payload, watchInfo.serial)
     }
 }
 

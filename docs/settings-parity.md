@@ -52,8 +52,8 @@ back unchanged.
 
 ### stoandl alerts — the daemon's own desktop alerts (new this session)
 
-Distinct from forwarded app notifications: these are things stoandl says *about itself*, on the host
-desktop. Previously unconditional with no way to silence them. Muting an alert silences the popup only —
+Distinct from forwarded app notifications: these are things stoandl says *about itself*, mostly on the
+host desktop (permission prompts and the full-battery alert also show on the watch). Previously unconditional with no way to silence them. Muting an alert silences the popup only —
 the condition is still logged at WARN, so a muted alert never hides a diagnosis.
 
 | Key | Kind | GUI | Applies | Why | Default |
@@ -62,6 +62,8 @@ the condition is still logged at WARN, so a muted alert never hides a diagnosis.
 | `alerts.pairing` | toggle | ✓ | live | ” — gates "won't stay connected" / "pairing removed" | `true` |
 | `alerts.bluetooth` | toggle | ✓ | live | ” — gates "blocked by a Bluetooth scan" | `true` |
 | `alerts.extensions` | toggle | ✓ | live | ” — gates "extension needs setup" | `true` |
+| `alerts.permissions` | toggle | ✓ | live | ” — gates the Allow/Deny prompt for an app's permission request (watch and desktop) | `true` |
+| `alerts.battery_full` | toggle | ✓ | live | ” — gates "Watch fully charged" (watch, through the choke point, and desktop) | `true` |
 
 `firmware.notify` is the fifth alert but keeps its own older key, because it also drives a **watch**
 notification with an Update button. One switch per event, not two — see [§5](#5-redundancy-noted).
@@ -223,15 +225,15 @@ that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex 
 | "Pebble pairing removed" (host bond lost) | desktop, with Pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Blocked by a Bluetooth scan" | desktop | n/a | `alerts.enabled` + `alerts.bluetooth` |
 | "<extension> needs setup" | desktop | n/a | `alerts.enabled` + `alerts.extensions` |
+| "Watch fully charged" | watch **and** desktop | yes (the watch half) | `alerts.enabled` + `alerts.battery_full`; on the watch also per-app mute of "stoandl" |
 | Incoming/missed call | watch (native call screen) | no — telephony has its own path | `call.dialer_apps` suppresses the duplicate app notification |
 | Find my watch | watch (ring) | no — reuses the call path | on demand only |
 | Weather / calendar pins | watch timeline | no — pins are not notifications | `weather.pins`, `calendar.enabled` |
 
 **Thresholds.** None of these events is user-threshold-based: the two internal thresholds (the
 broken-bond flap count, and the tick count before the Bluetooth-blocked warning) are debounce
-constants, not policy — exposing them would be a knob with no right answer. There is no
-battery-level alert today, which is the one event where a threshold *would* be meaningful; see
-[FIRMWARE-GAPS.md](../FIRMWARE-GAPS.md).
+constants, not policy — exposing them would be a knob with no right answer. The full-battery alert
+fires at 100 % and re-arms at ≤ 97 %, both fixed.
 
 **Test action.** `SendTestNotification` is reachable from the GUI on **Alerts → Send test** (new
 this session) and Settings → Debug → *Write notification…*.

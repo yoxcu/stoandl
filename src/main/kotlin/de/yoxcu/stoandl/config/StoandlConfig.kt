@@ -89,6 +89,9 @@ data class StoandlConfig(
     val alertsExtensions: Boolean,
     /** An app asks for a permission (plugins on): a prompt with Allow/Deny on the watch and the desktop. */
     val alertsPermissions: Boolean,
+    /** A connected watch reached 100 % (re-armed at 97 % or below): on the watch and the desktop. On by
+     *  default, as in the official app. Classic watches report their level hourly, so it can be late. */
+    val alertsBatteryFull: Boolean,
     /** Dialer apps, by app name or desktop-entry id (exact, case-insensitive). Their notifications are
      *  suppressed from the watch while a call is up (the native call screen replaces them) and their
      *  title is used as a fallback caller name. */
@@ -382,6 +385,7 @@ data class StoandlConfig(
             alertsBluetooth = true,
             alertsExtensions = true,
             alertsPermissions = true,
+            alertsBatteryFull = true,
             dialerApps = DEFAULT_DIALER_APPS,
             vcardPaths = DEFAULT_VCARD_PATHS.map(::expandTilde),
             weatherEnabled = true,
@@ -497,6 +501,7 @@ data class StoandlConfig(
                 alertsBluetooth = map["alerts.bluetooth"]?.let { parseBool(it) } ?: true,
                 alertsExtensions = map["alerts.extensions"]?.let { parseBool(it) } ?: true,
                 alertsPermissions = map["alerts.permissions"]?.let { parseBool(it) } ?: true,
+                alertsBatteryFull = map["alerts.battery_full"]?.let { parseBool(it) } ?: true,
                 dialerApps = list("call.dialer_apps", DEFAULT_DIALER_APPS),
                 vcardPaths = list("contacts.vcard_paths", DEFAULT_VCARD_PATHS).map(::expandTilde),
                 weatherEnabled = map["weather.enabled"]?.let { parseBool(it) } ?: true,
@@ -627,6 +632,7 @@ data class StoandlConfig(
                          if (!cfg.alertsBluetooth) "bluetooth" else null,
                          if (!cfg.alertsExtensions) "extensions" else null,
                          if (!cfg.alertsPermissions) "permissions" else null,
+                         if (!cfg.alertsBatteryFull) "battery_full" else null,
                      ).takeIf { it.isNotEmpty() }?.let { ", alerts muted: ${it.joinToString("/")}" }.orEmpty()) +
                     (if (cfg.extensionsEnabled.isNotEmpty()) ", extensions=${cfg.extensionsEnabled}" else "")
             }

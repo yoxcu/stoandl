@@ -2145,6 +2145,23 @@ click action (it waits for the action and prints its key).
 | 5.52e | GNOME | the `notify-send -A` notification on GNOME | No *Open* (nor *Other*): GNOME Shell has no `InvokeAction`. |
 | 5.52f | Off | `stoandl daemon set notification.open_action false` (or the GUI toggle), new notification | No *Open* (no restart); *Other* still there. |
 
+## 5.53 Watch fully charged alert  ⚠️ UNVERIFIED (needs a watch and its charger)
+
+`alerts.battery_full` (default on, under `alerts.enabled`) alerts on the watch and the desktop when a connected
+watch reaches 100 %, once per charge: it re-arms at 97 % or below, and a watch already full when it connects
+doesn't alert. BLE watches use the GATT battery level (`stoandl watch battery`); Classic watches the hourly
+analytics heartbeat. Off-device: `BatteryFullAlertTest` (the latch, heartbeat rounding and replay).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.53a | BLE | a BLE watch at ≤ 99 % on its charger until `stoandl watch battery` says 100 % | One *Watch fully charged* — "*name* is fully charged" on the desktop and on the watch. Log `… is fully charged`. |
+| 5.53b | Top-up | leave it on the charger for an hour; take it off and back on before it falls to 97 % | No second alert. |
+| 5.53c | Re-arm | let it run down to ≤ 97 %, charge again to 100 % | A second alert. |
+| 5.53d | Connect full | restart the daemon (`systemctl --user restart stoandl`) with the watch at 100 % | No alert. |
+| 5.53e | Classic | a Classic-era watch (Time Steel over Bluetooth Classic) charged from ≤ 99 % to full | The alert comes with the next hourly heartbeat after it reaches 100 % (`STOANDL_LOG=DEBUG`: `heartbeat … 100.0%`). |
+| 5.53f | Off | `stoandl daemon set alerts.battery_full false` (or the GUI's Alerts toggle), repeat 5.53c | No alert (no restart). Same with `alerts.enabled false`. |
+| 5.53g | Muted on the watch | `stoandl notif mute stoandl`, repeat 5.53c | Desktop alert only. |
+
 ## 5.54 Watch toggles: HR during activities, podcast seek, face order  ⚠️ UNVERIFIED (needs a watch; 5.54a–b an HRM watch on fw ≥ 4.38)
 
 The health profile gains `hrm_activity` (libpebble3 `hrmActivityTrackingEnabled`, "HR During Activities" in

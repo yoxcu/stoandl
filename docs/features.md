@@ -739,6 +739,18 @@ If stoandl can't tell, for example with no graphical logind session or logind no
 forwards. Toggle it in the GUI's Notifications settings or with
 `stoandl daemon set notification.only_when_locked true`. Off-device: `SessionLockTest`.
 _Implemented — to be tested ([TESTING.md §5.51](../TESTING.md))._
+
+### Watch fully charged alert
+
+When a connected watch on its charger reaches 100 %, stoandl says so on the desktop and on the watch
+(*Watch fully charged — name is fully charged*), as the official app does. Once per charge: it re-arms when
+the level falls to 97 % or below, so topping up doesn't repeat it, and a watch that is already full when it
+connects doesn't alert. BLE watches report their level over GATT; Classic-era watches have no GATT battery,
+so theirs comes from the hourly analytics heartbeat (whether or not `battery.heartbeat` stores it) and can
+be up to an hour late. Toggle `alerts.battery_full` (default on, under `alerts.enabled`); the watch copy
+is a `stoandl` notification, so muting the `stoandl` app keeps it on the desktop only. Off-device:
+`BatteryFullAlertTest`. _Implemented — to be tested ([TESTING.md §5.53](../TESTING.md))._
+
 ### HR during activities, podcast seek, face order
 
 Three official-app switches. The health profile gains `hrm_activity` ("HR During Activities": continuous heart
