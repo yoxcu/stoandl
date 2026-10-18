@@ -563,14 +563,18 @@ interface StoandlControl : DBusInterface {
     fun PluginInvoke(plugin: String, action: String, argsJson: String): String
 
     /** The permissions [app] (name or uuid) asked for or was given: `key\tstatus\tkind\tlabel\tlastUsedMs`.
-     *  status ∈ {granted, denied, undecided}; kind ∈ {read, write, exfiltrating}. */
+     *  status is the effective one: granted / denied (decided), auto (undecided, allowed by the policy), waiting
+     *  (undecided, must ask) or blocked (refused regardless); kind ∈ {read, write, exfiltrating}. */
     fun PermList(app: String): List<String>
 
-    /** Requests waiting for an answer, from apps running now: `appUuid\tappName\tkey\tlabel\trequestedAtMs`.
-     *  Re-read on [PermissionRequestsChanged]. */
+    /** Requests waiting for an answer, from every installed app:
+     *  `appUuid\tappName\tkey\tlabel\trequestedAtMs\trunning\tseen` (running, seen ∈ {true, false}; only
+     *  running apps' unseen requests are prompted; seen = put off with `later`). Re-read on
+     *  [PermissionRequestsChanged]. */
     fun PermPending(): List<String>
 
-    /** Answer [key] for [app] (name or uuid): [decision] ∈ {allow, deny, reset}. `ok:`, `notfound:`,
+    /** Answer [key] for [app] (name or uuid): [decision] ∈ {allow, deny, reset, later}; `later` stops asking
+     *  about a waiting request without deciding it (empty [key] = all of the app's). `ok:`, `notfound:`,
      *  `ambiguous:` or `error:`. */
     fun PermSet(app: String, key: String, decision: String): String
 
@@ -657,7 +661,8 @@ interface StoandlControl : DBusInterface {
      *  extension's plugin came or went). Re-call [PluginList]. */
     class PluginsChanged(path: String) : DBusSignal(path)
 
-    /** Poke: the requests waiting for an answer changed. Re-call [PermPending]. */
+    /** Poke: the requests waiting for an answer (or whether they're put off or their app runs) changed.
+     *  Re-call [PermPending]. */
     class PermissionRequestsChanged(path: String) : DBusSignal(path)
 
     /** Per-extension runtime state transition — the finer companion to [ExtensionsChanged] that surfaces

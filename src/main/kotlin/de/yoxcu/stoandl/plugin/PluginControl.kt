@@ -6,8 +6,10 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao
 import io.rebble.libpebblecommon.database.entity.LockerAppPermission
+import io.rebble.libpebblecommon.permissions.AppPermissionStatus
 import io.rebble.libpebblecommon.permissions.PermissionKind
 import io.rebble.libpebblecommon.permissions.PermissionRegistry
+import io.rebble.libpebblecommon.permissions.PermissionStatus
 import io.rebble.libpebblecommon.permissions.domainOf
 import io.rebble.libpebblecommon.permissions.permissionOf
 import io.rebble.libpebblecommon.plugin.ActionResult
@@ -100,34 +102,45 @@ class PluginControl(
         if (r.ok) "ok:${r.text.orEmpty().clean()}" else "failed:${r.code.orEmpty()} ${r.message.orEmpty()}".clean()
     }
 
-    /** `key\tstatus\tkind\tlabel\tlastUsedMs` for each permission [app] asked for or was decided. */
+    /** `key\tstatus\tkind\tlabel\tlastUsedMs` for each permission [app] asked for or was decided, with the
+     *  effective status (see [effectiveStatus]). */
     fun permissions(app: Uuid): List<String> = runBlocking {
         val rows = permissionDao()?.getByAppUuid(app) ?: return@runBlocking emptyList()
+        val statuses = libPebble()?.appPermissionStatuses(app)?.first().orEmpty()
         val defined = pluginLabels()
-        rows.sortedBy { it.permission }.map { r ->
-            listOf(r.permission, statusOf(r), kindLabel(r.permission), labelOf(r.permission, defined), (r.lastUsedAtMs ?: 0L).toString())
+        permissionRecords(rows, statuses).map { (r, status) ->
+            listOf(r.permission, status, kindLabel(r.permission), labelOf(r.permission, defined), (r.lastUsedAtMs ?: 0L).toString())
                 .joinToString("\t")
         }
     }
 
-    /** Undecided requests from running apps: `appUuid\tappName\tkey\tlabel\trequestedAtMs`. */
+    /** Requests waiting for an answer from every installed app, running or not:
+     *  `appUuid\tappName\tkey\tlabel\trequestedAtMs\trunning\tseen`. */
     fun pending(): List<String> = runBlocking {
         val lp = libPebble() ?: return@runBlocking emptyList()
+        val rows = permissionDao()?.allFlow()?.first() ?: return@runBlocking emptyList()
+        val running = lp.activePermissionRequests().first().map { it.appUuid }.toSet()
+        val statuses = rows.filter { it.granted == null }.map { it.appUuid }.distinct()
+            .associateWith { lp.appPermissionStatuses(it).first() }
         val defined = pluginLabels()
-        lp.activePermissionRequests().first().map { r ->
-            listOf(r.appUuid.toString(), (appName(r.appUuid) ?: r.appUuid.toString()).clean(), r.permission,
-                labelOf(r.permission, defined), r.requestedAtMs.toString()).joinToString("\t")
+        pendingRequests(rows, statuses, running).map { r ->
+            listOf(r.row.appUuid.toString(), (appName(r.row.appUuid) ?: r.row.appUuid.toString()).clean(), r.row.permission,
+                labelOf(r.row.permission, defined), r.row.requestedAtMs.toString(), r.running.toString(),
+                (r.row.seenAtMs != null).toString()).joinToString("\t")
         }
     }
 
-    /** Decide [key] for [app]: `allow`, `deny` or `reset` (back to undecided). `ok:` / `error:`. */
+    /** Decide [key] for [app]: `allow`, `deny`, `reset` (back to undecided) or `later` (stop asking about a
+     *  waiting request without deciding it; a blank [key] means all of the app's). `ok:` / `notfound:` / `error:`. */
     fun set(app: Uuid, key: String, decision: String): String = runBlocking {
         val lp = libPebble() ?: return@runBlocking "notready:no watch daemon state yet"
-        when (decision.lowercase()) {
+        val d = decision.lowercase()
+        if (key.isBlank() && d != "later") return@runBlocking "error:name the permission to $d"
+        when (d) {
             "allow", "deny" -> {
-                lp.setPermissionDecisions(app, mapOf(key to (decision.lowercase() == "allow")))
-                log.info { "Permission $key for ${appName(app) ?: app}: $decision" }
-                "ok:$key ${decision.lowercase()}ed"
+                lp.setPermissionDecisions(app, mapOf(key to (d == "allow")))
+                log.info { "Permission $key for ${appName(app) ?: app}: $d" }
+                "ok:$key ${d}ed"
             }
             "reset" -> {
                 val dao = permissionDao() ?: return@runBlocking "error:no permission store"
@@ -136,7 +149,16 @@ class PluginControl(
                 dao.insertOrReplace(row.copy(granted = null, decidedAtMs = null, seenAtMs = null))
                 "ok:$key reset"
             }
-            else -> "error:decision must be allow, deny or reset"
+            "later" -> {
+                val waiting = lp.appPermissionStatuses(app).first()
+                    .filter { it.status == PermissionStatus.Waiting }.map { it.permission }
+                val keys = if (key.isBlank()) waiting else waiting.filter { it == key }
+                if (keys.isEmpty()) return@runBlocking "notfound:${appName(app) ?: app} has nothing waiting${if (key.isBlank()) "" else " for $key"}"
+                lp.markPermissionRequestsSeen(app, keys)
+                log.info { "Permission request${if (keys.size > 1) "s" else ""} from ${appName(app) ?: app} put off: ${keys.joinToString()}" }
+                "ok:${keys.joinToString()} put off"
+            }
+            else -> "error:decision must be allow, deny, reset or later"
         }
     }
 
@@ -146,11 +168,39 @@ class PluginControl(
     private fun String.clean() = replace('\t', ' ').replace('\n', ' ')
 }
 
-private fun statusOf(r: LockerAppPermission) = when (r.granted) {
-    true -> "granted"
-    false -> "denied"
-    null -> "undecided"
+/**
+ * What a permission row means now: `granted` / `denied` (the user decided), `auto` (undecided, and the policy
+ * allows it), `waiting` (undecided, and the app must ask) or `blocked` (refused whatever the row says: Legacy
+ * PebbleKit switched off, global internet for an app that declares its domains, or the app isn't installed).
+ */
+internal fun effectiveStatus(status: PermissionStatus?): String = when (status) {
+    PermissionStatus.Granted -> "granted"
+    PermissionStatus.Denied -> "denied"
+    PermissionStatus.AllowedAutomatically -> "auto"
+    PermissionStatus.Waiting -> "waiting"
+    null -> "blocked"
 }
+
+/** Each row, sorted by key, with its effective status from libpebble3's [statuses] (which omits the blocked). */
+internal fun permissionRecords(
+    rows: List<LockerAppPermission>,
+    statuses: List<AppPermissionStatus>,
+): List<Pair<LockerAppPermission, String>> {
+    val byKey = statuses.associate { it.permission to it.status }
+    return rows.sortedBy { it.permission }.map { it to effectiveStatus(byKey[it.permission]) }
+}
+
+internal data class PendingRequest(val row: LockerAppPermission, val running: Boolean)
+
+/** The rows still [PermissionStatus.Waiting] per app's [statuses], oldest request first. */
+internal fun pendingRequests(
+    rows: List<LockerAppPermission>,
+    statuses: Map<Uuid, List<AppPermissionStatus>>,
+    running: Set<Uuid>,
+): List<PendingRequest> = rows
+    .filter { r -> r.granted == null && statuses[r.appUuid].orEmpty().any { it.permission == r.permission && it.status == PermissionStatus.Waiting } }
+    .sortedBy { it.requestedAtMs }
+    .map { PendingRequest(it, it.appUuid in running) }
 
 private fun kindLabel(key: String): String =
     PermissionRegistry[permissionOf(key)]?.kind?.name?.lowercase() ?: PermissionKind.Write.name.lowercase()

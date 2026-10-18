@@ -32,7 +32,7 @@ private const val DENY = "deny"
  * Asks the user when an app wants a permission (plugins on): one prompt per app, listing what it asks for,
  * with Allow and Deny on the watch (a direct notification with per-item handlers) and on the desktop (a
  * notification the monitor doesn't bridge). Either answer decides every listed request; answering in the
- * GUI or CLI instead retracts both prompts. Until answered, the app is refused (libpebble3 AppPermissions).
+ * GUI or CLI instead, or putting it off there, retracts both prompts. Until answered, the app is refused (libpebble3 AppPermissions).
  */
 class PermissionPrompter(
     private val scope: CoroutineScope,
@@ -49,7 +49,9 @@ class PermissionPrompter(
 
     fun start() {
         libPebble.activePermissionRequests()
-            .onEach { requests ->
+            .onEach { all ->
+                // A request put off (`perms later`, the GUI's Later) is left waiting but no longer asked.
+                val requests = all.filter { it.seenAtMs == null }
                 val byApp = requests.groupBy({ it.appUuid }, { it.permission }).mapValues { it.value.toSet() }
                 val labels = runCatching { libPebble.pluginPermissions().first().mapValues { it.value.label } }.getOrDefault(emptyMap())
                 synchronized(prompts) {

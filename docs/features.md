@@ -850,6 +850,20 @@ settings page talks to its plugin while open, through the daemon's page server. 
 (`plugins.enabled`). OAuth sign-in (store broker) isn't available. [plugins.md](plugins.md). _To be
 tested_: [TESTING §5.48](../TESTING.md).
 
+### App permissions: effective status, closed apps, Ask later
+
+`stoandl perms list <app>` and the GUI show what a permission means now, as the official app does
+(libpebble3 `appPermissionStatuses`): `granted` / `denied`, **allowed automatically** (undecided, but
+`plugins.permission_policy` lets it through), **waiting** (the app must ask) or **blocked** (global
+internet for an app that declares its domains). `stoandl perms` and the GUI
+banners now include requests from apps that have closed since they asked (they used to be invisible and the
+app stayed refused). **Later** (`perms later <app> [permission]`, the banner's and the dialog's Later)
+stops the prompts and banners for a request without deciding it (libpebble3 `markPermissionRequestsSeen`);
+`reset` makes it ask again. In the GUI each app row has a **Permissions** button (badged while a request
+waits) that opens the app's permissions: status, last use, Allow / Deny, a switch for decided ones, Reset.
+No new settings: nothing is asked or sent that wasn't before — closed apps are listed, not prompted, and
+putting off is always the user's own action. Off-device: `PluginsTest`; GUI smoke (`stoandl-smoke: perms`).
+_Implemented — to be tested ([TESTING.md §5.48m–q](../TESTING.md))._
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A

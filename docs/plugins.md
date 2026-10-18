@@ -27,11 +27,22 @@ page shows the request too, and so does `stoandl perms`. Until answered, the app
 have to ask is `plugins.permission_policy` (`ask_if_exfiltrating` by default: only when the data could
 leave this machine).
 
+Only a running app's requests are prompted. A request from an app that has since closed stays waiting:
+`stoandl perms` lists it (`[not running]`), and the GUI shows it as a banner and a badge on the app's
+Permissions button. **Later** (`perms later`) stops asking about a request without deciding it: no more
+prompts or banners, the app stays refused, and the app's permission page still offers Allow / Deny.
+
+`perms list` (and the GUI's per-app Permissions dialog) shows each permission's effective status:
+`granted` / `denied` (you decided), `auto` (undecided, but the policy allows it), `waiting` (undecided, the
+app has to ask) or `blocked` (refused whatever was decided: Legacy PebbleKit switched off, or global
+internet for an app that declares its domains).
+
 ```sh
-stoandl perms                       # requests waiting for an answer
-stoandl perms list Stocks           # what an app asked for and was given
+stoandl perms                       # requests waiting for an answer (every app, running or not)
+stoandl perms list Stocks           # what an app asked for, with its effective status
 stoandl perms allow Stocks Internet/query1.finance.yahoo.com
-stoandl perms reset Stocks Location # back to undecided
+stoandl perms reset Stocks Location # back to undecided (and asked again)
+stoandl perms later Stocks          # stop asking about Stocks' waiting requests for now
 ```
 
 Plugins' `Pebble.secureStorage` lives in the keyring (else the 0600 `secrets` file next to stoandl.conf),

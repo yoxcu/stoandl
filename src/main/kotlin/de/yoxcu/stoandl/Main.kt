@@ -141,7 +141,7 @@ private fun printUsage() {
     row("screenshot", "[path]")
     row("voice", "status · models · download · use · test")
     row("plugins", "list · read · invoke")
-    row("perms", "pending · list · allow · deny · reset")
+    row("perms", "pending · list · allow · deny · reset · later")
     row("logs", "[path]")
     row("support", "[out.tar.gz]")
     row("reset", "recovery · factory")
@@ -2722,26 +2722,37 @@ private fun ctlPlugins(rest: List<String>) {
     }
 }
 
-/** `stoandl perms [pending]`, `perms list <app>`, `perms allow|deny|reset <app> <permission>`. */
+/** `stoandl perms [pending]`, `perms list <app>`, `perms allow|deny|reset <app> <permission>`, `perms later <app> [permission]`. */
 private fun ctlPerms(rest: List<String>) {
+    val usage = "Usage: stoandl perms [pending | list <app> | allow|deny|reset <app> <permission> | later <app> [permission]]"
     when (val sub = rest.firstOrNull() ?: "pending") {
         "pending" -> withControl { control ->
             val rows = control.PermPending().map { it.split('\t') }
             if (rows.isEmpty()) println("No permission requests waiting")
-            rows.forEach { r -> println("${r.getOrElse(1) { "?" }}: ${r.getOrElse(3) { "" }}  (${r.getOrElse(2) { "" }})") }
+            rows.forEach { r ->
+                val notes = listOfNotNull(
+                    "not running".takeIf { r.getOrNull(5) == "false" },
+                    "put off".takeIf { r.getOrNull(6) == "true" },
+                ).joinToString(", ")
+                println("${r.getOrElse(1) { "?" }}: ${r.getOrElse(3) { "" }}  (${r.getOrElse(2) { "" }})" + if (notes.isEmpty()) "" else "  [$notes]")
+            }
         }
         "list" -> {
             val app = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl perms list <app>"); System.exit(2); return }
             withControl { control ->
                 val rows = control.PermList(app).map { it.split('\t') }
                 if (rows.isEmpty()) println("No permissions recorded for '$app' (or no such app)")
-                rows.forEach { r -> println("%-10s %-13s %s  (%s)".format(r.getOrElse(1) { "" }, r.getOrElse(2) { "" }, r.getOrElse(3) { "" }, r.getOrElse(0) { "" })) }
+                rows.forEach { r -> println("%-8s %-13s %s  (%s)".format(r.getOrElse(1) { "" }, r.getOrElse(2) { "" }, r.getOrElse(3) { "" }, r.getOrElse(0) { "" })) }
             }
         }
         "allow", "deny", "reset" -> {
             if (rest.size < 3) { System.err.println("Usage: stoandl perms $sub <app> <permission>"); System.exit(2); return }
             withControl { control -> printStatusOrExit(control.PermSet(rest[1], rest[2], sub)) }
         }
-        else -> { System.err.println("Usage: stoandl perms [pending | list <app> | allow|deny|reset <app> <permission>]"); System.exit(2) }
+        "later" -> {
+            if (rest.size < 2) { System.err.println("Usage: stoandl perms later <app> [permission]"); System.exit(2); return }
+            withControl { control -> printStatusOrExit(control.PermSet(rest[1], rest.getOrElse(2) { "" }, sub)) }
+        }
+        else -> { System.err.println(usage); System.exit(2) }
     }
 }

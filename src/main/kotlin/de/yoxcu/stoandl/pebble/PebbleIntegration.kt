@@ -155,6 +155,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -2194,8 +2195,15 @@ class PebbleIntegration(
             .drop(1)
             .onEach { emit(StoandlControl.PluginsChanged(STOANDL_OBJECT_PATH)) }
             .launchIn(scope)
-        libPebble.activePermissionRequests()
-            .map { reqs -> reqs.map { "${it.appUuid}|${it.permission}" }.sorted() }
+        // PermPending covers apps that aren't running and the put-off flag, so watch the undecided rows too.
+        combine(
+            libPebble.activePermissionRequests().map { reqs -> reqs.map { "${it.appUuid}|${it.permission}" }.sorted() },
+            libPebble.appsWithPendingPermissionRequests,
+            koinRef.get()?.get<LockerAppPermissionDao>()?.allFlow()
+                ?.map { rows -> rows.filter { it.granted == null }.map { "${it.appUuid}|${it.permission}|${it.seenAtMs != null}" } }
+                ?: flowOf(emptyList()),
+            pinnedConfig.map { it.watchConfig },
+        ) { active, apps, undecided, wc -> listOf(active, apps, undecided, wc) }
             .distinctUntilChanged()
             .drop(1)
             .onEach { emit(StoandlControl.PermissionRequestsChanged(STOANDL_OBJECT_PATH)) }

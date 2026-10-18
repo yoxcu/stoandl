@@ -6,6 +6,9 @@ import de.yoxcu.stoandl.ext.ExtensionPlugin
 import de.yoxcu.stoandl.ext.ExtensionPluginManifest
 import de.yoxcu.stoandl.ext.extensionPluginUuid
 import de.yoxcu.stoandl.secret.FileSecretStore
+import io.rebble.libpebblecommon.database.entity.LockerAppPermission
+import io.rebble.libpebblecommon.permissions.AppPermissionStatus
+import io.rebble.libpebblecommon.permissions.PermissionStatus
 import io.rebble.libpebblecommon.plugin.CellGenerations
 import io.rebble.libpebblecommon.plugin.Connections
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -93,6 +96,52 @@ class PluginsTest {
         assertEquals("Send data to api.example.com", labelOf("Internet/api.example.com"))
         assertEquals("Your location", labelOf("Location"))
         assertEquals("Control your lights (via Hue)", labelOf("abc:HomeControl", mapOf("abc:HomeControl" to "Control your lights (via Hue)")))
+    }
+
+    private val appA = Uuid.parse("11111111-1111-1111-1111-111111111111")
+    private val appB = Uuid.parse("22222222-2222-2222-2222-222222222222")
+    private fun row(app: Uuid, key: String, granted: Boolean? = null, at: Long = 0, seen: Long? = null) =
+        LockerAppPermission(app, key, granted, requestedAtMs = at, seenAtMs = seen)
+
+    @Test
+    fun `perms list shows the effective status, blocked where libpebble3 lists none`() {
+        val rows = listOf(row(appA, "Location"), row(appA, "Internet/x.org"), row(appA, "Calendar", granted = true),
+            row(appA, "Contacts", granted = false), row(appA, "LegacyPebbleKit", granted = true))
+        val statuses = listOf(
+            AppPermissionStatus("Location", PermissionStatus.AllowedAutomatically),
+            AppPermissionStatus("Internet/x.org", PermissionStatus.Waiting),
+            AppPermissionStatus("Calendar", PermissionStatus.Granted),
+            AppPermissionStatus("Contacts", PermissionStatus.Denied),
+        )
+        assertEquals(
+            listOf("Calendar" to "granted", "Contacts" to "denied", "Internet/x.org" to "waiting",
+                "LegacyPebbleKit" to "blocked", "Location" to "auto"),
+            permissionRecords(rows, statuses).map { (r, s) -> r.permission to s },
+        )
+    }
+
+    @Test
+    fun `pending covers apps that aren't running, oldest first, and keeps put-off requests`() {
+        val rows = listOf(
+            row(appB, "Location", at = 30),
+            row(appA, "Internet/x.org", at = 20, seen = 25),
+            row(appA, "Location", at = 10),
+            row(appA, "Calendar", at = 5),             // allowed automatically: not pending
+            row(appB, "Contacts", granted = true, at = 1),
+        )
+        val statuses = mapOf(
+            appA to listOf(AppPermissionStatus("Internet/x.org", PermissionStatus.Waiting),
+                AppPermissionStatus("Location", PermissionStatus.Waiting),
+                AppPermissionStatus("Calendar", PermissionStatus.AllowedAutomatically)),
+            appB to listOf(AppPermissionStatus("Location", PermissionStatus.Waiting),
+                AppPermissionStatus("Contacts", PermissionStatus.Granted)),
+        )
+        val pending = pendingRequests(rows, statuses, running = setOf(appB))
+        assertEquals(listOf("Location@A", "Internet/x.org@A", "Location@B"),
+            pending.map { "${it.row.permission}@${if (it.row.appUuid == appA) "A" else "B"}" })
+        assertEquals(listOf(false, false, true), pending.map { it.running })
+        assertEquals(listOf(null, 25L, null), pending.map { it.row.seenAtMs })
+        assertTrue(pendingRequests(rows, emptyMap(), emptySet()).isEmpty(), "an app libpebble3 doesn't know asks nothing")
     }
 }
 
