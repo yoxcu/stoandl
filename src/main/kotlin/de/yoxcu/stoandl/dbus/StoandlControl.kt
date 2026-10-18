@@ -552,24 +552,25 @@ interface StoandlControl : DBusInterface {
     /** Restart [name]'s process. Status-prefixed. */
     fun ExtRestart(name: String): String
 
-    /** The current settings of extension [name] as a JSON object of string values, read from its
-     *  `<configDir>/ext/<name>/config` file (for the GUI's native config form). Returns `ok:<json>`,
-     *  `ok:{}` when it has no config yet, or `notfound:`. */
+    /** The effective settings of extension [name] as a JSON object of string values: manifest defaults
+     *  overlaid by its `<configDir>/ext/<name>/config` file, for the GUI's native config form. Secret
+     *  fields read `""`; the reserved `_secrets` key lists the stored ones. `ok:<json>` or `notfound:`. */
     fun ExtGetConfig(name: String): String
 
     /** Merge [payloadJson] (a JSON object of key→value) into extension [name]'s `config` file — an
-     *  atomic write that preserves comments and unchanged keys (so unsent secrets aren't clobbered) —
-     *  then restart it if running. Status-prefixed (`ok:`/`notfound:`/`error:`). */
+     *  atomic write that preserves comments and unchanged keys — then restart it if running. Secret
+     *  fields go to the secret store: `""` = unchanged, `null` = remove. Status-prefixed
+     *  (`ok:`/`notfound:`/`error:`). */
     fun ExtSetConfig(name: String, payloadJson: String): String
 
     /** The typed config schema of extension [name] (its manifest `configSchema`) as a JSON array, for
-     *  the GUI's native config form. `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`
+     *  the GUI's native config form. `ok:<json-array>` of `{key,type,label,secret?,required?,options?}`, `none:`
      *  (no schema declared), or `notfound:`. */
     fun ExtConfigSchema(name: String): String
 
     /** The config entry point for extension [name] when it ships the **`url` config backend** — a hosted
-     *  settings page the GUI opens in a browser. stoandl has no embedded HTTP server, so the `url` backend
-     *  isn't implemented and this never returns a URL today: `error:<msg>` when the extension declares a
+     *  settings page the GUI opens in a browser. Extensions have no `url` backend (the config-page server
+     *  fronts PKJS pages only), so this never returns a URL today: `error:<msg>` when the extension declares a
      *  `configSchema` (the GUI renders that as a native form via [ExtConfigSchema] instead), `none:` when
      *  it has no config, or `notfound:`. Kept for contract parity; wire it up if a URL backend is added. */
     fun ExtOpenConfig(name: String): String

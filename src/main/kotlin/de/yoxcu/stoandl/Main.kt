@@ -1895,9 +1895,12 @@ private fun ctlExt(rest: List<String>) {
 private fun resolveKeepConfig(name: String, rest: List<String>): Boolean {
     if (rest.any { it == "--delete-config" || it == "--purge" }) return false
     if (rest.any { it == "--keep-config" }) return true
-    val cfg = File(File(File(configDir(), "ext"), name), "config")
-    if (!cfg.isFile) return true
-    print("Keep $name's config (${cfg.path})? It'll be restored if you reinstall. [Y/n]: ")
+    val dir = File(File(configDir(), "ext"), name)
+    val cfg = File(dir, "config")
+    val secrets = de.yoxcu.stoandl.ext.schemaFlags(de.yoxcu.stoandl.ext.readExtManifestMeta(dir).configSchemaJson).secretKeys
+    if (!cfg.isFile && secrets.isEmpty()) return true
+    val what = if (secrets.isEmpty()) "config (${cfg.path})" else "config and stored secrets (${secrets.joinToString(", ")})"
+    print("Keep $name's $what? It'll be restored if you reinstall. [Y/n]: ")
     System.out.flush()
     val ans = readlnOrNull()?.trim()?.lowercase()
     return ans != "n" && ans != "no"
@@ -2658,6 +2661,11 @@ private fun sanitizeConfig(text: String): String {
     val userinfo = Regex("""(://)[^/@\s:]+:[^/@\s]+@""")
     val secretParam = Regex("""([?&](?:token|key|apikey|api_key|auth|password|passwd|secret|sig|signature)=)[^&\s]+""", RegexOption.IGNORE_CASE)
     fun redactUrl(s: String) = s.replace(userinfo, "$1***:***@").replace(secretParam, "$1***")
+    // `extension.<name>.<key>` for every key an installed extension's configSchema marks secret.
+    val extSecretConfKeys = File(configDir(), "ext").listFiles()?.filter { it.isDirectory }?.flatMap { d ->
+        de.yoxcu.stoandl.ext.schemaFlags(de.yoxcu.stoandl.ext.readExtManifestMeta(d).configSchemaJson)
+            .secretKeys.map { "extension.${d.name}.$it" }
+    }?.toSet() ?: emptySet()
     val lines = text.lines().map { raw ->
         val hash = raw.indexOf('#')
         val code = if (hash >= 0) raw.substring(0, hash) else raw
@@ -2670,6 +2678,7 @@ private fun sanitizeConfig(text: String): String {
             // calendar.caldav is now `id|url|username` (no password — that lives in the secret store, not
             // this file), so there's nothing secret to redact beyond any secret query params in the URL.
             "calendar.caldav" -> value.split(',').joinToString(",") { redactUrl(it) }
+            in extSecretConfKeys -> if (value.isBlank()) value else " ***"
             else -> redactUrl(value)
         }
         code.substring(0, eq + 1) + value + comment

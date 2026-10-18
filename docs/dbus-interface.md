@@ -391,10 +391,10 @@ ack — `ok:` means "queued", not "done".
 | `ExtEnable` | `(s) → s` | Add to `extensions.enabled` and hotplug-start. | `ext enable <name>` |
 | `ExtDisable` | `(s) → s` | Remove from `extensions.enabled` and stop (files kept). | `ext disable <name>` |
 | `ExtRestart` | `(s) → s` | Restart the extension's process. | `ext restart <name>` |
-| `ExtConfigSchema` | `(s) → s` | The extension's typed config schema (manifest `configSchema`) as a JSON array: `ok:<json-array>` of `{key,type,label,secret?,options?}`, `none:`, or `notfound:`. | *(GUI)* |
+| `ExtConfigSchema` | `(s) → s` | The extension's typed config schema (manifest `configSchema`) as a JSON array: `ok:<json-array>` of `{key,type,label,secret?,required?,options?}`, `none:`, or `notfound:`. `secret` (string fields) = kept in the secret store as `ext:<name>:<key>`; `required` = the extension doesn't start until the field has a value. | *(GUI)* |
 | `ExtOpenConfig` | `(s) → s` | The `url` config backend (a hosted settings page the GUI opens in a browser). Not implemented (no extension serves a page; `OpenConfig`'s `ConfigPageServer` only fronts PKJS apps), so it never returns a URL: `error:` for a schema-backed extension (use `ExtConfigSchema`), `none:`, or `notfound:`. Present for contract parity. | *(GUI)* |
-| `ExtGetConfig` | `(s) → s` | The extension's current settings (its `config` file) as a JSON object of string values: `ok:<json>` (or `ok:{}`), or `notfound:`. | *(GUI)* |
-| `ExtSetConfig` | `(s,s) → s` | Merge a JSON object of key→value into the extension's `config` file (atomic, comment- and unchanged-key-preserving), then restart it if running. `ok:`/`notfound:`/`error:`. | *(GUI)* |
+| `ExtGetConfig` | `(s) → s` | The extension's effective settings (manifest `config` defaults overlaid by its `config` file) as a JSON object of string values: `ok:<json>`, or `notfound:`. Every secret field reads `""`; the reserved key `_secrets` lists the stored secret keys, comma-separated (`""` when none). | *(GUI)* |
+| `ExtSetConfig` | `(s,s) → s` | Merge a JSON object of key→value into the extension's `config` file (atomic, comment- and unchanged-key-preserving), then restart it if running, or start it if it's enabled but stopped (e.g. waiting on a required secret; the reply then says `started` or `still needs configuration`). Secret fields go to the secret store instead: `""` = unchanged, JSON `null` = remove, any other value = store; `_secrets` is ignored. `ok:`/`notfound:`/`error:`. | *(GUI)* |
 
 ### Plugins and app permissions (`stoandl plugins`, `stoandl perms`)
 

@@ -57,9 +57,10 @@ with `python3`, cwd = that dir, so `import stoandl_ext` finds its sibling). `ext
 `extension.<name>.` prefix — it's already scoped) holds that extension's homeserver/tokens/options. It's
 **preserved across reinstalls** (`stoandl ext install` won't clobber it). So `stoandl.conf` stays at just
 `extensions.enabled`. Settings resolve as: a `manifest.json`'s `config` (author defaults, for a
-self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfig":true, "watchapps":["app.pbw"] }`) **<** the `config`
-file (the user's place) **<** an optional `extension.<name>.<key>` in `stoandl.conf` (a back-compat
-override). The launch command (`cmd`, for non-Python extensions) may come from any of those layers too.
+self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfig":true, "watchapps":["app.pbw"] }`) **<** a
+leftover `extension.<name>.<key>` in `stoandl.conf` (back-compat) **<** the `config` file (the user's
+place, which the GUI and CLI write, so it wins). The launch command (`cmd`, for non-Python extensions)
+may come from any of those layers too, with `stoandl.conf` first so a broken `config` can be overridden.
 On install, the status line points at where to configure it (the path of the extension's `config`, and
 the `config.example` to copy).
 
@@ -70,21 +71,39 @@ instead of pointing the user at the `config` file. It's a JSON array of typed fi
 ```jsonc
 "configSchema": [
   {"key":"homeserver", "type":"string", "label":"Homeserver URL"},
-  {"key":"password",   "type":"string", "label":"Password",  "secret":true},
+  {"key":"password",   "type":"string", "label":"Password",  "secret":true, "required":true},
   {"key":"notify",     "type":"enum",   "label":"Notify on",  "options":["pushrules","mentions","all"]}
 ]
 ```
 
-Field `type` is `string` (+`"secret":true` to mask it), `bool`, `int`, or `enum` (+`options`). A GUI
-reads the current values (the `config` file), shows the form, and writes changes back — **merged**, so
-unsent secrets aren't clobbered, then restarts the extension. Without a `configSchema` a front-end just
-reports "no settings" (the alternative `url` backend — a hosted config page — isn't implemented in
-stoandl, which has no embedded HTTP server). These fields are purely for front-ends; the daemon and the
-stdio protocol ignore them.
+Field `type` is `string`, `bool`, `int`, or `enum` (+`options`). A GUI reads the effective values
+(manifest `config` defaults overlaid by the `config` file), shows the form, and writes changes back —
+**merged** into the `config` file — then the daemon restarts the extension if it is running. Without a
+`configSchema` a front-end just reports "no settings" (there is no `url` backend, a hosted config page,
+for extensions; the daemon's config-page server serves PKJS settings pages only).
+
+**Secrets.** A `string` field with `"secret": true` is kept in the daemon's secret store (the system
+keyring, else the 0600 `<configDir>/secrets` file) under `ext:<name>:<key>`, never in the `config` file:
+
+- At spawn its value goes into **that child's** `initialize.params.config.<key>` and nowhere else.
+- `ExtGetConfig` reports it as `""`, plus a reserved `_secrets` key listing the secret keys that are
+  stored (`"api_key"` or `""`). In `ExtSetConfig`, `""` leaves a secret unchanged (a form posts every
+  field), JSON `null` removes it, anything else stores it.
+- A secret found in plaintext in the `config` file (hand-edited, or from before this rule) is moved into
+  the store and its line deleted, at daemon start, at spawn and on the next settings read or write. One
+  in `stoandl.conf` (`extension.<name>.<key>`) is used only while nothing is stored, with a warning;
+  stoandl.conf isn't rewritten, but `stoandl support` redacts it. A manifest default for a secret is
+  ignored.
+- `stoandl ext uninstall <name> --delete-config` removes the stored secrets too; `--keep-config` keeps
+  them. Backups never carry them (the `secrets` file is excluded, the keyring is never backed up).
+
+**`required`** (schema field): when any field is `required`, the extension starts only once every
+required field has a non-empty value (a secret counts when stored); otherwise `requiresConfig` below
+applies.
 
 **`requiresConfig`** (manifest): an extension that can't run until configured (e.g. Matrix needs a
 homeserver) declares `"requiresConfig": true`. If it's started without any user settings (no `config`
-file and no `extension.<name>.*`), the daemon **does not spawn it** — it logs a warning and posts a
+file, no stored secret and no `extension.<name>.*`), the daemon **does not spawn it** — it logs a warning and posts a
 "needs setup" *desktop* notification (which stoandl's passive monitor bridges to the watch — so it's not
 pushed directly to the watch), and `install`/`enable`/`restart`
 return a clear "not started — needs configuration" status instead of a fake failure. Configure it, then
@@ -138,10 +157,16 @@ friction without real security, so it was dropped — `extensions.enabled` is th
   "iconCode":"NotificationGeneric","color":"Red","vibe":"double",  // optional; per-app override wins
   "actions":[{"id":"archive","label":"Archive"}],
   "reply":{"cannedReplies":["OK","On my way","Later"],"label":"Reply"},
-  "image":"data:image/png;base64,iVBOR…"}}  // optional picture: data: URI, file: URI or absolute path
+  "image":"data:image/png;base64,iVBOR…",   // optional picture: data: URI, file: URI or absolute path
+  "urgent":true}}                    // optional: not held back by notification.only_when_locked
 // host -> ext (result)
 {"jsonrpc":"2.0","id":7,"result":{"itemId":"e3b0c442-…"}}   // daemon-issued correlation id
 ```
+
+`urgent` (optional, default false) sends the notification even while `notification.only_when_locked`
+holds the rest back because the device is in use. Set it only for something the user is waiting for on
+the wrist, such as the answer to a question they just asked there; a held-back notification is dropped,
+not delayed.
 
 `image` (optional) is a picture shown in the notification on watches that can (Pebble Time 2 / Round 2,
 firmware 4.35+) while `notification.images` is on: PNG, GIF or BMP, and JPEG where the JRE has it. The
@@ -259,6 +284,23 @@ or invoke. Requests time out after 15 s.
 The daemon's own speech-to-text (`voice.*`), so an extension needs no engine, codec or network access of
 its own. `language` defaults to `voice.language`. Up to a minute; answered asynchronously. The Matrix
 extension uses it for voice notes.
+
+### keepAwake / release (hold off a suspend)
+
+```jsonc
+// ext -> host (requests)
+{"jsonrpc":"2.0","id":31,"method":"keepAwake","params":{"why":"answering a question","maxMs":60000}}
+{"jsonrpc":"2.0","id":31,"result":{"token":"3f0c9a2e-…"}}
+{"jsonrpc":"2.0","id":32,"method":"release","params":{"token":"3f0c9a2e-…"}}
+{"jsonrpc":"2.0","id":32,"result":{}}
+```
+
+For short work a suspend would break, such as a network request the watch is waiting on. Each hold is a
+logind sleep *block* (`<name>: <why>`; `why` is cut to 80 characters): a suspend asked for meanwhile is
+refused, so keep it short and release it. `maxMs` is required, `1..60000` (larger is clamped); the hold
+ends by itself after it. To hold longer, take a new token before the old one expires. `release` of an
+unknown or expired token still answers `{}`. At most 4 holds per extension (a fifth is the error
+`keepAwake: too many holds`), and every hold ends when the child exits or is stopped.
 
 The per-notification handler returns an **immediate optimistic** `TimelineActionResult(true, ResultSent,
 "Sent")` to the watch and fires `onReply`/`onAction` to the child **asynchronously** (the child then

@@ -34,6 +34,7 @@ class Extension:
         self._ids = itertools.count(1)
         self._out_lock = threading.Lock()
         self._pending = {}            # request id -> callback(result_dict)
+        self._want_err = set()        # request ids whose callback also gets {"error": {...}}
         # Populated from the initialize handshake:
         self.config = {}             # your extension.<name>.<key> settings
         self.granted = []            # capabilities the user granted (e.g. ["notify"])
@@ -60,7 +61,8 @@ class Extension:
 
     def notify(self, title, body="", app_name=None, subtitle=None, actions=None,
                canned_replies=None, allow_voice=False, ext_token=None,
-               icon=None, color=None, vibe=None, on_item=None, replace_id=None):
+               icon=None, color=None, vibe=None, on_item=None, replace_id=None,
+               urgent=False):
         """Push a notification to the watch.
 
         actions: list of (action_id, label) tuples — each becomes a menu item; the chosen one comes
@@ -72,6 +74,8 @@ class Extension:
         replace_id: an optional stable string. Re-sending with the same replace_id REPLACES the same
                  watch notification (across daemon restarts too) instead of piling up duplicates — use
                  it for a persistent/standing notification like find-my-phone.
+        urgent: sent even while the host's notification.only_when_locked holds notifications back
+                 (e.g. an answer to something the user just asked from the wrist).
         """
         rid = next(self._ids)
         params = {"title": title, "body": body}
@@ -89,6 +93,8 @@ class Extension:
             params["color"] = color
         if vibe:
             params["vibe"] = vibe
+        if urgent:
+            params["urgent"] = True
         if actions:
             params["actions"] = [{"id": a[0], "label": a[1]} for a in actions]
         if canned_replies:
@@ -124,6 +130,26 @@ class Extension:
 
     def stop_app(self, app_uuid):
         self._request("stopApp", {"uuid": app_uuid})
+
+    def keep_awake(self, why, max_ms, on_token=None):
+        """Keep the machine out of suspend for up to max_ms (at most 60000) while this extension works.
+        on_token(str) gets the hold's token, or "" when the host refused or doesn't support it."""
+        def done(res):
+            token = "" if "error" in res else res.get("token", "")
+            if "error" in res:
+                self.log("keepAwake refused: %r" % (res["error"],))
+            if on_token:
+                on_token(token)
+        rid = next(self._ids)
+        self._pending[rid] = done
+        self._want_err.add(rid)
+        self._send({"jsonrpc": "2.0", "id": rid, "method": "keepAwake",
+                    "params": {"why": why, "maxMs": int(max_ms)}})
+
+    def release(self, token):
+        """End a keep_awake hold (unknown or expired tokens are fine)."""
+        if token:
+            self._request("release", {"token": token})
 
     def install_pbw(self, path, on_result=None):
         """Sideload a .pbw onto the watch. on_result(bool) receives success."""
@@ -183,5 +209,13 @@ class Extension:
                 break
             elif method is None and "result" in msg:
                 cb = self._pending.pop(msg.get("id"), None)
+                self._want_err.discard(msg.get("id"))
                 if cb:
                     cb(msg["result"])
+            elif method is None and "error" in msg:
+                cb = self._pending.pop(msg.get("id"), None)
+                if cb and msg.get("id") in self._want_err:
+                    cb({"error": msg["error"]})
+                else:
+                    self.log("request %s failed: %r" % (msg.get("id"), msg["error"]))
+                self._want_err.discard(msg.get("id"))

@@ -3,7 +3,9 @@ package de.yoxcu.stoandl.ext
 import de.yoxcu.stoandl.util.LenientJson
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -181,9 +183,32 @@ data class ExtManifestMeta(
     val configSchemaJson: String?,
     val author: String,
     val version: String,
+    /** The manifest's `config` author defaults. */
+    val config: Map<String, String> = emptyMap(),
 )
 
 fun readExtManifestMeta(dir: File): ExtManifestMeta {
     val m = if (dir.isDirectory) readManifest(dir) else null
-    return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson, m?.author ?: "", m?.version ?: "")
+    return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson, m?.author ?: "", m?.version ?: "", m?.config ?: emptyMap())
+}
+
+/** The keys a `configSchema` marks `"secret": true` (string fields only) and `"required": true`. */
+data class SchemaFlags(val secretKeys: Set<String>, val requiredKeys: Set<String>) {
+    companion object { val NONE = SchemaFlags(emptySet(), emptySet()) }
+}
+
+fun schemaFlags(configSchemaJson: String?): SchemaFlags {
+    if (configSchemaJson.isNullOrBlank()) return SchemaFlags.NONE
+    val rows = runCatching { LenientJson.parseToJsonElement(configSchemaJson) as? JsonArray }.getOrNull()
+        ?: return SchemaFlags.NONE
+    val secret = LinkedHashSet<String>(); val required = LinkedHashSet<String>()
+    rows.forEach { row ->
+        val o = row as? JsonObject ?: return@forEach
+        val key = (o["key"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEach
+        fun flag(name: String) = (o[name] as? JsonPrimitive)?.booleanOrNull == true
+        val type = (o["type"] as? JsonPrimitive)?.contentOrNull ?: "string"
+        if (flag("secret") && type == "string") secret += key
+        if (flag("required")) required += key
+    }
+    return SchemaFlags(secret, required)
 }

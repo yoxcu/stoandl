@@ -21,7 +21,7 @@ object ConfFile {
 
     /** The `key = value` pairs of [file] (`#` starts a comment; later keys win). Throws on a read error. */
     fun read(file: File): Map<String, String> {
-        val map = HashMap<String, String>()
+        val map = LinkedHashMap<String, String>()
         file.readLines().forEach { raw ->
             val line = raw.substringBefore('#').trim()
             val idx = line.indexOf('=')
@@ -51,6 +51,23 @@ object ConfFile {
             }
         }
         remaining.forEach { (k, v) -> lines.add("$k = $v") }
+        writeAtomic(file, lines)
+    }
+
+    /** Delete every uncommented `key = …` line of [file] whose key is in [keys] (atomic; a no-op when
+     *  none matches or the file is absent). Lock-held (reentrant). */
+    fun remove(file: File, keys: Set<String>): Unit = synchronized(lock) {
+        if (!file.isFile || keys.isEmpty()) return
+        val lines = file.readLines()
+        val kept = lines.filter { raw ->
+            val code = raw.substringBefore('#')
+            val idx = code.indexOf('=')
+            idx <= 0 || code.substring(0, idx).trim() !in keys
+        }
+        if (kept.size != lines.size) writeAtomic(file, kept)
+    }
+
+    private fun writeAtomic(file: File, lines: List<String>) {
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(lines.joinToString("\n").trimEnd('\n') + "\n")

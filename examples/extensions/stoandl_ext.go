@@ -35,11 +35,17 @@ type Notification struct {
 	// CannedReplies adds a Reply menu; the chosen/dictated text comes back via OnReply(itemID, text).
 	CannedReplies []string
 	AllowVoice    bool
+	// ReplyLabel is the Reply action's title on the watch (default "Reply"). Setting it also offers a
+	// Reply with no canned replies, which then come from the host's notification.canned_replies.
+	ReplyLabel string
 
 	ExtToken string // your own correlation tag, echoed back verbatim in callbacks
 	Icon     string // iconCode (optional; per-app override wins)
 	Color    string // optional
 	Vibe     string // optional
+	// Urgent: sent even while the host's notification.only_when_locked holds notifications back (e.g. an
+	// answer to something the user just asked from the wrist).
+	Urgent bool
 
 	// ReplaceID: a stable string. Re-sending with the same ReplaceID REPLACES the same watch
 	// notification instead of piling up duplicates — use it for a per-conversation notification.
@@ -74,6 +80,7 @@ type Ext struct {
 
 	pendMu  sync.Mutex
 	pending map[int]func(map[string]any)
+	wantErr map[int]bool // pending callbacks that receive {"error": …} instead of only a log line
 
 	// Populated from the initialize handshake.
 	Config map[string]string // your extension.<name>.<key> settings
@@ -84,14 +91,19 @@ type Ext struct {
 	OnWatchConnected func()
 	OnAction         func(itemID, action string)
 	OnReply          func(itemID, text string)
-	OnDismiss        func(itemID string)
-	OnAppMessage     func(uuid string, txn int, data map[string]any)
+	// OnActionToken / OnReplyToken also get the notification's ExtToken; when set they are called
+	// instead of OnAction / OnReply.
+	OnActionToken func(itemID, extToken, action string)
+	OnReplyToken  func(itemID, extToken, text string)
+	OnDismiss     func(itemID string)
+	OnAppMessage  func(uuid string, txn int, data map[string]any)
 }
 
 func NewExt() *Ext {
 	return &Ext{
 		out:     bufio.NewWriter(os.Stdout),
 		pending: map[int]func(map[string]any){},
+		wantErr: map[int]bool{},
 		Config:  map[string]string{},
 		Watch:   map[string]any{},
 	}
@@ -153,6 +165,9 @@ func (e *Ext) Notify(n Notification) {
 	if n.Vibe != "" {
 		params["vibe"] = n.Vibe
 	}
+	if n.Urgent {
+		params["urgent"] = true
+	}
 	if len(n.Actions) > 0 {
 		acts := make([]map[string]any, 0, len(n.Actions))
 		for _, a := range n.Actions {
@@ -160,8 +175,15 @@ func (e *Ext) Notify(n Notification) {
 		}
 		params["actions"] = acts
 	}
-	if len(n.CannedReplies) > 0 {
-		params["reply"] = map[string]any{"cannedReplies": n.CannedReplies, "allowVoice": n.AllowVoice}
+	if len(n.CannedReplies) > 0 || n.ReplyLabel != "" {
+		reply := map[string]any{"cannedReplies": n.CannedReplies, "allowVoice": n.AllowVoice}
+		if n.CannedReplies == nil {
+			reply["cannedReplies"] = []string{}
+		}
+		if n.ReplyLabel != "" {
+			reply["label"] = n.ReplyLabel
+		}
+		params["reply"] = reply
 	}
 	if n.OnItem != nil {
 		onItem := n.OnItem
@@ -181,13 +203,45 @@ func (e *Ext) Close(itemID string) {
 }
 
 func (e *Ext) request(method string, params map[string]any, onResult func(map[string]any)) {
+	e.requestE(method, params, onResult, false)
+}
+
+// requestE is request whose callback, with wantErr, also receives an error reply as {"error": {...}}.
+func (e *Ext) requestE(method string, params map[string]any, onResult func(map[string]any), wantErr bool) {
 	rid := e.reqID()
 	if onResult != nil {
 		e.pendMu.Lock()
 		e.pending[rid] = onResult
+		if wantErr {
+			e.wantErr[rid] = true
+		}
 		e.pendMu.Unlock()
 	}
 	e.send(map[string]any{"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+}
+
+// KeepAwake asks the host to keep the machine out of suspend for up to maxMs (at most 60000) while
+// this extension works. cb gets the hold's token, or "" when the host refused or doesn't support it.
+// Release the token when done; to hold longer, take a new token before the old one expires.
+func (e *Ext) KeepAwake(why string, maxMs int, cb func(token string)) {
+	e.requestE("keepAwake", map[string]any{"why": why, "maxMs": maxMs}, func(res map[string]any) {
+		token, _ := res["token"].(string)
+		if _, failed := res["error"]; failed {
+			e.Logf("keepAwake refused: %v", res["error"])
+			token = ""
+		}
+		if cb != nil {
+			cb(token)
+		}
+	}, true)
+}
+
+// Release ends a KeepAwake hold (unknown or expired tokens are fine).
+func (e *Ext) Release(token string) {
+	if token == "" {
+		return
+	}
+	e.request("release", map[string]any{"token": token}, nil)
 }
 
 // RegisterApp arms inbound AppMessages from a watchapp UUID — they arrive via OnAppMessage.
@@ -254,11 +308,15 @@ func (e *Ext) Run(name string, capabilities, egress, cannedReplyDefaults []strin
 				e.OnWatchConnected()
 			}
 		case method == "onAction":
-			if e.OnAction != nil {
+			if e.OnActionToken != nil {
+				e.OnActionToken(str(params, "itemId"), str(params, "extToken"), str(params, "action"))
+			} else if e.OnAction != nil {
 				e.OnAction(str(params, "itemId"), str(params, "action"))
 			}
 		case method == "onReply":
-			if e.OnReply != nil {
+			if e.OnReplyToken != nil {
+				e.OnReplyToken(str(params, "itemId"), str(params, "extToken"), str(params, "text"))
+			} else if e.OnReply != nil {
 				e.OnReply(str(params, "itemId"), str(params, "text"))
 			}
 		case method == "onDismiss":
@@ -291,6 +349,7 @@ func (e *Ext) Run(name string, capabilities, egress, cannedReplyDefaults []strin
 			e.pendMu.Lock()
 			cb := e.pending[id]
 			delete(e.pending, id)
+			delete(e.wantErr, id)
 			e.pendMu.Unlock()
 			if cb != nil {
 				if res, ok := msg["result"].(map[string]any); ok {
@@ -306,9 +365,16 @@ func (e *Ext) Run(name string, capabilities, egress, cannedReplyDefaults []strin
 				id = int(f)
 			}
 			e.pendMu.Lock()
+			cb := e.pending[id]
+			wantErr := e.wantErr[id]
 			delete(e.pending, id)
+			delete(e.wantErr, id)
 			e.pendMu.Unlock()
-			e.Logf("request %d failed: %v", id, msg["error"])
+			if cb != nil && wantErr {
+				cb(map[string]any{"error": msg["error"]})
+			} else {
+				e.Logf("request %d failed: %v", id, msg["error"])
+			}
 		}
 	}
 }

@@ -2110,6 +2110,21 @@ in an upstream checkout.
 | 5.48p | GUI permissions dialog | Apps & Faces → the Permissions button on an app with grants | Lists each permission with its status ("Allowed automatically", "Waiting for your answer", …) and "used N min ago"; Allow/Deny on undecided rows, the switch on decided ones and Reset all take effect (`perms list` agrees) and the dialog refreshes. With plugins off the button only shows for an app with a waiting request, and the dialog says permissions are off. |
 | 5.48q | Signal | GUI open, answer or put off a request from the CLI; start/stop the asking app | The banners update without a refresh (PermissionRequestsChanged). |
 
+## 5.49 Extension secrets and keepAwake  ⚠️ UNVERIFIED (5.49a–e on a desktop; 5.49f on the phone)
+
+Secret `configSchema` fields live in the SecretStore as `ext:<name>:<key>`; `keepAwake` takes a bounded
+logind sleep block per request. Off-device: `ExtensionSecretsTest` (schema flags, migration, masking,
+payload rules, required gate, hold expiry/cap/release). Use an extension whose schema has a field with
+`"secret": true, "required": true` (the assistant's `api_key`).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.49a | Needs setup | install it with no key set | Not started; "needs setup" notification; `stoandl ext list` shows it stopped. |
+| 5.49b | Store from the GUI | Apps → the extension → settings: type the key, Save; `stoandl ext restart <name>` | Log `Secret ext:<name>:api_key stored (keyring\|file)`, no key in the log or in `ext/<name>/config`; `secret-tool search` (or the secrets file) has it; the extension starts and works. Reopened form: field blank, "Stored in the keyring", Clear shown. |
+| 5.49c | Keep and clear | change another field and Save; then Clear the key and Save | The key survives the first Save; after Clear the log says `removed` and the extension no longer starts (5.49a). |
+| 5.49d | Plaintext migration | put `api_key = …` into `ext/<name>/config` by hand; restart the daemon | Log `moved api_key out of …`; the line is gone, comments and other keys kept; the key is in the store. |
+| 5.49e | Uninstall | `stoandl ext uninstall <name> --delete-config`, then reinstall with `--keep-config` variants | `--delete-config` removes the stored key; `--keep-config` keeps it; with only a stored secret the CLI still asks. |
+| 5.49f | keepAwake | an extension request that takes `keepAwake{maxMs:60000}`; `systemd-inhibit --list` during it; `systemctl suspend` meanwhile | One `block` inhibitor `<name>: <why>` while it runs, gone on `release`, after 60 s, or when the extension is stopped/killed; `systemctl suspend` meanwhile is refused (a block lock), and works again after the release. |
 
 ## 5.51 Forward only while the screen is off or locked  ⚠️ UNVERIFIED (needs a watch; 5.51e on the phone)
 

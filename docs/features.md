@@ -835,6 +835,11 @@ _Find-my-phone (Ring + Stop) is hardware-verified ([TESTING.md §5.26](../TESTIN
 notification core and install/hotplug paths are built + smoke-tested but not yet run on hardware._
 Design + wire protocol: [extensions.md](extensions.md).
 
+Secret settings: a schema field marked `secret` is kept in the keyring (or the 0600 secrets file), shown
+in the GUI form as a password field with *Clear*, and handed only to that extension; a plaintext one in
+its `config` file is moved out. A `required` field keeps the extension stopped until it is set. Extensions
+can also hold off a suspend for up to a minute (`keepAwake`). _To be tested ([TESTING.md §5.49](../TESTING.md))._
+
 ### Phones that deep-sleep (suspend-aware daemon)
 
 For a phone that suspends whenever the screen is off: a logind delay lock makes a suspend wait until

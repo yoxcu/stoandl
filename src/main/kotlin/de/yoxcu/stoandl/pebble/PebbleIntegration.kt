@@ -576,6 +576,8 @@ class PebbleIntegration(
                     emit(StoandlControl.PluginsChanged(STOANDL_OBJECT_PATH))
                 }
             },
+            secrets = secretStore,
+            holdAwake = { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} },
         )
 
         // The Linux calendar reader — always built (reads its sources live from config), so a source

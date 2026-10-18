@@ -11,6 +11,7 @@ import de.yoxcu.stoandl.pebble.NotifOwnerRegistry
 import de.yoxcu.stoandl.pebble.NotifRequest
 import de.yoxcu.stoandl.pebble.ReplySpec
 import de.yoxcu.stoandl.pebble.WatchNotifier
+import de.yoxcu.stoandl.secret.SecretStore
 import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.runCommand
@@ -28,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -88,8 +90,15 @@ class ExtensionManager(
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
     /** Where an extension's plugin (declared in its `initialize` result) is registered and removed. */
     private val pluginHost: ExtensionPluginHost? = null,
+    /** Where `"secret": true` config fields live (ref [extSecretRef]); never the `config` file. */
+    private val secrets: SecretStore,
+    /** A logind sleep block for `keepAwake` (SleepGuard.holdAwake in the daemon). */
+    private val holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
+    private val extSecrets = ExtensionSecrets(extDir, secrets)
+    // `extension.<name>.<key>` secrets in stoandl.conf already warned about (once per daemon run).
+    private val warnedConfSecrets = ConcurrentHashMap.newKeySet<String>()
 
     /** Invoked after a state change the `ExtList` view reflects (enable/disable/restart/install/
      *  uninstall) — set by PebbleIntegration to emit the `ExtensionsChanged` D-Bus signal so the GUI
@@ -105,6 +114,10 @@ class ExtensionManager(
     @Volatile var onExtensionState: ((String, String) -> Unit)? = null
 
     fun start() {
+        // A secret left in plaintext in any installed extension's config moves to the store now, not at
+        // its next spawn: a disabled extension's config file still goes into a backup.
+        extDir.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("__") }
+            ?.forEach { runCatching { extSecrets.migrate(it.name, extSecrets.flagsOf(it.name).secretKeys) } }
         if (enabledAtStart.isEmpty()) {
             log.info { "No extensions enabled (set extensions.enabled or run `stoandl ext install`)" }
         } else {
@@ -138,16 +151,24 @@ class ExtensionManager(
 
     private fun startProcess(name: String): StartResult {
         if (running.containsKey(name)) return StartResult.STARTED
-        val def = resolveExtension(name, extDir, extConfig[name] ?: emptyMap()) ?: return StartResult.NO_ENTRYPOINT
-        // A manifest that declares requiresConfig can't run until the user supplies settings — don't
-        // spawn a doomed child; notify + bail gracefully so it's clear what to do.
-        if (def.requiresConfig && !def.userConfigured) {
+        val flags = extSecrets.flagsOf(name)
+        extSecrets.migrate(name, flags.secretKeys)
+        val confLayer = extConfig[name] ?: emptyMap()
+        val resolved = resolveExtension(name, extDir, confLayer) ?: return StartResult.NO_ENTRYPOINT
+        val (def, fromConf) = withSecrets(resolved, flags.secretKeys, extSecrets.stored(name, flags.secretKeys), confLayer)
+        fromConf.filter { warnedConfSecrets.add("$name:$it") }.forEach { k ->
+            log.warn { "Extension '$name': secret '$k' is read from extension.$name.$k in stoandl.conf — set it in the extension's settings instead, then remove that line" }
+        }
+        // An extension that can't run until the user supplies settings: don't spawn a doomed child;
+        // notify + bail gracefully so it's clear what to do.
+        if (!configSatisfied(def, flags.requiredKeys)) {
             notifyNeedsConfig(name, File(def.workingDir, "config"))
             return StartResult.NEEDS_CONFIG
         }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
             onState = { state -> onExtensionState?.invoke(name, state) },
-            notificationImagesOn = notificationImagesOn, transcribe = transcribe, pluginHost = pluginHost)
+            notificationImagesOn = notificationImagesOn, transcribe = transcribe, pluginHost = pluginHost,
+            holdAwake = holdAwake)
         running[name] = proc
         proc.launch()
         return StartResult.STARTED
@@ -186,8 +207,8 @@ class ExtensionManager(
             ?.map { it.name }?.toSet() ?: emptySet()
         return (installed + enabled).sorted().map { n ->
             val meta = readExtManifestMeta(File(extDir, n))
-            // config-kind: `schema` when the manifest declares a configSchema, else `none` (the `url`
-            // backend isn't implemented — no embedded HTTP server). Description is a single line.
+            // config-kind: `schema` when the manifest declares a configSchema, else `none` (there is no
+            // `url` backend for extensions). Description is a single line.
             val configKind = configKindOf(meta.configSchemaJson)
             listOf(
                 n,
@@ -212,10 +233,10 @@ class ExtensionManager(
     }
 
     /** The config entry point for the GUI when an extension declares a `url` config backend (a hosted
-     *  settings page opened in a browser). stoandl has no embedded HTTP server, so the `url` backend
-     *  isn't implemented and this never returns a URL: `error:` when the extension is schema-backed (the
-     *  GUI renders the native form from [configSchema] instead), `none:` when it has no config, or
-     *  `notfound:`. */
+     *  settings page opened in a browser). Extensions have no `url` backend (the daemon's config-page
+     *  server serves PKJS pages only), so this never returns a URL: `error:` when the extension is
+     *  schema-backed (the GUI renders the native form from [configSchema] instead), `none:` when it has
+     *  no config, or `notfound:`. */
     fun openConfig(name: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!isKnown(n)) return "notfound:'$name' is not installed"
@@ -287,6 +308,8 @@ class ExtensionManager(
         setEnabled(n, false)
         val dir = File(extDir, n)
         val existed = dir.isDirectory
+        // Read before the directory goes: the manifest names the secret keys.
+        if (!keepConfig) extSecrets.flagsOf(n).secretKeys.forEach { extSecrets.remove(n, it) }
         val watchMsg = if (existed) removeBundledWatchapp(dir) else ""
         // Optionally keep the user's `config` (so a later reinstall restores its settings); the install
         // path already preserves an existing config across an overwrite.
@@ -357,20 +380,21 @@ class ExtensionManager(
         return result
     }
 
-    /** The extension's current settings (its `<extDir>/<name>/config` file) as a JSON object of string
-     *  values, for the GUI's native config form. `ok:<json>` (or `ok:{}` if it has no config yet) or
-     *  `notfound:`. */
+    /** The extension's effective settings as a JSON object of string values, for the GUI's native config
+     *  form: manifest defaults overlaid by its `<extDir>/<name>/config` file, every secret blanked, and
+     *  `_secrets` naming the stored ones ([effectiveConfigView]). `ok:<json>` or `notfound:`. */
     fun getConfig(name: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!isKnown(n)) return "notfound:'$name' is not installed"
-        val values = readRawConfig(File(File(extDir, n), "config"))
+        val values = extSecrets.configView(n)
         val json = buildJsonObject { values.forEach { (k, v) -> put(k, v) } }
         return "ok:" + LenientJson.encodeToString(JsonObject.serializer(), json)
     }
 
-    /** Merge [payload] (a JSON object of key→value) into the extension's `config` file — an atomic write
-     *  that preserves comments and unchanged keys (so unsent secrets aren't clobbered) — then restart it
-     *  if running so the change takes effect. `ok:`/`notfound:`/`error:`. */
+    /** Merge [payload] (a JSON object of key→value) into the extension's settings — secret keys into the
+     *  secret store ([splitConfigPayload]: `""` keeps, `null` removes), the rest into its `config` file (an
+     *  atomic write that preserves comments and unchanged keys) — then restart it if running so the change
+     *  takes effect. `ok:`/`notfound:`/`error:`. */
     fun setConfig(name: String, payload: String): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         if (!isKnown(n)) return "notfound:'$name' is not installed"
@@ -379,19 +403,29 @@ class ExtensionManager(
         } catch (e: Exception) {
             return "error:Invalid JSON payload: ${e.message}"
         }
-        val updates = obj.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" }
-        if (updates.isEmpty()) return "ok:No changes for '$n'"
         return try {
-            writeConfigUpdates(File(extDir, n), updates)
-            // Apply immediately if it's running (config is read in the initialize handshake); no-op if stopped.
+            val plain = extSecrets.applyPayload(n, obj) ?: return "ok:No changes for '$n'"
+            if (plain.isNotEmpty()) writeConfigUpdates(File(extDir, n), plain)
+            // Apply immediately if it's running (config is read in the initialize handshake).
             if (running.containsKey(n)) {
                 stopProcess(n)
                 startProcess(n)
                 // A failed restart (the new config removed the entry point / now needs config) flips it
                 // running→stopped — an ExtList change, so poke. The common running→running case doesn't.
                 if (!running.containsKey(n)) notifyChanged()
+                "ok:Saved settings for '$n'"
+            } else if (n in currentEnabled()) {
+                // Enabled but stopped (typically NEEDS_CONFIG until a required secret is saved): start it now.
+                val result = when (startProcess(n)) {
+                    StartResult.STARTED -> "ok:Saved settings for '$n' and started it"
+                    StartResult.NEEDS_CONFIG -> "ok:Saved settings for '$n' (not started — still needs configuration)"
+                    StartResult.NO_ENTRYPOINT -> "ok:Saved settings for '$n' (couldn't start it: no entry point?)"
+                }
+                notifyChanged()
+                result
+            } else {
+                "ok:Saved settings for '$n'"
             }
-            "ok:Saved settings for '$n'"
         } catch (e: Exception) {
             log.warn(e) { "setConfig($n) failed" }
             "error:${e.message ?: "failed to save settings"}"
@@ -401,28 +435,14 @@ class ExtensionManager(
     // ---- helpers --------------------------------------------------------------------------------
 
     /** The GUI config-kind for an extension, derived from its manifest `configSchema`: `schema` when a
-     *  non-empty schema is declared (the GUI renders a native form), else `none`. The `url` backend
-     *  (an externally hosted config page) isn't implemented — stoandl has no embedded HTTP server — so it
-     *  never appears here. Single source of truth for [list], [configSchema] and [openConfig]. */
+     *  non-empty schema is declared (the GUI renders a native form), else `none`. There is no `url`
+     *  backend (a hosted config page) for extensions, so it never appears here. Single source of truth for [list], [configSchema] and [openConfig]. */
     private fun configKindOf(configSchemaJson: String?): String =
         if (!configSchemaJson.isNullOrBlank() && configSchemaJson != "[]") "schema" else "none"
 
     /** A known extension = an installed dir or an enabled name (the same set [list] reports). */
     private fun isKnown(name: String): Boolean =
         File(extDir, name).isDirectory || name in currentEnabled()
-
-    /** Raw `key = value` pairs from a config file (no `~`/`%h` expansion — we round-trip the user's exact
-     *  values, unlike the spawn-time read which expands them). */
-    private fun readRawConfig(file: File): Map<String, String> {
-        if (!file.isFile) return emptyMap()
-        val out = LinkedHashMap<String, String>()
-        file.readLines().forEach { raw ->
-            val line = raw.substringBefore('#').trim()
-            val idx = line.indexOf('=')
-            if (idx > 0) out[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
-        }
-        return out
-    }
 
     /** Upsert [updates] into `<dir>/config` (atomic, comment- and unchanged-key-preserving). Shares the
      *  writer + lock with [setEnabled] and `SetConfig` so concurrent config writes can't corrupt a file. */
@@ -552,6 +572,7 @@ private class ExtensionProcess(
     private val notificationImagesOn: () -> Boolean = { false },
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
     private val pluginHost: ExtensionPluginHost? = null,
+    holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
 ) {
     private val tag = def.name
     // Host → extension requests (readSource, invokeAction) awaiting their reply, by JSON-RPC id. The
@@ -570,6 +591,7 @@ private class ExtensionProcess(
     @Volatile private var shuttingDown = false
     private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }.also { owners.register(it) }
     private val registeredApps = ConcurrentHashMap.newKeySet<Uuid>()
+    private val awake = AwakeHolds(def.name, scope, holdAwake)
 
     fun onWatchConnected() {
         if (!ready) return
@@ -592,6 +614,7 @@ private class ExtensionProcess(
         writeChannel = null      // stop new enqueues before tearing down
         val p = proc
         job.cancel()             // cancels the supervise loop + writer/reader/collector coroutines
+        awake.close()
         p?.destroy()             // then actually kill the child (waitFor was just cancelled, not the proc)
         log.info { "[$tag] stopped" }
     }
@@ -666,6 +689,7 @@ private class ExtensionProcess(
         writeChannel = null
         proc = null
         writerJob.cancel(); stderrJob.cancel(); readerJob.cancel(); processorJob.cancel()
+        awake.releaseAll()       // no hold outlives its child (shutdown() covers the cancelled path)
         try { writer.close() } catch (_: Exception) {}
     }
 
@@ -712,6 +736,17 @@ private class ExtensionProcess(
             method == "installPbw" -> handleInstallPbw(id, params)
             // Off the read loop: a transcription takes seconds.
             method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
+            method == "keepAwake" -> {
+                val maxMs = params?.get("maxMs")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.longOrNull }
+                awake.acquire(params?.str("why"), maxMs).fold(
+                    onSuccess = { token -> reply(id) { put("token", token) } },
+                    onFailure = { replyError(id, it.message ?: "keepAwake failed") },
+                )
+            }
+            method == "release" -> {
+                val token = params?.str("token")
+                if (token == null) replyError(id, "release: missing token") else { awake.release(token); reply(id) {} }
+            }
             method == "log" -> log.info { "[$tag] ${params?.str("message") ?: ""}" }
             method == "initialize" -> {}
             else -> log.debug { "[$tag] unhandled message: method=$method" }
@@ -779,6 +814,9 @@ private class ExtensionProcess(
             itemId = requestedId,
             // A picture: a data: URI (base64), a file: URI or an absolute path.
             image = params.str("image")?.let(ImageSource::parse),
+            // Sent even while notification.only_when_locked holds the rest back (an answer the user just
+            // asked for from the wrist).
+            urgent = params["urgent"]?.jsonPrimitive?.booleanOrNull == true,
         )
         val itemId = watchNotifier.push(req, def.name, extToken)
         if (id != null) reply(id) { put("itemId", itemId?.toString()) }
