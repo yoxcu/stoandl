@@ -1787,6 +1787,9 @@ class PebbleIntegration(
             connectedFirmware = {
                 libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
             },
+            connectedWatchType = {
+                libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.platform?.watchType
+            },
         )
         watchPrefsControlRef.set(control)
         log.info {

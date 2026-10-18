@@ -7,6 +7,7 @@ import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
+import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import kotlinx.coroutines.flow.flowOf
 import java.lang.reflect.Proxy
@@ -31,11 +32,13 @@ class WatchPrefsControlTest {
     private var listed: List<WatchPreference<*>> = listOf(WatchPreference(EnumWatchPref.SystemTextSize, null))
     private val musicUuid = Uuid.parse("1f03293d-47af-4f28-b960-f2b02a6dd757")
     private var firmware: FirmwareVersion? = null
+    private var watchType: WatchType? = null
     private val control = WatchPrefsControl(
         fakeLibPebble(),
         resolveAppUuid = { if (it.equals("Music", true)) musicUuid else null },
         appName = { if (it == musicUuid) "Music" else null },
         connectedFirmware = { firmware },
+        connectedWatchType = { watchType },
     )
 
     @Test
@@ -154,9 +157,90 @@ class WatchPrefsControlTest {
         assertEquals(listOf("Quiet Time", "Timeline Future", "Airplane Mode"), rows.map { it[2] })
         assertEquals(listOf("Quiet Time", "Timeline Future", "off"), rows.map { it[3] })
         assertEquals(
-            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|<app name or uuid>",
+            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|Toggle Touch|" +
+                "<app name or uuid>",
             rows[0][4],
         )
+    }
+
+    private val touchUuid = SystemAppIDs.TOUCH_TOGGLE_UUID
+
+    private fun connect(type: WatchType, tag: String) {
+        watchType = type
+        firmware = fw(tag)
+    }
+
+    private fun qlRow(): List<String> {
+        listed = listOf(WatchPreference(QuicklaunchWatchPref.QlUp, QuickLaunchSetting(true, touchUuid)))
+        return control.list().single().split('\t')
+    }
+
+    /** fw 4.39.0 `fw/apps/system/toggle/touch.h`; registered only under CONFIG_TOUCH (obelix, getafix). */
+    @Test
+    fun `toggle touch is offered with a note while no watch is connected`() {
+        assertEquals(
+            "ok:Set qlUp = Toggle Touch (syncs to the watch on next connect; touch watches only)",
+            control.setOne("qlUp", "toggle-touch"),
+        )
+        assertEquals(listOf(QuickLaunchSetting(true, touchUuid)), written.map { it.value })
+        val row = qlRow()
+        assertEquals("Toggle Touch", row[2])
+        assertContains(row[4], "|Toggle Touch|")
+        assertEquals("Toggle Touch: touch watches only.", row[7])
+    }
+
+    @Test
+    fun `a touch watch on 4_39 gets toggle touch without a note`() {
+        connect(WatchType.EMERY, "v4.39.0")
+        assertEquals("ok:Set qlSingleClickUp = Toggle Touch (syncs to the watch on next connect)",
+            control.setOne("qlSingleClickUp", "Toggle Touch"))
+        connect(WatchType.GABBRO, "v4.41.2")
+        assertTrue(control.setOne("qlDown", touchUuid.toString()).startsWith("ok:"))
+        assertEquals(listOf(touchUuid, touchUuid), written.map { (it.value as QuickLaunchSetting).uuid })
+        val row = qlRow()
+        assertContains(row[4], "|Toggle Touch|")
+        assertEquals("", row[7])
+    }
+
+    @Test
+    fun `a watch without touch is neither offered nor given toggle touch`() {
+        connect(WatchType.FLINT, "v4.41.2")
+        val r = control.setOne("qlUp", "Toggle Touch")
+        assertEquals("error:Toggle Touch is for touch watches only; the connected watch (flint) doesn't have it", r)
+        assertTrue(written.isEmpty(), "nothing may reach the watch")
+        val row = qlRow()
+        assertEquals("Toggle Touch", row[2], "a value set for another watch still lists by name")
+        assertEquals(
+            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|<app name or uuid>",
+            row[4],
+        )
+        assertEquals("", row[7])
+        assertTrue(control.setOne("qlUp", "off").startsWith("ok:"), "the button can still be cleared")
+    }
+
+    @Test
+    fun `a touch watch older than 4_39 lacks toggle touch`() {
+        connect(WatchType.EMERY, "v4.38.2")
+        assertEquals(
+            "error:Toggle Touch needs PebbleOS 4.39 or later, the watch runs v4.38.2",
+            control.setOne("qlUp", "Toggle Touch"),
+        )
+        assertTrue(written.isEmpty())
+        assertTrue("Toggle Touch" !in qlRow()[4].split('|'))
+    }
+
+    @Test
+    fun `a toggle touch pin is skipped on a watch without it and applied on one with it`() {
+        val pins = mapOf("qlUp" to "Toggle Touch", "qlDown" to "Backlight")
+        connect(WatchType.FLINT, "v4.41.2")
+        control.applyConfigured(pins)
+        assertEquals(listOf("qlDown"), written.map { it.pref.id })
+
+        written.clear()
+        connect(WatchType.EMERY, "v4.41.2")
+        control.applyConfigured(pins)
+        assertEquals(listOf("qlUp", "qlDown"), written.map { it.pref.id })
+        assertEquals(QuickLaunchSetting(true, touchUuid), written.first().value)
     }
 
     private fun fw(tag: String) = FirmwareVersion.from(

@@ -231,8 +231,11 @@ description` (`flags` carries `debug` for advanced settings). `type` ∈ **`bool
 is `min..max[ unit]`), **`enum`** (`current` + `allowed` are **display names** like `Standard - Low`,
 not the Kotlin constant — round-trip-safe, `SetWatchPref` accepts either), **`quicklaunch`** (`current`
 is a system action / an app name / `off` / a raw uuid; `allowed` is `off|Quiet Time|Backlight|Motion
-Backlight|Airplane Mode|Timeline Past|Timeline Future|<app name or uuid>`: the firmware system actions
-the official app offers, then the literal app placeholder — pick the target by action or app name), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
+Backlight|Airplane Mode|Timeline Past|Timeline Future|Toggle Touch|<app name or uuid>`: the firmware system actions
+the official app offers, then the literal app placeholder — pick the target by action or app name. An action only
+some watches have (`Toggle Touch`: touch watches on fw 4.39+) is left out while a watch without it is connected,
+and `SetWatchPref` refuses it then; with no watch connected it is listed, `description` names its audience
+(`Toggle Touch: touch watches only.`) and the `ok:` reply ends `; touch watches only`), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
 **`schedule`** (the Quiet Time weekday/weekend hours: `current`/`default` are a 24 h `HH:MM-HH:MM`
 window in the watch's local time, where an end before the start runs overnight; `allowed` is the
 literal `HH:MM-HH:MM`. The hours alone do nothing: the matching `bool` pref

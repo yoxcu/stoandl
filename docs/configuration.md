@@ -578,9 +578,16 @@ watch.dndNotificationBacklight = false   # fw >= 4.41, see below
 A quick-launch button (`qlUp`, `qlDown`, `qlSelect`, `qlBack`, the `qlCombo…` holds and the
 `qlSingleClick…` taps) takes `off`, an app name or UUID, or one of the firmware's system actions, as the
 official app offers them: `Quiet Time`, `Backlight`, `Motion Backlight`, `Airplane Mode`,
-`Timeline Past`, `Timeline Future`. Case, spaces, `-` and `_` don't matter (`quiet-time`). An action name
+`Timeline Past`, `Timeline Future`, `Toggle Touch`. Case, spaces, `-` and `_` don't matter (`quiet-time`). An action name
 wins over an app with the same title; give that app's UUID instead. `stoandl settings ql` lists the
 defaults by name (hold Back: Quiet Time, tap Down: Timeline Future).
+
+`Toggle Touch` turns the touchscreen on or off. Only touch watches (Pebble Time 2, Pebble Round 2) on
+PebbleOS 4.39 or later have it. With such a watch connected it is offered like the others; with another
+watch connected it isn't offered, `settings set` refuses it, and a `watch.ql*` pin of it is skipped. With no
+watch connected it is accepted and marked "touch watches only". libpebble3 never sends it to a watch that
+lacks it: that watch would treat it as an uninstalled app, and before PebbleOS 4.40 a tap on that button
+reboots the watch.
 
 Text size is two settings: `systemTextSize` (menus and the launcher) and `notifTextSize` (notifications;
 `SameAsSystem` follows the system size). The phone can set them from PebbleOS 4.39 on; older firmware

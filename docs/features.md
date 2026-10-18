@@ -127,7 +127,11 @@ and says so on `settings set`, and `stoandl settings` names the release in its d
 _Implemented — to be tested ([TESTING.md §5.5q](../TESTING.md)):_ quick-launch buttons also take the
 firmware system actions the official app offers — Quiet Time, Backlight, Motion Backlight, Airplane Mode,
 Timeline Past, Timeline Future — by name in the CLI and config and from the GUI's dropdown, and list them
-by name (the hold-Back and tap-Down defaults showed as raw UUIDs before).
+by name (the hold-Back and tap-Down defaults showed as raw UUIDs before). _Implemented — to be tested
+([TESTING.md §5.5r](../TESTING.md)):_ the fw 4.39 Toggle Touch action, offered only for a touch watch (Pebble
+Time 2, Pebble Round 2) on 4.39 or later and marked "touch watches only" while no watch is connected.
+libpebble3 (fork) doesn't send it to a watch without it, which would read it as an uninstalled app (a tap on
+such a button reboots firmware older than 4.40).
 
 ### Bluetooth Classic transport
 

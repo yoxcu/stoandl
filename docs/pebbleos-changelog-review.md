@@ -269,7 +269,7 @@ through 4.41.2), and the split text-size keys (`d6dd9e8`; fw `67e6af4c9` whiteli
 
 1. 🔴 **Fork + host:** `HRMonitoringInterval.FiveMin(4)` + a tolerant `fromInt` + a `5min` choice (fw ≥4.39.0). _Implemented — to be tested ([TESTING §5.63](../TESTING.md)); an unknown code is kept verbatim, not defaulted._
 2. 🟢 **Fork prefs:** `dndNotificationBacklight` (fw ≥4.41.0; older fw rejects the key). _Implemented — to be tested ([TESTING §5.64](../TESTING.md)); the fork's new `WatchPref.minFirmware` keeps it (and the 4.39 text sizes) off older watches._ Review 5's VibeScore 15–20 is still open.
-3. 🟢 **Host:** add the QL Toggle Touch UUID to the §5.2 table; per-watchface drain attribution from the heartbeat.
+3. 🟢 **Host:** add the QL Toggle Touch UUID to the §5.2 table. _Implemented — to be tested ([TESTING §5.5r](../TESTING.md)); confirmed at the v4.39.0 tag (`fw/apps/system/toggle/touch.h`, registry id −102 under `CONFIG_TOUCH`, set only by the obelix and getafix boards). stoandl offers it only for an emery/gabbro watch on ≥4.39.0, and the fork's `QuickLaunchActionSupport` keeps it off any other watch._ Still open: per-watchface drain attribution from the heartbeat.
 4. 🟢 **Optional:** notification window state (bit 26); SpO2 parse, export and prefs; host MPRIS debounce and a
    `Disabled`→`Error` mapping for <4.39/4.40 watches.
 5. 🟡 **Hardware, on the 4.41.x watch:** v14 minute records flow (5.219); downgrade handoff against an old PRF

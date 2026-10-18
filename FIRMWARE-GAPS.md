@@ -20,7 +20,7 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 ([docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md) § Review 6):
 - a fork fix for the watch's new 5-minute HR interval, which the fork rejected (implemented, to be tested: TESTING §5.63);
 - the `dndNotificationBacklight` pref (implemented, to be tested: TESTING §5.64);
-- the Toggle Touch Quick Launch action (§5.2);
+- the Toggle Touch Quick Launch action (§5.2; implemented, to be tested: TESTING §5.5r);
 - optional SpO2 and notification-window-state support;
 - dropping live HR via `0x180D` (§5.4);
 - hardware re-tests on the 4.41.x watch.
@@ -491,7 +491,14 @@ ones a user sees); the others still need stoandl work.
 
 ### 5.2 Quick Launch actions
 
-- **The gap.** stoandl resolves quick-launch values only against the locker, so no *action* is selectable, and
+**Mostly done, to be tested (TESTING §5.5q, §5.5r).** `QuickLaunchActions` (`WatchPrefsControl.kt`) names Quiet
+Time, Backlight, Motion Backlight, Airplane Mode, Timeline Past/Future and Toggle Touch, and the GUI's dropdown
+offers them. Toggle Touch is registered only under `CONFIG_TOUCH` (obelix = emery, getafix = gabbro; v4.39.0
+`system_app_registry_list.json` id −102). stoandl offers it only for such a watch on ≥4.39.0, and the fork's
+`QuickLaunchActionSupport` doesn't send it to any other watch. Clear notifications and Nothing are not in the
+table yet, and `off` is still labelled Off.
+
+- **The gap (as found).** stoandl resolves quick-launch values only against the locker, so no *action* is selectable, and
   the defaults render as raw UUIDs.
 - **Sketch.** A static name ↔ UUID table: Quiet Time, Backlight, Motion Backlight, Airplane Mode
   (`SystemAppIDs.kt:27-30`), Timeline Past/Future (`:23-24`), Clear notifications

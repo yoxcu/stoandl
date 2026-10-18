@@ -9,6 +9,7 @@ import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
 import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.NumberWatchPref
+import io.rebble.libpebblecommon.database.entity.QuickLaunchActionSupport
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import io.rebble.libpebblecommon.database.entity.QuietTimeSchedule
@@ -16,6 +17,7 @@ import io.rebble.libpebblecommon.database.entity.RgbColorWatchPref
 import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefEnum
+import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -52,6 +54,8 @@ class WatchPrefsControl(
     private val syncPinnedPref: ((id: String, raw: String) -> Unit)? = null,
     /** The connected watch's running firmware, or null when none is connected (or in tests). */
     private val connectedFirmware: () -> FirmwareVersion? = { null },
+    /** The connected watch's platform, or null when none is connected (or in tests). */
+    private val connectedWatchType: () -> WatchType? = { null },
 ) {
     /** `<id>@<firmware>` pins already reported as too new for the watch, so a reconnect logs them at DEBUG. */
     private val tooNewReported: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -75,7 +79,14 @@ class WatchPrefsControl(
                 return@forEach
             }
             try {
-                libPebble.setWatchPref(parse(pref, raw))
+                val wp = parse(pref, raw)
+                val cannotRun = cannotRun(wp)
+                if (cannotRun != null) {
+                    val message = "Not applying watch pref $id: $cannotRun"
+                    if (tooNewReported.add("$id@${firmware?.stringVersion}")) log.info { message } else log.debug { message }
+                    return@forEach
+                }
+                libPebble.setWatchPref(wp)
                 log.info { "Applied watch pref $id = $raw" }
             } catch (e: Exception) {
                 log.warn { "Skipping watch pref $id: ${e.message}" }
@@ -88,12 +99,14 @@ class WatchPrefsControl(
         val pref = WatchPref.from(id) ?: return "error:Unknown watch pref '$id' (see 'stoandl settings')"
         return try {
             val wp = parse(pref, raw)
+            cannotRun(wp)?.let { return "error:$it" }
             libPebble.setWatchPref(wp)
             // Keep a pinned `watch.<id>` in stoandl.conf in step, else it would revert this on reconnect.
             syncPinnedPref?.invoke(pref.id, raw.trim())
             val sync = tooOldFor(pref, connectedFirmware())?.let { "$it; it syncs once the watch is updated" }
                 ?: "syncs to the watch on next connect"
-            "ok:Set ${pref.id} = ${format(pref, wp.valueOrDefault())} ($sync)"
+            val audience = gatedAction(wp)?.takeIf { !watchKnown() }?.audience?.let { "; $it" } ?: ""
+            "ok:Set ${pref.id} = ${format(pref, wp.valueOrDefault())} ($sync$audience)"
         } catch (e: IllegalArgumentException) {
             "error:${e.message}"
         } catch (e: Exception) {
@@ -115,7 +128,7 @@ class WatchPrefsControl(
                 allowed(pref),
                 if (pref.isDebugSetting) "debug" else "",
                 pref.displayName,
-                describe(pref).replace('\t', ' '),
+                describe(pref, quickLaunchNote(pref)).replace('\t', ' '),
             ).joinToString("\t")
         }
     }
@@ -145,6 +158,41 @@ class WatchPrefsControl(
             val sentence = if (description.trimEnd().last() in ".!?") description.trimEnd() else "${description.trimEnd()}."
             return (listOf(sentence) + notes).joinToString(" ")
         }
+    }
+
+    // ---- system actions only some watches have ------------------------------------------------------
+
+    private fun watchKnown() = connectedWatchType() != null && connectedFirmware() != null
+
+    /** The gated system action [wp] sets an enabled quick-launch button to, or null. */
+    private fun gatedAction(wp: WatchPreference<*>): QuickLaunchActions.Action? =
+        (wp.value as? QuickLaunchSetting)?.takeIf { it.enabled }?.uuid?.let { QuickLaunchActions.gated(it) }
+
+    /**
+     * Why the connected watch can't run the system action [wp] sets, or null when it can, the action runs
+     * everywhere, or no watch is connected to tell. The firmware registers such an action only on some
+     * boards; any other watch reads its UUID as an uninstalled app, so nothing would happen (before
+     * PebbleOS 4.40 a tap on that button reboots the watch). libpebble3 doesn't send it to such a watch.
+     */
+    private fun cannotRun(wp: WatchPreference<*>): String? {
+        val action = gatedAction(wp) ?: return null
+        return QuickLaunchActions.whyNot(action, connectedWatchType() ?: return null, connectedFirmware() ?: return null)
+    }
+
+    /** The system actions the connected watch can run (all of them when none is connected). */
+    private fun offeredActions(): List<QuickLaunchActions.Action> {
+        val type = connectedWatchType()
+        val firmware = connectedFirmware()
+        if (type == null || firmware == null) return QuickLaunchActions.all
+        return QuickLaunchActions.all.filter { QuickLaunchActions.whyNot(it, type, firmware) == null }
+    }
+
+    /** For a quick-launch pref with no watch connected to tell: which offered actions only some watches run. */
+    private fun quickLaunchNote(pref: WatchPref<*>): String? {
+        if (pref !is QuicklaunchWatchPref || watchKnown()) return null
+        return QuickLaunchActions.all.filter { it.audience != null }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(" ") { "${it.name}: ${it.audience}." }
     }
 
     // ---- parsing (string → typed WatchPreference) -------------------------------------------------
@@ -230,7 +278,7 @@ class WatchPrefsControl(
         // for the CLI/GUI — round-trip-safe because [parseEnum] also accepts the display name and the
         // names are unique within each pref's option list. Pipe-joined (a display name can contain ',').
         is EnumWatchPref -> pref.options.joinToString("|") { it.displayName }
-        is QuicklaunchWatchPref -> (listOf("off") + QuickLaunchActions.names + "<app name or uuid>").joinToString("|")
+        is QuicklaunchWatchPref -> (listOf("off") + offeredActions().map { it.name } + "<app name or uuid>").joinToString("|")
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
         is ScheduleWatchPref -> "HH:MM-HH:MM"
     }
@@ -255,26 +303,51 @@ class WatchPrefsControl(
  * A name wins over a locker app of the same title; address that app by UUID.
  */
 internal object QuickLaunchActions {
-    private val actions = listOf(
-        "Quiet Time" to SystemAppIDs.QUIET_TIME_TOGGLE_UUID,
-        "Backlight" to SystemAppIDs.BACKLIGHT_UUID,
-        "Motion Backlight" to SystemAppIDs.MOTION_BACKLIGHT_UUID,
-        "Airplane Mode" to SystemAppIDs.AIRPLANE_MODE_UUID,
-        "Timeline Past" to SystemAppIDs.TIMELINE_PAST_UUID,
-        "Timeline Future" to SystemAppIDs.TIMELINE_FUTURE_UUID,
+    /**
+     * [support] is what the firmware needs to have the action (libpebble3's [QuickLaunchActionSupport], null
+     * when every watch has it); [audience] says so in words when no watch is connected to check against.
+     */
+    class Action(val name: String, val uuid: Uuid, val audience: String? = null) {
+        val support: QuickLaunchActionSupport? = QuickLaunchActionSupport.of(uuid)
+    }
+
+    val all = listOf(
+        Action("Quiet Time", SystemAppIDs.QUIET_TIME_TOGGLE_UUID),
+        Action("Backlight", SystemAppIDs.BACKLIGHT_UUID),
+        Action("Motion Backlight", SystemAppIDs.MOTION_BACKLIGHT_UUID),
+        Action("Airplane Mode", SystemAppIDs.AIRPLANE_MODE_UUID),
+        Action("Timeline Past", SystemAppIDs.TIMELINE_PAST_UUID),
+        Action("Timeline Future", SystemAppIDs.TIMELINE_FUTURE_UUID),
+        // PebbleOS 4.39.0, Pebble Time 2 and Pebble Round 2 only.
+        Action("Toggle Touch", SystemAppIDs.TOUCH_TOGGLE_UUID, audience = "touch watches only"),
     )
 
-    val names: List<String> = actions.map { it.first }
+    val names: List<String> = all.map { it.name }
 
     /** An action by its name (case, spaces, `-` and `_` ignored: `quiet-time`, `AirplaneMode`) or its UUID. */
     fun parse(raw: String): Uuid? {
         val key = squash(raw)
-        actions.firstOrNull { squash(it.first) == key }?.let { return it.second }
+        all.firstOrNull { squash(it.name) == key }?.let { return it.uuid }
         val asUuid = runCatching { Uuid.parse(raw.trim()) }.getOrNull() ?: return null
-        return actions.firstOrNull { it.second == asUuid }?.second
+        return all.firstOrNull { it.uuid == asUuid }?.uuid
     }
 
-    fun nameOf(uuid: Uuid): String? = actions.firstOrNull { it.second == uuid }?.first
+    fun nameOf(uuid: Uuid): String? = all.firstOrNull { it.uuid == uuid }?.name
+
+    /** The action [uuid] if only some watches have it. */
+    fun gated(uuid: Uuid): Action? = all.firstOrNull { it.uuid == uuid && it.support != null }
+
+    /** Why a [type] watch on [firmware] lacks [action], or null when it has it. */
+    fun whyNot(action: Action, type: WatchType, firmware: FirmwareVersion): String? {
+        val support = action.support ?: return null
+        return when {
+            type !in support.watchTypes -> "${action.name} is for ${action.audience ?: "other watches"}; " +
+                "the connected watch (${type.codename}) doesn't have it"
+            !support.minFirmware.isMetBy(firmware) ->
+                "${action.name} needs PebbleOS ${support.minFirmware} or later, the watch runs ${firmware.stringVersion}"
+            else -> null
+        }
+    }
 
     private fun squash(s: String) = s.filterNot { it.isWhitespace() || it == '-' || it == '_' }.lowercase()
 }
