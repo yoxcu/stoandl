@@ -1784,6 +1784,9 @@ class PebbleIntegration(
             resolveAppUuid = { q -> resolve(libPebble, q).map { it.properties.id }.distinct().singleOrNull() },
             appName = { uuid -> allApps(libPebble).firstOrNull { it.properties.id == uuid }?.properties?.title },
             syncPinnedPref = ::syncPinnedWatchPref,
+            connectedFirmware = {
+                libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
+            },
         )
         watchPrefsControlRef.set(control)
         log.info {

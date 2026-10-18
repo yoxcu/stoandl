@@ -16,9 +16,11 @@ import io.rebble.libpebblecommon.database.entity.RgbColorWatchPref
 import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefEnum
+import io.rebble.libpebblecommon.services.FirmwareVersion
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
@@ -48,15 +50,28 @@ class WatchPrefsControl(
      * Null in tests / when there is no config file to keep in step with.
      */
     private val syncPinnedPref: ((id: String, raw: String) -> Unit)? = null,
+    /** The connected watch's running firmware, or null when none is connected (or in tests). */
+    private val connectedFirmware: () -> FirmwareVersion? = { null },
 ) {
+    /** `<id>@<firmware>` pins already reported as too new for the watch, so a reconnect logs them at DEBUG. */
+    private val tooNewReported: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     /** Apply every configured `watch.<id> = value`. Unknown ids / bad values are logged and skipped
-     *  (one bad entry never blocks the rest). Called on each connect so config stays authoritative. */
+     *  (one bad entry never blocks the rest). Called on each connect so config stays authoritative.
+     *  A pin the connected firmware is too old for is skipped: that firmware rejects the key. */
     fun applyConfigured(prefs: Map<String, String>) {
         if (prefs.isEmpty()) return
+        val firmware = connectedFirmware()
         prefs.forEach { (id, raw) ->
             val pref = WatchPref.from(id)
             if (pref == null) {
                 log.warn { "Unknown watch pref '$id' in config — ignoring (try 'stoandl settings')" }
+                return@forEach
+            }
+            val tooOld = tooOldFor(pref, firmware)
+            if (tooOld != null) {
+                val message = "Not applying watch pref $id: $tooOld"
+                if (tooNewReported.add("$id@${firmware?.stringVersion}")) log.info { message } else log.debug { message }
                 return@forEach
             }
             try {
@@ -76,7 +91,9 @@ class WatchPrefsControl(
             libPebble.setWatchPref(wp)
             // Keep a pinned `watch.<id>` in stoandl.conf in step, else it would revert this on reconnect.
             syncPinnedPref?.invoke(pref.id, raw.trim())
-            "ok:Set ${pref.id} = ${format(pref, wp.valueOrDefault())} (syncs to the watch on next connect)"
+            val sync = tooOldFor(pref, connectedFirmware())?.let { "$it; it syncs once the watch is updated" }
+                ?: "syncs to the watch on next connect"
+            "ok:Set ${pref.id} = ${format(pref, wp.valueOrDefault())} ($sync)"
         } catch (e: IllegalArgumentException) {
             "error:${e.message}"
         } catch (e: Exception) {
@@ -98,16 +115,35 @@ class WatchPrefsControl(
                 allowed(pref),
                 if (pref.isDebugSetting) "debug" else "",
                 pref.displayName,
-                listOfNotNull(pref.description, DESCRIPTION_NOTES[pref.id]).joinToString(" ").replace('\t', ' '),
+                describe(pref).replace('\t', ' '),
             ).joinToString("\t")
         }
     }
 
-    private companion object {
+    internal companion object {
         /** What stoandl adds to libpebble3's description where the firmware changed what a pref does. */
-        val DESCRIPTION_NOTES = listOf(EnumWatchPref.SystemTextSize, EnumWatchPref.NotificationTextSize).associate {
-            it.id to "Needs PebbleOS 4.39 or later; older firmware ignores it, so change the size on the watch. " +
-                "Extra Large is set on the watch only."
+        private val DESCRIPTION_NOTES = listOf(EnumWatchPref.SystemTextSize, EnumWatchPref.NotificationTextSize).associate {
+            it.id to "On older firmware change the size on the watch. Extra Large is set on the watch only."
+        }
+
+        /** Why [firmware] can't take [pref] (it rejects keys newer than its whitelist), or null when it can. */
+        fun tooOldFor(pref: WatchPref<*>, firmware: FirmwareVersion?): String? {
+            val min = pref.minFirmware ?: return null
+            if (firmware == null || min.isMetBy(firmware)) return null
+            return "needs PebbleOS $min or later, the watch runs ${firmware.stringVersion}"
+        }
+
+        /** libpebble3's description, the firmware it needs (from [WatchPref.minFirmware], unless the description
+         *  already says so), stoandl's note and [extra], as sentences. */
+        fun describe(pref: WatchPref<*>, extra: String? = null): String {
+            val description = pref.description
+            val needs = pref.minFirmware?.let { "Needs PebbleOS $it or later." }
+                ?.takeUnless { description != null && "PebbleOS ${pref.minFirmware}" in description }
+            val notes = listOfNotNull(needs, DESCRIPTION_NOTES[pref.id], extra)
+            if (description.isNullOrBlank()) return notes.joinToString(" ")
+            if (notes.isEmpty()) return description
+            val sentence = if (description.trimEnd().last() in ".!?") description.trimEnd() else "${description.trimEnd()}."
+            return (listOf(sentence) + notes).joinToString(" ")
         }
     }
 

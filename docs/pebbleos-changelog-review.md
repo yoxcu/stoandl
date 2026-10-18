@@ -268,7 +268,7 @@ through 4.41.2), and the split text-size keys (`d6dd9e8`; fw `67e6af4c9` whiteli
 #### Open items as of review 6 (additions to review 5's list, which still stands except where corrected)
 
 1. 🔴 **Fork + host:** `HRMonitoringInterval.FiveMin(4)` + a tolerant `fromInt` + a `5min` choice (fw ≥4.39.0). _Implemented — to be tested ([TESTING §5.63](../TESTING.md)); an unknown code is kept verbatim, not defaulted._
-2. 🟢 **Fork prefs:** `dndNotificationBacklight` (fw ≥4.41.0; older fw rejects the key), plus review 5's VibeScore 15–20, still open.
+2. 🟢 **Fork prefs:** `dndNotificationBacklight` (fw ≥4.41.0; older fw rejects the key). _Implemented — to be tested ([TESTING §5.64](../TESTING.md)); the fork's new `WatchPref.minFirmware` keeps it (and the 4.39 text sizes) off older watches._ Review 5's VibeScore 15–20 is still open.
 3. 🟢 **Host:** add the QL Toggle Touch UUID to the §5.2 table; per-watchface drain attribution from the heartbeat.
 4. 🟢 **Optional:** notification window state (bit 26); SpO2 parse, export and prefs; host MPRIS debounce and a
    `Disabled`→`Error` mapping for <4.39/4.40 watches.

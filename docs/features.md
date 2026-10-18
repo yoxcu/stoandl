@@ -116,6 +116,14 @@ notification timeout can't be set below 15 s (shorter ones vanish without a vibe
 two settings, `systemTextSize` and `notifTextSize` (upstream PR #443, cherry-picked), which the phone can
 set from fw 4.39; the old `textStyle` is gone.
 
+_Implemented — to be tested ([TESTING.md §5.64](../TESTING.md)):_ `dndNotificationBacklight` (PebbleOS 4.41),
+the Quiet Time switch that stops notifications lighting the screen, listed under Quiet Time in the GUI.
+A setting a firmware release introduced carries that release in libpebble3 (`WatchPref.minFirmware`, a fork
+addition: this one, the 4.39 text sizes, and the 4.22–4.37 keys `lightPreset`, `lightDynamicMode`,
+`language`, `musicShowAlbumArt`, `dndAutoDismiss` and `unitsWind`): libpebble3 doesn't send it to an older watch, which would
+reject the key and have it re-sent on every connect, stoandl skips a `watch.*` pin for it on such a watch
+and says so on `settings set`, and `stoandl settings` names the release in its description.
+
 _Implemented — to be tested ([TESTING.md §5.5q](../TESTING.md)):_ quick-launch buttons also take the
 firmware system actions the official app offers — Quiet Time, Backlight, Motion Backlight, Airplane Mode,
 Timeline Past, Timeline Future — by name in the CLI and config and from the GUI's dropdown, and list them

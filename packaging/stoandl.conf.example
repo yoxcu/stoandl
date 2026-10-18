@@ -147,6 +147,7 @@ weather.interval = 30
 # watch.systemTextSize = Larger   # fw >= 4.39 (notifications: watch.notifTextSize); see docs/configuration.md
 # watch.dndWeekdayScheduleEnabled = true   # turns the Mon-Fri Quiet Time schedule on (off by default)
 # watch.dndWeekdaySchedule = 22:00-07:00   # its hours (HH:MM-HH:MM; end < start runs overnight)
+# watch.dndNotificationBacklight = false   # fw >= 4.41: notifications don't light the screen in Quiet Time
 
 # Optional: add a "current location" entry from GeoClue2 at city level (cell towers / Wi-Fi, no GPS).
 # It's shown first on the watch and re-resolved every refresh. The place name is reverse-geocoded

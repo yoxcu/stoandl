@@ -2292,6 +2292,21 @@ Off-device: `HealthProfileTest`, fork `HrmPreferencesValueTest`.
 | 5.63c | Set from the host | `stoandl health profile set hrm_interval 5min` (or pick 5min in the GUI) while on another interval | `ok:`; the watch's Health settings show 5 Minutes after it syncs, and `stoandl health hr` shows samples about 5 min apart over the next hour. |
 | 5.63d | Old firmware refused | a watch on fw < 4.39.0 connected (or none connected): `stoandl health profile set hrm_interval 5min` | `error:<watch> runs firmware v4.38.x; the 5-minute interval needs 4.39.0 or newer …` (or `Connect the watch first …`). `stoandl health profile` lists `hrm_interval` without `5min` in its choices, and the GUI's Measurement interval combo doesn't offer it (it appears once a 4.39+ watch connects, without reopening the page). Nothing reaches the watch. |
 
+## 5.64 Quiet Time notification backlight (`dndNotificationBacklight`)  ⚠️ UNVERIFIED (needs a watch on fw ≥ 4.41.0; 5.64d a watch on older fw)
+
+PebbleOS 4.41.0 (`601bd0836`) added `dndNotificationBacklight` (bool, default true) to its settings whitelist.
+The fork lists it as a `BoolWatchPref` with `minFirmware` 4.41, and doesn't send it (nor the 4.39 text
+sizes, nor the keys whitelisted in 4.22–4.37) to older firmware, which rejects the key. stoandl skips a pin for it on such a watch. Off-device:
+`WatchPrefsControlTest`, fork `WatchPrefMinFirmwareTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.64a | Listed | `stoandl settings dnd`; the GUI's Watch settings | `dndNotificationBacklight` is a `bool`, `true`/`true`, described "Turn on the backlight when a notification arrives during Quiet Time. Needs PebbleOS 4.41 or later." (4.41 once). The GUI shows it in the Quiet Time section. |
+| 5.64b | Set from the host | Quiet Time on (`settings set dndManuallyEnabled true`), `settings set dndNotificationBacklight false`, then send a desktop notification in the dark | `ok:… (syncs to the watch on next connect)`. The notification shows without the backlight; the watch's Settings → Quiet Time shows the option off. Set it back to `true`: the next notification lights the screen. |
+| 5.64c | Set on the watch | toggle the option in the watch's Quiet Time settings | `stoandl settings dndNotificationBacklight` follows within a few seconds. |
+| 5.64d | Older firmware | a watch on fw < 4.41.0: `watch.dndNotificationBacklight = false` in stoandl.conf, restart, reconnect twice; then `settings set dndNotificationBacklight false` | One INFO `Not applying watch pref dndNotificationBacklight: needs PebbleOS 4.41 or later, the watch runs v4.40.x`, later connects at DEBUG; no `Rejecting non-whitelisted setting` in the watch logs (`stoandl logs`), and with `STOANDL_LOG=DEBUG` a `Not sending watch pref dndNotificationBacklight` instead of an insert. `settings set` answers `ok:… needs PebbleOS 4.41 or later, the watch runs v4.40.x; it syncs once the watch is updated`. Other pins still apply. |
+| 5.64e | After the update | update that watch to ≥ 4.41.0 and reconnect | The stored value reaches the watch (5.64b's behaviour) without setting it again. |
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

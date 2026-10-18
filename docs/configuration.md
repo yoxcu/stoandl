@@ -572,6 +572,7 @@ watch.qlBack = off
 watch.qlSelect = Backlight
 watch.systemTextSize = Larger   # fw >= 4.39, see below
 watch.notifTextSize = SameAsSystem
+watch.dndNotificationBacklight = false   # fw >= 4.41, see below
 ```
 
 A quick-launch button (`qlUp`, `qlDown`, `qlSelect`, `qlBack`, the `qlCombo…` holds and the
@@ -585,6 +586,15 @@ Text size is two settings: `systemTextSize` (menus and the launcher) and `notifT
 `SameAsSystem` follows the system size). The phone can set them from PebbleOS 4.39 on; older firmware
 ignores both, so set the size on the watch there. Extra Large is set on the watch only (libpebble3 has
 no value for it). The old `textStyle` key is gone: a `watch.textStyle` pin is ignored.
+
+`dndNotificationBacklight` (default `true`) decides whether a notification turns the backlight on
+during Quiet Time; `false` keeps the screen dark. It needs PebbleOS 4.41 or later. Older firmware
+rejects the key, so stoandl doesn't send it there: a `watch.dndNotificationBacklight` pin is skipped on
+each connect to such a watch (logged once per firmware version), and `settings set` stores the value and
+says it syncs once the watch is updated. Every setting a later release added to the watch's whitelist is
+held back the same way on older firmware: `lightPreset` and `lightDynamicMode` (4.22), `language` (4.28),
+`musicShowAlbumArt` (4.34), `dndAutoDismiss` and `unitsWind` (4.37), and the split text sizes (4.39).
+`stoandl settings` shows the firmware a setting needs in its description.
 
 Values are parsed per the setting's type: booleans (`true`/`false`), numbers (validated against the
 setting's range), enums (by name — `stoandl settings` shows the choices), quick-launch (an app name/UUID, or

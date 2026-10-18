@@ -19,7 +19,7 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 **Review 6 (2026-10-17, v4.38.2 → v4.41.2)** adds a few items and is recorded only in the review log
 ([docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md) § Review 6):
 - a fork fix for the watch's new 5-minute HR interval, which the fork rejected (implemented, to be tested: TESTING §5.63);
-- the `dndNotificationBacklight` pref;
+- the `dndNotificationBacklight` pref (implemented, to be tested: TESTING §5.64);
 - the Toggle Touch Quick Launch action (§5.2);
 - optional SpO2 and notification-window-state support;
 - dropping live HR via `0x180D` (§5.4);
@@ -201,7 +201,7 @@ These are commonMain, self-contained, and a safer interim than the 517-commit bu
 | `7de45f8a` → `42cbc5a4` | Watch sleep card (typicals, seconds-of-day) | Order matters. |
 | `cf8f33e4` | Weather UTF-8 string length | §1.3. |
 | `WatchPrefEntity.kt` diff `e4180ffc..433fef18` (185 lines, one file) | New prefs (QT schedule, `dndAutoDismiss`, `musicShowAlbumArt`, `lightPreset`, `lightDynamicMode`, `unitsWind`, `language`); removes the dead ones; notification-timeout min 15 s | Brings the new `ScheduleWatchPref` type, so `WatchPrefsControl` and both GUIs need the §4.1 work. Trim `WatchLanguage` to Custom/English for fw ≥4.38. |
-| fork-only patch | `VibeScore` 15-20 (DoublePulseMedium, PebbleMorse, Heartbeat, DoubleTap, Wave, Imperial) + `dndTouchBacklight` | Not upstream. The patterns exist only on Core boards with fw ≥4.38.0. Also fixes a display bug: a watch-picked id ≥15 decodes to the default, so a pinned `watch.vibeScore*` overwrites it. |
+| fork-only patch | `VibeScore` 15-20 (DoublePulseMedium, PebbleMorse, Heartbeat, DoubleTap, Wave, Imperial) + `dndTouchBacklight` | Not upstream. The patterns exist only on Core boards with fw ≥4.38.0. Also fixes a display bug: a watch-picked id ≥15 decodes to the default, so a pinned `watch.vibeScore*` overwrites it. `dndTouchBacklight` needs no `minFirmware`: every whitelist since v4.9.179 has it. |
 
 ---
 
