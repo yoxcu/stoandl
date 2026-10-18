@@ -831,3 +831,10 @@ timestamps are unix epoch seconds. Both halves are local-only (no egress), so th
 | `health.export` | `true` | Project the synced data to NDJSON under `~/.config/stoandl/health/` whenever new data arrives. |
 | `health.export_samples` | `false` | Also write minute-level samples (steps + heart rate per minute). Much higher volume than the daily summary, so off by default. |
 | `health.export_days` | `30` | How many days back each export re-projects (the daily/activities/samples window). Days already written outside the window stay in place. |
+
+**Health profile.** The watch's own tracking settings are not stoandl keys: they live on the watch and
+stoandl edits them with `stoandl health profile set <key> <value>` (GUI: Settings → Health profile).
+`hrm_interval` takes `5min`, `10min`, `30min`, `1h` or `off`. `5min` arrived in PebbleOS 4.39.0, so
+stoandl refuses it unless every connected watch runs 4.39.0 or newer, and asks you to connect the
+watch first when none is; older firmware would treat it as invalid and show and measure 10 minutes. A
+5-minute interval picked on the watch itself is kept as is.

@@ -686,7 +686,7 @@ private fun healthProfile(args: List<String>) {
         val value = args.drop(2).joinToString(" ")
         if (key.isNullOrBlank() || value.isBlank()) {
             System.err.println("Usage: stoandl health profile set <key> <value>\n" +
-                "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (10min/30min/1h/off), hrm_activity (on/off),\n" +
+                "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (5min/10min/30min/1h/off; 5min needs fw 4.39.0+), hrm_activity (on/off),\n" +
                 "        units (metric/imperial), height_cm, weight_kg, age, gender (female/male/other), resting_hr, max_hr")
             System.exit(1); return
         }
@@ -701,9 +701,13 @@ private fun healthProfile(args: List<String>) {
             System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
         }
         if (records.isEmpty()) { println("No health profile available (is a health-capable watch set up?)"); return }
-        val rows = records.mapNotNull { val f = it.split('\t'); if (f.size < 2) null else f[0] to f[1] }
-        val w = rows.maxOf { it.first.length }
-        rows.forEach { (k, v) -> println("  ${k.padEnd(w)}  $v") }
+        // A third field lists the values the daemon accepts for that key right now.
+        val rows = records.mapNotNull { val f = it.split('\t'); if (f.size < 2) null else f }
+        val w = rows.maxOf { it[0].length }
+        rows.forEach { f ->
+            val choices = f.getOrNull(2)?.takeIf { it.isNotBlank() }?.let { "   ($it)" } ?: ""
+            println("  ${f[0].padEnd(w)}  ${f[1]}$choices")
+        }
         println("\nSet one with:  stoandl health profile set <key> <value>")
     }
 }

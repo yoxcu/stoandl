@@ -2277,6 +2277,21 @@ an add field. Off-device: `ConfListTest`, `ConfigSchemaTest`; the GUI smoke chec
 | 5.62c | GUI editor | Settings → Daemon configuration → Notifications → Canned replies: add `Not now, sorry`, move it to the top, edit a row, remove a row | Each edit applies at once (no toast); `daemon get` follows, with `\,` in the added item; Calls & contacts → Dialer apps and Weather → Locations use the same editor. |
 | 5.62d | On the wrist | after 5.62b, reply to a NeoChat notification on the watch | The Reply list shows `Sure, see you then` as one item; choosing it sends that text with its comma. |
 
+## 5.63 5-minute heart-rate interval  ⚠️ UNVERIFIED (needs an HRM watch on fw ≥ 4.39.0; 5.63d a watch on older fw)
+
+PebbleOS 4.39.0 (`2edd1c78c`) added `HRMonitoringInterval_5Min` = 4. The fork's `HRMonitoringInterval`
+gains `FiveMin(4)`, its lookup no longer throws on a code it can't name, and such a code is kept and sent back
+verbatim. The health profile's `hrm_interval` accepts `5min`, gated on the connected watch's running firmware;
+`GetHealthProfile` advertises the accepted intervals and the GUI offers only those.
+Off-device: `HealthProfileTest`, fork `HrmPreferencesValueTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.63a | 5 min chosen on the watch | watch connected; on the watch, Settings → Health → Heart Rate interval → 5 Minutes | No `Failed to decode health settings blob for key: hrmPreferences` in the log. `stoandl health profile` shows `hrm_interval 5min`, and so does the GUI's Health profile page. |
+| 5.63b | It sticks | after 5.63a, `stoandl health profile set hrm off`, then `set hrm on` | The watch's own setting still reads 5 Minutes after each sync; `stoandl health profile` keeps `5min`. |
+| 5.63c | Set from the host | `stoandl health profile set hrm_interval 5min` (or pick 5min in the GUI) while on another interval | `ok:`; the watch's Health settings show 5 Minutes after it syncs, and `stoandl health hr` shows samples about 5 min apart over the next hour. |
+| 5.63d | Old firmware refused | a watch on fw < 4.39.0 connected (or none connected): `stoandl health profile set hrm_interval 5min` | `error:<watch> runs firmware v4.38.x; the 5-minute interval needs 4.39.0 or newer …` (or `Connect the watch first …`). `stoandl health profile` lists `hrm_interval` without `5min` in its choices, and the GUI's Measurement interval combo doesn't offer it (it appears once a 4.39+ watch connects, without reopening the page). Nothing reaches the watch. |
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

@@ -774,6 +774,18 @@ first run) moves a watchface to the top of the locker order when it becomes the 
 live. Off-device: `HealthProfileTest`, `MprisSkipTest`, `LibPebbleConfigProjectionTest`.
 _Implemented — to be tested ([TESTING.md §5.54](../TESTING.md))._
 
+### 5-minute heart-rate interval
+
+PebbleOS 4.39.0 added a 5-minute heart-rate measurement interval (code 4 in its `HRMonitoringInterval`).
+libpebble3 knew only codes 0–3 and threw on any other, so when the watch synced 5 minutes stoandl answered
+"invalid data", kept the old interval and later wrote it back to the watch. The fork now names 5 minutes, and
+it keeps any interval code a newer firmware adds as is (it is sent back unchanged until someone picks a
+different interval) instead of throwing. `stoandl health profile set hrm_interval 5min` and the GUI's Health
+profile page offer it; with no watch connected, or one older than 4.39.0, the daemon refuses it and says why,
+and `GetHealthProfile` leaves it out of the intervals it advertises, so the GUI doesn't offer it.
+Off-device: `HealthProfileTest`, fork `HrmPreferencesValueTest`.
+_Implemented — to be tested ([TESTING.md §5.63](../TESTING.md))._
+
 ### Factory reset / reset to recovery
 
 Reset the connected watch — the companion to the firmware tooling, for un-bricking a bad flash or

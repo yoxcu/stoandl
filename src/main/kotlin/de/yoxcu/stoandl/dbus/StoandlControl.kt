@@ -298,7 +298,8 @@ interface StoandlControl : DBusInterface {
     /** The watch's health *profile* (its own activity-tracking configuration, written to the watch's
      *  HealthParams BlobDB — distinct from the read-only data sync). Each entry is tab-separated
      *  `key \t value`; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval`
-     *  (`10min`/`30min`/`1h`/`off`), `hrm_activity` (continuous HR during detected walks and runs), `units` (`metric`/`imperial`; also the unit weather is sent in),
+     *  (`5min`/`10min`/`30min`/`1h`/`off`; setting `5min` needs a connected watch on firmware 4.39.0+, so its
+     *  record carries a third field: the intervals [SetHealthProfile] accepts now, `|`-joined), `hrm_activity` (continuous HR during detected walks and runs), `units` (`metric`/`imperial`; also the unit weather is sent in),
      *  `height_cm`, `weight_kg`, `age`, `gender` (`female`/`male`/`other`), `resting_hr`, `max_hr`.
      *  Empty if libPebble isn't ready. */
     fun GetHealthProfile(): List<String>

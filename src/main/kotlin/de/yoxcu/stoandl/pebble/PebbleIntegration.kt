@@ -3351,8 +3351,13 @@ private class StoandlControlImpl(
             log.warn(e) { "healthSettings read failed" }
             return emptyList()
         }
-        return healthProfileRecords(s)
+        return healthProfileRecords(s, connectedFirmwareTags(lp))
     }
+
+    /** Each connected watch's display name → its running firmware tag, for the health-profile gates. */
+    private fun connectedFirmwareTags(lp: LibPebble): Map<String, String> =
+        lp.watches.value.filterIsInstance<ConnectedPebbleDevice>()
+            .associate { it.displayName() to it.watchInfo.runningFwVersion.stringVersion }
 
     override fun SetHealthProfile(key: String, value: String): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
@@ -3363,6 +3368,7 @@ private class StoandlControlImpl(
         }
         val v = value.trim()
         val next = applyHealthProfileKey(cur, key, v).getOrElse { return "error:${it.message}" }
+        healthProfileRefusal(cur, next, connectedFirmwareTags(lp))?.let { return "error:$it" }
         return try {
             lp.updateHealthSettings(next)
             log.info { "Health profile: set $key = $v" }

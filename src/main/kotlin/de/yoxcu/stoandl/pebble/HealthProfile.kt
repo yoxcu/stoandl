@@ -1,25 +1,38 @@
 package de.yoxcu.stoandl.pebble
 
+import de.yoxcu.stoandl.firmware.FirmwareTag
 import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
 import io.rebble.libpebblecommon.database.entity.HealthGender
 import io.rebble.libpebblecommon.health.HealthSettings
 import java.util.Locale
 
-/** The `key \t value` records of `GetHealthProfile`, in display order. */
-internal fun healthProfileRecords(s: HealthSettings): List<String> {
+/** The `hrm_interval` spelling of each interval, in display order. */
+private val HRM_INTERVAL_NAMES = listOf(
+    HRMonitoringInterval.FiveMin to "5min",
+    HRMonitoringInterval.TenMin to "10min",
+    HRMonitoringInterval.ThirtyMin to "30min",
+    HRMonitoringInterval.OneHour to "1h",
+    HRMonitoringInterval.Disabled to "off",
+)
+
+private fun HRMonitoringInterval.profileName() = HRM_INTERVAL_NAMES.first { it.first == this }.second
+
+/**
+ * The `key \t value` records of `GetHealthProfile`, in display order. The `hrm_interval` record has a
+ * third field: the intervals `SetHealthProfile` accepts right now, `|`-joined ([connected] as for
+ * [healthProfileRefusal]), so a client offers only those.
+ */
+internal fun healthProfileRecords(s: HealthSettings, connected: Map<String, String>): List<String> {
     fun b(v: Boolean) = if (v) "on" else "off"
-    val interval = when (s.hrmMeasurementInterval) {
-        HRMonitoringInterval.TenMin -> "10min"
-        HRMonitoringInterval.ThirtyMin -> "30min"
-        HRMonitoringInterval.OneHour -> "1h"
-        HRMonitoringInterval.Disabled -> "off"
-    }
+    val choices = HRM_INTERVAL_NAMES
+        .filter { (interval, _) -> intervalRefusal(s.hrmMeasurementInterval, interval, connected) == null }
+        .joinToString("|") { it.second }
     return listOf(
         "tracking\t${b(s.trackingEnabled)}",
         "activity_insights\t${b(s.activityInsightsEnabled)}",
         "sleep_insights\t${b(s.sleepInsightsEnabled)}",
         "hrm\t${b(s.hrmEnabled)}",
-        "hrm_interval\t$interval",
+        "hrm_interval\t${s.hrmMeasurementInterval.profileName()}\t$choices",
         "hrm_activity\t${b(s.hrmActivityTrackingEnabled)}",
         "units\t${if (s.imperialUnits) "imperial" else "metric"}",
         "height_cm\t${s.heightMm / 10}",
@@ -47,11 +60,12 @@ internal fun applyHealthProfileKey(cur: HealthSettings, key: String, value: Stri
         "sleep_insights" -> cur.copy(sleepInsightsEnabled = bool(v) ?: return err(onOff))
         "hrm" -> cur.copy(hrmEnabled = bool(v) ?: return err(onOff))
         "hrm_interval" -> cur.copy(hrmMeasurementInterval = when (v.lowercase()) {
+            "5min", "5m" -> HRMonitoringInterval.FiveMin
             "10min", "10m" -> HRMonitoringInterval.TenMin
             "30min", "30m" -> HRMonitoringInterval.ThirtyMin
             "1h", "60min", "1hr" -> HRMonitoringInterval.OneHour
             "off", "disabled" -> HRMonitoringInterval.Disabled
-            else -> return err("Expected 10min/30min/1h/off")
+            else -> return err("Expected 5min/10min/30min/1h/off")
         })
         "hrm_activity" -> cur.copy(hrmActivityTrackingEnabled = bool(v) ?: return err(onOff))
         "units" -> cur.copy(imperialUnits = when (v.lowercase()) {
@@ -75,4 +89,37 @@ internal fun applyHealthProfileKey(cur: HealthSettings, key: String, value: Stri
         else -> return err("Unknown health key '$key' (see 'stoandl health profile')")
     }
     return Result.success(next)
+}
+
+/** The firmware that added the 5-minute heart-rate interval (PebbleOS 2edd1c78c). */
+private val FW_HRM_FIVE_MIN = FirmwareTag(listOf(4, 39, 0, 0), null)
+
+/**
+ * Why [next] must not go to the watch, or null when it may. [connected] maps each connected watch's
+ * display name to its running firmware tag. Keeping 5 minutes (the watch chose it) while another key
+ * changes is fine.
+ */
+internal fun healthProfileRefusal(cur: HealthSettings, next: HealthSettings, connected: Map<String, String>): String? =
+    intervalRefusal(cur.hrmMeasurementInterval, next.hrmMeasurementInterval, connected)
+
+/**
+ * Why a switch from [current] to [next] must not go to the watch, or null when it may. The 5-minute
+ * interval needs firmware 4.39.0 on every connected watch; older firmware treats the code as invalid
+ * and shows and measures 10 minutes. With no watch connected the version can't be checked, so the
+ * switch waits for one.
+ */
+private fun intervalRefusal(
+    current: HRMonitoringInterval,
+    next: HRMonitoringInterval,
+    connected: Map<String, String>,
+): String? {
+    if (next != HRMonitoringInterval.FiveMin || current == HRMonitoringInterval.FiveMin) return null
+    if (connected.isEmpty()) {
+        return "Connect the watch first: 5min needs firmware 4.39.0 or newer, and stoandl checks the watch's version before sending it"
+    }
+    val old = connected.entries.firstOrNull { (_, fw) ->
+        val tag = FirmwareTag.parse(fw)
+        tag == null || tag.compareNumbers(FW_HRM_FIVE_MIN) < 0
+    } ?: return null
+    return "${old.key} runs firmware ${old.value}; the 5-minute interval needs 4.39.0 or newer (update the firmware, or pick 10min)"
 }

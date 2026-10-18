@@ -18,7 +18,7 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 
 **Review 6 (2026-10-17, v4.38.2 → v4.41.2)** adds a few items and is recorded only in the review log
 ([docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md) § Review 6):
-- a fork fix for the watch's new 5-minute HR interval, which the fork rejects today;
+- a fork fix for the watch's new 5-minute HR interval, which the fork rejected (implemented, to be tested: TESTING §5.63);
 - the `dndNotificationBacklight` pref;
 - the Toggle Touch Quick Launch action (§5.2);
 - optional SpO2 and notification-window-state support;
