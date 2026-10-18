@@ -529,6 +529,7 @@ stoandl settings                  # all settings (one row each)
 stoandl settings light            # filter by id/name substring
 stoandl settings set lightAmbientThreshold 200
 stoandl settings set qlUp "Music"  # hold-Up quick-launches the Music app (by name or UUID; "off" to clear)
+stoandl settings set qlDown "Quiet Time"  # or a system action, see below
 stoandl settings set clock24h true
 ```
 
@@ -539,9 +540,17 @@ watch.lightAmbientThreshold = 200
 watch.clock24h = true
 watch.qlUp = Music
 watch.qlBack = off
+watch.qlSelect = Backlight
 watch.systemTextSize = Larger   # fw >= 4.39, see below
 watch.notifTextSize = SameAsSystem
 ```
+
+A quick-launch button (`qlUp`, `qlDown`, `qlSelect`, `qlBack`, the `qlCombo…` holds and the
+`qlSingleClick…` taps) takes `off`, an app name or UUID, or one of the firmware's system actions, as the
+official app offers them: `Quiet Time`, `Backlight`, `Motion Backlight`, `Airplane Mode`,
+`Timeline Past`, `Timeline Future`. Case, spaces, `-` and `_` don't matter (`quiet-time`). An action name
+wins over an app with the same title; give that app's UUID instead. `stoandl settings ql` lists the
+defaults by name (hold Back: Quiet Time, tap Down: Timeline Future).
 
 Text size is two settings: `systemTextSize` (menus and the launcher) and `notifTextSize` (notifications;
 `SameAsSystem` follows the system size). The phone can set them from PebbleOS 4.39 on; older firmware

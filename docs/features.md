@@ -116,6 +116,11 @@ notification timeout can't be set below 15 s (shorter ones vanish without a vibe
 two settings, `systemTextSize` and `notifTextSize` (upstream PR #443, cherry-picked), which the phone can
 set from fw 4.39; the old `textStyle` is gone.
 
+_Implemented — to be tested ([TESTING.md §5.5q](../TESTING.md)):_ quick-launch buttons also take the
+firmware system actions the official app offers — Quiet Time, Backlight, Motion Backlight, Airplane Mode,
+Timeline Past, Timeline Future — by name in the CLI and config and from the GUI's dropdown, and list them
+by name (the hold-Back and tap-Down defaults showed as raw UUIDs before).
+
 ### Bluetooth Classic transport
 
 Classic-era Pebbles (Pebble Time / Time Steel; by class also the original Pebble / Steel and Time

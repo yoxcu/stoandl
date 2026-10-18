@@ -3,6 +3,7 @@
 package de.yoxcu.stoandl.pebble
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
@@ -153,8 +154,11 @@ class WatchPrefsControl(
         if (t.isEmpty() || t.equals("off", true) || t.equals("none", true) || t.equals("disabled", true)) {
             return QuickLaunchSetting(enabled = false, uuid = null)
         }
-        val uuid = resolveAppUuid(t)
-            ?: throw IllegalArgumentException("no single app matching '$t' for quick launch (name or UUID)")
+        val uuid = QuickLaunchActions.parse(t) ?: resolveAppUuid(t)
+            ?: throw IllegalArgumentException(
+                "no system action or single app matching '$t' for quick launch " +
+                    "(${QuickLaunchActions.names.joinToString(", ")}, or an app name or UUID)",
+            )
         return QuickLaunchSetting(enabled = true, uuid = uuid)
     }
 
@@ -190,7 +194,7 @@ class WatchPrefsControl(
         // for the CLI/GUI — round-trip-safe because [parseEnum] also accepts the display name and the
         // names are unique within each pref's option list. Pipe-joined (a display name can contain ',').
         is EnumWatchPref -> pref.options.joinToString("|") { it.displayName }
-        is QuicklaunchWatchPref -> "off|<app name or uuid>"
+        is QuicklaunchWatchPref -> (listOf("off") + QuickLaunchActions.names + "<app name or uuid>").joinToString("|")
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
         is ScheduleWatchPref -> "HH:MM-HH:MM"
     }
@@ -201,9 +205,40 @@ class WatchPrefsControl(
         is EnumWatchPref -> (value as? WatchPrefEnum)?.displayName ?: "?"
         is QuicklaunchWatchPref -> (value as? QuickLaunchSetting)?.let {
             val u = it.uuid
-            if (!it.enabled || u == null) "off" else (appName(u) ?: u.toString())
+            if (!it.enabled || u == null) "off" else (QuickLaunchActions.nameOf(u) ?: appName(u) ?: u.toString())
         } ?: "off"
         is RgbColorWatchPref -> (value as? UInt)?.let { "0x" + it.toString(16).padStart(6, '0').uppercase() } ?: "?"
         is ScheduleWatchPref -> (value as? QuietTimeSchedule)?.encode() ?: "?"
     }
+}
+
+/**
+ * The firmware system actions a quick-launch button can run instead of an app, named and ordered as the
+ * official app's picker lists them. They have no locker entry, so without this table they parsed as no
+ * app at all and listed as a raw UUID (the `qlBack` and `qlSingleClickDown` defaults among them).
+ * A name wins over a locker app of the same title; address that app by UUID.
+ */
+internal object QuickLaunchActions {
+    private val actions = listOf(
+        "Quiet Time" to SystemAppIDs.QUIET_TIME_TOGGLE_UUID,
+        "Backlight" to SystemAppIDs.BACKLIGHT_UUID,
+        "Motion Backlight" to SystemAppIDs.MOTION_BACKLIGHT_UUID,
+        "Airplane Mode" to SystemAppIDs.AIRPLANE_MODE_UUID,
+        "Timeline Past" to SystemAppIDs.TIMELINE_PAST_UUID,
+        "Timeline Future" to SystemAppIDs.TIMELINE_FUTURE_UUID,
+    )
+
+    val names: List<String> = actions.map { it.first }
+
+    /** An action by its name (case, spaces, `-` and `_` ignored: `quiet-time`, `AirplaneMode`) or its UUID. */
+    fun parse(raw: String): Uuid? {
+        val key = squash(raw)
+        actions.firstOrNull { squash(it.first) == key }?.let { return it.second }
+        val asUuid = runCatching { Uuid.parse(raw.trim()) }.getOrNull() ?: return null
+        return actions.firstOrNull { it.second == asUuid }?.second
+    }
+
+    fun nameOf(uuid: Uuid): String? = actions.firstOrNull { it.second == uuid }?.first
+
+    private fun squash(s: String) = s.filterNot { it.isWhitespace() || it == '-' || it == '_' }.lowercase()
 }

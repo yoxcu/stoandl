@@ -121,6 +121,7 @@ weather.interval = 30
 # watch.lightAmbientThreshold = 200
 # watch.clock24h = true
 # watch.qlUp = Music          # hold Up quick-launches Music (app name or UUID; "off" to clear)
+# watch.qlDown = Quiet Time   # or a system action: Quiet Time, Backlight, Motion Backlight, Airplane Mode, Timeline Past, Timeline Future
 # watch.systemTextSize = Larger   # fw >= 4.39 (notifications: watch.notifTextSize); see docs/configuration.md
 # watch.dndWeekdayScheduleEnabled = true   # turns the Mon-Fri Quiet Time schedule on (off by default)
 # watch.dndWeekdaySchedule = 22:00-07:00   # its hours (HH:MM-HH:MM; end < start runs overnight)

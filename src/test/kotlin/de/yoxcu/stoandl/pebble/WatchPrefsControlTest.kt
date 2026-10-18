@@ -1,14 +1,19 @@
 package de.yoxcu.stoandl.pebble
 
+import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.EnumWatchPref
+import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
+import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import kotlinx.coroutines.flow.flowOf
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /**
  * A notification timeout under 15 s makes a notification vanish at once and cancels its vibration on
@@ -17,9 +22,16 @@ import kotlin.test.assertTrue
  * pref against its own bounds, so there is no second copy of the 15 s here. These tests pin that the
  * floor reaches both the CLI/GUI path and the `watch.*` config pins.
  */
+@OptIn(ExperimentalUuidApi::class)
 class WatchPrefsControlTest {
     private val written = mutableListOf<WatchPreference<*>>()
-    private val control = WatchPrefsControl(fakeLibPebble(), resolveAppUuid = { null }, appName = { null })
+    private var listed: List<WatchPreference<*>> = listOf(WatchPreference(EnumWatchPref.SystemTextSize, null))
+    private val musicUuid = Uuid.parse("1f03293d-47af-4f28-b960-f2b02a6dd757")
+    private val control = WatchPrefsControl(
+        fakeLibPebble(),
+        resolveAppUuid = { if (it.equals("Music", true)) musicUuid else null },
+        appName = { if (it == musicUuid) "Music" else null },
+    )
 
     @Test
     fun `a notification timeout under 15 s is refused`() {
@@ -47,11 +59,61 @@ class WatchPrefsControlTest {
         assertContains(row[7], "4.39")
     }
 
+    @Test
+    fun `quick launch takes the firmware system actions by name`() {
+        assertEquals("ok:Set qlUp = Backlight (syncs to the watch on next connect)", control.setOne("qlUp", "Backlight"))
+        listOf("quiet time", "Motion-Backlight", "AirplaneMode", "timeline_past", "Timeline Future").forEach {
+            assertTrue(control.setOne("qlDown", it).startsWith("ok:"), it)
+        }
+        assertEquals(
+            listOf(
+                SystemAppIDs.BACKLIGHT_UUID, SystemAppIDs.QUIET_TIME_TOGGLE_UUID, SystemAppIDs.MOTION_BACKLIGHT_UUID,
+                SystemAppIDs.AIRPLANE_MODE_UUID, SystemAppIDs.TIMELINE_PAST_UUID, SystemAppIDs.TIMELINE_FUTURE_UUID,
+            ).map { QuickLaunchSetting(true, it) },
+            written.map { it.value },
+        )
+    }
+
+    /** No locker entry backs a system action, so its UUID (e.g. pinned in stoandl.conf) must parse on its own. */
+    @Test
+    fun `a system action's uuid is accepted and shown by name`() {
+        assertEquals(
+            "ok:Set qlSelect = Quiet Time (syncs to the watch on next connect)",
+            control.setOne("qlSelect", SystemAppIDs.QUIET_TIME_TOGGLE_UUID.toString()),
+        )
+    }
+
+    @Test
+    fun `apps, off and unknown names still behave as before`() {
+        assertEquals("ok:Set qlUp = Music (syncs to the watch on next connect)", control.setOne("qlUp", "Music"))
+        assertEquals("ok:Set qlUp = off (syncs to the watch on next connect)", control.setOne("qlUp", "off"))
+        assertEquals(listOf(QuickLaunchSetting(true, musicUuid), QuickLaunchSetting(false, null)), written.map { it.value })
+        val r = control.setOne("qlUp", "Timeline")
+        assertTrue(r.startsWith("error:"), r)
+        assertContains(r, "Quiet Time")
+    }
+
+    @Test
+    fun `quick launch defaults list by name and the actions are offered`() {
+        listed = listOf(
+            WatchPreference(QuicklaunchWatchPref.QlBack, null),
+            WatchPreference(QuicklaunchWatchPref.QlSingleClickDown, null),
+            WatchPreference(QuicklaunchWatchPref.QlUp, QuickLaunchSetting(true, SystemAppIDs.AIRPLANE_MODE_UUID)),
+        )
+        val rows = control.list().map { it.split('\t') }
+        assertEquals(listOf("Quiet Time", "Timeline Future", "Airplane Mode"), rows.map { it[2] })
+        assertEquals(listOf("Quiet Time", "Timeline Future", "off"), rows.map { it[3] })
+        assertEquals(
+            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|<app name or uuid>",
+            rows[0][4],
+        )
+    }
+
     private fun fakeLibPebble(): LibPebble =
         Proxy.newProxyInstance(LibPebble::class.java.classLoader, arrayOf(LibPebble::class.java)) { proxy, method, args ->
             when (method.name) {
                 "setWatchPref" -> written.add(args!![0] as WatchPreference<*>).let { null }
-                "getWatchPrefs" -> flowOf(listOf(WatchPreference(EnumWatchPref.SystemTextSize, null)))
+                "getWatchPrefs" -> flowOf(listed)
                 "toString" -> "fake LibPebble"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args?.firstOrNull()
