@@ -210,7 +210,7 @@ good for: [heartbeat-metrics.md](heartbeat-metrics.md).
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `ListApps` | `() → as` | Locker contents (apps + faces), one record each (see below). | `apps list` |
-| `GetAppIcon` | `(s) → s` | The menu icon of the installed app/face `<uuid>`, extracted **locally** from its cached `.pbw` (no network/appstore) and written as a PNG under `<configDir>/icons/<uuid>.png` (cached after first call). `ok:<abs png path>` / `none:` (no cached `.pbw`, no declared `menuIcon`, or undecodable) / `notready:` / `error:<msg>`. Fetched lazily per-row by the GUI (kept off `ListApps`). | *(GUI only)* |
+| `GetAppIcon` | `(s) → s` | The menu icon of the installed app/face `<uuid>`, extracted **locally** from its cached `.pbw` (no network/appstore) and written as a PNG under `<configDir>/icons/<uuid>.png` (cached after first call). A `none:` is cheap to repeat: the `pbw-cache` listing is kept until that directory's mtime changes, and a `.pbw` without a `menuIcon` isn't reopened. `ok:<abs png path>` / `none:` (no cached `.pbw`, no declared `menuIcon`, or undecodable) / `notready:` / `error:<msg>`. Fetched lazily per-row by the GUI (kept off `ListApps`). | *(GUI only)* |
 | `LaunchApp` | `(s) → s` | Launch app/face by UUID or name. `ok:`/`notfound:`/`ambiguous:`/`notready:`/`error:`. | `apps launch <name\|uuid>` |
 | `RemoveApp` | `(s) → s` | Uninstall app/face from the locker (system apps refused). | `apps remove <name\|uuid>` |
 | `SideloadApp` | `(s) → s` | Install a local `.pbw` (absolute daemon-side path). | `apps install <path.pbw>` (aliases `sideload`, `add`) |

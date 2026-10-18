@@ -27,12 +27,23 @@ private val log = KotlinLogging.logger {}
  * bytes are EITHER a PNG (passed through unchanged) or a Pebble GBitmap (decoded → RGBA → PNG).
  *
  * Results are cached at `<configDir>/icons/<uuid>.png`; a second request for the same app re-uses it.
+ * The GUI asks for every locker row on every rebuild and most rows (system apps, apps synced without a
+ * local `.pbw`) have no icon, so the `pbw-cache` listing and the `.pbw`s without a menu icon are
+ * remembered too (see [findCachedPbw]).
  */
 class AppIconExtractor(
     private val configDir: File = StoandlConfig.configDir(),
 ) {
     private val pbwCacheDir = File(configDir, "pbw-cache")
     private val iconDir = File(configDir, "icons")
+
+    /** One `pbw-cache` listing, `uuid → .pbw`, valid while the directory's mtime is [mtime]. */
+    private class Listing(val mtime: Long, val byUuid: Map<String, File>)
+    @Volatile private var listing: Listing? = null
+
+    /** `.pbw`s that declare no menu icon, so they aren't reopened: name (it carries the version), mtime
+     *  and size, since a sideload of the same version overwrites the file in place. */
+    private val noIcon = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     init {
         // Bust the icon cache when the extraction format changes (e.g. the upscale below) so stale
@@ -73,8 +84,14 @@ class AppIconExtractor(
             return null
         }
 
+        val pbwKey = "${pbwFile.name}:${pbwFile.lastModified()}:${pbwFile.length()}"
+        if (pbwKey in noIcon) return null
         return try {
-            val png = extractMenuIconPng(pbwFile) ?: return null
+            val png = extractMenuIconPng(pbwFile) ?: run {
+                // A clean "no icon" (not a read error, which may be a .pbw still being written).
+                noIcon.add(pbwKey)
+                return null
+            }
             iconDir.mkdirs()
             // Write atomically (tmp + rename) so a partial write never leaves a corrupt cache entry.
             val tmp = File(iconDir, "$uuid.png.tmp")
@@ -91,12 +108,22 @@ class AppIconExtractor(
         }
     }
 
-    /** Find `<uuid>_<version>.pbw` in the cache by UUID prefix (version-agnostic). */
-    private fun findCachedPbw(uuid: String): File? {
-        if (!pbwCacheDir.isDirectory) return null
-        val prefix = "${uuid}_"
-        return pbwCacheDir.listFiles()
-            ?.firstOrNull { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".pbw") }
+    /**
+     * Find `<uuid>_<version>.pbw` in the cache by UUID prefix (version-agnostic). The directory is listed
+     * once and re-listed only when its mtime changes, which every locker change that matters here does:
+     * libpebble3 adds a `.pbw` on install or update (also when that download finishes after the
+     * `LockerChanged` signal, which a signal-driven reset would miss) and deletes it on removal.
+     */
+    internal fun findCachedPbw(uuid: String): File? {
+        val mtime = pbwCacheDir.lastModified()  // 0 when the directory doesn't exist
+        if (mtime == 0L) return null
+        val current = listing?.takeIf { it.mtime == mtime } ?: Listing(
+            mtime,
+            pbwCacheDir.listFiles { f -> f.isFile && f.name.endsWith(".pbw") && '_' in f.name }.orEmpty()
+                .groupBy { it.name.substringBefore('_') }
+                .mapValues { (_, files) -> files.maxBy { it.name } },
+        ).also { listing = it }
+        return current.byUuid[uuid]
     }
 
     /** Open the `.pbw`, locate the menuIcon resource, extract+decode it, return PNG bytes (or null). */
