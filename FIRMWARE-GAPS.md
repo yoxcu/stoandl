@@ -16,6 +16,15 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 [TESTING §5.33](TESTING.md), and each item below names its own rows. Still open: the fork-only VibeScore patch
 (§2), §4 apart from §4.1 and §4.5, and §5 apart from the languages note.
 
+**Review 6 (2026-10-17, v4.38.2 → v4.41.2)** adds a few items and is recorded only in the review log
+([docs/pebbleos-changelog-review.md](docs/pebbleos-changelog-review.md) § Review 6):
+- a fork fix for the watch's new 5-minute HR interval, which the fork rejects today;
+- the `dndNotificationBacklight` pref;
+- the Toggle Touch Quick Launch action (§5.2);
+- optional SpO2 and notification-window-state support;
+- dropping live HR via `0x180D` (§5.4);
+- hardware re-tests on the 4.41.x watch.
+
 ## Sources and method
 
 - **Changelog.** The Notion changelog carries notes only for **v4.38.1** in this window. v4.37.0, v4.38.0,
@@ -486,7 +495,8 @@ ones a user sees); the others still need stoandl work.
   the defaults render as raw UUIDs.
 - **Sketch.** A static name ↔ UUID table: Quiet Time, Backlight, Motion Backlight, Airplane Mode
   (`SystemAppIDs.kt:27-30`), Timeline Past/Future (`:23-24`), Clear notifications
-  `d9c0d758-54bd-45b1-99ac-2a3a889350c9`, and Nothing `de6da17f-1a10-4725-adbb-1efc22e43f04` (fw ≥4.38.0).
+  `d9c0d758-54bd-45b1-99ac-2a3a889350c9`, Nothing `de6da17f-1a10-4725-adbb-1efc22e43f04` (fw ≥4.38.0), and
+  Toggle Touch `5cc5a4e8-150d-4ec3-9afc-965e3fdec3c3` (fw ≥4.39.0, touch boards only; review 6).
   Consult it in `resolveAppUuid`/`appName` (`PebbleIntegration.kt:1353-1357`) and list it in `allowed`.
 - **GUIs.** Add an "Actions" group, and label `off` honestly: it means "Unassigned", which opens the QL menu.
 - About 30 lines + the GUIs.
@@ -504,7 +514,9 @@ ones a user sees); the others still need stoandl work.
 
 - **Health profile toggle.** Expose `hrm_activity` (`hrmActivityTrackingEnabled`) in `Get/SetHealthProfile`;
   it drives 4.38's scene-adaptive activity HR.
-- **Live HR** via the watch's standard GATT Heart Rate service `0x180D`/`0x2A37`: 1 s notify, a per-device
+- **Live HR: dropped (review 6).** Not possible: NimBLE, which every Core board runs since 4.38, implements no GATT
+  Heart Rate Service (fw `e0ef66a3b`), so no `0x180D` is exposed. The original note follows for the record.
+  Live HR via the watch's standard GATT Heart Rate service `0x180D`/`0x2A37`: 1 s notify, a per-device
   on-watch permission prompt, HRM watches over BLE only. Implement BlueZ-direct from the daemon, or as a fork
   `HrmWatcher` modelled on `BatteryWatcher`. Default off (battery).
 - **"Watch fully charged" desktop alert** (`alerts.battery_full`), from battery level. The GATT level is
