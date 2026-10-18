@@ -46,6 +46,11 @@ notification.images = true
 # notification list, read in the app that posted it (when the app withdraws it), or closed by an
 # extension. A popup that only times out into the history stays on the watch. Local only, no egress.
 notification.sync_dismissals = true
+# An "Open" action on the watch for a desktop notification that opens its app when clicked (its default
+# action): choosing it opens the app as a click on the popup would, through plasmashell's
+# org.kde.NotificationManager.InvokeAction. Plasma only -- GNOME Shell lets no other program click a
+# notification, so the action never appears there. Local only, no egress; read live.
+notification.open_action = true
 # Minutes a reconnecting watch looks back for notifications it hasn't received — the ones posted while
 # it was disconnected (a phone that drops the Bluetooth link on every suspend and wakes for a push
 # message, a watch out of range). Never older than the daemon's start or the watch's pairing; what the

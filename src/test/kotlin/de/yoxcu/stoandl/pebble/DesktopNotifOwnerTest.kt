@@ -69,6 +69,23 @@ class DesktopNotifOwnerTest {
     }
 
     @Test
+    fun `Open is offered for a default action when the server can invoke it and the toggle is on`() {
+        val plasma = ServerCaps(invokeAction = true, invokeReply = false)
+        val actions = listOf("default" to "", "a" to "A", "b" to "B")
+        assertEquals(
+            listOf(NotifAction("a", "A"), NotifAction("b", "B"), NotifAction("default", OPEN_ACTION_LABEL)),
+            desktopWristActions(actions, plasma, openOn = true, max = 3),
+        )
+        // The app-action cap doesn't squeeze Open out.
+        assertEquals(NotifAction("default", OPEN_ACTION_LABEL), desktopWristActions(actions, plasma, openOn = true, max = 1).last())
+        assertEquals(listOf(NotifAction("a", "A"), NotifAction("b", "B")), desktopWristActions(actions, plasma, openOn = false, max = 3))
+        // No click action, or a server without InvokeAction (GNOME, portal/GTK sources): no Open.
+        assertEquals(emptyList(), desktopWristActions(listOf("inline-reply" to "Reply"), plasma, openOn = true, max = 3))
+        assertEquals(emptyList(), desktopWristActions(actions, ServerCaps.NONE, openOn = true, max = 3))
+        assertNull(openAction(listOf("a" to "A")))
+    }
+
+    @Test
     fun `removeOwner drops only that owner's routes`() {
         val t = NotifRouteTable()
         val a = Uuid.random(); val b = Uuid.random(); val c = Uuid.random()

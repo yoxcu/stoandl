@@ -29,6 +29,7 @@ private const val PORTAL_PATH = "/org/freedesktop/portal/desktop"
 private const val KDE_PORTAL_NAME = "org.freedesktop.impl.portal.desktop.kde"
 private const val KDE_NM_IFACE = "org.kde.NotificationManager"
 private const val INLINE_REPLY = "inline-reply"
+private const val DEFAULT_ACTION = "default"
 private const val MAX_DEAD = 512
 
 /**
@@ -109,7 +110,28 @@ internal data class ServerCaps(val invokeAction: Boolean, val invokeReply: Boole
 /** The actions of an FDO notification worth offering on the wrist: not the popup's click action
  *  (`default`) and not `inline-reply` (that one becomes the Reply action). */
 internal fun wristActions(actions: List<Pair<String, String>>, max: Int): List<Pair<String, String>> =
-    actions.filter { (key, label) -> key != "default" && key != INLINE_REPLY && label.isNotBlank() }.take(max)
+    actions.filter { (key, label) -> key != DEFAULT_ACTION && key != INLINE_REPLY && label.isNotBlank() }.take(max)
+
+/** The wrist's "Open" action: the popup's click action (`default`), offered when the app gave one. Its
+ *  label is fixed — apps label it "default", "Open", "View" or nothing, and the popup never shows it. */
+internal fun openAction(actions: List<Pair<String, String>>): Pair<String, String>? =
+    if (actions.any { it.first == DEFAULT_ACTION }) DEFAULT_ACTION to OPEN_ACTION_LABEL else null
+
+internal const val OPEN_ACTION_LABEL = "Open"
+
+/** The named wrist actions for a desktop notification: up to [max] app actions, then Open when [openOn].
+ *  All of them go through the server's `InvokeAction`, so none are offered when it lacks the method — a
+ *  button that always fails would be worse than none. */
+internal fun desktopWristActions(
+    actions: List<Pair<String, String>>,
+    caps: ServerCaps,
+    openOn: Boolean,
+    max: Int,
+): List<NotifAction> {
+    if (!caps.invokeAction) return emptyList()
+    val open = if (openOn) listOfNotNull(openAction(actions)) else emptyList()
+    return (wristActions(actions, max) + open).map { (key, label) -> NotifAction(key, label) }
+}
 
 /** The label the app gave its inline-reply action, if it has one. */
 internal fun inlineReplyLabel(actions: List<Pair<String, String>>): String? =
@@ -120,9 +142,10 @@ internal fun inlineReplyLabel(actions: List<Pair<String, String>>): String? =
  * - dismiss: FDO → `CloseNotification()` (the one spec method a non-owner may call), falling back to
  *   GNOME Shell's own object when GNOME's relay refuses an id that belongs to another client; PORTAL →
  *   the backend's `RemoveNotification`; GTK → `org.gtk.Notifications.RemoveNotification`;
- * - reply / named actions (FDO on Plasma only): `org.kde.NotificationManager.InvokeReply` / `InvokeAction`,
- *   which make the server deliver `NotificationReplied` / `ActionInvoked` to the app itself — the signals
- *   an app only accepts from the server.
+ * - reply / named actions / Open (FDO on Plasma only): `org.kde.NotificationManager.InvokeReply` /
+ *   `InvokeAction` (Open is `InvokeAction(id, "default")`, a click on the popup), which make the server
+ *   deliver `NotificationReplied` / `ActionInvoked` to the app itself — the signals an app only accepts
+ *   from the server. GNOME Shell has no such method, so none of them are offered there.
  *
  * Stale ids: FDO ids restart after the server restarts, so every FDO call first checks that the token's
  * server still owns the name, and [onEvent] drops all desktop routes when the owner changes. A notification

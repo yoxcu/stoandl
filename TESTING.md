@@ -2129,6 +2129,22 @@ shows what stoandl reads.
 | 5.51f | No graphical session | headless box or an ssh-only login, display off or none; `notify-send hi` | Forwarded (a text or ssh session never counts as in use). With no logind session at all the log says once `Can't tell whether the session is locked (…); notifications are forwarded`. |
 | 5.51g | Off | `stoandl daemon set notification.only_when_locked false`, repeat 5.51a | The watch buzzes (no restart). |
 
+## 5.52 Open a notification's app from the wrist  ⚠️ UNVERIFIED (needs a watch; Plasma)
+
+`notification.open_action` (default on) adds **Open** to a desktop notification that has a click action
+(`default`), invoked through `org.kde.NotificationManager.InvokeAction(id, "default")`. Off-device:
+`DesktopNotifOwnerTest` (when Open is offered). `notify-send -A default=Open -A b=Other hi` posts one with a
+click action (it waits for the action and prints its key).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.52a | Open | Plasma; a NeoChat or Telegram message (or the `notify-send -A` line above); on the watch open it → **Open** | The watch shows *Done*; the app comes to the front (or, on Wayland, at least asks for attention in the task bar); `notify-send` prints `default`. Log `Invoked action 'default' on D-Bus notification N`. |
+| 5.52b | Order | the `notify-send -A` notification | The action menu lists *Other*, then *Open* (then Mute, Dismiss). |
+| 5.52c | No click action | `notify-send -A b=Other hi` | No *Open* on the watch. |
+| 5.52d | Locked phone | on the op6, phone locked, a NeoChat message → **Open** on the watch | *Done*; after unlocking, NeoChat is open on that room. |
+| 5.52e | GNOME | the `notify-send -A` notification on GNOME | No *Open* (nor *Other*): GNOME Shell has no `InvokeAction`. |
+| 5.52f | Off | `stoandl daemon set notification.open_action false` (or the GUI toggle), new notification | No *Open* (no restart); *Other* still there. |
+
 ## 5.54 Watch toggles: HR during activities, podcast seek, face order  ⚠️ UNVERIFIED (needs a watch; 5.54a–b an HRM watch on fw ≥ 4.38)
 
 The health profile gains `hrm_activity` (libpebble3 `hrmActivityTrackingEnabled`, "HR During Activities" in

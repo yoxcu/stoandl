@@ -638,6 +638,21 @@ List settings keep `,` as the separator and take `\,` for a comma inside an item
 backslash; older files read unchanged), in `stoandl.conf`, `stoandl daemon set` and over D-Bus. The GUI
 edits every list setting (canned replies, dialer apps, contact files, weather locations) as one row per
 item, with add, remove and move up/down.
+
+### Open a notification's app from the wrist
+
+A desktop notification that opens its app when clicked (its `default` action — NeoChat, Telegram, a
+browser's web notification) gets an **Open** action on the watch. Choosing it opens the app as a click on
+the popup would: stoandl asks plasmashell to invoke the action (`org.kde.NotificationManager.InvokeAction(id,
+"default")`, the same method the app's other wrist actions use, in every Plasma since 5.19), and the watch
+shows *Done*. Toggle: `notification.open_action` (default on; the action only appears when the
+notification has a click action and the server supports it). On Wayland the app gets no activation token
+this way, so KWin may only flag it as wanting attention instead of raising it, and on a locked phone it opens
+behind the lock screen. Not on GNOME: GNOME Shell offers no method for another program to click a
+notification, and `ActionInvoked` is only accepted from the notification server, so the action never
+appears there; nor for portal/GTK notifications. Off-device: `DesktopNotifOwnerTest`.
+_Implemented — to be tested ([TESTING.md §5.52](../TESTING.md))._
+
 ### Notifications from sandboxed and GTK apps
 
 Two kinds of notification never reach `org.freedesktop.Notifications.Notify`, so the watch never saw

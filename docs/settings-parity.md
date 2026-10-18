@@ -46,6 +46,7 @@ back unchanged.
 | `notification.canned_replies` | list | ✓ | live | read per notification in `WatchNotifier.push` | — | `Ok,Yes,No,Call me,Call you later` |
 | `notification.forward` | toggle | Sync screen | live | read per push; `SetSyncEnabled("notifications", …)` | — | `true` |
 | `notification.only_when_locked` | toggle | ✓ | live | read per push in `WatchNotifier.push`; asks logind (`SessionLock`) only while on | — | `false` |
+| `notification.open_action` | toggle | ✓ | live | read per desktop notification in `DbusNotificationListenerConnection.forward` | — | `true` |
 | `notification.images` | toggle | ✓ | live | read per push; turning it off deletes the stored pictures | — | `true` |
 | `notification.sync_dismissals` | toggle | ✓ | live | read per desktop close / withdrawal | — | `true` |
 

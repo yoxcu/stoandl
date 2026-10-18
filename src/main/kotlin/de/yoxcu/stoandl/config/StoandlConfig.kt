@@ -54,6 +54,9 @@ data class StoandlConfig(
     /** Clear a notification from the watch when it's dismissed on the desktop or phone (closed by the user
      *  or the app, withdrawn through the portal/GTK, or closed by an extension). Local only; read live. */
     val notificationSyncDismissals: Boolean,
+    /** Offer "Open" on the wrist for a desktop notification with a click action (`default`), invoked
+     *  through Plasma's `org.kde.NotificationManager.InvokeAction`. Read per notification. */
+    val notificationOpenAction: Boolean,
     /** Show pictures attached to notifications (an extension's photo, a screenshot a notification links to)
      *  on watches that can (Pebble Time 2 / Round 2, firmware 4.35+). Never sender avatars. Read live;
      *  switching it off deletes the stored pictures. */
@@ -370,6 +373,7 @@ data class StoandlConfig(
             notificationForward = true,
             notificationOnlyWhenLocked = false,
             notificationSyncDismissals = true,
+            notificationOpenAction = true,
             notificationImages = true,
             notificationCatchUpMinutes = DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
             notificationCannedReplies = DEFAULT_CANNED_REPLIES,
@@ -482,6 +486,7 @@ data class StoandlConfig(
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
                 notificationOnlyWhenLocked = parseBool(map["notification.only_when_locked"]),
                 notificationSyncDismissals = map["notification.sync_dismissals"]?.let { parseBool(it) } ?: true,
+                notificationOpenAction = map["notification.open_action"]?.let { parseBool(it) } ?: true,
                 notificationImages = map["notification.images"]?.let { parseBool(it) } ?: true,
                 notificationCatchUpMinutes = map["notification.catch_up_minutes"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 1440L) ?: DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,

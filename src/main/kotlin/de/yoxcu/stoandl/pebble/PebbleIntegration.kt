@@ -590,6 +590,7 @@ class PebbleIntegration(
                     dialerNameCache = dialerNameCache,
                     watchNotifier = watchNotifier,
                     desktopOwner = desktopOwner,
+                    openActionOn = { configStore.current().notificationOpenAction },
                 )
             }
             // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
@@ -2451,6 +2452,8 @@ private class DbusNotificationListenerConnection(
     private val watchNotifier: WatchNotifier,
     // Delivers wrist dismiss/reply/actions back to the desktop, and tracks server restarts and closes.
     private val desktopOwner: DesktopNotifOwner,
+    /** `notification.open_action`, read per notification. */
+    private val openActionOn: () -> Boolean,
 ) : NotificationListenerConnection {
     private val log = KotlinLogging.logger {}
 
@@ -2496,9 +2499,7 @@ private class DbusNotificationListenerConnection(
         val caps = desktopOwner.capabilitiesFor(notification)
         val reply = inlineReplyLabel(notification.actions)
             ?.takeIf { caps.invokeReply }?.let { ReplySpec(label = it) }
-        val actions = if (caps.invokeAction) {
-            wristActions(notification.actions, MAX_WRIST_ACTIONS).map { (key, label) -> NotifAction(key, label) }
-        } else emptyList()
+        val actions = desktopWristActions(notification.actions, caps, openActionOn(), MAX_WRIST_ACTIONS)
         // Where the app name goes (notification.app_name), per-app mute/style and the "Mute" action
         // are applied in WatchNotifier. The desktop ref rides in the route as the owner token, so a
         // wrist dismiss/reply reaches the original notification.
@@ -2525,7 +2526,7 @@ private class DbusNotificationListenerConnection(
     }
 }
 
-/** App actions offered on the wrist besides Reply, Mute and Dismiss. */
+/** App actions offered on the wrist besides Reply, Open, Mute and Dismiss. */
 private const val MAX_WRIST_ACTIONS = 3
 
 /** How long a dialer notification waits for ModemManager to report the call it is about. */

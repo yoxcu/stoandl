@@ -303,6 +303,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("notification.sync_dismissals", G_NOTIF, "Clear dismissed notifications from the watch",
         "When a notification is closed on the desktop or phone (or its app withdraws it), it is removed " +
             "from the watch too. A popup that only times out stays.") { it.notificationSyncDismissals },
+    toggle("notification.open_action", G_NOTIF, "Open on the phone or computer",
+        "An \"Open\" action on the watch for a notification that opens its app when clicked: it opens the " +
+            "app as a click on the popup would. Plasma only; GNOME doesn't let another program do this.") { it.notificationOpenAction },
     int("notification.catch_up_minutes", G_NOTIF, "Catch up after a disconnect",
         "A reconnecting watch also gets the notifications it missed that are at most this old (never from " +
             "before the daemon started or the watch was paired). 0 = only ones posted after it reconnected.",
