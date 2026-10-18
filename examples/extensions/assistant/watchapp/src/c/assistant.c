@@ -253,6 +253,14 @@ static const char *header_for_state(void) {
   return s_question[0] ? s_question : "Claude";
 }
 
+// TextLayer's own content size comes from its layout cache, which drawing refreshes with the visible
+// part only, so a re-measure of the same text can return a stale, shorter height (the end of a long
+// answer then can't be scrolled to). Measure without a cache instead.
+static int16_t measure_text(const char *text, GFont font, int16_t w) {
+  return graphics_text_layout_get_content_size(text, font, GRect(0, 0, w, MEASURE_H), GTextOverflowModeWordWrap,
+                                               GTextAlignmentLeft).h + 4;
+}
+
 static void relayout(void) {
   if (!s_scroll) {
     return;
@@ -262,8 +270,7 @@ static void relayout(void) {
 
   text_layer_set_text(s_header, header_for_state());
   text_layer_set_font(s_header, header_font());
-  layer_set_frame(text_layer_get_layer(s_header), GRect(INSET_X, PAD_TOP, w, MEASURE_H));
-  int16_t header_h = text_layer_get_content_size(s_header).h + 4;
+  int16_t header_h = measure_text(header_for_state(), header_font(), w);
   layer_set_frame(text_layer_get_layer(s_header), GRect(INSET_X, PAD_TOP, w, header_h));
 
   int16_t body_y = PAD_TOP + header_h;
@@ -272,8 +279,7 @@ static void relayout(void) {
 #if defined(PBL_COLOR)
   text_layer_set_text_color(s_body, s_state == ST_THINKING ? GColorDarkGray : GColorBlack);
 #endif
-  layer_set_frame(text_layer_get_layer(s_body), GRect(INSET_X, body_y, w, MEASURE_H));
-  int16_t body_h = text_layer_get_content_size(s_body).h + 4;
+  int16_t body_h = measure_text(body_for_state(), body_font(), w);
   layer_set_frame(text_layer_get_layer(s_body), GRect(INSET_X, body_y, w, body_h));
 
   scroll_layer_set_content_size(s_scroll, GSize(bounds.size.w, body_y + body_h + PAD_BOTTOM));
