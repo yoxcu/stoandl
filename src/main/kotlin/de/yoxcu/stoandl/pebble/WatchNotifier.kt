@@ -99,7 +99,15 @@ data class NotifRequest(
     // A picture the notification carries (a photo, a screenshot), shown on watches that support it while
     // notification.images is on and the app's own images switch isn't off. Never a sender avatar.
     val image: ImageSource? = null,
+    // Critical urgency (an alarm, an incoming call): still sent while notification.only_when_locked holds
+    // the others back.
+    val urgent: Boolean = false,
 )
+
+/** `notification.only_when_locked` holds a notification back: the device is in use and nothing exempts it
+ *  (an allow filter, critical urgency). [inUse] is only asked when the rest would hold it back. */
+internal suspend fun heldBackWhileInUse(onlyWhenLocked: Boolean, exempt: Boolean, inUse: suspend () -> Boolean): Boolean =
+    onlyWhenLocked && !exempt && inUse()
 
 /** Whether a notification's picture goes out: `notification.images` on, and the app's own switch (`notif
  *  images`, libpebble3's `sendImages`) not off. [app] is null while per-app settings are off. */
@@ -257,6 +265,9 @@ class WatchNotifier(
     private val images: NotificationImageStore? = null,
     // The user's named vibes ([VibePatterns]), resolved alongside the built-ins.
     private val customVibes: suspend () -> CustomVibes = { emptyMap() },
+    // Whether the user is at the phone/desktop right now (screen on, session unlocked), for
+    // notification.only_when_locked. Read per notification, only while that key is on.
+    private val deviceInUse: suspend () -> Boolean = { false },
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -292,7 +303,8 @@ class WatchNotifier(
     private suspend fun pushInternal(req: NotifRequest, ownerId: String, ownerToken: String?): Uuid? {
         val cfg = configStore.current()
         // Global filters first: an `allow` match whitelists the notification (bypasses block filters, the
-        // master forwarding switch AND per-app mute); a `block` match drops it. Then the master switch.
+        // master forwarding switch, only_when_locked AND per-app mute); a `block` match drops it. Then the
+        // master switch.
         val whitelisted = when (filters.decide(req.appName, req.title, req.body)) {
             NotificationFilters.Decision.BLOCK -> {
                 log.info { "Notification from ${req.appName} dropped by a block filter" }
@@ -307,6 +319,10 @@ class WatchNotifier(
         }
         if (!whitelisted && req.transient) {
             log.info { "Transient notification from ${req.appName} not forwarded" }
+            return null
+        }
+        if (heldBackWhileInUse(cfg.notificationOnlyWhenLocked, whitelisted || req.urgent, deviceInUse)) {
+            log.info { "Notification from ${req.appName} not forwarded: the device is in use (notification.only_when_locked)" }
             return null
         }
         val dao = notifAppDao

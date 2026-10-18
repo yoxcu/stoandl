@@ -46,6 +46,11 @@ data class StoandlConfig(
      *  When off, every notification is dropped host-side at the send choke point (per-app mute, filters
      *  and styling are moot) — calls and firmware prompts use their own paths and are unaffected. */
     val notificationForward: Boolean,
+    /** Forward only while nobody is using the host: its display is off or the graphical session is locked
+     *  (logind `LockedHint`). Mirrors the official app's "Always send notifications" switched off. Off by
+     *  default (always forward). Critical-urgency notifications and allow-filter matches still go through;
+     *  calls use their own path. Read per notification. */
+    val notificationOnlyWhenLocked: Boolean,
     /** Clear a notification from the watch when it's dismissed on the desktop or phone (closed by the user
      *  or the app, withdrawn through the portal/GTK, or closed by an extension). Local only; read live. */
     val notificationSyncDismissals: Boolean,
@@ -363,6 +368,7 @@ data class StoandlConfig(
             notificationAppName = DEFAULT_APP_NAME_PLACEMENT,
             notificationSyncToWatch = false,
             notificationForward = true,
+            notificationOnlyWhenLocked = false,
             notificationSyncDismissals = true,
             notificationImages = true,
             notificationCatchUpMinutes = DEFAULT_NOTIFICATION_CATCH_UP_MINUTES,
@@ -474,6 +480,7 @@ data class StoandlConfig(
                 notificationAppName = parseAppNamePlacement(map["notification.app_name"]),
                 notificationSyncToWatch = parseBool(map["notification.sync_to_watch"]),
                 notificationForward = map["notification.forward"]?.let { parseBool(it) } ?: true,
+                notificationOnlyWhenLocked = parseBool(map["notification.only_when_locked"]),
                 notificationSyncDismissals = map["notification.sync_dismissals"]?.let { parseBool(it) } ?: true,
                 notificationImages = map["notification.images"]?.let { parseBool(it) } ?: true,
                 notificationCatchUpMinutes = map["notification.catch_up_minutes"]?.trim()?.toLongOrNull()

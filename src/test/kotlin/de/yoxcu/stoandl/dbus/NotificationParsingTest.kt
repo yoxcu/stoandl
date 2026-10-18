@@ -35,6 +35,18 @@ class NotificationParsingTest {
     }
 
     @Test
+    fun `only critical urgency and urgent priority count as urgent`() {
+        assertTrue(criticalUrgency(mapOf("urgency" to Variant(2.toByte()))))
+        assertFalse(criticalUrgency(mapOf("urgency" to Variant(1.toByte()))))
+        assertFalse(criticalUrgency(emptyMap<String, Any>()))
+        assertFalse(criticalUrgency(null))
+        assertTrue(urgentPriority(mapOf("priority" to Variant("urgent"))))
+        assertTrue(urgentPriority(mapOf("urgent" to Variant(true))))
+        assertFalse(urgentPriority(mapOf("priority" to Variant("high"))))
+        assertFalse(urgentPriority(null))
+    }
+
+    @Test
     fun `dict strings unwrap nested variants and ignore empty values`() {
         val dict = mapOf(
             "title" to Variant("Hello"),

@@ -45,6 +45,9 @@ back unchanged.
 | `notification.catch_up_minutes` | int | ✓ | **restart** | part of the host-built `LibPebbleConfig` that `init()` pins into `NotificationConfigFlow` once | 0–1440 min | `60` |
 | `notification.canned_replies` | list | ✓ | live | read per notification in `WatchNotifier.push` | — | `Ok,Yes,No,Call me,Call you later` |
 | `notification.forward` | toggle | Sync screen | live | read per push; `SetSyncEnabled("notifications", …)` | — | `true` |
+| `notification.only_when_locked` | toggle | ✓ | live | read per push in `WatchNotifier.push`; asks logind (`SessionLock`) only while on | — | `false` |
+| `notification.images` | toggle | ✓ | live | read per push; turning it off deletes the stored pictures | — | `true` |
+| `notification.sync_dismissals` | toggle | ✓ | live | read per desktop close / withdrawal | — | `true` |
 
 ### stoandl alerts — the daemon's own desktop alerts (new this session)
 
@@ -207,13 +210,13 @@ Both of these used to have a **precedence trap** where `stoandl.conf` silently b
 
 Every notification the daemon can originate (i.e. not a forwarded desktop notification), and the setting
 that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex filters, then
-`notification.forward`, then per-app mute — in that order.
+`notification.forward`, then `notification.only_when_locked`, then per-app mute — in that order.
 
 | Event | Surface | Through the choke point? | Governed by |
 | --- | --- | --- | --- |
-| Forwarded desktop notification | watch | yes | `notification.forward`, per-app mute, filters |
+| Forwarded desktop notification | watch | yes | `notification.forward`, `notification.only_when_locked` (critical urgency exempt), per-app mute, filters |
 | Extension notification | watch | yes | same |
-| Test notification (`SendTestNotification`) | watch | **yes, deliberately** — the test is only useful if the policy applies to it | same |
+| Test notification (`SendTestNotification`) | watch | **yes, deliberately** — the test is only useful if the policy applies to it | same, except `notification.only_when_locked` (like the official app's test, it would never arrive while you're at the screen sending it) |
 | Firmware update available | watch **and** desktop | no (own path, so the Update button works) | `firmware.notify` + a source enabled; on the watch, its app name ("stoandl") follows `notification.app_name` |
 | "Pebble won't stay connected" (broken bond) | desktop, with Re-pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Pebble pairing removed" (host bond lost) | desktop, with Pair | n/a | `alerts.enabled` + `alerts.pairing` |

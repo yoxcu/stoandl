@@ -713,6 +713,17 @@ stoandl notif filter add <regex> block|allow   # matched against app name + titl
 
 See [configuration.md](configuration.md#per-app-notification-settings). _To be tested._
 
+### Forward only while the screen is off or locked
+
+`notification.only_when_locked` (default off, so everything is forwarded as before) holds notifications
+back while you're using the phone or computer: the display is on (DRM DPMS) **and** your graphical session
+is unlocked (logind `LockedHint`, set by KScreenLocker and GNOME Shell). This is the official app's "Always
+send notifications" switched off. Critical-urgency notifications (alarms, a dialer's incoming call), allow-filter
+matches and `stoandl notif test` still reach the watch, and calls always ring through the native call screen.
+If stoandl can't tell, for example with no graphical logind session or logind not answering within 1 s, it
+forwards. Toggle it in the GUI's Notifications settings or with
+`stoandl daemon set notification.only_when_locked true`. Off-device: `SessionLockTest`.
+_Implemented — to be tested ([TESTING.md §5.51](../TESTING.md))._
 ### HR during activities, podcast seek, face order
 
 Three official-app switches. The health profile gains `hrm_activity` ("HR During Activities": continuous heart

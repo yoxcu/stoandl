@@ -26,6 +26,7 @@ import de.yoxcu.stoandl.notification.NotificationImageStore
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.QuietTimeLink
 import de.yoxcu.stoandl.power.ScreenState
+import de.yoxcu.stoandl.power.SessionLock
 import de.yoxcu.stoandl.power.SleepGuard
 import de.yoxcu.stoandl.power.delayUntilWallClock
 import de.yoxcu.stoandl.power.delayWallClock
@@ -535,7 +536,7 @@ class PebbleIntegration(
         de.yoxcu.stoandl.config.customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } }
         watchNotifier = WatchNotifier(
             libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements,
-            notificationImages,
+            notificationImages, vibePatterns::custom, deviceInUse = SessionLock::inUse,
         )
         val desktopOwner = DesktopNotifOwner(
             routeTable,
@@ -2516,6 +2517,7 @@ private class DbusNotificationListenerConnection(
                 reply = reply,
                 transient = notification.transient,
                 image = image,
+                urgent = notification.urgent,
             ),
             ownerId = desktopOwner.id,
             ownerToken = ref.encode(),
@@ -3627,7 +3629,8 @@ private class StoandlControlImpl(
         return try {
             val id = runBlocking {
                 watchNotifier.push(
-                    NotifRequest(appName = "stoandl", title = t, body = body),
+                    // Urgent: a test the user just asked for arrives even with only_when_locked on.
+                    NotifRequest(appName = "stoandl", title = t, body = body, urgent = true),
                     ownerId = "desktop", ownerToken = null,
                 )
             }

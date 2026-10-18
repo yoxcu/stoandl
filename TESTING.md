@@ -2110,6 +2110,25 @@ in an upstream checkout.
 | 5.48q | Signal | GUI open, answer or put off a request from the CLI; start/stop the asking app | The banners update without a refresh (PermissionRequestsChanged). |
 
 
+## 5.51 Forward only while the screen is off or locked  ⚠️ UNVERIFIED (needs a watch; 5.51e on the phone)
+
+`notification.only_when_locked` holds notifications back while the display is on and the logind session
+unlocked (`LockedHint`). Off-device: `SessionLockTest` (the in-use rule, the logind property parsing, what is
+exempt) and `NotificationParsingTest` (urgency hints). Turn it on with
+`stoandl daemon set notification.only_when_locked true` (or the GUI's Notifications toggle) before 5.51a–f.
+`busctl get-property org.freedesktop.login1 /org/freedesktop/login1/session/auto org.freedesktop.login1.Session LockedHint`
+shows what stoandl reads.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.51a | In use | unlocked desktop, display on; `notify-send hi` | Nothing on the watch. Log: `not forwarded: the device is in use (notification.only_when_locked)`. |
+| 5.51b | Locked | lock the session (Super+L), `sleep 5; notify-send hi` from a terminal or ssh | The watch buzzes. |
+| 5.51c | Urgent | unlocked; `notify-send -u critical alarm`, and a GNOME/Flatpak app notification with urgent priority if you have one | Both reach the watch. |
+| 5.51d | Exempt | unlocked; `stoandl notif test`; an allow filter (`stoandl notif filter add 'hi' allow`, then `notify-send hi`) | Both reach the watch. |
+| 5.51e | Phone | on the op6 with the screen on and unlocked, a NeoChat message; then the same with the screen off | Held back with the screen on; buzzes with it off (even before the lock screen engages). An incoming call rings either way. |
+| 5.51f | No graphical session | headless box or an ssh-only login, display off or none; `notify-send hi` | Forwarded (a text or ssh session never counts as in use). With no logind session at all the log says once `Can't tell whether the session is locked (…); notifications are forwarded`. |
+| 5.51g | Off | `stoandl daemon set notification.only_when_locked false`, repeat 5.51a | The watch buzzes (no restart). |
+
 ## 5.54 Watch toggles: HR during activities, podcast seek, face order  ⚠️ UNVERIFIED (needs a watch; 5.54a–b an HRM watch on fw ≥ 4.38)
 
 The health profile gains `hrm_activity` (libpebble3 `hrmActivityTrackingEnabled`, "HR During Activities" in

@@ -79,6 +79,8 @@ data class IncomingNotification(
      *  `x-kde-urls` hint (KNotification `setUrls`, e.g. Spectacle's screenshot). Sender avatars
      *  (`image-data`, `image-path`, portal/GTK icons) are deliberately not taken. */
     val attachment: String? = null,
+    /** Critical urgency: FDO `urgency` hint 2, portal/GTK priority `urgent` (alarms, incoming calls). */
+    val urgent: Boolean = false,
 )
 
 /** What the passive monitor reports. */
@@ -103,6 +105,7 @@ private data class PendingNotify(
     val actions: List<Pair<String, String>>,
     val transient: Boolean,
     val attachment: String?,
+    val urgent: Boolean,
     val atMs: Long,
 )
 
@@ -151,6 +154,14 @@ internal fun dictBool(dict: Any?, key: String): Boolean =
         is Number -> v.toLong() != 0L
         else -> false
     }
+
+/** A Notify's `urgency` hint (a byte) is 2, critical. */
+internal fun criticalUrgency(hints: Any?): Boolean =
+    ((hints as? Map<*, *>)?.get("urgency")?.let(::unwrapVariant) as? Number)?.toInt() == 2
+
+/** A portal/GTK notification dict asks for urgent priority (`priority` "urgent", or GLib's older `urgent` flag). */
+internal fun urgentPriority(dict: Any?): Boolean =
+    dictString(dict, "priority") == "urgent" || dictBool(dict, "urgent")
 
 /**
  * Suppresses the second sighting of one notification that reaches the bus twice:
@@ -259,6 +270,7 @@ internal class NotificationMonitorState(
             actions = parseNotifyActions(params.getOrNull(5)),
             transient = dictBool(params.getOrNull(6), "transient"),
             attachment = imageAttachment(params.getOrNull(6)),
+            urgent = criticalUrgency(params.getOrNull(6)),
             atMs = now,
         )
     }
@@ -287,7 +299,7 @@ internal class NotificationMonitorState(
             emit(NotificationEvent.Posted(IncomingNotification(
                 id, p.appName, p.summary, p.body,
                 source = NotifSource.FDO, owner = server, appId = p.desktopEntry, actions = p.actions,
-                transient = p.transient, attachment = p.attachment,
+                transient = p.transient, attachment = p.attachment, urgent = p.urgent,
             )))
         }
     }
@@ -304,6 +316,7 @@ internal class NotificationMonitorState(
             id = UInt32(0), appName = DesktopAppNames.nameOf(appId), summary = title, body = body,
             source = source, appId = appId, portalId = id,
             backend = if (source == NotifSource.PORTAL) backend else null,
+            urgent = urgentPriority(dict),
         )))
     }
 

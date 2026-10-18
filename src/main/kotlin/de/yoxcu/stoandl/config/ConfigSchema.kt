@@ -293,6 +293,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "Push the per-app list and mute states to the watch's BlobDB. Current firmware surfaces no " +
             "per-app notification UI, so this normally changes nothing — mute is enforced host-side.",
         apply = ConfigApply.RESTART) { it.notificationSyncToWatch },
+    toggle("notification.only_when_locked", G_NOTIF, "Only while the screen is off or locked",
+        "Hold notifications back while you're using the phone or computer (display on and session " +
+            "unlocked). Urgent ones (alarms, incoming calls) and allow-filter matches still reach the watch; " +
+            "calls ring as usual.") { it.notificationOnlyWhenLocked },
     toggle("notification.images", G_NOTIF, "Pictures on the watch",
         "Photos and screenshots a notification carries are shown on watches that can (Pebble Time 2 / " +
             "Round 2, firmware 4.35+). Sender avatars are never sent. Off deletes the stored pictures.") { it.notificationImages },

@@ -29,6 +29,12 @@ notification.sync_to_watch = false
 # notification is dropped host-side (calls and firmware prompts use their own paths and still get through).
 # `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
 notification.forward = true
+# Forward only while nobody is using this phone/computer: its display is off or the session is locked
+# (logind LockedHint, set by the screen locker). Like the official app's "Always send notifications"
+# switched off. Critical-urgency notifications (alarms, a dialer's incoming call), allow-filter matches and
+# `stoandl notif test` still get through; calls ring on the watch as usual. When it can't tell (no logind
+# graphical session) everything is forwarded. Local only; read live.
+notification.only_when_locked = false
 # Pictures a notification carries -- a photo from an extension (Matrix), a screenshot a desktop
 # notification links to, a web notification's image on Plasma -- are shown on watches that can
 # (Pebble Time 2 / Round 2, firmware 4.35+). Sender avatars are never sent. Local only, no egress; the
