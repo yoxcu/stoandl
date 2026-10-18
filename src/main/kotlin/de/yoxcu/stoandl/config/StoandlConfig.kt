@@ -9,7 +9,7 @@ private val log = KotlinLogging.logger {}
 
 /**
  * Daemon configuration, loaded once at startup from a simple `key = value` file (`#` starts a
- * comment; list values are comma-separated). Lives at `$XDG_CONFIG_HOME/stoandl/stoandl.conf`
+ * comment; list values are comma-separated, `\,` for a comma inside an item — see [ConfList]). Lives at `$XDG_CONFIG_HOME/stoandl/stoandl.conf`
  * (default `~/.config/stoandl/stoandl.conf`). A missing/unreadable file yields defaults.
  *
  * The daemon holds the loaded config in a live [ConfigStore]: the `SetConfig`/`SetSyncEnabled` D-Bus
@@ -461,7 +461,7 @@ data class StoandlConfig(
                 return defaults()
             }
             fun list(key: String, default: List<String> = emptyList()): List<String> =
-                map[key]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: default
+                map[key]?.let(ConfList::decode) ?: default
 
             val cfg = StoandlConfig(
                 notificationPerApp = map["notification.per_app"]?.let { parseBool(it) } ?: true,
@@ -691,7 +691,7 @@ data class StoandlConfig(
         }
 
         private fun parseList(raw: String?): List<String> =
-            raw?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct() ?: emptyList()
+            ConfList.decode(raw).distinct()
 
         /** Gather the `extension.<name>.<key> = value` settings into name → {key → value}. `%h`/`~` in
          *  values expand to home. The keys (incl. `cmd`) are resolved against the ext dir at spawn time. */

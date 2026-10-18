@@ -26,7 +26,9 @@ Nothing is unreachable.
 
 Every `text` and `list` value is additionally rejected if it contains `#` or a newline: `stoandl.conf`
 is `key = value`, one per line, with `#` starting a comment, so either would silently truncate or split
-the setting on the next read.
+the setting on the next read. A comma inside a `list` item is written `\,` (and a backslash `\\`;
+`config/ConfList.kt`), so items such as canned replies can hold commas while older plain lists read
+back unchanged.
 
 ---
 
@@ -263,7 +265,7 @@ pins the column count and order, and asserts no label, description, group or com
 tab, newline or comma — any of which would corrupt the record for both parsers.
 
 `GetConfig` is unchanged: `key \t value`, where value is a combo's option **label**, a toggle's
-`true`/`false`, or the raw text/number/comma-joined list.
+`true`/`false`, or the raw text/number/comma-joined list (`\,` escaping a comma inside an item).
 
 `SetConfig` returns `ok:` / `notfound:` / `error:<reason>`. A restart-required key's `ok:` tail carries
 “(restart stoandl to apply)”.

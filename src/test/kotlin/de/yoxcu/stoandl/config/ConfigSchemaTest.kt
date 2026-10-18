@@ -83,6 +83,18 @@ class ConfigSchemaTest {
         assertEquals("", ok(f, "   "))
     }
 
+    /** A canned reply may contain a comma: the GUI submits it as `\,`, the conf keeps it escaped, and
+     *  the loader and `GetConfig` give back the same items. */
+    @Test
+    fun `list items with commas round-trip through SetConfig, the conf file and GetConfig`(): Unit = withTempConf { conf ->
+        val f = field("notification.canned_replies")
+        assertEquals("Sure\\, see you,Ok", ok(f, " Sure\\, see you , Ok ,"))
+        assertEquals("ok", applyGuiConfig(f.key, "Sure\\, see you,Ok", conf).substringBefore(':'))
+        val cfg = StoandlConfig.load(conf, logResult = false)
+        assertEquals(listOf("Sure, see you", "Ok"), cfg.notificationCannedReplies)
+        assertEquals("Sure\\, see you,Ok", f.value(cfg))
+    }
+
     /**
      * `stoandl.conf` is `key = value`, one per line, with `#` starting a comment — so a value carrying
      * either would be silently truncated or split on the next read. Rejecting at the write path is the

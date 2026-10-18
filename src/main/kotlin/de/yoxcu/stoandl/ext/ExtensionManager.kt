@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.ext
 
+import de.yoxcu.stoandl.config.ConfList
 import de.yoxcu.stoandl.dbus.sendDesktopNotification
 import de.yoxcu.stoandl.imaging.ImageSource
 import de.yoxcu.stoandl.pebble.NotifAction
@@ -494,7 +495,7 @@ class ExtensionManager(
     }
 
     private fun namesIn(line: String): List<String> =
-        line.substringBefore('#').substringAfter('=').split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        ConfList.decode(line.substringBefore('#').substringAfter('='))
 
     private fun currentEnabled(): List<String> {
         if (!confFile.isFile) return emptyList()
@@ -508,7 +509,7 @@ class ExtensionManager(
         val names = LinkedHashSet(currentEnabled())
         if (enabled) names.add(name) else names.remove(name)
         try {
-            ConfFile.upsert(confFile, mapOf(ENABLED_KEY to names.joinToString(", ")))
+            ConfFile.upsert(confFile, mapOf(ENABLED_KEY to ConfList.encode(names.toList())))
         } catch (e: Exception) {
             log.warn { "Couldn't update extensions.enabled in ${confFile.path}: ${e.message}" }
         }

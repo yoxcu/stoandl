@@ -25,7 +25,8 @@ import java.io.File
  * The first five columns are the original wire format; everything from `group` on is **appended**, so a
  * client built against the old contract keeps working (both front-ends index columns positionally and
  * tolerate missing ones). `value` is a combo's option label, a toggle's `true`/`false`, or the raw text /
- * number / comma-joined list; the write path maps that back to the raw `stoandl.conf` token via [parse].
+ * number / comma-joined list ([ConfList]: `\,` escapes a comma inside an item); the write path maps
+ * that back to the raw `stoandl.conf` token via [parse].
  */
 
 /** One combo option: the [label] shown in the GUI and emitted by `GetConfig`, the raw [token] written to
@@ -134,9 +135,8 @@ data class ConfigField(
                 else ConfigParse.Ok(t)
             "list" -> {
                 confSafe(t)?.let { return ConfigParse.Err("$key: $it") }
-                // Normalise to the `a,b,c` form StoandlConfig.list() reads back, dropping blanks.
-                val items = t.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-                val normalised = items.joinToString(",")
+                // Normalise to the escaped `a,b\,c` form StoandlConfig.list() reads back, dropping blanks.
+                val normalised = ConfList.encode(ConfList.decode(t))
                 validate?.invoke(normalised)?.let { return ConfigParse.Err("$key: $it") }
                 ConfigParse.Ok(normalised)
             }
@@ -189,7 +189,7 @@ private fun list(
     key: String, group: String, label: String, desc: String, placeholder: String = "",
     apply: ConfigApply = ConfigApply.LIVE, validate: ((String) -> String?)? = null,
     read: (StoandlConfig) -> List<String>,
-) = ConfigField(key, "list", group, label, desc, apply, read = { read(it).joinToString(",") },
+) = ConfigField(key, "list", group, label, desc, apply, read = { ConfList.encode(read(it)) },
     placeholder = placeholder, validate = validate)
 
 // --- Per-key validators ----------------------------------------------------------------------------
@@ -198,7 +198,7 @@ private fun list(
  *  location the daemon would silently drop at load time. */
 private fun weatherLocationsValid(v: String): String? {
     if (v.isEmpty()) return null
-    val entries = v.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    val entries = ConfList.decode(v)
     val parsed = StoandlConfig.parseWeatherLocations(entries)
     return if (parsed.size == entries.size) null
     else "expected comma-separated Name:lat:lon entries (e.g. Berlin:52.52:13.405)"

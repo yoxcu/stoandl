@@ -29,8 +29,9 @@ The service allows 5 starts within 5 minutes, and manual restarts count towards 
 inside the window leaves the daemon stopped. `systemctl --user reset-failed stoandl` clears the limit
 (see [README → Logging & reporting bugs](../README.md#logging--reporting-bugs)).
 
-Syntax is `key = value`, `#` starts a comment, and list values are comma-separated. A starter file
-is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.example).
+Syntax is `key = value`, `#` starts a comment, and list values are comma-separated; write `\,` for a
+comma inside an item (`\\` for a backslash; any other backslash is literal, so older files read
+unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.example).
 
 ## Keys
 
@@ -44,8 +45,8 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `notification.images` | bool | `true` | Show pictures a notification carries on watches that can (Pebble Time 2 / Round 2, firmware 4.35+): a photo an extension attaches (Matrix), the first image file in a desktop notification's `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma (`<img>` in the body). Sender avatars (`image-data`, portal/GTK icons) are never sent. The pictures are kept, at most 32, in `~/.cache/stoandl/images/notifications`, deleted with their notification, and all deleted when this is switched off. Local only. Read live. |
 | `notification.sync_dismissals` | bool | `true` | Clear a notification from the watch when it's dismissed on the desktop or phone: closed by the user or the app (`NotificationClosed` reason 2 or 3), withdrawn through the portal or `org.gtk.Notifications`, or closed by an extension. A popup that only times out (reason 1) stays. The watch marks the item dismissed. Read live. |
 | `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
-| `notification.canned_replies` | list | `Ok, Yes, No, Call me, Call you later` | The watch's Reply list for desktop notifications that take a reply (Plasma with the `InvokeReply` patch, see [features.md → Reply to desktop notifications](features.md#reply-to-desktop-notifications)) and for extensions that don't send their own. Whole items are kept while the NUL-joined list fits the firmware's 512 bytes; empty = the firmware's list. A reply can't contain a comma. |
 | `alerts.enabled` | bool | `true` | Master switch for the desktop alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup) — as opposed to forwarded app notifications. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
+| `notification.canned_replies` | list | `Ok, Yes, No, Call me, Call you later` | The watch's Reply list for desktop notifications that take a reply (Plasma with the `InvokeReply` patch, see [features.md → Reply to desktop notifications](features.md#reply-to-desktop-notifications)) and for extensions that don't send their own. Whole items are kept while the NUL-joined list fits the firmware's 512 bytes; empty = the firmware's list. A reply with a comma escapes it: `Sure\, see you then`. |
 | `alerts.pairing` | bool | `true` | Alert when a watch keeps connecting-then-dropping (unpaired on the watch) or its pairing was removed on this host — each with the action that fixes it (Re-pair / Pair). Without it a watch can silently stop reconnecting forever. |
 | `alerts.bluetooth` | bool | `true` | Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which blocks the watch from reconnecting. |
 | `alerts.extensions` | bool | `true` | Alert when an installed extension requires configuration before it can start. |

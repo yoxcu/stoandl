@@ -632,6 +632,11 @@ wrist is the point. The watch shows *Sent* when plasmashell accepted it and *Fai
 so reply there per channel (the [Matrix extension](../examples/extensions/matrix)). _To be tested_
 ([TESTING.md §5.34](../TESTING.md)).
 
+_Implemented — to be tested ([TESTING.md §5.62](../TESTING.md)):_ a canned reply may contain a comma.
+List settings keep `,` as the separator and take `\,` for a comma inside an item (`\\` for a
+backslash; older files read unchanged), in `stoandl.conf`, `stoandl daemon set` and over D-Bus. The GUI
+edits every list setting (canned replies, dialer apps, contact files, weather locations) as one row per
+item, with add, remove and move up/down.
 ### Notifications from sandboxed and GTK apps
 
 Two kinds of notification never reach `org.freedesktop.Notifications.Notify`, so the watch never saw

@@ -2131,6 +2131,21 @@ connect [name]` (GUI: the banner's *Connect*, or a known watch's *Connect*) or a
 | 5.55i | GUI | Watch page with a watch connected | A *Disconnect* action; after it, a *Watch disconnected* banner with *Connect*; a CLI disconnect/connect updates the page within a second (WatchesChanged). Inside a Quiet Time pause an information banner says so. |
 ---
 
+## 5.62 List settings with commas, the GUI list editor  ⚠️ UNVERIFIED (5.62a–c on a desktop; 5.62d needs a watch and Plasma with InvokeReply)
+
+List-valued keys (`notification.canned_replies`, `call.dialer_apps`, `contacts.vcard_paths`, `weather.locations`,
+`calendar.*`, `extensions.enabled`) keep `,` as the separator; `\,` is a comma inside an item and `\\` a
+backslash (`config/ConfList.kt`; any other backslash stays literal, so older files read unchanged). `GetConfig` and
+`SetConfig` carry the same encoding. The GUI renders a `list` key as one row per item with move up/down, remove and
+an add field. Off-device: `ConfListTest`, `ConfigSchemaTest`; the GUI smoke checks the QML codec (`list codec ok`).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.62a | Old file | keep a `stoandl.conf` with `notification.canned_replies = Ok, Yes, Call me` and restart | `stoandl daemon get notification.canned_replies` → `Ok,Yes,Call me`; the GUI shows three rows. |
+| 5.62b | Comma in the CLI | `stoandl daemon set notification.canned_replies 'Sure\, see you then,Ok'` | `ok:… = Sure\, see you then,Ok`; the file holds the same; the GUI shows two rows, the first with its comma. |
+| 5.62c | GUI editor | Settings → Daemon configuration → Notifications → Canned replies: add `Not now, sorry`, move it to the top, edit a row, remove a row | Each edit applies at once (no toast); `daemon get` follows, with `\,` in the added item; Calls & contacts → Dialer apps and Weather → Locations use the same editor. |
+| 5.62d | On the wrist | after 5.62b, reply to a NeoChat notification on the watch | The Reply list shows `Sure, see you then` as one item; choosing it sends that text with its comma. |
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

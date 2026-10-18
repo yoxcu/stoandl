@@ -5,7 +5,8 @@
 # The service allows 5 starts in 5 minutes (manual restarts count). A 6th restart leaves it stopped
 # until:  systemctl --user reset-failed stoandl && systemctl --user start stoandl
 #
-# Syntax: `key = value`, `#` starts a comment. List values are comma-separated.
+# Syntax: `key = value`, `#` starts a comment. List values are comma-separated; `\,` is a comma
+# inside an item (e.g. `Sure\, see you then`) and `\\` a backslash.
 
 # Per-app mute store. When on, every desktop app that notifies is tracked and its mute state is
 # enforced host-side before sending (the notification is dropped before it crosses BLE). Manage it at
@@ -45,7 +46,7 @@ notification.sync_dismissals = true
 # libpebble3 default). 0-1440; startup-only. An hour covers a phone that only reconnects on its longer
 # wakes; a larger value only means older notifications can arrive after a long absence.
 notification.catch_up_minutes = 60
-# The watch's Reply list (comma-separated) for desktop notifications that take a reply -- on Plasma with
+# The watch's Reply list (comma-separated, `\,` inside a reply) for desktop notifications that take a reply -- on Plasma with
 # the InvokeReply patch (docs/features.md) -- and for extensions that don't bring their own. Whole items
 # are kept while they fit the firmware's 512-byte limit; empty = the firmware's list below.
 notification.canned_replies = Ok, Yes, No, Call me, Call you later

@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.calendar
 
+import de.yoxcu.stoandl.config.ConfList
 import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.secret.SecretStore
@@ -64,14 +65,14 @@ object CalendarSources {
                 if (!isHttp(u)) return@withLock "error:iCal URL must be http(s)"
                 if (hasComma(u)) return@withLock "error:URL cannot contain ','"
                 if (cfg.calendarIcalUrls.any { it.equals(u, true) }) return@withLock "error:that iCal URL is already configured"
-                ConfFile.upsert(confFile, mapOf("calendar.ical_urls" to (cfg.calendarIcalUrls + u).joinToString(", ")))
+                ConfFile.upsert(confFile, mapOf("calendar.ical_urls" to ConfList.encode(cfg.calendarIcalUrls + u)))
                 store.reload()
                 "ok:${SourceId.ical(u)}\tnone"
             }
             "ics" -> {
                 if (hasComma(u)) return@withLock "error:path cannot contain ','"
                 if (cfg.calendarIcsPaths.any { it == u }) return@withLock "error:that path is already configured"
-                ConfFile.upsert(confFile, mapOf("calendar.ics_paths" to (cfg.calendarIcsPaths + u).joinToString(", ")))
+                ConfFile.upsert(confFile, mapOf("calendar.ics_paths" to ConfList.encode(cfg.calendarIcsPaths + u)))
                 store.reload()
                 "ok:${SourceId.ics(u)}\tnone"
             }
@@ -112,7 +113,7 @@ object CalendarSources {
                 if (u.isEmpty()) return@withLock "error:a ${if (type == "ical") "URL" else "path"} is required"
                 if (type == "ical" && !isHttp(u)) return@withLock "error:iCal URL must be http(s)"
                 if (hasComma(u)) return@withLock "error:value cannot contain ','"
-                ConfFile.upsert(confFile, mapOf(key to list.map { if (it == value) u else it }.joinToString(", ")))
+                ConfFile.upsert(confFile, mapOf(key to ConfList.encode(list.map { if (it == value) u else it })))
                 store.reload()
                 "ok:${if (type == "ical") SourceId.ical(u) else SourceId.ics(u)}\tnone"
             }
@@ -137,7 +138,7 @@ object CalendarSources {
                 val key = if (type == "ical") "calendar.ical_urls" else "calendar.ics_paths"
                 val list = if (type == "ical") cfg.calendarIcalUrls else cfg.calendarIcsPaths
                 if (value !in list) return@withLock "notfound:no $type source '$id'"
-                ConfFile.upsert(confFile, mapOf(key to list.filterNot { it == value }.joinToString(", ")))
+                ConfFile.upsert(confFile, mapOf(key to ConfList.encode(list.filterNot { it == value })))
                 store.reload()
                 "ok:removed"
             }
@@ -146,7 +147,7 @@ object CalendarSources {
     }
 
     private fun writeCalDav(confFile: File, entries: List<StoandlConfig.CalDavAccount>) =
-        ConfFile.upsert(confFile, mapOf("calendar.caldav" to entries.joinToString(", ") { "${it.id}|${it.url}|${it.username}" }))
+        ConfFile.upsert(confFile, mapOf("calendar.caldav" to ConfList.encode(entries.map { "${it.id}|${it.url}|${it.username}" })))
 
     /** Store (or clear, when [password] is blank) the CalDAV password; returns the backend name. */
     private fun storeSecret(ref: String, password: String, secretStore: SecretStore): String =
