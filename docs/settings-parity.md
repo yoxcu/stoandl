@@ -150,6 +150,7 @@ and the firmware sources are rebuilt per check (**fixed this session**).
 | --- | --- | --- | --- | --- | --- |
 | `classic.discover` | toggle | ✓ | **restart** | `startClassicWatch()` is a one-shot check in `init()` | `true` |
 | `connection.autoswitch` | toggle | ✓ | live | read inside the wrist-follower loop | `true` |
+| `connection.disconnect_persists` | toggle | ✓ | live | read at startup, when `ManualDisconnect.restore()` finds the pause marker; nothing to apply before then | `true` |
 | `dnd.sync` | combo | ✓ (+ Sync screen) | live | `applyDnd()` rebuilds the mirror | `Off` |
 | `geolocation.enabled` | toggle | ✓ | live | read per request in `LiveGeolocation` | `false` |
 | `datalog.enabled` | toggle | ✓ | **restart** | `DatalogStore` is started (or not) once in `init()` | `false` |

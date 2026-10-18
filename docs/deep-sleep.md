@@ -158,6 +158,10 @@ crash, never leaves a watch that won't reconnect. Log lines: `Quiet Time: watch 
 07:00`, `Quiet Time: watch connection back on (display on)`, and libpebble3's `holding every watch
 disconnected` / `connections released`.
 
+A manual `stoandl watch disconnect` is a separate hold on the same mechanism: the link is off while either
+holds it. Quiet Time ending doesn't reconnect a watch you disconnected by hand, and `stoandl watch connect`
+inside the window takes effect when the pause ends ([features → Manual disconnect](features.md#manual-disconnect)).
+
 ## Host prerequisites (Mode B)
 
 stoandl can't keep a link alive across suspend on its own. On the OnePlus 6 (SDM845, WCN3990) that

@@ -99,6 +99,7 @@ import io.rebble.libpebblecommon.NotificationConfig
 import io.rebble.libpebblecommon.NotificationConfigFlow
 import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.WatchConfigFlow
+import io.rebble.libpebblecommon.connection.ActiveDevice
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
@@ -444,6 +445,8 @@ class PebbleIntegration(
     // power.quiet_time_link_off: no watch link during the watch's scheduled Quiet Time; started before
     // libpebble3 connects anything, so a restart inside the window stays paused.
     private var quietTimeLink: QuietTimeLink? = null
+    // `stoandl watch disconnect|connect`; restored before libpebble3 connects anything.
+    private lateinit var manualDisconnect: ManualDisconnect
     private lateinit var linkActivity: WatchLinkActivity
     @Volatile private var lastHealthRequestMs = 0L
     // Datalog send state last pushed to the connected watch (null = none yet); see startDatalogPolicy.
@@ -670,6 +673,11 @@ class PebbleIntegration(
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
         notificationAppsControl = NotificationAppsControl(koin.get(), appNamePlacements, vibePatterns::custom)
         watchConnector = koin.get()
+        manualDisconnect = ManualDisconnect(
+            connector = watchConnector,
+            marker = File(StoandlConfig.configDir(), "watch-disconnected"),
+            persist = { config.connectionDisconnectPersists },
+        ).also { it.restore() }
         quietTimeLink = QuietTimeLink(
             scope = scope,
             libPebble = libPebble,
@@ -1616,15 +1624,19 @@ class PebbleIntegration(
      *  would roughly double the phone's awake time for nothing — the link drops again right after. Real
      *  deliveries still count: their PPoG packets and BlobDB records show up in [linkActivity]. */
     private fun pendingWatchWork(): String? {
-        val parts = listOfNotNull(quietTimeLink?.pendingDescription(), voiceProvider.pendingDescription(), watchTraffic())
+        // While paused by hand, Quiet Time ending reconnects nothing: don't wait for that reconnect.
+        val quietTime = quietTimeLink?.pendingDescription()
+            ?.takeUnless { manualDisconnect.held && it.startsWith("reconnect") }
+        val parts = listOfNotNull(manualDisconnectPending(), quietTime, voiceProvider.pendingDescription(), watchTraffic())
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
 
     /** Notifications and packets owed to or awaited from the watch; see [pendingWatchWork]. A notification
-     *  queued while the Quiet Time pause holds the link off can't be delivered, so it isn't waited for. */
+     *  queued while a pause (Quiet Time, manual disconnect) holds the link off can't be delivered, so it
+     *  isn't waited for. */
     private fun watchTraffic(): String? {
         val parts = buildList {
-            if (::watchNotifier.isInitialized && quietTimeLink?.held != true) {
+            if (::watchNotifier.isInitialized && !linkPaused()) {
                 watchNotifier.pendingDescription(NOTIFICATION_PICKUP_GRACE_MS)?.let(::add)
             }
             if (linkActivity.busy.value) add(linkActivity.summary())
@@ -1632,10 +1644,19 @@ class PebbleIntegration(
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
 
+    private fun watchUpdateRunning(): Boolean =
+        System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds
+
+    private fun linkPaused(): Boolean = quietTimeLink?.held == true || manualDisconnect.held
+
+    /** For the sleep guard: the manual disconnect's own teardown, still running. */
+    private fun manualDisconnectPending(): String? =
+        if (manualDisconnect.held && libPebble.watches.value.any { it is ActiveDevice }) "manual disconnect" else null
+
     /** Why the watch link must stay up whatever the Quiet Time pause wants, or null. */
     private fun linkNeeded(): String? = when {
         pairingGate.isOpen() -> "pairing window open"
-        System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds -> "watch update running"
+        watchUpdateRunning() -> "watch update running"
         libPebble.currentCall.value != null -> "call in progress"
         else -> null
     }
@@ -2104,7 +2125,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl) { libPebble.bluetoothEnabled.value.enabled() })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -2131,9 +2152,12 @@ class PebbleIntegration(
     private fun startSignalEmitters() {
 
         // WatchesChanged: poke when the watch list's name/state/battery/transport signature changes
-        // (the records ListWatches returns, so any GUI-visible change re-fetches).
-        libPebble.watches
-            .map { devices -> devices.joinToString("\n", transform = ::watchRecord) }
+        // (the records ListWatches returns, so any GUI-visible change re-fetches), or LinkPause does.
+        combine(
+            libPebble.watches.map { devices -> devices.joinToString("\n", transform = ::watchRecord) },
+            manualDisconnect.paused,
+            quietTimeLink?.heldState ?: flowOf(false),
+        ) { records, manual, quiet -> Triple(records, manual, quiet) }
             .distinctUntilChanged()
             .drop(1)
             .onEach { emit(StoandlControl.WatchesChanged(STOANDL_OBJECT_PATH)) }
@@ -2314,7 +2338,7 @@ class PebbleIntegration(
                 // and hold the goal steady across a firmware/language update's reboot gap.
                 if (pairingGate.isOpen()) continue
                 if (!libPebble.bluetoothEnabled.value.enabled()) continue
-                if (quietTimeLink?.held == true) { armedId = null; continue } // paused on purpose: nothing to rotate
+                if (linkPaused()) { armedId = null; continue } // paused on purpose: nothing to rotate
                 if (System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds) continue
 
                 val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
@@ -2922,6 +2946,11 @@ private class StoandlControlImpl(
     private val pluginControl: PluginControl,
     // Named custom vibes (NotifSetVibePattern, NotifStyleChoices, NotifVibeTest).
     private val vibePatterns: VibePatterns,
+    // Disconnect / Connect / LinkPause.
+    private val manualDisconnect: ManualDisconnect,
+    private val quietTimeHeld: () -> Boolean,
+    // A firmware or language update (and its reboot) needs the link: Disconnect refuses meanwhile.
+    private val watchUpdateRunning: () -> Boolean,
     // True only when Bluetooth is usable: libpebble3's state (a BlueZ adapter exists and is powered).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -3986,6 +4015,8 @@ private class StoandlControlImpl(
      *  window it didn't open. Its timeout is wall-clock time, like the gate's and the CLI's: a phone that
      *  sleeps through the window (monotonic time stops) must not keep the monitor alive past it. */
     private fun openPairingWindowAndMonitor(lp: LibPebble) {
+        // A pairing window asks for a watch link: a manual disconnect would keep it from ever coming up.
+        manualDisconnect.resume()
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
         val alreadyBonded = lp.watches.value
             .mapNotNull { it.identifier as? PebbleBleIdentifier }
@@ -4180,18 +4211,46 @@ private class StoandlControlImpl(
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
+        if (watch.isBlank()) {
+            val resumed = manualDisconnect.resume()
+            // A lone watch also gets the goal back: a failed pairing may have cleared it.
+            known.singleOrNull()?.takeIf { it !is ActiveDevice }?.connect()
+            return when {
+                quietTimeHeld() && resumed -> "ok:Resumed — the connection stays paused until Quiet Time ends"
+                quietTimeHeld() -> "ok:The connection is paused for Quiet Time — it comes back when Quiet Time ends"
+                resumed -> "ok:Watch connection resumed"
+                else -> "ok:Watch connection wasn't paused"
+            }
+        }
         // Same exact-then-unique-substring match as repair/unpair.
         val match = when (val m = matchOneWatch(known, watch)) {
             is WatchMatch.One -> m.device
             is WatchMatch.Error -> return m.message
         }
+        manualDisconnect.resume()
         if (match is ConnectedPebbleDevice) return "ok:${match.displayName()} already connected"
         // requestConnection: in single-watch mode this sets connectGoal on the chosen watch and clears
         // it on the others, handing it the one connection slot (it connects once in range).
         match.connect()
         log.info { "Connect: handing the connection slot to ${match.displayName()}" }
-        return "ok:Connecting ${match.displayName()}"
+        return if (quietTimeHeld()) "ok:${match.displayName()} connects when Quiet Time ends"
+        else "ok:Connecting ${match.displayName()}"
     }
+
+    override fun Disconnect(): String {
+        val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
+        val active = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        if (watchUpdateRunning()) return "error:A firmware or language update is running — disconnect when it's done"
+        if (pairingGate.isOpen()) return "error:A pairing window is open — disconnect when it's closed"
+        if (!manualDisconnect.disconnect()) return "ok:Watch connection already paused"
+        return "ok:" + (active?.let { "Disconnected ${it.displayName()}" } ?: "Watch connection paused") +
+            " — 'stoandl watch connect' resumes it"
+    }
+
+    override fun LinkPause(): String = "ok:" + listOfNotNull(
+        "manual".takeIf { manualDisconnect.held },
+        "quiet_time".takeIf { quietTimeHeld() },
+    ).joinToString(",")
 
     override fun ListWatches(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()

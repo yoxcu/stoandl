@@ -358,6 +358,11 @@ classic.discover = true
 # `stoandl watch connect <name>`).
 connection.autoswitch = true
 
+# `stoandl watch disconnect` (or Disconnect on the GUI's Watch page) keeps every watch disconnected until
+# `stoandl watch connect`. With this on the pause also lasts across a daemon restart, like the official
+# app's Disconnect; set to false to have a restart reconnect.
+connection.disconnect_persists = true
+
 # ── Phones that deep-sleep (suspend whenever the screen is off) ───────────────────────────────────
 # See docs/deep-sleep.md. Harmless on a desktop; the first two are on by default.
 #

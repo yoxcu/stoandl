@@ -271,6 +271,9 @@ data class StoandlConfig(
      *  single paired watch. On by default; turn off to pin the connection to the last-chosen watch
      *  (use `stoandl watch connect <name>` to move it). */
     val connectionAutoswitch: Boolean,
+    /** `stoandl watch disconnect` (or the GUI's Disconnect) lasts across a daemon restart until
+     *  `stoandl watch connect`, like the official app's Disconnect. Off: a restart reconnects. */
+    val connectionDisconnectPersists: Boolean,
     /** Hold a logind *delay* inhibitor so a suspend waits (up to [powerSleepGuardMaxMs]) until watch
      *  traffic in flight — typically the notification a push wake just produced — has reached the watch.
      *  Switches only the lock: the suspend-aware (wall-clock) scheduling of weather/calendar/firmware
@@ -423,6 +426,7 @@ data class StoandlConfig(
             batteryRetentionDays = DEFAULT_BATTERY_RETENTION_DAYS,
             classicDiscover = true,
             connectionAutoswitch = true,
+            connectionDisconnectPersists = true,
             powerSleepGuard = true,
             powerSleepGuardMaxMs = DEFAULT_SLEEP_GUARD_MAX_MS,
             powerPauseDatalogScreenOff = false,
@@ -552,6 +556,7 @@ data class StoandlConfig(
                 // read an absent key as false and contradict defaults(), conf.example and the docs.
                 classicDiscover = map["classic.discover"]?.let { parseBool(it) } ?: true,
                 connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
+                connectionDisconnectPersists = map["connection.disconnect_persists"]?.let { parseBool(it) } ?: true,
                 powerSleepGuard = map["power.sleep_guard"]?.let { parseBool(it) } ?: true,
                 powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
                     ?.coerceIn(0L, 4500L) ?: DEFAULT_SLEEP_GUARD_MAX_MS,

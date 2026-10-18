@@ -496,6 +496,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         apply = ConfigApply.RESTART) { it.classicDiscover },
     toggle("connection.autoswitch", G_CONNECTION, "Auto-switch between watches",
         "With 2+ paired watches, connect whichever is in range — preferring the most recently used") { it.connectionAutoswitch },
+    toggle("connection.disconnect_persists", G_CONNECTION, "Stay disconnected after a restart",
+        "A watch you disconnected by hand stays disconnected when stoandl restarts, until you connect it again") { it.connectionDisconnectPersists },
 
     // --- Deep sleep (phones that suspend whenever the display is off; see docs/deep-sleep.md) ---
     toggle("power.sleep_guard", G_SLEEP, "Sleep guard",

@@ -175,8 +175,20 @@ interface StoandlControl : DBusInterface {
     /** Connect a SPECIFIC known watch by name substring (exact-then-unique-substring, like [Repair]).
      *  In single-watch mode this hands the one connection slot to the chosen watch (disconnecting
      *  whatever else is active), so it's how you switch between paired watches without unpairing.
-     *  Status-prefixed return. */
+     *  Empty [watch] resumes the link after [Disconnect] (the watch holding the connection goal connects
+     *  again); a named watch resumes it too. Inside a Quiet Time pause the link stays off until the
+     *  window ends. Status-prefixed return. */
     fun Connect(watch: String): String
+
+    /** Disconnect the watch and keep every watch disconnected until [Connect] (or a pairing window). In
+     *  memory, not libpebble3's persisted connect goal; with `connection.disconnect_persists` on it lasts
+     *  across a daemon restart. Returns `ok:<message>`, also when it already was paused. */
+    fun Disconnect(): String
+
+    /** Why the watch link is held off right now: `ok:` and a comma-separated list of `manual`
+     *  ([Disconnect]) and `quiet_time` (`power.quiet_time_link_off`); `ok:` alone when nothing holds it.
+     *  WatchesChanged fires when it changes. */
+    fun LinkPause(): String
 
     /** Whether the host's Bluetooth is on and usable for the watch link. The daemon tracks this from
      *  libpebble3's adapter state AND the presence of `org.bluez.GattManager1` (so it also catches

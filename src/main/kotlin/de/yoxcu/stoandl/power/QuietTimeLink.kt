@@ -14,6 +14,9 @@ import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -68,7 +71,9 @@ class QuietTimeLink(
     private var callsNoted = false
     @Volatile private var prefs: List<WatchPreference<*>> = emptyList()
 
+    private val _heldState = MutableStateFlow(false)
     /** Whether the link is paused right now. */
+    val heldState: StateFlow<Boolean> = _heldState.asStateFlow()
     val held: Boolean get() = hold != null
 
     /**
@@ -128,6 +133,7 @@ class QuietTimeLink(
         val current = hold
         if (current != null && stayReason != null) {
             hold = null
+            _heldState.value = false
             releasedAtMs = nowMs
             current.close()
             log.info { "Quiet Time: watch connection back on ($stayReason)" }
@@ -137,6 +143,7 @@ class QuietTimeLink(
                 return
             }
             hold = watchConnector.holdDisconnected("Quiet Time")
+            _heldState.value = true
             releasedAtMs = null
             log.info { "Quiet Time: watch connection paused until ${window.toTime()}" }
         }

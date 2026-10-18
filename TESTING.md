@@ -2108,6 +2108,27 @@ app turns on at first run). Off-device: `HealthProfileTest`, `MprisSkipTest`, `L
 | 5.54b | During a walk | `hrm_activity on`, walk 10+ min, `stoandl health sync` | Dense HR samples across the walk (`stoandl health hr`, or the GUI Health tab); with `off`, only the interval samples. |
 | 5.54c | Seek off | a seek-only player (5.43c); `stoandl daemon set music.seek_when_available false` | Without a restart, the watch's Music app swaps fast-forward/rewind for skip icons, and next/previous log `MPRIS next`/`previous`, not `seek`. Back to `true`: seeks again. |
 | 5.54d | Faces by last used | `stoandl apps` lists faces; activate a face lower in the list from the watch's face menu | By default the order stays. `stoandl daemon set apps.order_faces_by_last_used true`, activate another face lower down: `stoandl apps` (and the GUI's Faces list) now show it first. Back to `false`: the order stays again. |
+
+## 5.55 Manual disconnect (`stoandl watch disconnect` / `connect`)  ⚠️ UNVERIFIED (needs a watch; 5.55f two watches, 5.55g Quiet Time)
+
+`stoandl watch disconnect` (GUI: Watch page → *Disconnect*) keeps every watch disconnected until `stoandl watch
+connect [name]` (GUI: the banner's *Connect*, or a known watch's *Connect*) or a pairing window. It is a libpebble3
+`holdDisconnected` hold, never `requestDisconnection` (no persisted `connectGoal=false`). New key
+`connection.disconnect_persists` (default on, like the official app): the pause lasts across a daemon restart via
+`<configDir>/watch-disconnected`. D-Bus: `Disconnect`, `LinkPause`, `Connect("")`. Off-device: `ManualDisconnectTest`,
+`ConfigSchemaTest`; the GUI smoke walks Disconnect → Connect against the mock.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.55a | Disconnect | watch connected; `stoandl watch disconnect` | `Disconnected <name> — 'stoandl watch connect' resumes it`; the watch shows disconnected within seconds. Log `Watch connection paused by hand` and libpebble3's `holding every watch disconnected`. `stoandl watch list` ends with `Watch connection paused …`. |
+| 5.55b | Stays off | wait 5 min with the watch in range; send a desktop notification | The watch stays disconnected (no reconnect attempts in the log). The phone may suspend: the sleep guard doesn't wait for the notification. |
+| 5.55c | Connect | `stoandl watch connect` | `Watch connection resumed`; the watch reconnects and gets the notification from 5.55b (catch-up: paused time doesn't count). |
+| 5.55d | Restart, persisting | disconnect, `systemctl --user restart stoandl` | Still disconnected after the restart; log `Watch connection stays paused …`. `stoandl watch connect` reconnects. |
+| 5.55e | Restart, not persisting | `stoandl daemon set connection.disconnect_persists false`, disconnect, restart the daemon | The watch reconnects after the restart. |
+| 5.55f | Two watches | two paired watches, `connection.autoswitch` on; disconnect, wait 2 min; then `stoandl watch connect <other>` | No `Auto-switch: arming …` while paused; the connect resumes and hands the slot to `<other>`. |
+| 5.55g | Quiet Time | `power.quiet_time_link_off` on, inside the scheduled window with the display off 10 min (link paused for Quiet Time); `stoandl watch disconnect`, then `stoandl watch connect` | Connect answers `Resumed — the connection stays paused until Quiet Time ends`; the watch reconnects only when the window ends or the display comes on. Disconnect before the window ends: the watch stays off after it. |
+| 5.55h | Pairing resumes | disconnected; `stoandl watch pair` | The pause ends (log `Watch connection resumed`), the window opens as usual. |
+| 5.55i | GUI | Watch page with a watch connected | A *Disconnect* action; after it, a *Watch disconnected* banner with *Connect*; a CLI disconnect/connect updates the page within a second (WatchesChanged). Inside a Quiet Time pause an information banner says so. |
 ---
 
 ## 7. Regression sanity  (run after any of the above)

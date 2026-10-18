@@ -168,6 +168,8 @@ you paired elsewhere and didn't mark trusted can't open a profile while stoandl 
 stoandl watch pair [--yes]        # pair a new watch (~2 min window; finds BLE and classic watches; --yes: don't ask for the code)
 stoandl watch list                # known watches, their connection state and battery level
 stoandl watch connect B349        # connect a specific known watch by name/substring (switches the active watch)
+stoandl watch disconnect          # keep every watch disconnected until `watch connect` (see Manual disconnect)
+stoandl watch connect             # resume after `watch disconnect`
 stoandl watch repair B349 [--yes] # re-pair ONE watch by name/substring (forgets just it, then pairs)
 stoandl watch unpair [name]       # forget watches on this host — all of them, or just the named one
 ```
@@ -900,6 +902,24 @@ SQLite library is also extracted once to `~/.cache/stoandl/native/` instead of a
 openjdk25: x86_64 natively, aarch64 under qemu-user). Without the fix it reproduces the phone's exact
 `avgFinalize+0xc4` crash; with it `AVG()` works and the daemon starts cleanly. Not yet run on the phone
 ([TESTING.md §5.32a](../TESTING.md))._
+
+### Manual disconnect
+
+`stoandl watch disconnect` (GUI: Watch page → *Disconnect*) drops the watch link and keeps every watch
+disconnected until `stoandl watch connect` (or `stoandl watch connect <name>` to resume on a particular
+watch; GUI: the *Watch disconnected* banner's *Connect*). A pairing window (`watch pair`, `watch repair`) also
+ends it, and it is refused while a firmware or language update runs. It pauses the link in memory (libpebble3's `holdDisconnected`) rather than clearing the watch's
+persisted connection goal, so nothing is left that would keep a later launch from reconnecting on its own.
+With `connection.disconnect_persists` (default on, as in the official app) the pause also lasts across a
+daemon restart; set it off and a restart reconnects. While paused nothing reaches the watch (calls neither);
+notifications posted meanwhile arrive after `connect` (paused time doesn't count towards the catch-up window).
+
+It applies to every watch: stoandl links one watch at a time, and the multi-watch auto-switch doesn't rotate
+to another watch while paused. It stacks with the Quiet Time pause (`power.quiet_time_link_off`): the link is
+off while either holds it, so Quiet Time ending doesn't undo a manual disconnect, and `connect` inside the
+Quiet Time window takes effect when the window ends (Connect says so). `stoandl watch list` and the GUI's
+Watch page show either pause (D-Bus `LinkPause`). _Implemented — to be tested
+([TESTING.md §5.55](../TESTING.md))._
 
 ### Multiple concurrent Pebble watches
 

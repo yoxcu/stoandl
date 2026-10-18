@@ -119,7 +119,8 @@ private fun printUsage() {
     println("  stoandl <command> [args]")
     println()
     println("Watch & apps")
-    row("watch", "list connect pair unpair repair")
+    row("watch", "list connect disconnect pair")
+    row("", "unpair repair")
     row("", "battery [history|insights|activity|")
     row("", "         power|heartbeat] · find")
     row("apps", "list launch install remove order")
@@ -1291,6 +1292,10 @@ private fun ctlWatch(rest: List<String>) {
     when (rest.firstOrNull() ?: "list") {
         "list" -> watchList()
         "connect" -> watchConnect(rest.getOrNull(1))
+        "disconnect" -> withControl { control ->
+            try { handleStatusResponse(control.Disconnect()) }
+            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        }
         "pair" -> watchPair(assumeYes)
         "unpair" -> watchUnpair(rest.getOrNull(1))
         "repair" -> watchRepair(rest.drop(1).firstOrNull { !it.startsWith("-") }, assumeYes)
@@ -1303,7 +1308,7 @@ private fun ctlWatch(rest: List<String>) {
         "running" -> watchRunning()
         "rename", "nickname" -> watchRename(rest.getOrNull(1), rest.drop(2).joinToString(" "))
         else -> {
-            System.err.println("Usage: stoandl watch <list|connect <n>|pair [--yes]|unpair [n]|repair <n> [--yes]|rename <n> <name>|battery|find|ping|running>")
+            System.err.println("Usage: stoandl watch <list|connect [n]|disconnect|pair [--yes]|unpair [n]|repair <n> [--yes]|rename <n> <name>|battery|find|ping|running>")
             System.exit(1)
         }
     }
@@ -1355,13 +1360,18 @@ private fun watchList() = withControl { control ->
             }
         }
         if (control.BluetoothStatus() == "ok:off") println("Bluetooth is off — no watch can connect until it is on.")
+        val pause = runCatching { control.LinkPause() }.getOrNull()?.removePrefix("ok:")?.split(',').orEmpty()
+        when {
+            "manual" in pause -> println("Watch connection paused — 'stoandl watch connect' resumes it.")
+            "quiet_time" in pause -> println("Watch connection paused for Quiet Time (power.quiet_time_link_off).")
+        }
     } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
 }
 
+// `watch connect` resumes after `watch disconnect`; `watch connect <name>` also switches to that watch.
 private fun watchConnect(name: String?) {
-    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch connect <name>"); System.exit(1); return }
     withControl { control ->
-        try { handleStatusResponse(control.Connect(name)) }
+        try { handleStatusResponse(control.Connect(name ?: "")) }
         catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
     }
 }
