@@ -18,6 +18,7 @@ type config struct {
 	KeepHistory bool
 	BaseURL     string
 	SystemExtra string
+	Language    string
 }
 
 const (
@@ -44,6 +45,7 @@ func parseConfig(m map[string]string) config {
 		KeepHistory: get("keep_history", "true") != "false",
 		BaseURL:     get("base_url", "https://api.anthropic.com"),
 		SystemExtra: strings.TrimSpace(m["system_prompt_extra"]),
+		Language:    strings.TrimSpace(m["language"]),
 	}
 	switch c.Effort {
 	case "low", "medium", "high":
@@ -65,4 +67,16 @@ func atoi(s string, def, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// systemExtra is what follows the fixed system prompt: the user's language, then their own instructions.
+func (c config) systemExtra() string {
+	var parts []string
+	if c.Language != "" {
+		parts = append(parts, "The user speaks "+c.Language+": always reply in "+c.Language+".")
+	}
+	if c.SystemExtra != "" {
+		parts = append(parts, c.SystemExtra)
+	}
+	return strings.Join(parts, "\n\n")
 }

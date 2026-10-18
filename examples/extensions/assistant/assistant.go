@@ -215,7 +215,7 @@ func (a *assistant) ask(o origin, conv string, turn int, text string) {
 		Effort:      a.cfg.Effort,
 		MaxTokens:   a.cfg.MaxTokens,
 		WebSearch:   a.cfg.WebSearch,
-		SystemExtra: a.cfg.SystemExtra,
+		SystemExtra: a.cfg.systemExtra(),
 		History:     append([]Turn(nil), c.Turns[:n-1]...),
 		Prompt:      t.Prompt,
 	}
@@ -242,7 +242,7 @@ func (a *assistant) cancelLocked(cause error) {
 	}
 }
 
-func (a *assistant) prefix() string { return prefixKey(a.cfg.SystemExtra, a.cfg.WebSearch) }
+func (a *assistant) prefix() string { return prefixKey(a.cfg.systemExtra(), a.cfg.WebSearch) }
 
 func (a *assistant) run(j *job, req askRequest) {
 	release := a.keepAwake()
@@ -346,9 +346,9 @@ func (a *assistant) logAsk(j *job, model string, res askResult, cancelled bool) 
 	if len(q) > 40 {
 		q = q[:40]
 	}
-	a.ext.Logf("%q ask conv=%s turn=%d model=%s ttft=%d total=%d in=%d out=%d cost=$%.5f stop=%s sink=%s",
+	a.ext.Logf("%q ask conv=%s turn=%d model=%s ttft=%d total=%d in=%d out=%d searches=%d cost=$%.5f stop=%s sink=%s",
 		string(q), j.conv, j.turn, model, res.TTFT.Milliseconds(), res.Total.Milliseconds(),
-		res.In, res.Out, res.Cost, stop, j.origin)
+		res.In, res.Out, res.Searches, res.Cost, stop, j.origin)
 }
 
 // keepAwake holds off suspend while a request runs; the returned func releases the hold, also when

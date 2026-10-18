@@ -173,19 +173,24 @@ func TestParamsPerModel(t *testing.T) {
 	if fmt.Sprint(m["output_config"]) != "map[effort:medium]" || m["thinking"] != nil || m["fallbacks"] != nil {
 		t.Fatalf("sonnet: %v", m)
 	}
-	if tools := fmt.Sprint(m["tools"]); !strings.Contains(tools, "web_search_20260209") || !strings.Contains(tools, "max_uses:1") {
-		t.Fatalf("sonnet tools: %s", tools)
+	if tools := fmt.Sprint(m["tools"]); !strings.Contains(tools, "name:web_lookup") || strings.Contains(tools, "web_search") {
+		t.Fatalf("sonnet regular request carries only the lookup tool: %s", tools)
+	}
+	r.Searching = true
+	if tools := fmt.Sprint(marshal(r)["tools"]); !strings.Contains(tools, "web_search_20260209") || !strings.Contains(tools, "max_uses:1") || strings.Contains(tools, "web_lookup") {
+		t.Fatalf("sonnet search request: %s", tools)
 	}
 	if !strings.Contains(fmt.Sprint(m["system"]), "\n\nBe kind.") {
 		t.Fatalf("system_prompt_extra: %v", m["system"])
 	}
+	r.Searching = false
 	r.Model = modelOpus
 	p := r.params()
 	m = marshal(r)
 	if m["fallbacks"] != "default" || len(p.Betas) != 1 || p.Betas[0] != "server-side-fallback-2026-07-01" || m["thinking"] != nil {
 		t.Fatalf("opus: %v betas %v", m, p.Betas)
 	}
-	r.Model = modelHaiku
+	r.Model, r.Searching = modelHaiku, true
 	m = marshal(r)
 	if m["output_config"] != nil || !strings.Contains(fmt.Sprint(m["tools"]), "web_search_20250305") {
 		t.Fatalf("haiku: %v", m)
@@ -592,4 +597,65 @@ func TestUsageCostCountsDeclinedAttempts(t *testing.T) {
 	if c := usageCost(modelHaiku, top); math.Abs(c-cost(modelHaiku, 1000, 1000, 0)) > 1e-12 {
 		t.Fatalf("no iterations: %v", c)
 	}
+}
+
+func TestSystemExtraCarriesLanguage(t *testing.T) {
+	if got := parseConfig(map[string]string{}).systemExtra(); got != "" {
+		t.Fatalf("no language, no extra: %q", got)
+	}
+	c := parseConfig(map[string]string{"language": "German", "system_prompt_extra": "Be kind."})
+	got := c.systemExtra()
+	if !strings.HasPrefix(got, "The user speaks German: always reply in German") || !strings.HasSuffix(got, "\n\nBe kind.") {
+		t.Fatalf("extra: %q", got)
+	}
+	if prefixKey(c.systemExtra(), false) == prefixKey("", false) {
+		t.Fatal("a language change must start a new conversation")
+	}
+	if !strings.Contains(systemPrompt, "40 words") {
+		t.Fatal("watch rules missing from the system prompt")
+	}
+}
+
+func lookupBlock() []string {
+	return []string{
+		`{"type":"content_block_start","index":IDX,"content_block":{"type":"tool_use","id":"toolu_1","name":"web_lookup","input":{}}}`,
+		`{"type":"content_block_delta","index":IDX,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"bitcoin price\"}"}}`,
+	}
+}
+
+func TestLookupEscalatesToOneOffSearch(t *testing.T) {
+	f := newFakeAPI(t,
+		fakeResponse{events: sseMessage("tool_use", 300, 15, lookupBlock())},
+		fakeResponse{events: sseMessage("end_turn", 6000, 20, searchBlock(), textBlock("About $97,000 right now."))},
+	)
+	req := testClient(f)
+	req.Model, req.WebSearch = modelSonnet, true
+	req.History = []Turn{{Q: "hi", Prompt: "Local time: x\n\nhi", Text: "Hello!", Content: thinkingAndText("Hello!")}}
+	searching := 0
+	res := runAsk(context.Background(), newClient("sk-test", f.srv.URL), req, streamHooks{Searching: func() { searching++ }})
+	if res.Err != nil || res.Text != "About $97,000 right now." || res.In != 6300 || searching < 1 {
+		t.Fatalf("result %+v searching=%d", res, searching)
+	}
+	if len(res.Content) != 1 || strings.Contains(string(res.Content[0]), "server_tool_use") {
+		t.Fatalf("a searched answer is stored as text only: %s", res.Content)
+	}
+	reqs := f.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests: %d", len(reqs))
+	}
+	first, second := fmt.Sprint(reqs[0]["tools"]), fmt.Sprint(reqs[1]["tools"])
+	if !strings.Contains(first, "web_lookup") || strings.Contains(first, "web_search_2") {
+		t.Fatalf("first request tools: %s", first)
+	}
+	if !strings.Contains(second, "web_search_20260209") || strings.Contains(second, "web_lookup") {
+		t.Fatalf("search request tools: %s", second)
+	}
+	if hist := fmt.Sprint(reqs[1]["messages"]); strings.Contains(hist, "thinking") || !strings.Contains(hist, "Hello!") {
+		t.Fatalf("search request replays history as plain text: %s", hist)
+	}
+}
+
+func thinkingAndText(text string) []json.RawMessage {
+	t, _ := json.Marshal(map[string]string{"type": "text", "text": text})
+	return []json.RawMessage{json.RawMessage(`{"type":"thinking","thinking":"","signature":"SIG9"}`), t}
 }

@@ -49,13 +49,14 @@ the daemon moves it into the secret store at the next start and deletes the line
 | `model` | `claude-haiku-4-5-20251001` | Or `claude-sonnet-5`, `claude-opus-5-5`. Changing it starts a new conversation. |
 | `effort` | `low` | `low`, `medium`, `high`; sent to Sonnet 5 and Opus 5.5 only (Haiku 4.5 has no effort or thinking). |
 | `max_tokens` | `2048` | Per answer; on Sonnet 5 and Opus 5.5 it includes thinking. A cut answer ends in `...`. |
-| `web_search` | `false` | Anthropic's server-side web search, at most one search per question, $0.01 each. |
+| `web_search` | `false` | Let Claude search the web when a question needs current facts. Regular questions carry only a small `web_lookup` tool (about 100 tokens); when Claude calls it, the question is re-asked once with Anthropic's web search tool (thousands of tokens of tool definition, plus $0.01 per search) and the watch shows "Searching...". The searched answer is kept as text, so the conversation stays append-only. |
 | `presets` | 4 starter questions | `\|`-separated: the anchor card's replies and the watchapp's presets menu. |
 | `followups` | `Explain more\|Shorter\|Retry` | Replies on answer cards. |
 | `idle_minutes` | `15` | A question with no card attached continues the last conversation only within this time. |
 | `keep_history` | `true` | Keep conversations for 24 h in a file, so replies to older cards survive a restart. |
 | `base_url` | `https://api.anthropic.com` | For a proxy. |
-| `system_prompt_extra` | (empty) | Appended to the built-in prompt ("answer first, plain text, about 60 words"). |
+| `language` | (empty) | Reply language, e.g. `German`. Empty: the language you spoke, which a misheard question can flip (Parakeet guesses the language itself). |
+| `system_prompt_extra` | (empty) | Appended to the built-in prompt (Pebble screen: answer first, 1–3 sentences, at most 40 words, plain text, longer only when asked). |
 
 ## Conversations and history
 
@@ -72,7 +73,7 @@ With `keep_history = true` they are kept in `${XDG_STATE_HOME:-~/.local/state}/s
 The extension logs one line per question (no key, the question cut to 40 characters):
 
 ```
-"how long to boil an egg" ask conv=1a2b3c4d turn=1 model=claude-haiku-4-5-20251001 ttft=612 total=1480 in=312 out=58 cost=$0.00060 stop=end_turn sink=notif
+"how long to boil an egg" ask conv=1a2b3c4d turn=1 model=claude-haiku-4-5-20251001 ttft=612 total=1480 in=312 out=58 searches=0 cost=$0.00060 stop=end_turn sink=notif
 ```
 
 To compare the models before choosing one, run the bench by hand (never under the daemon). It reads only

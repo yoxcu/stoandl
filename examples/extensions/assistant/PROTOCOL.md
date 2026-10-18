@@ -125,7 +125,7 @@ The GUI renders the schema (an enum shows its first option when the value is unk
 | `model` | enum `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5-5` | `claude-haiku-4-5-20251001` | Changing it ends the current conversation (the next question starts a new one). |
 | `effort` | enum `low`, `medium`, `high` | `low` | `output_config.effort`, sent to Sonnet 5 and Opus 5.5 only. |
 | `max_tokens` | int | 2048 | Per answer. On Sonnet 5 and Opus 5.5 this includes thinking tokens. |
-| `web_search` | bool | false | Anthropic server-side web search, `max_uses: 1`. Billed per search. Off by default (external egress rule). |
+| `web_search` | bool | false | Ad-hoc web search: regular requests carry a client tool `web_lookup` (`{query}`); when Claude calls it, the turn is re-asked once with the server web search tool (`max_uses: 1`), the history as plain text, and the answer stored as text only. Billed per search. Off by default (external egress rule). |
 | `presets` | string, `\|`-separated, ≤ 512 B | see B2 | Starter questions: the anchor card's canned replies and the watchapp presets menu. |
 | `followups` | string, `\|`-separated, ≤ 512 B | `Explain more\|Shorter\|Retry` | Canned replies on answer and error cards. |
 | `idle_minutes` | int | 15 | Idle rule (B7). |
@@ -140,7 +140,7 @@ The GUI renders the schema (an enum shows its first option when the value is unk
 | Item | Rule |
 |---|---|
 | Client | `anthropic.NewClient(option.WithAPIKey(cfg.api_key), option.WithBaseURL(cfg.base_url))`. Always streaming: `client.Messages.NewStreaming` (beta `client.Beta.Messages.NewStreaming` where a beta is needed) with `message.Accumulate`. |
-| System prompt | Fixed text, then `"\n\n" + system_prompt_extra` if set: *"You answer questions spoken into a smartwatch. The answer is read on a small screen. Answer first, in plain text, in about 60 words or fewer unless asked for more. No markdown, headings, tables or emoji. Use short sentences. The question was transcribed from speech: if it is unclear, answer the most likely reading. Answer in the language of the question."* |
+| System prompt | Fixed text (`systemPrompt` in claude.go: Pebble screen, 1–3 sentences / at most 40 words, answer first, plain text, longer only on request, expect speech-recognition errors), then `"\n\n"` + a reply-language line when `language` is set, then `"\n\n" + system_prompt_extra` if set. The whole text is part of the conversation fingerprint, so changing it starts a new conversation. |
 | User turn | `"Local time: Fri 17 Oct 2026 14:05 CEST (Europe/Berlin)\n\n" + question`. The time stays out of the system prompt so the system prompt is a stable prefix. |
 | Haiku 4.5 | No `thinking`, no `effort`. Web search tool `web_search_20250305`. |
 | Sonnet 5 | `output_config.effort = cfg.effort`, `thinking` omitted (runs adaptive). Web search `web_search_20260209`. |

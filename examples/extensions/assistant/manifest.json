@@ -16,7 +16,8 @@
     "idle_minutes": "15",
     "keep_history": "true",
     "base_url": "https://api.anthropic.com",
-    "system_prompt_extra": ""
+    "system_prompt_extra": "",
+    "language": ""
   },
   "configSchema": [
     {"key": "api_key", "type": "string", "label": "Anthropic API key", "secret": true, "required": true},
@@ -29,6 +30,7 @@
     {"key": "idle_minutes", "type": "int", "label": "New conversation after idle minutes"},
     {"key": "keep_history", "type": "bool", "label": "Keep conversations for 24 h across restarts"},
     {"key": "base_url", "type": "string", "label": "API base URL"},
+    {"key": "language", "type": "string", "label": "Reply language (e.g. German; empty = the language you speak)"},
     {"key": "system_prompt_extra", "type": "string", "label": "Extra instructions (no #)"}
   ]
 }

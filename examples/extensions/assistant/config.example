@@ -25,6 +25,8 @@ idle_minutes = 15
 keep_history = true
 # For a proxy.
 base_url = https://api.anthropic.com
+# Reply language, e.g. German. Empty: the language you speak (a misheard question can then flip it).
+language =
 # Appended to the built-in system prompt (it cannot contain the character the config parser treats as
 # a comment).
 system_prompt_extra =

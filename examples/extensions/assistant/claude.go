@@ -26,11 +26,15 @@ const (
 
 var allModels = []string{modelHaiku, modelSonnet, modelOpus}
 
-const systemPrompt = "You answer questions spoken into a smartwatch. The answer is read on a small screen. " +
-	"Answer first, in plain text, in about 60 words or fewer unless asked for more. " +
-	"No markdown, headings, tables or emoji. Use short sentences. " +
-	"The question was transcribed from speech: if it is unclear, answer the most likely reading. " +
-	"Answer in the language of the question."
+const systemPrompt = "You are answering on a Pebble smartwatch: the reply is read at a glance on a small screen " +
+	"that shows about 30 words at a time, so every word costs the user a scroll. " +
+	"Reply in 1 to 3 short sentences, at most 40 words; the first sentence must answer the question on its own. " +
+	"Start with the answer: no greeting, no restating the question, no filler or closing offer. " +
+	"Plain text only: no markdown, lists, bullets, headings, tables, links or emoji. Write numbers as digits and use short units. " +
+	"Go longer (up to about 120 words) only when the user asks for more detail, such as \"Explain more\". " +
+	"The question was dictated and transcribed by speech recognition, so expect misheard words: answer the most likely " +
+	"meaning. Only if it is truly unintelligible, ask in one short sentence to repeat it. " +
+	"Reply in the language the user spoke."
 
 // Overridable in tests.
 var (
@@ -165,6 +169,28 @@ type askRequest struct {
 	SystemExtra string
 	History     []Turn // the base; failed turns are skipped
 	Prompt      string // the user turn: time line + question
+	// Searching is the one-off request made after Claude asked for a web lookup: the real web search
+	// tool, earlier turns as plain text. Its answer is stored as text only, so the conversation itself
+	// keeps one tool set (lookupTool) and stays append-only.
+	Searching bool
+}
+
+// lookupTool stands in for web search in every regular request. The server web search tool's own
+// definition costs thousands of input tokens per question (web_search_20260209 brings dynamic
+// filtering); this one costs about a hundred, and the real tool is only sent when Claude calls it.
+const lookupTool = "web_lookup"
+
+func lookupToolParam() anthropic.BetaToolUnionParam {
+	return anthropic.BetaToolUnionParam{OfTool: &anthropic.BetaToolParam{
+		Name: lookupTool,
+		Description: anthropic.String("Search the web. Call it, before writing any answer text, only when the answer " +
+			"depends on current or fast-changing information (news, prices, weather, schedules, scores, recent " +
+			"releases, opening hours) or on a specific fact you do not know. Never call it for general knowledge."),
+		InputSchema: anthropic.BetaToolInputSchemaParam{
+			Properties: map[string]any{"query": map[string]any{"type": "string", "description": "What to search for"}},
+			Required:   []string{"query"},
+		},
+	}}
 }
 
 func systemText(extra string) string {
@@ -188,6 +214,9 @@ func (r askRequest) params() anthropic.BetaMessageNewParams {
 		System:    []anthropic.BetaTextBlockParam{{Text: systemText(r.SystemExtra)}},
 		Messages:  append(replay(r.History), anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(r.Prompt))),
 	}
+	if r.Searching {
+		p.Messages = append(replayText(r.History), anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(r.Prompt)))
+	}
 	fam := modelFamily(r.Model)
 	if fam != famHaiku {
 		p.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(r.Effort)}
@@ -196,7 +225,10 @@ func (r askRequest) params() anthropic.BetaMessageNewParams {
 		p.Betas = []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01}
 		p.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
 	}
-	if r.WebSearch {
+	switch {
+	case r.WebSearch && !r.Searching:
+		p.Tools = []anthropic.BetaToolUnionParam{lookupToolParam()}
+	case r.Searching:
 		if fam == famHaiku {
 			p.Tools = []anthropic.BetaToolUnionParam{{OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{MaxUses: anthropic.Int(1)}}}
 		} else {
@@ -204,6 +236,26 @@ func (r askRequest) params() anthropic.BetaMessageNewParams {
 		}
 	}
 	return p
+}
+
+// replayText is the history as plain question/answer text, for the one-off search request.
+func replayText(turns []Turn) []anthropic.BetaMessageParam {
+	var msgs []anthropic.BetaMessageParam
+	for _, t := range turns {
+		if t.Err != 0 || strings.TrimSpace(t.Text) == "" {
+			continue
+		}
+		prompt := t.Prompt
+		if prompt == "" {
+			prompt = t.Q
+		}
+		msgs = append(msgs,
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(prompt)),
+			anthropic.BetaMessageParam{Role: anthropic.BetaMessageParamRoleAssistant,
+				Content: []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(t.Text)}},
+		)
+	}
+	return msgs
 }
 
 // replay rebuilds the message list from stored turns, skipping failed ones (and their question) so
@@ -470,10 +522,35 @@ func runAsk(parent context.Context, client anthropic.Client, req askRequest, hoo
 			return res
 		case anthropic.BetaStopReasonMaxTokens, anthropic.BetaStopReasonModelContextWindowExceeded:
 			res.Truncated = true
+		case anthropic.BetaStopReasonToolUse:
+			if !req.Searching && callsLookup(msg) {
+				req.Searching = true
+				params = req.params()
+				content = nil
+				gap = text.Len() > 0
+				firstTimer.Reset(firstTextTimeout)
+				if hooks.Searching != nil {
+					hooks.Searching()
+				}
+				continue
+			}
+		}
+		if req.Searching {
+			res.Content = textOnly(res.Text)
+			return res
 		}
 		res.Content = echoable(append(content, blocks...))
 		return res
 	}
+}
+
+func callsLookup(msg anthropic.BetaMessage) bool {
+	for _, b := range msg.Content {
+		if b.Type == "tool_use" && b.Name == lookupTool {
+			return true
+		}
+	}
+	return false
 }
 
 // textOnly is the stored content for an answer cut off mid-stream: its text alone, since a partial
