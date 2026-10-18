@@ -28,7 +28,7 @@ in a GUI's plugin row. See [`../../docs/extensions.md`](../../docs/extensions.md
   `register_app`/`send_app_message`/`launch_app`/`install_pbw` + `on_app_message`). Ship a copy in your
   extension dir.
 - **`stoandl_ext.go`** — the same helper for Go (`package main`): copy it next to your extension and
-  drive it from your own service loop. Used by `matrix/`.
+  drive it from your own service loop. Used by `matrix/` and `assistant/`.
 - **`matrix/`** — a git submodule ([yoxcu/stoandl-matrix](https://github.com/yoxcu/stoandl-matrix)): a
   **Matrix** extension (Go) — messages on the wrist + canned replies, decrypting E2EE rooms. Logs in as a
   second device of your account; builds to a static, musl-clean binary (`mautrix-go` + pure-Go `goolm`).
@@ -38,6 +38,10 @@ in a GUI's plugin row. See [`../../docs/extensions.md`](../../docs/extensions.md
   *Find My Phone* watchapp + its companion, a complete, forkable boilerplate. UP rings this computer,
   DOWN stops it. Has its own README, build, and `package.sh`. After cloning stoandl, run
   `git submodule update --init` to populate it.
+- **`assistant/`** — **Ask Claude** (Go, official Anthropic SDK): questions by notification reply or
+  from its bundled C watchapp, answers as paged cards or streamed AppMessages. Uses `keepAwake` and a
+  keyring-backed API key. Guide: [docs/assistant.md](../../docs/assistant.md); has its own README and
+  `package.sh`.
 
 ## Install find-my-phone (one shot)
 

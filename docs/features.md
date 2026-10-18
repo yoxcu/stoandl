@@ -959,6 +959,20 @@ waits) that opens the app's permissions: status, last use, Allow / Deny, a switc
 No new settings: nothing is asked or sent that wasn't before — closed apps are listed, not prompted, and
 putting off is always the user's own action. Off-device: `PluginsTest`; GUI smoke (`stoandl-smoke: perms`).
 _Implemented — to be tested ([TESTING.md §5.48m–q](../TESTING.md))._
+
+### Ask Claude (assistant extension)
+
+Ask Claude a question from the wrist with your own Anthropic API key: reply to an "Ask Claude"
+notification by voice or with a preset, and the answer comes back as a notification card (paged, with
+Reply for follow-ups and Retry on errors); or open the bundled **Assistant** watchapp, which dictates at
+once and streams the answer in. A Go extension in
+[`examples/extensions/assistant/`](../examples/extensions/assistant/) on the official Anthropic Go SDK;
+the key lives in the keyring, conversations persist 24 h in a 0600 file (`keep_history`), web search is
+a separate opt-in, and `stoandl-assistant bench` compares the three models' latency and cost. No fork
+change. Guide: [assistant.md](assistant.md). _Built and tested offline (a fake streaming endpoint drives
+the request, notification and watchapp paths); not yet run against the real API or on a watch
+([TESTING.md §5.50](../TESTING.md))._
+
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A

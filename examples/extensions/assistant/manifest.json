@@ -1,0 +1,34 @@
+{
+  "name": "assistant",
+  "cmd": "./stoandl-assistant",
+  "author": "stoandl",
+  "version": "1.0.0",
+  "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
+  "requiresConfig": true,
+  "watchapps": ["assistant.pbw"],
+  "config": {
+    "model": "claude-haiku-4-5-20251001",
+    "effort": "low",
+    "max_tokens": "2048",
+    "web_search": "false",
+    "presets": "Tell me a fun fact|Give me a quick dinner idea|How do I say thank you in Japanese?|Motivate me",
+    "followups": "Explain more|Shorter|Retry",
+    "idle_minutes": "15",
+    "keep_history": "true",
+    "base_url": "https://api.anthropic.com",
+    "system_prompt_extra": ""
+  },
+  "configSchema": [
+    {"key": "api_key", "type": "string", "label": "Anthropic API key", "secret": true, "required": true},
+    {"key": "model", "type": "enum", "label": "Model", "options": ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5-5"]},
+    {"key": "effort", "type": "enum", "label": "Effort (Sonnet 5 and Opus 5.5)", "options": ["low", "medium", "high"]},
+    {"key": "max_tokens", "type": "int", "label": "Max tokens per answer"},
+    {"key": "web_search", "type": "bool", "label": "Web search (billed per search)"},
+    {"key": "presets", "type": "string", "label": "Preset questions (|-separated)"},
+    {"key": "followups", "type": "string", "label": "Follow-up replies (|-separated)"},
+    {"key": "idle_minutes", "type": "int", "label": "New conversation after idle minutes"},
+    {"key": "keep_history", "type": "bool", "label": "Keep conversations for 24 h across restarts"},
+    {"key": "base_url", "type": "string", "label": "API base URL"},
+    {"key": "system_prompt_extra", "type": "string", "label": "Extra instructions (no #)"}
+  ]
+}

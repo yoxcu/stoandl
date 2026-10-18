@@ -2126,6 +2126,32 @@ payload rules, required gate, hold expiry/cap/release). Use an extension whose s
 | 5.49e | Uninstall | `stoandl ext uninstall <name> --delete-config`, then reinstall with `--keep-config` variants | `--delete-config` removes the stored key; `--keep-config` keeps it; with only a stored secret the CLI still asks. |
 | 5.49f | keepAwake | an extension request that takes `keepAwake{maxMs:60000}`; `systemd-inhibit --list` during it; `systemctl suspend` meanwhile | One `block` inhibitor `<name>: <why>` while it runs, gone on `release`, after 60 s, or when the extension is stopped/killed; `systemctl suspend` meanwhile is refused (a block lock), and works again after the release. |
 
+## 5.50 Ask Claude (assistant extension)  ⚠️ UNVERIFIED (needs an Anthropic API key and a watch; 5.50j–l need a watch with a microphone)
+
+The `assistant` extension ([docs/assistant.md](docs/assistant.md)) on top of 5.49. Off-device: `go test
+-race ./...` in `examples/extensions/assistant` (text cleanup, paging, chunking, history, the B7 reply
+rules, bench statistics; an httptest fake of the streaming Messages endpoint for the request, card and
+watchapp paths). Use a throwaway key with a spend limit. Log: `grep -E ' ask conv=|assistant' /tmp/stoandl.log`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.50a | Bench | `ANTHROPIC_API_KEY=… stoandl-assistant bench -n 3` on the desktop and the phone | A table per model: TTFT and total p50/p90, output tokens, cost. **Record** it; it decides the default model. Unset key: exit 2 with a message. |
+| 5.50b | Anchor | install `assistant-<arch>.tar.gz`, set the key in the GUI | The extension starts; an "Ask Claude" card on the watch with Reply (presets) and Open app. Restart the daemon: no second buzz (re-send with `vibe: None`, 5.50m). |
+| 5.50c | Ask by preset | anchor → Ask → "Tell me a fun fact" | An answer card titled with the question within a few seconds; one `ask conv=… stop=end_turn sink=notif` log line; `systemd-inhibit --list` shows the `assistant: answering a question` block only while it runs. |
+| 5.50d | Ask by voice | anchor → Ask → Voice → a question | As 5.50c with the transcript as the title. |
+| 5.50e | Follow-up | Reply "Shorter" on the answer | A shorter answer that refers to the first (same conversation: `turn=2`). |
+| 5.50f | Branch | Reply on the *first* answer card after 5.50e | A new conversation id in the log; its answer follows the first turn only. |
+| 5.50g | Paging | ask something long ("Explain how a refrigerator works in detail") | Page 1 with More (2/N); More posts page 2 silently and doesn't duplicate on a second press. |
+| 5.50h | Errors | a wrong key (GUI), then Wi-Fi off | `Claude: key rejected` card, then `Claude: no answer`; Reply → Retry re-asks the same question once fixed. |
+| 5.50i | History | ask, restart the daemon, Reply on the old card | The follow-up keeps the context (history.json, mode 0600). With `keep_history=false`: the file is deleted, and the reply starts a new conversation. After 24 h the conversation is gone. |
+| 5.50j | Watchapp | launch Assistant from Quick Launch, ask a question | Dictation starts at once; `Thinking…`, then the answer streams in; no notification card. |
+| 5.50k | Leave early | ask in the app, press Back before the answer finishes | The answer arrives as a notification card. Reopen the app instead: the running answer restarts in the app. |
+| 5.50l | Cancel / new chat | Select while thinking; hold Select on an answer | `Cancelled` and a `stop=cancelled` line; hold Select starts a new conversation id. |
+| 5.50m | Silent re-send | 5.50b restart row; an anchor older than 20 h at reconnect | Record whether `vibe: None` re-sends stay silent. |
+| 5.50n | Web search | `web_search = true`; "What's the weather in Berlin today?" | The app shows `Searching…`; the answer cites today's data; the log cost includes $0.01. |
+| 5.50o | Models | switch `model` to `claude-sonnet-5`, then `claude-opus-5-5` | Both answer; the first question after a switch starts a new conversation. |
+| 5.50p | Phone suspend | on the op6, ask and let the screen turn off at once | The answer still arrives (the keepAwake block held the suspend). |
+
 ## 5.51 Forward only while the screen is off or locked  ⚠️ UNVERIFIED (needs a watch; 5.51e on the phone)
 
 `notification.only_when_locked` holds notifications back while the display is on and the logind session

@@ -1,0 +1,30 @@
+# Assistant extension settings: copy to ~/.config/stoandl/ext/assistant/config, or use the GUI
+# (Apps & Faces → Extensions → assistant). Every key is shown at its default.
+
+# Anthropic API key. Set it in the GUI so it goes to the keyring; a key typed here is moved into the
+# daemon's secret store and this line deleted on the next start.
+api_key =
+
+# claude-haiku-4-5-20251001 (fastest, cheapest) | claude-sonnet-5 | claude-opus-5-5
+# Changing it starts a new conversation.
+model = claude-haiku-4-5-20251001
+# low | medium | high: sent to Sonnet 5 and Opus 5.5 only.
+effort = low
+# Per answer; on Sonnet 5 and Opus 5.5 this includes thinking.
+max_tokens = 2048
+# Anthropic's server-side web search, at most one search per question, billed per search.
+web_search = false
+# Starter questions (the "Ask Claude" card's replies and the watchapp's presets menu), |-separated.
+presets = Tell me a fun fact|Give me a quick dinner idea|How do I say thank you in Japanese?|Motivate me
+# Canned replies on answer cards, |-separated.
+followups = Explain more|Shorter|Retry
+# A question after this many idle minutes starts a new conversation.
+idle_minutes = 15
+# Keep conversations for 24 h in ~/.local/state/stoandl/assistant/history.json (0600), so replies to
+# older cards survive a restart. false keeps them in memory only.
+keep_history = true
+# For a proxy.
+base_url = https://api.anthropic.com
+# Appended to the built-in system prompt (it cannot contain the character the config parser treats as
+# a comment).
+system_prompt_extra =

@@ -1,0 +1,6 @@
+/assistant-*.tar.gz
+/stoandl-assistant
+/stoandl-assistant-*
+/assistant.pbw
+/watchapp/build/
+/watchapp/.lock-waf*
