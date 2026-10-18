@@ -55,8 +55,6 @@ import de.yoxcu.stoandl.dnd.DndSync
 import de.yoxcu.stoandl.dnd.detectHostDnd
 import de.yoxcu.stoandl.ext.ExtensionManager
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
-import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
-import io.rebble.libpebblecommon.database.entity.HealthGender
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
@@ -1921,6 +1919,7 @@ class PebbleIntegration(
             "dnd" -> applyDnd()
             "notifications" -> log.info { "Notification forwarding ${if (config.notificationForward) "on" else "paused"}" }
             "plugins" -> log.info { "Plugins ${if (config.pluginsEnabled) "on (permission policy ${config.pluginsPermissionPolicy.name.lowercase()})" else "off"}" }
+            "apps" -> log.info { "Watchfaces ${if (config.appsOrderFacesByLastUsed) "move to the top when activated" else "keep their order"}" }
             "images" -> if (!config.notificationImages) {
                 notificationImages.purge()
                 log.info { "Notification pictures off; stored pictures deleted" }
@@ -1939,6 +1938,7 @@ class PebbleIntegration(
         key == "dnd.sync" -> "dnd"
         key.startsWith("calendar.") -> "calendar"
         key.startsWith("plugins.") -> "plugins"
+        key.startsWith("apps.") -> "apps"
         key == "notification.forward" -> "notifications"
         key == "notification.images" -> "images"
         else -> null
@@ -3248,27 +3248,7 @@ private class StoandlControlImpl(
             log.warn(e) { "healthSettings read failed" }
             return emptyList()
         }
-        fun b(v: Boolean) = if (v) "on" else "off"
-        val interval = when (s.hrmMeasurementInterval) {
-            HRMonitoringInterval.TenMin -> "10min"
-            HRMonitoringInterval.ThirtyMin -> "30min"
-            HRMonitoringInterval.OneHour -> "1h"
-            HRMonitoringInterval.Disabled -> "off"
-        }
-        return listOf(
-            "tracking\t${b(s.trackingEnabled)}",
-            "activity_insights\t${b(s.activityInsightsEnabled)}",
-            "sleep_insights\t${b(s.sleepInsightsEnabled)}",
-            "hrm\t${b(s.hrmEnabled)}",
-            "hrm_interval\t$interval",
-            "units\t${if (s.imperialUnits) "imperial" else "metric"}",
-            "height_cm\t${s.heightMm / 10}",
-            "weight_kg\t${String.format(Locale.ROOT, "%.1f", s.weightDag / 100.0)}",
-            "age\t${s.ageYears}",
-            "gender\t${s.gender.name.lowercase()}",
-            "resting_hr\t${s.restingHr}",
-            "max_hr\t${s.maxHr}",
-        )
+        return healthProfileRecords(s)
     }
 
     override fun SetHealthProfile(key: String, value: String): String {
@@ -3278,44 +3258,8 @@ private class StoandlControlImpl(
         } catch (e: Exception) {
             return "error:${e.message ?: "could not read health settings"}"
         }
-        fun bool(v: String): Boolean? = when (v.trim().lowercase()) {
-            "on", "true", "yes", "1", "enabled" -> true
-            "off", "false", "no", "0", "disabled" -> false
-            else -> null
-        }
         val v = value.trim()
-        val next = when (key.trim().lowercase()) {
-            "tracking" -> cur.copy(trackingEnabled = bool(v) ?: return "error:Expected on/off")
-            "activity_insights" -> cur.copy(activityInsightsEnabled = bool(v) ?: return "error:Expected on/off")
-            "sleep_insights" -> cur.copy(sleepInsightsEnabled = bool(v) ?: return "error:Expected on/off")
-            "hrm" -> cur.copy(hrmEnabled = bool(v) ?: return "error:Expected on/off")
-            "hrm_interval" -> cur.copy(hrmMeasurementInterval = when (v.lowercase()) {
-                "10min", "10m" -> HRMonitoringInterval.TenMin
-                "30min", "30m" -> HRMonitoringInterval.ThirtyMin
-                "1h", "60min", "1hr" -> HRMonitoringInterval.OneHour
-                "off", "disabled" -> HRMonitoringInterval.Disabled
-                else -> return "error:Expected 10min/30min/1h/off"
-            })
-            "units" -> cur.copy(imperialUnits = when (v.lowercase()) {
-                "imperial" -> true
-                "metric" -> false
-                else -> return "error:Expected metric/imperial"
-            })
-            "height_cm", "height" -> cur.copy(heightMm = ((v.toDoubleOrNull()
-                ?: return "error:Expected a number (cm)") * 10).toInt().toShort())
-            "weight_kg", "weight" -> cur.copy(weightDag = ((v.toDoubleOrNull()
-                ?: return "error:Expected a number (kg)") * 100).toInt().toShort())
-            "age" -> cur.copy(ageYears = v.toIntOrNull() ?: return "error:Expected a whole number (years)")
-            "gender" -> cur.copy(gender = when (v.lowercase()) {
-                "female", "f" -> HealthGender.Female
-                "male", "m" -> HealthGender.Male
-                "other", "o" -> HealthGender.Other
-                else -> return "error:Expected female/male/other"
-            })
-            "resting_hr" -> cur.copy(restingHr = (v.toIntOrNull() ?: return "error:Expected a number (bpm)").toShort())
-            "max_hr" -> cur.copy(maxHr = (v.toIntOrNull() ?: return "error:Expected a number (bpm)").toShort())
-            else -> return "error:Unknown health key '$key' (see 'stoandl health profile')"
-        }
+        val next = applyHealthProfileKey(cur, key, v).getOrElse { return "error:${it.message}" }
         return try {
             lp.updateHealthSettings(next)
             log.info { "Health profile: set $key = $v" }

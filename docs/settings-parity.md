@@ -104,6 +104,11 @@ the pending delay and starts counting the new one. Because a `StateFlow` conflat
 calendar write that does *not* change the interval leaves the countdown running — which is what stops
 repeated edits from starving the sync.
 
+### Apps & faces
+
+| Key | Kind | GUI | Applies | Why | Default |
+| --- | --- | --- | --- | --- | --- |
+| `apps.order_faces_by_last_used` | toggle | ✓ | live | projected into libpebble3's `WatchConfig`, which `Locker` reads per activation | `false` (keeps today's order; the official app turns it on at first run) |
 ### Music · Health · Battery
 
 | Key | Kind | GUI | Applies | Validated | Default |
@@ -112,6 +117,7 @@ repeated edits from starving the sync.
 | `music.volume` | combo | ✓ | live | System/Player | `System` |
 | `music.volume_up_command` | text | ✓ | live | — | _(empty)_ |
 | `music.volume_down_command` | text | ✓ | live | — | _(empty)_ |
+| `music.seek_when_available` | toggle | ✓ | live | — (applied when MPRIS publishes the status) | `true` |
 | `health.sync` | toggle | ✓ (+ Sync screen) | live | — | `true` |
 | `health.export` | toggle | ✓ | live | — | `true` |
 | `health.export_samples` | toggle | ✓ | live | — | `false` |

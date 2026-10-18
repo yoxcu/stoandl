@@ -705,6 +705,17 @@ stoandl notif filter add <regex> block|allow   # matched against app name + titl
 
 See [configuration.md](configuration.md#per-app-notification-settings). _To be tested._
 
+### HR during activities, podcast seek, face order
+
+Three official-app switches. The health profile gains `hrm_activity` ("HR During Activities": continuous heart
+rate during detected walks and runs, at some battery cost; firmware 4.38+ on a watch with an HRM), in
+`stoandl health profile set hrm_activity on|off` and the GUI's Health profile page. `music.seek_when_available`
+(default on, as before) turns off the ±15 s seek for podcast and audiobook players, so next/previous always
+skip. `apps.order_faces_by_last_used` (default off, so the order you set stays; the official app turns it on at
+first run) moves a watchface to the top of the locker order when it becomes the active face. Both keys are
+live. Off-device: `HealthProfileTest`, `MprisSkipTest`, `LibPebbleConfigProjectionTest`.
+_Implemented — to be tested ([TESTING.md §5.54](../TESTING.md))._
+
 ### Factory reset / reset to recovery
 
 Reset the connected watch — the companion to the firmware tooling, for un-bricking a bad flash or

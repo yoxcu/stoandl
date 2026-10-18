@@ -614,7 +614,7 @@ private fun healthProfile(args: List<String>) {
         val value = args.drop(2).joinToString(" ")
         if (key.isNullOrBlank() || value.isBlank()) {
             System.err.println("Usage: stoandl health profile set <key> <value>\n" +
-                "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (10min/30min/1h/off),\n" +
+                "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (10min/30min/1h/off), hrm_activity (on/off),\n" +
                 "        units (metric/imperial), height_cm, weight_kg, age, gender (female/male/other), resting_hr, max_hr")
             System.exit(1); return
         }

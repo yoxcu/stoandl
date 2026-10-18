@@ -21,8 +21,10 @@ import kotlin.time.Duration.Companion.minutes
  *
  * From config: the notification catch-up window (`notification.catch_up_minutes`; libpebble3's
  * NotificationCatchUp), the calendar knobs PhoneCalendarSyncer reads live (`calendar.reminders`,
- * `calendar.show_declined`, `calendar.reminder_vibe`) and plugins with their permission policy
- * (`plugins.*`; PluginRegistry, LockerPluginLoader and AppPermissions follow the flow).
+ * `calendar.show_declined`, `calendar.reminder_vibe`), plugins with their permission policy
+ * (`plugins.*`; PluginRegistry, LockerPluginLoader and AppPermissions follow the flow), the locker's
+ * face order (`apps.order_faces_by_last_used`) and `music.seek_when_available` (read by Android's music
+ * control only; MprisMusicControl applies the same key itself).
  */
 fun libPebbleConfigOf(cfg: StoandlConfig): LibPebbleConfig = LibPebbleConfig(
     bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
@@ -38,6 +40,8 @@ fun libPebbleConfigOf(cfg: StoandlConfig): LibPebbleConfig = LibPebbleConfig(
             StoandlConfig.PermissionPolicyMode.NEVER_ASK -> PermissionPolicy.NeverAsk
         },
         askLegacyAppsForPermissions = cfg.pluginsAskLegacyApps,
+        orderWatchfacesByLastUsed = cfg.appsOrderFacesByLastUsed,
+        musicSeekWhenAvailable = cfg.musicSeekWhenAvailable,
     ),
     notificationConfig = NotificationConfig(
         missedNotificationCatchUpMs = cfg.notificationCatchUpMinutes.minutes.inWholeMilliseconds,

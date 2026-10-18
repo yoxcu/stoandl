@@ -30,6 +30,15 @@ class LibPebbleConfigProjectionTest {
     }
 
     @Test
+    fun `face order (off by default) and podcast seek (on by default) follow the config`() {
+        assertFalse(libPebbleConfigOf(base).watchConfig.orderWatchfacesByLastUsed)
+        assertTrue(libPebbleConfigOf(base).watchConfig.musicSeekWhenAvailable)
+        val flipped = libPebbleConfigOf(base.copy(appsOrderFacesByLastUsed = true, musicSeekWhenAvailable = false))
+        assertTrue(flipped.watchConfig.orderWatchfacesByLastUsed)
+        assertFalse(flipped.watchConfig.musicSeekWhenAvailable)
+    }
+
+    @Test
     fun `vibe names take libpebble3's spelling, custom names pass through`() {
         assertEquals("Olé", vibePatternName("olé"))
         assertEquals("Ohhh, Oh", vibePatternName(" ohhh, oh "))

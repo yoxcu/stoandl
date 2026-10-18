@@ -136,6 +136,12 @@ data class StoandlConfig(
      *  Both must be set to take effect; only used when [musicVolume] is [MusicVolumeMode.SYSTEM]. */
     val musicVolumeUpCommand: String,
     val musicVolumeDownCommand: String,
+    /** Next/previous seek within the track (15 s) for a player that can seek but can't change track
+     *  (podcasts, audiobooks), and the watch shows fast-forward/rewind for it. Off = always skip. */
+    val musicSeekWhenAvailable: Boolean,
+    /** Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3
+     *  `orderWatchfacesByLastUsed`). On by default, as the official app sets it at first run. */
+    val appsOrderFacesByLastUsed: Boolean,
     /** Master switch for calendar sync. On by default; flipped live by the Sync screen
      *  (`SetSyncEnabled("calendar", …)`). Calendar only actually syncs when this is on **and** a source
      *  is configured ([calendarIcsPaths]/[calendarDiscover]/[calendarIcalUrls]/[calendarCalDav]) —
@@ -378,6 +384,8 @@ data class StoandlConfig(
             musicVolume = MusicVolumeMode.SYSTEM,
             musicVolumeUpCommand = "",
             musicVolumeDownCommand = "",
+            musicSeekWhenAvailable = true,
+            appsOrderFacesByLastUsed = false,
             calendarEnabled = true,
             calendarIcsPaths = emptyList(),
             calendarDiscover = false,
@@ -495,6 +503,8 @@ data class StoandlConfig(
                 musicVolume = parseMusicVolume(map["music.volume"]),
                 musicVolumeUpCommand = map["music.volume_up_command"]?.trim().orEmpty(),
                 musicVolumeDownCommand = map["music.volume_down_command"]?.trim().orEmpty(),
+                musicSeekWhenAvailable = map["music.seek_when_available"]?.let { parseBool(it) } ?: true,
+                appsOrderFacesByLastUsed = map["apps.order_faces_by_last_used"]?.let { parseBool(it) } ?: false,
                 calendarEnabled = map["calendar.enabled"]?.let { parseBool(it) } ?: true,
                 calendarIcsPaths = list("calendar.ics_paths").map(::expandTilde),
                 calendarDiscover = parseBool(map["calendar.discover"]),

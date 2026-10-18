@@ -253,7 +253,8 @@ class MprisMusicControl(
             targetBus = target
             // When music control is disabled, publish nothing (the watch's Music app shows no now-playing);
             // the monitor keeps running so re-enabling is instant.
-            _playbackState.value = if (enabled()) target?.let { players[it] } else null
+            val cfg = configStore.current()
+            _playbackState.value = if (cfg.musicControl) target?.let { players[it] }?.withSeek(cfg.musicSeekWhenAvailable) else null
         }
     }
 
@@ -354,7 +355,8 @@ class MprisMusicControl(
     override fun pause() = control("pause") { it.Pause() }
     override fun playPause() = control("playPause") { it.PlayPause() }
     // A player that can seek but has no next/previous (a podcast or audiobook app, a single video) gets a
-    // seek instead, and the watch shows fast-forward/rewind icons for it (skipSeeksWithinTrack).
+    // seek instead, and the watch shows fast-forward/rewind icons for it (skipSeeksWithinTrack), unless
+    // `music.seek_when_available` is off (applied in recompute, so a flip reaches the watch at once).
     override fun nextTrack() =
         if (_playbackState.value?.skipSeeksWithinTrack == true) control("seek +${SEEK_STEP_US / 1_000_000}s") { it.Seek(SEEK_STEP_US) }
         else control("next") { it.Next() }
@@ -504,3 +506,7 @@ private const val SEEK_STEP_US = 15_000_000L
  *  omits CanGoNext/CanGoPrevious keeps plain skipping. */
 internal fun skipSeeksWithinTrack(canNext: Boolean, canPrevious: Boolean, canSeek: Boolean): Boolean =
     canSeek && !canNext && !canPrevious
+
+/** The status the watch gets: a player's own seek capability, dropped when seeking is switched off. */
+internal fun PlaybackStatus.withSeek(seekWhenAvailable: Boolean): PlaybackStatus =
+    if (seekWhenAvailable || !skipSeeksWithinTrack) this else copy(skipSeeksWithinTrack = false)

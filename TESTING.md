@@ -2093,6 +2093,21 @@ in an upstream checkout.
 | 5.48p | GUI permissions dialog | Apps & Faces → the Permissions button on an app with grants | Lists each permission with its status ("Allowed automatically", "Waiting for your answer", …) and "used N min ago"; Allow/Deny on undecided rows, the switch on decided ones and Reset all take effect (`perms list` agrees) and the dialog refreshes. With plugins off the button only shows for an app with a waiting request, and the dialog says permissions are off. |
 | 5.48q | Signal | GUI open, answer or put off a request from the CLI; start/stop the asking app | The banners update without a refresh (PermissionRequestsChanged). |
 
+
+## 5.54 Watch toggles: HR during activities, podcast seek, face order  ⚠️ UNVERIFIED (needs a watch; 5.54a–b an HRM watch on fw ≥ 4.38)
+
+The health profile gains `hrm_activity` (libpebble3 `hrmActivityTrackingEnabled`, "HR During Activities" in
+the official app; CLI `stoandl health profile set hrm_activity on`, GUI Health profile → Heart rate). Two new
+live keys: `music.seek_when_available` (on by default; the 5.43c seek can be switched off) and
+`apps.order_faces_by_last_used` (off by default; libpebble3 `orderWatchfacesByLastUsed`, which the official
+app turns on at first run). Off-device: `HealthProfileTest`, `MprisSkipTest`, `LibPebbleConfigProjectionTest`, `ConfigSchemaTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.54a | HR during activities | `stoandl health profile` | An `hrm_activity` row. `stoandl health profile set hrm_activity on`: `ok:`; the GUI's switch (enabled only while the heart-rate monitor and activity tracking are on) follows. The watch's own Health settings show activity HR on after it syncs. |
+| 5.54b | During a walk | `hrm_activity on`, walk 10+ min, `stoandl health sync` | Dense HR samples across the walk (`stoandl health hr`, or the GUI Health tab); with `off`, only the interval samples. |
+| 5.54c | Seek off | a seek-only player (5.43c); `stoandl daemon set music.seek_when_available false` | Without a restart, the watch's Music app swaps fast-forward/rewind for skip icons, and next/previous log `MPRIS next`/`previous`, not `seek`. Back to `true`: seeks again. |
+| 5.54d | Faces by last used | `stoandl apps` lists faces; activate a face lower in the list from the watch's face menu | By default the order stays. `stoandl daemon set apps.order_faces_by_last_used true`, activate another face lower down: `stoandl apps` (and the GUI's Faces list) now show it first. Back to `false`: the order stays again. |
 ---
 
 ## 7. Regression sanity  (run after any of the above)

@@ -250,6 +250,7 @@ private fun reminderVibeChoices(): List<ConfigChoice> =
             ConfigChoice(n.replace(",", ""), n) { it.calendarReminderVibe.equals(n, ignoreCase = true) }
         }
 
+private const val G_APPS = "Apps & faces"
 private const val G_PLUGINS = "Plugins"
 private const val G_VOICE = "Voice"
 private const val G_NOTIF = "Notifications"
@@ -382,6 +383,11 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "The vibration for every calendar reminder: a built-in one or one of yours (stoandl notif vibe-add)",
         ConfigApply.LIVE, choicesOf = ::reminderVibeChoices),
 
+    // --- Apps & faces ---
+    toggle("apps.order_faces_by_last_used", G_APPS, "Recently used faces first",
+        "Move a watchface to the top of the locker order whenever it becomes the active face. Off keeps " +
+            "the order you set.") { it.appsOrderFacesByLastUsed },
+
     // --- Plugins ---
     toggle("plugins.enabled", G_PLUGINS, "Plugins",
         "Phone-side data and actions for watchfaces and watchapps: built-in (weather, music, calendar, " +
@@ -442,6 +448,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     text("music.volume_down_command", G_MUSIC, "Volume-down command",
         "Overrides the auto-detected System-volume backend. Both commands must be set to take effect.",
         placeholder = "wpctl set-volume @DEFAULT_SINK@ 5%-") { it.musicVolumeDownCommand },
+    toggle("music.seek_when_available", G_MUSIC, "Seek instead of skip for podcasts",
+        "In a player that can seek but has no next/previous track (podcasts, audiobooks), the watch's " +
+            "next/previous jump 15 s forward/back. Off = they always skip.") { it.musicSeekWhenAvailable },
 
     // --- Health ---
     toggle("health.sync", G_HEALTH, "Health sync",

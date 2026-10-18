@@ -219,6 +219,9 @@ music.volume = system
 # otherwise stoandl auto-detects wpctl / pactl / amixer on PATH. Each runs once per button press.
 # music.volume_up_command = wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
 # music.volume_down_command = wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+# In a player that can seek but can't change track (podcasts, audiobooks), the watch's next/previous
+# jump 15 s forward/back and the watch shows fast-forward/rewind. false = they always skip.
+music.seek_when_available = true
 
 # ── Geolocation (watchapps) ──────────────────────────────────────────────────────────────────────
 # Provide location to watchapps that request it (PebbleKit JS navigator.geolocation, and sports/GPS
@@ -447,6 +450,11 @@ voice.http_model =
 voice.language = auto
 # Keep each dictation's audio in ~/.cache/stoandl/voice (debugging).
 voice.save_audio = false
+
+# ── Apps & faces ────────────────────────────────────────────────────────────────────────────────
+# Move a watchface to the top of the locker order whenever it becomes the active face (the official app
+# turns this on at first run). false (the default) keeps the order you set (`stoandl apps order`, the GUI).
+apps.order_faces_by_last_used = false
 
 # ── Plugins ─────────────────────────────────────────────────────────────────────────────────────────
 # Phone-side data sources and actions watchfaces and watchapps use (the official app's plugin system):

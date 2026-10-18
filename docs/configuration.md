@@ -56,6 +56,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `music.volume` | string | `system` | What the watch's volume buttons control: `system` (master/output volume — auto-detects `wpctl`/`pactl`/`amixer`) or `player` (the active player's own MPRIS volume; pure D-Bus but ignored by players that don't expose it, e.g. most browsers). |
 | `music.volume_up_command` | string | _(empty)_ | For `music.volume = system`: an explicit shell command to raise volume, overriding the auto-detected backend. Only used if **both** up and down are set. |
 | `music.volume_down_command` | string | _(empty)_ | The matching volume-down command (see above). |
+| `music.seek_when_available` | bool | `true` | In a player that can seek but has no next/previous track (podcasts, audiobooks, a single video), the watch's next/previous seek 15 s forward/back and the watch shows fast-forward/rewind icons. `false` = they always skip (official app: "Seek instead of Skip for Podcasts"). Live. |
 | `weather.locations` | list | _(empty)_ | Locations to fetch weather for, each as `Name:lat:lon` (e.g. `Berlin:52.52:13.405`). Merged with `weather.location_source`. |
 | `weather.location_source` | string | `manual` | Where extra locations come from: `manual` (only the list above), `gnome` (read GNOME/Phosh's weather GSettings), or `command` (run `weather.location_command`). |
 | `weather.location_command` | string | _(empty)_ | For `weather.location_source = command`: a shell command that prints `Name:lat:lon` lines. |
@@ -68,6 +69,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `weather.intercept_pkjs` | bool | `false` | Answer the weather APIs classic watchfaces call from PKJS (Yahoo YQL, dead since 2019; OpenWeatherMap 2.5 when OWM rejects the app's own key) from Open-Meteo, in the shape each API returned. Place names are looked up with Open-Meteo geocoding (a `weather.locations` name answers without a lookup); coordinates are named via `weather.reverse_geocode` if on, else the nearest `weather.locations` entry within 10 km. Off by default — it sends the watchface's coordinates or place name to a web service. Location-based watchfaces also need `geolocation.enabled`. Read live. |
 | `weather.enabled` | bool | `true` | Master switch for weather sync, flipped live by the Sync screen (`SetSyncEnabled("weather", …)`). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
 | `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
+| `apps.order_faces_by_last_used` | bool | `false` | Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3 `orderWatchfacesByLastUsed`, which the official app turns on at first run). Off by default so the order you set (`stoandl apps order`, the GUI) stays as it was. Live. |
 | `plugins.enabled` | bool | `false` | Plugins: phone-side data sources and actions watchfaces and watchapps use (upstream's plugin system): the built-in ones (weather, music, calendar, phone state, watch settings, watch state), the plugin a `.pbw` ships, and extensions that serve sources. Also turns on app permissions for every watchapp's PKJS. Off by default: no plugin code runs and nothing is fetched. See [plugins.md](plugins.md). |
 | `plugins.permission_policy` | string | `ask_if_exfiltrating` | When an app must ask before using a permission: `ask_if_exfiltrating` (only when the data could leave this machine), `always_ask`, or `never_ask` (everything granted; explicit denials stand). |
 | `plugins.ask_legacy_apps` | bool | `false` | Apps made before permissions (no manifest v2) are asked too, instead of keeping internet access and what they declared. |
@@ -437,6 +439,10 @@ external tool). Note many players — most browsers — don't expose a `Volume` 
 is silently ignored there; mpv, VLC and Spotify do support it. If `system` is selected but no backend is
 found, stoandl logs a warning and falls back to player volume. (In `system` mode the now-playing volume
 bar on the watch still reflects the player, not the master level — only the buttons act on master.)
+
+**Podcasts and audiobooks.** A player that can seek but has no next/previous track gets a 15 s seek from
+the watch's next/previous buttons instead, and the watch shows fast-forward/rewind icons for it (firmware
+that knows the flag). Set `music.seek_when_available = false` to always skip.
 
 ## Calendar
 
