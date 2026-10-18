@@ -440,15 +440,29 @@ interface StoandlControl : DBusInterface {
 
     /** Set per-app notification styling for the app matching [query], applied host-side to its
      *  outgoing notifications: [color] (a TimelineColor name), [icon] (a TimelineIcon enum name), and
-     *  [vibe] (a built-in vibration's name, see [NotifStyleChoices], or a CSV of on/off ms). For each
+     *  [vibe] (a built-in or custom vibration's name, see [NotifStyleChoices], or a CSV of on/off ms). For each
      *  value: empty = leave unchanged; `default` = reset. An unknown name is refused (`error:`) and
      *  nothing changes. Status-prefixed return. */
     fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String
 
-    /** What a per-app style picker offers, one record per choice: `kind \t value \t label`, kind
-     *  `vibe` (every built-in vibration) or `icon` (a curated set; [NotifSetStyle] takes any
-     *  TimelineIcon). `value` is what [NotifSetStyle] takes and [NotifList] reports. Static. */
+    /** What a per-app style picker offers, one record per choice: `vibe \t value \t label \t ms,ms,… \t
+     *  builtin|custom` (every built-in vibration, then the custom ones from [NotifSetVibePattern]) or
+     *  `icon \t value \t label` (a curated set; [NotifSetStyle] takes any TimelineIcon). `value` is what
+     *  [NotifSetStyle] takes and [NotifList] reports. */
     fun NotifStyleChoices(): List<String>
+
+    /** Add or replace the custom vibration [name] with [pattern], a CSV of on/off ms (at most 64 segments,
+     *  10 s in total); an empty [pattern] removes it. Stored in libpebble3's pattern table, so it is offered
+     *  by [NotifStyleChoices], taken by [NotifSetStyle] and by `calendar.reminder_vibe`. A name that is a
+     *  built-in, a CSV or `default`/`none`/`clear` is refused. Status-prefixed return
+     *  (`ok:`/`notfound:`/`error:`). */
+    fun NotifSetVibePattern(name: String, pattern: String): String
+
+    /** Buzz the connected watch with [spec] (a vibration name, a CSV of on/off ms, or `default` for the
+     *  watch's own) as a short "Vibration test" notification, outside the notification pipeline, so no
+     *  mute, filter or forwarding switch applies. Status-prefixed return: `notready:` with no watch,
+     *  `error:` for an unknown name or a firmware without custom vibrations (before 4.9.97). */
+    fun NotifVibeTest(spec: String): String
 
     /** Set where the app matching [query] shows its name on the watch, overriding `notification.app_name`
      *  for it: [placement] `small` (a small line under the title), `subtitle` (the large bold subtitle,

@@ -1,5 +1,7 @@
 package de.yoxcu.stoandl.notification
 
+import de.yoxcu.stoandl.pebble.CustomVibes
+import de.yoxcu.stoandl.pebble.STYLE_RESET_WORDS
 import de.yoxcu.stoandl.pebble.normalizeColor
 import de.yoxcu.stoandl.pebble.normalizeIcon
 import de.yoxcu.stoandl.pebble.normalizeVibe
@@ -35,6 +37,8 @@ class NotificationAppsControl(
     private val dao: NotificationAppRealDao,
     // Per-app overrides of notification.app_name (stoandl's own file, keyed like the DAO's packageName).
     private val appNames: AppNamePlacements,
+    // The user's named vibes, so `setStyle` takes them like the built-ins.
+    private val customVibes: suspend () -> CustomVibes = { emptyMap() },
 ) {
     /** Each entry tab-separated: `name \t muteLabel \t color \t icon \t vibe \t lastNotifiedEpoch \t appName`
      *  (empty string for an unset style field; `appName` is the app's own placement token, empty when it
@@ -94,7 +98,8 @@ class NotificationAppsControl(
                 ?: return@resolveSingle unknown("colour", color)
             val newIcon = resolveStyle(icon, app.iconCode, ::normalizeIcon)
                 ?: return@resolveSingle unknown("icon", icon)
-            val newVibe = resolveStyle(vibe, app.vibePatternName, ::normalizeVibe)
+            val custom = runBlocking { customVibes() }
+            val newVibe = resolveStyle(vibe, app.vibePatternName) { normalizeVibe(it, custom) }
                 ?: return@resolveSingle unknown("vibration", vibe)
             runBlocking { dao.updateAppState(app.packageName, newVibe.value, newColor.value, newIcon.value) }
             "ok:Updated style for ${app.name} (color=${newColor.value ?: "default"}, icon=${newIcon.value ?: "default"}, vibe=${newVibe.value ?: "default"})"
@@ -139,7 +144,7 @@ class NotificationAppsControl(
     private fun resolveStyle(arg: String, current: String?, normalize: (String) -> String?): Kept? =
         when (arg.trim().lowercase()) {
             "" -> Kept(current)
-            "default", "none", "clear" -> Kept(null)
+            in STYLE_RESET_WORDS -> Kept(null)
             else -> normalize(arg)?.let(::Kept)
         }
 

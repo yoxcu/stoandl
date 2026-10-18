@@ -202,7 +202,9 @@ calendar.reminders = true
 # Events you declined still become pins.
 calendar.show_declined = false
 # Vibration for every calendar reminder, by name: Standard, Pulses, Double, Triple, Bloom, Pips, Ole, SOS,
-# OhhhOh, Five, Two, None (the watch's display names work too). Empty = the watch's default.
+# OhhhOh, Five, Two, None (the watch's display names work too), or one you added with
+# `stoandl notif vibe-add` (its exact spelling here; the GUI and `stoandl daemon set` list and match it).
+# Empty = the watch's default.
 calendar.reminder_vibe =
 
 # ── Music control ────────────────────────────────────────────────────────────────────────────────

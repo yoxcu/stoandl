@@ -467,6 +467,7 @@ stoandl notif unmute <app>
 stoandl notif mute-all
 stoandl notif style <app> --color/--icon/--vibe   # per-app colour / icon / vibration
 stoandl notif styles               # list every accepted colour / icon / vibe (generated from the enums)
+stoandl notif vibe-test <vibe>     # buzz the watch with a vibration (to be tested, below)
 ```
 
 Modes: `always`, the day-of-week schedules `weekdays`/`weekends`, and temporary mutes. Matching is a
@@ -673,6 +674,18 @@ in-memory `SystemCallLog` fed by the call monitor). _To be tested._
 
 DE-agnostic vCard lookup (`contacts.vcard_paths`, suffix-matched), with the dialer's own notification
 title as fallback. See [configuration.md](configuration.md#caller-id-resolution). _To be tested._
+
+### Vibration test and custom vibrations
+
+`stoandl notif vibe-test <name|ms,ms,…|default>` and a **Test** button next to each vibration in the
+Kirigami app dialog buzz the connected watch with that pattern, as the official app's test does: a short
+"Vibration test" notification sent outside the notification pipeline (no mute, filter or forwarding
+switch in the way). `stoandl notif vibe-add <name> <ms,ms,…>` / `vibe-remove` keep named custom
+vibrations in libpebble3's pattern table next to the built-ins, so per-app `--vibe`, the GUI picker, an
+extension's `vibe` and `calendar.reminder_vibe` all take them; `stoandl notif vibes` lists both kinds.
+Firmware before 4.9.97 can't play custom vibrations, and the test says so. An on-demand action with no
+new config key. See [configuration.md](configuration.md#per-app-notification-settings). _To be tested_
+([TESTING.md §5.18a–5.18d](../TESTING.md)).
 
 ### Notification filtering
 

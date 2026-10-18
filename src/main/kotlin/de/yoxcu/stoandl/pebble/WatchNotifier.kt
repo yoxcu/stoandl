@@ -251,6 +251,8 @@ class WatchNotifier(
     private val appNames: AppNamePlacements,
     // Pictures attached to notifications, served when the watch pulls them. Null in tests.
     private val images: NotificationImageStore? = null,
+    // The user's named vibes ([VibePatterns]), resolved alongside the built-ins.
+    private val customVibes: suspend () -> CustomVibes = { emptyMap() },
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -355,6 +357,14 @@ class WatchNotifier(
         // Like styles: an app's own placement applies only while per-app settings are on.
         val placement = styled?.let { appNames.get(it.packageName) } ?: cfg.notificationAppName
         val fields = watchFields(req.appName, req.title, req.subtitle, req.body, placement)
+        // The custom store is only read for a name that isn't a built-in or a CSV.
+        val vibeSpec = req.vibeName ?: styled?.vibePatternName
+        val vibe = perAppVibe(vibeSpec) ?: vibeSpec?.let { spec ->
+            perAppVibe(spec, try { customVibes() } catch (e: Exception) {
+                log.warn(e) { "Custom vibrations unreadable; '$spec' buzzes the watch's default" }
+                emptyMap()
+            })
+        }
         val notif = buildTimelineNotification(
             // Pin to the same parent UUID the official Android app uses: the firmware only round-trips
             // dismiss/actions for a recognized notification-source app, never for a random parentId.
@@ -370,7 +380,7 @@ class WatchNotifier(
                 // Explicit per-notification style wins, else the per-app store, else the app-name icon.
                 tinyIcon { perAppIcon(req.iconCode ?: styled?.iconCode, req.appName) }
                 perAppColor(req.colorName ?: styled?.colorName)?.let { c -> backgroundColor { c.toPebbleColor() } }
-                perAppVibe(req.vibeName ?: styled?.vibePatternName)?.let { v -> vibrationPattern { v } }
+                vibe?.let { v -> vibrationPattern { v } }
             }
             actions {
                 req.actions.forEach { a ->

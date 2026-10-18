@@ -246,7 +246,9 @@ preset-name-or-hex, a quick-launch app-name-or-uuid-or-`off`, and a schedule `HH
 | `NotifSetMute` | `(s,s) → s` | Set mute for the app matching `<query>`; spec = `always`/`never`/`weekdays`/`weekends` or a duration (`30m`/`1h`/`2d`). | `notif mute <app> [spec]` / `notif unmute <app>` (sends `never`) |
 | `NotifSetMuteAll` | `(s) → s` | Apply a mute spec to every tracked app. | `notif mute-all [spec]` / `notif unmute-all` |
 | `NotifSetStyle` | `(s,s,s,s) → s` | Per-app styling `(query, color, icon, vibe)` applied host-side; per value, empty = unchanged, `default` = reset. A name the watch can't show is refused (`error:`) and nothing changes. | `notif style <app> [--color] [--icon] [--vibe]` |
-| `NotifStyleChoices` | `() → as` | What a style picker offers: `kind \t value \t label`, kind `vibe` (every built-in vibration, libpebble3's `DefaultVibePattern`) or `icon` (a curated set). `value` is what `NotifSetStyle` takes and `NotifList` reports. Static. | (`notif styles` prints the same offline) |
+| `NotifStyleChoices` | `() → as` | What a style picker offers: `vibe \t value \t label \t ms,ms,… \t builtin\|custom` (every built-in vibration, libpebble3's `DefaultVibePattern`, then the custom ones from `NotifSetVibePattern`, by name) or `icon \t value \t label` (a curated set). `value` is what `NotifSetStyle` takes and `NotifList` reports. The two vibe columns were appended, so a client reading three is unaffected. | `notif vibes` (vibes only); `notif styles` prints the built-ins offline |
+| `NotifSetVibePattern` | `(s,s) → s` | Add or replace a named custom vibration `(name, pattern)`, `pattern` a CSV of on/off ms (≤ 64 segments, ≤ 10 s in total); an empty `pattern` removes it. Stored in libpebble3's `VibePatternEntity` table next to the built-ins, so `NotifSetStyle`, the extension `notify` `vibe` field and `calendar.reminder_vibe` take the name. A name that is a built-in, a CSV or `default`/`none`/`clear` is refused. Case-insensitive: re-adding `work` replaces `Work`. `ok:` / `notfound:` (remove) / `error:`. Live; no signal (pickers re-read `NotifStyleChoices` on open). | `notif vibe-add <name> <ms,ms,…>` / `notif vibe-remove <name>` |
+| `NotifVibeTest` | `(s) → s` | Buzz the connected watch with a vibration `(spec)`: a built-in or custom name, a CSV of on/off ms, or `default` (the watch's own). Sent as a short "Vibration test" notification **outside** the notification pipeline (like the official app's test), so mute, filters, `notification.forward` and per-app styles don't apply; Quiet Time on the watch still silences it. `notready:` with no watch connected; `error:` for an unknown name or a firmware without custom vibrations (before 4.9.97, which would buzz only its default). | `notif vibe-test <name\|ms,ms,…\|default>` |
 | `NotifSetAppName` | `(s,s) → s` | Where the app matching `query` shows its name on the watch `(query, placement)`, overriding `notification.app_name` for it: `small` / `subtitle` / `off`; `default` (or empty, `none`, `clear`) drops the override. Applies while `notification.per_app` is on. `ok:` / `notfound:` / `ambiguous:` / `error:Unknown app-name placement …`. Live. | `notif style <app> --app-name <small\|subtitle\|off\|default>` |
 | `SendTestNotification` | `(s,s) → s` | Debug: inject a synthetic notification `(title, body)` to the watch through the normal send path (per-app mute, style and filters all apply) — the notification-pipeline counterpart of `FakeCallRing`. `ok:`/`error:`/`notready:`. | `notif test [title] [body]` |
 | `NotifListFilters` | `() → as` | Global notification filters, one record each: `pattern\taction` (`action` ∈ `allow`/`block`). | `notif filter list` |
@@ -437,6 +439,7 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` · `appNamePlacement`(small/subtitle/off, empty = global) |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
+| `NotifStyleChoices` | `kind`(vibe/icon) · `value` · `label`; a vibe adds `ms,ms,…` · `builtin`/`custom` |
 | `ExtList` | `name` · `installed`/`missing` · `enabled`/`disabled` · `running`/`stopped` · `config`(none/schema) · `description` · `author` · `version` |
 | `GetHealthSeries` | steps bars: `label` · `steps` · `typical` · sleep timeline (day): `startFraction` · `widthFraction` · `isDeep`(0/1) · sleep bars: `label` · `totalMin` · `deepMin` · heart (day): `minuteOfDay`(0–1439) · `bpm` · heart bars: `label` · `avgBpm` |
 | `GetSyncStatus` | `service` · `enabled`/`disabled` · `available`/`unavailable` · `lastSync` |
@@ -479,8 +482,8 @@ is down — and a reminder that **backup/restore are not daemon capabilities**:
   directly; `--all` decodes the newest record with the same table as `HeartbeatMetrics`.
 - `health` / `health [days]` / `health activities` / `health dump` — read
   `~/.config/stoandl/health/*.ndjson` directly (`health sync` and `health hr` call the daemon).
-- `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums, the vibe presets
-  and the app-name placements.
+- `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums, the built-in vibe
+  presets and the app-name placements (custom vibrations live in the daemon: `notif vibes`).
 - `version` and `language list` use a *soft* connection: they call the daemon if reachable and
   degrade to embedded/offline output otherwise.
 

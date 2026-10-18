@@ -86,7 +86,7 @@ is shipped at [`packaging/stoandl.conf.example`](../packaging/stoandl.conf.examp
 | `calendar.sync_interval` | number | `30` | Minutes between calendar refreshes (also rolls the timeline window forward). |
 | `calendar.reminders` | bool | `true` | The watch buzzes before each event (its reminders). `false` = pins only. Read live. |
 | `calendar.show_declined` | bool | `false` | Events you declined still become pins. Read live. |
-| `calendar.reminder_vibe` | text | *(empty)* | Vibration for every calendar reminder, a name from libpebble3's pattern list: `Standard`, `Pulses`, `Double`, `Triple`, `Bloom`, `Pips`, `Ole`, `SOS`, `OhhhOh`, `Five`, `Two`, `None` (display names such as `Olé` or `Ohhh, Oh` work too). Empty = the watch's default. Read live. |
+| `calendar.reminder_vibe` | combo | *(empty)* | Vibration for every calendar reminder, a name from libpebble3's pattern list: `Standard`, `Pulses`, `Double`, `Triple`, `Bloom`, `Pips`, `Ole`, `SOS`, `OhhhOh`, `Five`, `Two`, `None` (display names such as `Olé` or `Ohhh, Oh` work too), or a custom one (`stoandl notif vibe-add`, see [Per-app notification settings](#per-app-notification-settings)), which the GUI picker lists after the built-ins and `stoandl daemon set` takes in any case (hand-edited, use its exact spelling). Empty = the watch's default. Read live. |
 | `calendar.enabled` | bool | `true` | Master switch for calendar sync, flipped live by the Sync screen (`SetSyncEnabled("calendar", …)`). Turning it off stops syncing and removes the watch's calendar pins until re-enabled. |
 | `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
 | `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). **Needs a daemon restart.** |
@@ -157,6 +157,10 @@ stoandl notif mute-all  / unmute-all   # apply to every tracked app
 stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
 stoandl notif style NeoChat --app-name off   # where this app's name goes (small / subtitle / off / default)
 stoandl notif styles                   # list every available colour, icon, vibe preset and app-name place (offline)
+stoandl notif vibe-test double         # buzz the watch with a vibration (a name, ms,ms,… or default)
+stoandl notif vibe-add "Work" 100,50,100,50,400   # a named custom vibration (on/off ms)
+stoandl notif vibe-remove Work
+stoandl notif vibes                    # built-in and custom vibrations with their patterns
 ```
 
 Quote multi-word app names. The app argument is a case-insensitive **substring** match, but an **exact**
@@ -176,12 +180,23 @@ action menu.)
 **Per-app styling** (`notif style`) sets, for an app's notifications: `--color` (a
 [TimelineColor](https://github.com/coredevices/libpebble3) name like `Red`/`MintGreen`/`DukeBlue`),
 `--icon` (a TimelineIcon enum name like `NotificationSlack`; defaults to an icon picked from the app
-name), and `--vibe` (a preset `short`/`long`/`double`/`triple`/`pulse`, or a CSV of on/off milliseconds
-like `100,50,100`). These are applied **host-side at send time** to the outgoing notification, so they
+name), and `--vibe` (a built-in vibration such as `Double`, `Pulses` or `Ohhh, Oh`, a custom one you
+added, or a CSV of on/off milliseconds like `100,50,100`). These are applied **host-side at send time** to the outgoing notification, so they
 render on the watch with no sync. For each flag, `default` resets it; omitting it leaves it unchanged.
 Run **`stoandl notif styles`** to print the full list of accepted colours (64), icons (the `Notification*`
 app/messaging set plus the generic timeline icons) and vibe presets — it's generated from the enums, so
 it always matches what the daemon accepts, and needs no daemon or watch.
+
+**Vibrations.** `stoandl notif vibe-test <vibe>` (or **Test** next to each vibration in the GUI's app
+dialog) buzzes the connected watch with it as a short "Vibration test" notification, sent outside the
+notification pipeline like the official app's test: mute, filters and `notification.forward` don't
+apply, Quiet Time on the watch still silences it. `default` buzzes the watch's own default (Settings →
+Notifications → Vibration on the watch). `stoandl notif vibe-add <name> <ms,ms,…>` stores a named custom
+vibration — at most 64 on/off segments and 10 s in total — in libpebble3's pattern table next to the
+built-ins (the official app's store), so `--vibe`, the GUI's picker, an extension's `vibe` and
+`calendar.reminder_vibe` all take the name. Re-adding a name replaces it; `vibe-remove` deletes it, and
+apps still set to it buzz the watch's default. Firmware before 4.9.97 can't play custom vibrations at
+all: it buzzes its default for every notification.
 
 **Where the app name goes** (`notif style <app> --app-name`) overrides `notification.app_name` for one
 app: `small`, `subtitle` or `off`; `default` drops the override. The watch draws a notification as the

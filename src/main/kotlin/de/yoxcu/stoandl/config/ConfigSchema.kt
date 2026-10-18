@@ -233,6 +233,23 @@ private fun installedModelChoices(): List<ConfigChoice> {
     return installed.map { m -> ConfigChoice(m.name, m.id) { it.voiceLocalModel == m.id } }
 }
 
+/** The user's custom vibration names, offered by `calendar.reminder_vibe` after the built-ins. The daemon
+ *  wires it to libpebble3's vibe store; empty elsewhere (tests, before init). */
+@Volatile internal var customVibeNames: () -> List<String> = { emptyList() }
+
+private fun reminderVibeChoices(): List<ConfigChoice> =
+    listOf(ConfigChoice("Watch default", "") { it.calendarReminderVibe == null }) +
+        // Value = the enum name (comma-free for the CSV options column); the config also takes the
+        // display name.
+        DefaultVibePattern.entries.map { p ->
+            ConfigChoice(p.displayName.replace(",", ""), p.name) { c ->
+                c.calendarReminderVibe.let { v -> v.equals(p.name, ignoreCase = true) || v.equals(p.displayName, ignoreCase = true) }
+            }
+        } +
+        (runCatching { customVibeNames() }.getOrNull() ?: emptyList()).map { n ->
+            ConfigChoice(n.replace(",", ""), n) { it.calendarReminderVibe.equals(n, ignoreCase = true) }
+        }
+
 private const val G_PLUGINS = "Plugins"
 private const val G_VOICE = "Voice"
 private const val G_NOTIF = "Notifications"
@@ -361,16 +378,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "The watch buzzes before an event (its own reminders). Off = pins only.") { it.calendarReminders },
     toggle("calendar.show_declined", G_CALENDAR, "Show declined events",
         "Events you declined still appear on the timeline") { it.calendarShowDeclined },
-    combo("calendar.reminder_vibe", G_CALENDAR, "Reminder vibration",
-        "The vibration for every calendar reminder", choices =
-            listOf(ConfigChoice("Watch default", "") { it.calendarReminderVibe == null }) +
-            // Value = the enum name (comma-free for the CSV options column); the config also takes the
-            // display name.
-            DefaultVibePattern.entries.map { p ->
-                ConfigChoice(p.displayName.replace(",", ""), p.name) { c ->
-                    c.calendarReminderVibe.let { v -> v.equals(p.name, ignoreCase = true) || v.equals(p.displayName, ignoreCase = true) }
-                }
-            }),
+    ConfigField("calendar.reminder_vibe", "combo", G_CALENDAR, "Reminder vibration",
+        "The vibration for every calendar reminder: a built-in one or one of yours (stoandl notif vibe-add)",
+        ConfigApply.LIVE, choicesOf = ::reminderVibeChoices),
 
     // --- Plugins ---
     toggle("plugins.enabled", G_PLUGINS, "Plugins",

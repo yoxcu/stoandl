@@ -124,7 +124,7 @@ private fun printUsage() {
     row("", "         power|heartbeat] · find")
     row("apps", "list launch install remove order")
     row("settings", "list · set <id> <value>")
-    row("notif", "list mute unmute style filter")
+    row("notif", "list mute unmute style vibe-test filter")
     row("ext", "list install enable disable")
     row("", "restart uninstall")
     row("config", "[app]   PKJS config page")
@@ -1035,6 +1035,43 @@ private fun ctlNotif(rest: List<String>) {
                 try { handleStatusResponse(control.SendTestNotification(title, body)) }
                 catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
             }
+            // Buzz the watch with a vibration (name, CSV or `default`) — the preview for `--vibe`.
+            "vibe-test" -> {
+                val spec = rest.drop(1).joinToString(" ")
+                if (spec.isBlank()) {
+                    System.err.println("Usage: stoandl notif vibe-test <name|ms,ms,…|default>  ('stoandl notif vibes' lists the names)"); System.exit(1); return
+                }
+                handleStatusResponse(try { control.NotifVibeTest(spec) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            // Every vibration the daemon takes, with the custom ones stored there.
+            "vibes" -> {
+                val rows = try { control.NotifStyleChoices() } catch (e: Exception) {
+                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
+                }
+                printVibes(rows)
+            }
+            // Named custom vibrations; quote multi-word names: `stoandl notif vibe-add "Work chat" 100,50,100`.
+            "vibe-add" -> {
+                val name = rest.getOrNull(1)
+                val pattern = rest.getOrNull(2)
+                if (name.isNullOrBlank() || pattern.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl notif vibe-add <name> <ms,ms,…>  (on/off milliseconds, e.g. 100,50,100)"); System.exit(1); return
+                }
+                handleStatusResponse(try { control.NotifSetVibePattern(name, pattern) } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
+            "vibe-remove" -> {
+                val name = rest.drop(1).joinToString(" ")
+                if (name.isBlank()) {
+                    System.err.println("Usage: stoandl notif vibe-remove <name>"); System.exit(1); return
+                }
+                handleStatusResponse(try { control.NotifSetVibePattern(name, "") } catch (e: Exception) {
+                    System.err.println("Error: ${e.message}"); System.exit(1); return
+                })
+            }
             // Quote multi-word app names: `stoandl notif mute "My App" 1h`.
             "mute", "unmute" -> {
                 val query = rest.getOrNull(1)
@@ -1797,7 +1834,9 @@ private fun printNotifStyles() {
 
     println("Vibrations (--vibe):")
     DefaultVibePattern.entries.forEach { println("  %-14s %s ms".format(it.displayName, it.pattern.joinToString(","))) }
-    println("  (or a custom CSV of on/off milliseconds, e.g. 100,50,100)")
+    println("  (or a CSV of on/off milliseconds, e.g. 100,50,100, or a name you added with")
+    println("   'stoandl notif vibe-add <name> <ms,ms,…>'; 'stoandl notif vibes' lists those too,")
+    println("   'stoandl notif vibe-test <vibe>' buzzes one on the watch)")
     println()
 
     val colors = TimelineColor.entries.map { it.name }.sorted()
@@ -1812,6 +1851,24 @@ private fun printNotifStyles() {
     println()
     println("Other icons (${otherIcons.size}):")
     printColumns(otherIcons)
+}
+
+/** Print the `vibe` records of NotifStyleChoices (`vibe \t value \t label \t ms,ms,… \t builtin|custom`). */
+private fun printVibes(rows: List<String>) {
+    val vibes = rows.map { it.split('\t') }.filter { it.firstOrNull() == "vibe" }
+    val (custom, builtin) = vibes.partition { it.getOrNull(4) == "custom" }
+    val w = (vibes.maxOfOrNull { it.getOrElse(1) { "" }.length } ?: 0).coerceIn(14, 40)
+    println("Built-in vibrations:")
+    builtin.forEach { println("  %-${w}s %s ms".format(it.getOrElse(1) { "" }, it.getOrElse(3) { "" })) }
+    println()
+    if (custom.isEmpty()) {
+        println("No custom vibrations (add one: stoandl notif vibe-add <name> <ms,ms,…>).")
+    } else {
+        println("Custom vibrations:")
+        custom.forEach { println("  %-${w}s %s ms".format(it.getOrElse(1) { "" }, it.getOrElse(3) { "" })) }
+    }
+    println()
+    println("Try one on the watch: stoandl notif vibe-test <name|ms,ms,…|default>")
 }
 
 /** Print [items] wrapped into space-padded columns that fit within [width] characters. */

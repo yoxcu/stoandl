@@ -94,6 +94,9 @@ provider forever, so the watchapp path kept the old id until a restart; the cach
 | --- | --- | --- | --- | --- | --- |
 | `calendar.discover` | toggle | ✓ | live | sources are re-read per enumeration | `false` |
 | `calendar.sync_interval` | int | ✓ | live² | the ticker re-samples it each tick (was captured once; **fixed this session**) | `30` min |
+| `calendar.reminders` | toggle | ✓ | live | projected into libpebble3's `WatchConfig` (`libPebbleConfigOf`) | `true` |
+| `calendar.show_declined` | toggle | ✓ | live | ” | `false` |
+| `calendar.reminder_vibe` | combo | ✓ | live | ”; the options are the built-ins plus the user's custom vibrations, read per use | `Watch default` |
 | `calendar.enabled` | toggle | Sync screen | live | `SetSyncEnabled("calendar", …)` | `true` |
 
 ² Applies at once: the ticker is keyed on a `StateFlow` of the interval, so changing the value cancels

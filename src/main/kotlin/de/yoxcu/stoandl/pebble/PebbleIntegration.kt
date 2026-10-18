@@ -134,6 +134,7 @@ import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.DataLoggingOutgoingPacket
+import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.metadata.supportsHrm
 import io.rebble.libpebblecommon.services.DailySleep
 import io.rebble.libpebblecommon.services.WatchInfo
@@ -399,6 +400,8 @@ class PebbleIntegration(
     // The shared notification send choke point (assigned in init()); passed to StoandlControlImpl so
     // SendTestNotification can inject through the same path desktop/extension notifications use.
     private lateinit var watchNotifier: WatchNotifier
+    // The user's named vibes (libpebble3's VibePatternDao), shared by the send path, setStyle and NotifSetVibePattern.
+    private lateinit var vibePatterns: VibePatterns
     // The health on-connect-request collector (when health.sync is on), held so applyHealth can cancel it.
     private var healthRequestJob: Job? = null
     // Last successful sync time (epoch seconds) per discrete-sync service (weather/calendar/health), for
@@ -525,6 +528,8 @@ class PebbleIntegration(
         // In-memory route table, bounded by age and count. The watch offers actions from its history too
         // (watchClaims advertises SupportsTwoWayDismissal), so routes outlive the popup.
         val routeTable = NotifRouteTable()
+        vibePatterns = VibePatterns(koin.get())
+        de.yoxcu.stoandl.config.customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } }
         watchNotifier = WatchNotifier(
             libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements,
             notificationImages,
@@ -664,7 +669,7 @@ class PebbleIntegration(
         debugControl = DebugControl(libPebbleRef)
         developerControl = DeveloperControl(libPebbleRef)
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
-        notificationAppsControl = NotificationAppsControl(koin.get(), appNamePlacements)
+        notificationAppsControl = NotificationAppsControl(koin.get(), appNamePlacements, vibePatterns::custom)
         watchConnector = koin.get()
         quietTimeLink = QuietTimeLink(
             scope = scope,
@@ -2907,6 +2912,8 @@ private class StoandlControlImpl(
     private val voiceControl: VoiceControl,
     // Plugins and app permissions (Plugin*, Perm*).
     private val pluginControl: PluginControl,
+    // Named custom vibes (NotifSetVibePattern, NotifStyleChoices, NotifVibeTest).
+    private val vibePatterns: VibePatterns,
     // True only when Bluetooth is usable: libpebble3's state (a BlueZ adapter exists and is powered).
     private val btOn: () -> Boolean,
 ) : StoandlControl {
@@ -3576,7 +3583,36 @@ private class StoandlControlImpl(
         notificationAppsControl?.setStyle(query, color, icon, vibe)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
 
-    override fun NotifStyleChoices(): List<String> = notifStyleChoices()
+    override fun NotifStyleChoices(): List<String> =
+        notifStyleChoices(runCatching { runBlocking { vibePatterns.custom() } }.getOrDefault(emptyMap()))
+
+    override fun NotifSetVibePattern(name: String, pattern: String): String = try {
+        runBlocking { vibePatterns.set(name, pattern) }
+    } catch (e: Exception) {
+        log.warn(e) { "NotifSetVibePattern failed" }
+        "error:${e.message ?: "failed"}"
+    }
+
+    override fun NotifVibeTest(spec: String): String {
+        val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
+        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+            ?: return "notready:No watch connected"
+        val reset = spec.trim().lowercase() in STYLE_RESET_WORDS
+        val custom = runBlocking { vibePatterns.custom() }
+        val name = if (reset) null else normalizeVibe(spec, custom)
+            ?: return "error:Unknown vibration '${spec.trim()}' (stoandl notif styles lists them)"
+        val pattern = name?.let { perAppVibe(it, custom) }
+        if (pattern != null && ProtocolCapsFlag.SupportsCustomVibePatterns !in dev.capabilities) {
+            return "error:${dev.displayName()} runs firmware ${dev.runningFwVersion}, which buzzes only its own default (custom vibrations need 4.9.97 or newer)"
+        }
+        return try {
+            runBlocking { lp.sendNotification(vibeTestNotification(name ?: "Watch default", pattern)) }
+            "ok:Buzzing ${name ?: "the watch's default"} on ${dev.displayName()} (silent while Quiet Time is on)"
+        } catch (e: Exception) {
+            log.warn(e) { "NotifVibeTest failed" }
+            "error:${e.message ?: "send failed"}"
+        }
+    }
 
     override fun NotifSetAppName(query: String, placement: String): String =
         notificationAppsControl?.setAppName(query, placement)

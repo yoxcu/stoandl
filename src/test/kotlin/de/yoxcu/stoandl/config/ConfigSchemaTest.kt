@@ -374,4 +374,21 @@ class ConfigSchemaTest {
         assertNull(guiConfigField("weather"))
         assertNull(guiConfigField(""))
     }
+
+    @Test
+    fun `reminder vibe offers and takes the custom vibrations`() {
+        val f = field("calendar.reminder_vibe")
+        err(f, "Work")
+        val saved = customVibeNames
+        customVibeNames = { listOf("Work", "a,b") }
+        try {
+            assertEquals("Work", ok(f, "work"))
+            assertEquals("a,b", ok(f, "ab"))
+            assertEquals("Pulses", ok(f, "pulses"))
+            assertTrue(f.options.split(",").containsAll(listOf("Work", "ab")))
+            assertEquals("Work", f.value(defaults().copy(calendarReminderVibe = "work")))
+        } finally {
+            customVibeNames = saved
+        }
+    }
 }
