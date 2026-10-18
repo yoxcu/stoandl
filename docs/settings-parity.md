@@ -64,6 +64,7 @@ the condition is still logged at WARN, so a muted alert never hides a diagnosis.
 | `alerts.extensions` | toggle | ✓ | live | ” — gates "extension needs setup" | `true` |
 | `alerts.permissions` | toggle | ✓ | live | ” — gates the Allow/Deny prompt for an app's permission request (watch and desktop) | `true` |
 | `alerts.battery_full` | toggle | ✓ | live | ” — gates "Watch fully charged" (watch, through the choke point, and desktop) | `true` |
+| `alerts.scan_failed` | toggle | ✓ | live | ” — gates "Pebble pairing can't search" (once per pairing window) | `true` |
 
 `firmware.notify` is the fifth alert but keeps its own older key, because it also drives a **watch**
 notification with an Update button. One switch per event, not two — see [§5](#5-redundancy-noted).
@@ -225,6 +226,7 @@ that governs it. "Choke point" = `WatchNotifier.push`, which enforces the regex 
 | "Pebble pairing removed" (host bond lost) | desktop, with Pair | n/a | `alerts.enabled` + `alerts.pairing` |
 | "Blocked by a Bluetooth scan" | desktop | n/a | `alerts.enabled` + `alerts.bluetooth` |
 | "<extension> needs setup" | desktop | n/a | `alerts.enabled` + `alerts.extensions` |
+| "Pebble pairing can't search" (discovery keeps failing during a pairing window) | desktop, once per window | n/a | `alerts.enabled` + `alerts.scan_failed` |
 | "Watch fully charged" | watch **and** desktop | yes (the watch half) | `alerts.enabled` + `alerts.battery_full`; on the watch also per-app mute of "stoandl" |
 | Incoming/missed call | watch (native call screen) | no — telephony has its own path | `call.dialer_apps` suppresses the duplicate app notification |
 | Find my watch | watch (ring) | no — reuses the call path | on demand only |

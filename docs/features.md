@@ -179,7 +179,8 @@ unanswered for 60 s) ends the window and isn't retried: no further pairing reque
 until you open the next pairing window. A pairing window also discovers with the display off
 (it's an explicit request), but only while the host is awake, so keep a phone that
 suspends with the display off awake while pairing. If the window can't discover, `watch pair` prints
-why (Bluetooth off, another watch connecting, the phone slept) instead of timing out silently.
+why (Bluetooth off, another watch connecting, the phone slept, the scan failing to start) instead of
+timing out silently.
 
 If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
 re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
@@ -750,6 +751,17 @@ so theirs comes from the hourly analytics heartbeat (whether or not `battery.hea
 be up to an hour late. Toggle `alerts.battery_full` (default on, under `alerts.enabled`); the watch copy
 is a `stoandl` notification, so muting the `stoandl` app keeps it on the desktop only. Off-device:
 `BatteryFullAlertTest`. _Implemented — to be tested ([TESTING.md §5.53](../TESTING.md))._
+
+### Scan failures while pairing
+
+When a pairing window's scan can't start (BlueZ refuses `StartDiscovery`: the adapter isn't ready, LE or
+BR/EDR is switched off on the controller), `stoandl watch pair` and the GUI pair dialog say so —
+`Scan failed, retrying — Failed to scan for watches: Bluetooth discovery didn't start (…)` — instead of
+searching silently until the timeout, and a timed-out window names the failure. As in the official app, which
+shows libpebble3's user-facing errors as a toast, the failure also raises a desktop alert, once per window and
+only when it repeats: toggle `alerts.scan_failed` (default on, under `alerts.enabled`). Every libpebble3
+user-facing error (scan, sideload, locker) is logged at WARN. Off-device: `ScanFailuresTest`, fork
+`ScanningTest` / `BlueZDiscoveryTest`. _Implemented — to be tested ([TESTING.md §5.57](../TESTING.md))._
 
 ### HR during activities, podcast seek, face order
 

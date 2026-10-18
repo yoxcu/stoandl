@@ -108,6 +108,7 @@ import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.connection.UserFacingError
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.PebbleDevice
@@ -237,8 +238,10 @@ private class PairingGate {
     private val expiryMs = java.util.concurrent.atomic.AtomicLong(0L)
     // The host suspended (and resumed) while this window was open; cleared by the next open().
     private val slept = AtomicBoolean(false)
+    val scanFailures = ScanFailures()
     fun open() {
         slept.set(false)
+        scanFailures.windowOpened()
         expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS)
     }
     fun close() { expiryMs.set(0L) }
@@ -722,6 +725,7 @@ class PebbleIntegration(
         ).start()
         sleepGuard?.start()
         startTransferKeepAwake()
+        startUserFacingErrors()
         startScanLoop()
         startAutoConnect()
         startWristFollower()
@@ -974,7 +978,8 @@ class PebbleIntegration(
                 if (windowOpen) {
                     showPairingScanPause(devices.firstOrNull { it is ConnectingPebbleDevice }?.let {
                         "$PAIRING_PAUSED_BLE_BUSY${it.displayName()} is connecting (a scan would disturb it)."
-                    } ?: PAIRING_PAUSED_SLEPT.takeIf { pairingGate.sleptDuringWindow() })
+                    } ?: pairingGate.scanFailures.note(System.currentTimeMillis())
+                        ?: PAIRING_PAUSED_SLEPT.takeIf { pairingGate.sleptDuringWindow() })
                     if (!displayOffNoted && ScreenState.isOn() == false) {
                         displayOffNoted = true
                         log.info {
@@ -990,6 +995,32 @@ class PebbleIntegration(
         }
     }
 
+    /** libpebble3's user-facing errors, which the official app shows as a toast: logged at WARN here. A scan
+     *  failure also goes into the open pairing window's PairStatus and, if it repeats, a desktop alert
+     *  (`alerts.scan_failed`), so `watch pair` says why it finds nothing. */
+    private fun startUserFacingErrors() {
+        libPebble.userFacingErrors.onEach { error ->
+            if (error !is UserFacingError.FailedToScan) {
+                log.warn { "libpebble3: ${error.message}" }
+                return@onEach
+            }
+            val windowOpen = pairingGate.isOpen()
+            val now = System.currentTimeMillis()
+            val recorded = pairingGate.scanFailures.record(error.message, now, windowOpen)
+            if (recorded.logWarn) log.warn { "libpebble3: ${error.message}" }
+            else log.debug { "libpebble3 (repeated): ${error.message}" }
+            if (windowOpen) pairingGate.scanFailures.note(now)?.let(::showPairingScanPause)
+            if (recorded.alert && alertsAllow { it.alertsScanFailed }) withContext(Dispatchers.IO) {
+                sendDesktopNotification(
+                    "Pebble pairing can't search",
+                    "${error.message}. stoandl keeps retrying while the pairing window is open; check that " +
+                        "Bluetooth is on and working.",
+                    appName = STOANDL_DESKTOP_ONLY_APP,
+                )
+            }
+        }.launchIn(scope)
+    }
+
     /** Say in PairStatus why the open pairing window can't discover ([note], a `pending:` string), or
      *  withdraw such a note with null. Only replaces the bare `pending:` or an earlier note — never a
      *  found watch, a code to confirm or a result — so it can't clobber real progress. */
@@ -1000,7 +1031,7 @@ class PebbleIntegration(
     /** The pairing window is still searching: nothing found yet, possibly with a scan-pause note. */
     private fun pairingSearching(state: String = pairingState.get()): Boolean =
         state == "pending:" || state == PAIRING_PAUSED_BT_OFF || state == PAIRING_PAUSED_SLEPT ||
-            state.startsWith(PAIRING_PAUSED_BLE_BUSY)
+            state.startsWith(PAIRING_PAUSED_BLE_BUSY) || state.startsWith(PAIRING_SCAN_FAILED)
 
     /**
      * Diagnostic: warn (once) when an *external* process is holding a *sustained* Bluetooth discovery
@@ -4125,7 +4156,7 @@ private class StoandlControlImpl(
         // Overall timeout: the gate's end plus the grace.
         val timeoutJob = launch {
             delayUntilWallClock(deadlineMs, wakeups())
-            result.complete("timeout:Pairing timed out")
+            result.complete(pairingGate.scanFailures.timedOut(System.currentTimeMillis()))
         }
         val newState = result.await()
         connectedJob.cancel()

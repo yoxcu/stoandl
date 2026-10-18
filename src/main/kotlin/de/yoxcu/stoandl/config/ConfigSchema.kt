@@ -318,8 +318,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
 
     // --- stoandl's own alerts ---
     toggle("alerts.enabled", G_ALERTS, "Alerts from stoandl",
-        "Master switch for the desktop alerts stoandl raises about itself (pairing, Bluetooth, " +
-            "extensions). Forwarded app notifications are unaffected.") { it.alertsEnabled },
+        "Master switch for the alerts stoandl raises about itself (pairing, Bluetooth, extensions, " +
+            "permission requests, full battery, pairing scan). Most show on the desktop only; permission " +
+            "prompts and the full-battery alert also show on the watch. Forwarded app notifications are " +
+            "unaffected.") { it.alertsEnabled },
     toggle("alerts.pairing", G_ALERTS, "Pairing problems",
         "Alert when a watch keeps dropping the link (unpaired on the watch) or its pairing was " +
             "removed on this computer — each with the action that fixes it") { it.alertsPairing },
@@ -332,6 +334,9 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("alerts.battery_full", G_ALERTS, "Watch fully charged",
         "Alert on the watch and the desktop when a watch on the charger reaches 100 %. Classic-era watches " +
             "report their charge once an hour, so theirs can come up to an hour late.") { it.alertsBatteryFull },
+    toggle("alerts.scan_failed", G_ALERTS, "Pairing scan failed",
+        "Alert when a pairing window can't search for watches because Bluetooth discovery keeps failing " +
+            "to start (once per window). `stoandl watch pair` reports it either way.") { it.alertsScanFailed },
 
     // --- Calls & contacts ---
     list("call.dialer_apps", G_CALLS, "Dialer apps",

@@ -64,10 +64,12 @@ notification.catch_up_minutes = 60
 notification.canned_replies = Ok, Yes, No, Call me, Call you later
 
 # --- stoandl's own alerts -------------------------------------------------------------------------
-# The desktop alerts stoandl raises ABOUT ITSELF -- pairing trouble, another app's Bluetooth scan
-# blocking reconnects, an extension that needs setting up. These are NOT forwarded app notifications
-# (those follow notification.forward / per-app mute above) and they show on the host desktop, not the
-# watch. All on by default: without them a watch can silently stop reconnecting forever.
+# The alerts stoandl raises ABOUT ITSELF -- pairing trouble, another app's Bluetooth scan blocking
+# reconnects, an extension that needs setting up, permission requests, a fully charged watch, a pairing
+# window that can't search. These are NOT forwarded app notifications (those follow notification.forward
+# / per-app mute above). Most show on the host desktop only; permission prompts and the full-battery
+# alert also show on the watch. All on by default: without them a watch can silently stop reconnecting
+# forever.
 # Turning one off silences the POPUP only -- the condition is still logged at WARN and still lands in
 # `stoandl support`, so a muted alert never hides a diagnosis.
 # The firmware-update alert has its own switch (firmware.notify, below), because it also drives a
@@ -89,6 +91,9 @@ alerts.permissions = true
 # on the watch and the desktop, as in the official app. Classic-era watches report their charge once
 # an hour (analytics heartbeat), so theirs can come up to an hour late.
 alerts.battery_full = true
+# An open pairing window can't search for watches: Bluetooth discovery keeps failing to start. Once per
+# window; `stoandl watch pair` and the GUI's pairing status report the failure either way.
+alerts.scan_failed = true
 
 # Telephony/dialer apps, by app name or desktop-entry id (exact, case-insensitive). While a call is
 # up their notifications are held back from the watch (the native call screen replaces them); their

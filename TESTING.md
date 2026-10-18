@@ -2197,6 +2197,27 @@ connect [name]` (GUI: the banner's *Connect*, or a known watch's *Connect*) or a
 | 5.55g | Quiet Time | `power.quiet_time_link_off` on, inside the scheduled window with the display off 10 min (link paused for Quiet Time); `stoandl watch disconnect`, then `stoandl watch connect` | Connect answers `Resumed — the connection stays paused until Quiet Time ends`; the watch reconnects only when the window ends or the display comes on. Disconnect before the window ends: the watch stays off after it. |
 | 5.55h | Pairing resumes | disconnected; `stoandl watch pair` | The pause ends (log `Watch connection resumed`), the window opens as usual. |
 | 5.55i | GUI | Watch page with a watch connected | A *Disconnect* action; after it, a *Watch disconnected* banner with *Connect*; a CLI disconnect/connect updates the page within a second (WatchesChanged). Inside a Quiet Time pause an information banner says so. |
+
+## 5.57 Scan failures while pairing  ⚠️ UNVERIFIED (needs root on the host for `btmgmt`; 5.57e needs a classic watch setup)
+
+libpebble3 reports a failed scan as a user-facing error (`FailedToScan`); the official app shows it as a toast.
+The fork's BlueZ scanners now fail the scan when `Adapter1.StartDiscovery` is refused (InProgress — discovery
+already held by stoandl's own connection — still counts as running), and stoandl logs every user-facing error at
+WARN, shows a scan failure in the open pairing window's `PairStatus` (`Scan failed, retrying — …`), names it in
+a timed-out window's result, and raises `alerts.scan_failed` (default on, under `alerts.enabled`) once per window
+when it repeats. Off-device: `ScanFailuresTest` (log/alert/note rate), fork `ScanningTest` and
+`BlueZDiscoveryTest` (message, InProgress).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.57a | Scan refused | `sudo btmgmt le off` (the adapter stays powered; BlueZ refuses LE discovery), `stoandl watch pair` | Within a few seconds the CLI prints `Scan failed, retrying — Failed to scan for watches: Bluetooth discovery didn't start (…)` (the GUI pair dialog shows the same). Log: one WARN `libpebble3: Failed to scan for watches: …`, repeats only at DEBUG (at most one WARN a minute). |
+| 5.57b | Alert | as 5.57a | One desktop alert *Pebble pairing can't search* for the window, not one per retry. |
+| 5.57c | Timeout | leave 5.57a running for the whole window | The CLI ends with `Pairing timed out — failed to scan for watches: …` instead of a bare timeout. |
+| 5.57d | Recovers | as 5.57a, then `sudo btmgmt le on` inside the window, watch in pairing mode | The note goes back to the plain search within ~10 s, `Starting BLE scan`, and the watch pairs normally. |
+| 5.57e | Classic | `classic.discover = true`, `sudo btmgmt bredr off`, `stoandl watch pair` | `Scan failed, retrying — Failed to scan for classic watches: …`; the BLE scan is unaffected. Restore with `sudo btmgmt bredr on`. |
+| 5.57f | Off | `stoandl daemon set alerts.scan_failed false`, repeat 5.57a | No alert; the CLI note, timeout text and WARN still appear. Same with `alerts.enabled false`. |
+| 5.57g | Connect unaffected | a bonded BLE watch that advertises while disconnected (aplite/basalt/chalk/diorite era) out of range, then back in range | It reconnects as before. The pre-connect scan uses the same scanner: a refused one only logs `scanBeforeConnect: scan failed: …` and the connect goes ahead. |
+
 ---
 
 ## 5.62 List settings with commas, the GUI list editor  ⚠️ UNVERIFIED (5.62a–c on a desktop; 5.62d needs a watch and Plasma with InvokeReply)
