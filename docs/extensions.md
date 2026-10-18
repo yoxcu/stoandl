@@ -427,9 +427,9 @@ without re-push (only if the §"deferred" re-push proves lossy on hardware). (Th
   `initialize` handshake + `notify`/`onAction`/`onReply`/`onDismiss`/`onWatchConnected`/
   `closeNotification`, async dispatch, restart/backoff + quarantine, stderr→logback. Reference
   `stoandl_ext.py` helper.
-- **Phase 2 — Dismiss hygiene + in-memory routes. ✅ done.** Dismiss `markForDeletion`s (no resync);
-  owner registry + token-in-route. (Route *persistence* was prototyped then dropped — pointless given
-  the firmware only actions live notifications.) `onWatchConnected` settle delay.
+- **Phase 2 — Dismiss hygiene + routes. ✅ done.** Dismiss `markForDeletion`s (no resync);
+  owner registry + token-in-route. `onWatchConnected` settle delay. Routes were later persisted (see
+  "Actions from the history").
 - **Phase 3 — Watchapp companion (goal c). ✅ done, hardware-verified.** `registerApp`/`sendAppMessage`/
   `onAppMessage` (ACK-on-receipt, via the broadcast packet flow so the companion manager can't steal it)/
   `launchApp`/`stopApp`/`installPbw` with the typed-tagged dict codec. Ships the find-my-phone
@@ -448,9 +448,8 @@ without re-push (only if the §"deferred" re-push proves lossy on hardware). (Th
     sends canned replies back through the account. Receive is a long-poll `/sync` behind a pluggable
     `WakeSource` so a UnifiedPush wake can drop in later. _TBT on hardware — see TESTING.md §5.27._
   - ✅ **Go helper** — `examples/extensions/stoandl_ext.go` (the Go counterpart of `stoandl_ext.py`).
-  - **TODO:** per-extension rate limit; JSON-Schema + a Rust helper; voice `TranscriptionProvider`
-    (canned replies need nothing, but wrist dictation is a no-op until one is wired);
-    cross-extension UUID arbitration.
+  - **TODO:** per-extension rate limit; JSON-Schema + a Rust helper; cross-extension UUID arbitration.
+    (Wrist dictation works through the daemon's `voice.*` backend, see "Reply UX" above.)
 
 ## Action routing, dismiss, and the firmware reality
 
@@ -464,9 +463,9 @@ token) is carried *in* the route, so `onReply`/`onAction`/`onDismiss` need no pe
 **Actions from the history.** The firmware offers a notification's action menu from the watch's
 Notifications app only when the phone advertises capability bit 3 (`SupportsTwoWayDismissal`, the
 firmware's ExtendedNotificationService; `notification_window.c` `prv_should_show_action_in_action_menu`).
-stoandl advertises it (`WatchClaims`), so actions work on old notifications too. Routes are in memory,
-bounded to 7 days and 2000 items; after a daemon restart a history item's Dismiss still works and its
-other actions answer "Not supported". (Before stoandl advertised the bit, the menu appeared only on the
+stoandl advertises it (`WatchClaims`), so actions work on old notifications too. Routes are bounded to
+7 days and 2000 items and persisted (`~/.cache/stoandl/notification-routes.json`), so after a daemon restart a
+history item's actions and replies still reach their owner with the original `extToken`. (Before stoandl advertised the bit, the menu appeared only on the
 live popup, which these docs once called a firmware limit.)
 
 A wrist Dismiss uses `markForDeletion`: the watch already removed the item, so it only leaves our sync set.

@@ -8,8 +8,9 @@ Keep it in sync with `GUI_CONFIG_FIELDS` — `ConfigSchemaTest` enforces the mec
 exposed key round-trips through `StoandlConfig.load`, no duplicates, no framing characters), but the
 *Applies* column is prose and only a human can keep it honest.
 
-**Scope.** `stoandl.conf` has 58 top-level keys plus two prefix families (`watch.<prefId>`,
-`extension.<name>.<key>`). 51 are rendered by the schema-driven Settings page; the remaining ones are
+**Scope.** `stoandl.conf` has 84 top-level keys plus two prefix families (`watch.<prefId>`,
+`extension.<name>.<key>`). 77 are rendered by the schema-driven Settings page, which also renders one
+secret (`voice.api_key`, kept in the keyring, never in the file); the remaining ones are
 reachable through a **richer dedicated surface** and are listed in [§3](#3-keys-deliberately-not-in-the-schema).
 Nothing is unreachable.
 
@@ -120,6 +121,14 @@ repeated edits from starving the sync.
 | Key | Kind | GUI | Applies | Why | Default |
 | --- | --- | --- | --- | --- | --- |
 | `apps.order_faces_by_last_used` | toggle | ✓ | live | projected into libpebble3's `WatchConfig`, which `Locker` reads per activation | `false` (keeps today's order; the official app turns it on at first run) |
+
+### Plugins
+
+| Key | Kind | GUI | Applies | Validated | Default |
+| --- | --- | --- | --- | --- | --- |
+| `plugins.enabled` | toggle | ✓ | live | — | `false` |
+| `plugins.permission_policy` | combo | ✓ | live | ask_if_exfiltrating/always_ask/never_ask | `If data could leave this machine` |
+| `plugins.ask_legacy_apps` | toggle | ✓ | live | — | `false` |
 
 ### Voice
 
