@@ -52,6 +52,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.seconds
@@ -233,7 +235,7 @@ class ExtensionManager(
 
     fun list(): List<String> {
         val enabled = currentEnabled().toSet()
-        // Skip dotfiles (e.g. our .install-tmp-*) and python's __pycache__ — not extensions.
+        // Skip dotfiles (e.g. our .install-tmp-*/.install-new-*) and python's __pycache__ — not extensions.
         val installed = extDir.listFiles()
             ?.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("__") }
             ?.map { it.name }?.toSet() ?: emptySet()
@@ -278,7 +280,8 @@ class ExtensionManager(
 
     /** Install from an archive (.tar.gz/.tgz/.tar/.zip) or an unpacked directory (an extension being
      *  written, a git checkout) into `<extDir>/<name>/`, sideload a bundled `.pbw`, enable it, and
-     *  hotplug-start it. A directory is copied, so later edits need another install. */
+     *  hotplug-start it. A directory is copied (links as links, at most [MAX_INSTALL_BYTES]), so later
+     *  edits need another install. */
     fun install(path: String): String {
         val src = File(path)
         if (src.isDirectory) {
@@ -293,7 +296,7 @@ class ExtensionManager(
         }
         if (!src.isFile) return "error:No such file or directory: $path"
         val tmp = File(extDir, ".install-tmp-${System.nanoTime()}")
-        extDir.mkdirs(); tmp.deleteRecursively(); tmp.mkdirs()
+        extDir.mkdirs(); deleteTree(tmp); tmp.mkdirs()
         try {
             if (!extract(src, tmp)) {
                 return "error:Could not extract ${src.name} (need tar/unzip; supported: .tar.gz/.tgz/.tar/.zip, or a directory)"
@@ -304,7 +307,7 @@ class ExtensionManager(
             val stem = src.name.removeSuffix(".tar.gz").removeSuffix(".tgz").removeSuffix(".tar").removeSuffix(".zip")
             return installFrom(root, stem)
         } finally {
-            tmp.deleteRecursively()
+            deleteTree(tmp)
         }
     }
 
@@ -313,15 +316,34 @@ class ExtensionManager(
         val name = nameFor(root, fallbackName)
         if (name.isEmpty()) return "error:Could not determine an extension name from $fallbackName"
 
-        stopProcess(name)
+        // Copy into a staging dir next to the install and swap it in only once the copy worked, so a
+        // failed copy leaves the previous install as it was. The staging and old dirs are dotfiles, which
+        // [list] skips.
+        extDir.mkdirs()
         val dest = File(extDir, name)
-        // Preserve the user's per-extension `config` across a reinstall (the archive shouldn't carry
-        // one; if it does, the archive's wins).
-        val savedConfig = File(dest, "config").takeIf { it.isFile }?.readText()
-        dest.deleteRecursively()
-        dest.parentFile?.mkdirs()
-        if (!copyTree(root, dest)) return "error:Failed to install files for '$name'"
-        if (savedConfig != null && !File(dest, "config").isFile) File(dest, "config").writeText(savedConfig)
+        val stage = File(extDir, ".install-new-${System.nanoTime()}")
+        val old = File(extDir, ".install-old-${System.nanoTime()}")
+        try {
+            copyExtensionTree(root.toPath(), stage.toPath())?.let { why ->
+                log.warn { "Copying ${root.path} for '$name' failed: $why" }
+                return "error:Could not install '$name': $why"
+            }
+            // Keep the user's per-extension `config` across a reinstall (the source shouldn't carry one;
+            // if it does, the source's wins).
+            val config = File(dest, "config")
+            if (config.isFile && !File(stage, "config").exists()) {
+                Files.copy(config.toPath(), File(stage, "config").toPath(), StandardCopyOption.COPY_ATTRIBUTES)
+            }
+            stopProcess(name)
+            if (dest.exists() && !dest.renameTo(old)) return "error:Could not replace the installed '$name'"
+            if (!stage.renameTo(dest)) {
+                old.renameTo(dest)
+                return "error:Failed to install files for '$name'"
+            }
+        } finally {
+            deleteTree(stage)
+            deleteTree(old)
+        }
 
         val pbwMsg = sideloadBundledPbw(dest)
         setEnabled(name, true)
@@ -342,24 +364,6 @@ class ExtensionManager(
     private fun nameFor(root: File, fallbackName: String): String =
         (manifestName(root) ?: fallbackName).substringAfterLast('/').filter { it.isLetterOrDigit() || it == '-' || it == '_' }
 
-    /** Copy [root] to [dest], skipping version-control metadata. Kotlin's copyRecursively drops the
-     *  executable bit, so a native entry point (e.g. a Go binary launched via `cmd: ./stoandl-matrix`) would
-     *  land non-executable and exec would fail with errno 13: anything executable at the source stays so. */
-    private fun copyTree(root: File, dest: File): Boolean = try {
-        root.walkTopDown().onEnter { it == root || it.name !in VCS_DIRS }.forEach { src ->
-            val target = File(dest, src.relativeTo(root).path)
-            if (src.isDirectory) target.mkdirs()
-            else {
-                src.copyTo(target, overwrite = true)
-                if (src.canExecute()) target.setExecutable(true)
-            }
-        }
-        true
-    } catch (e: Exception) {
-        log.warn { "Copying ${root.path} to ${dest.path} failed: ${e.message}" }
-        false
-    }
-
     fun uninstall(name: String, keepConfig: Boolean): String {
         val n = sanitize(name) ?: return "error:Invalid name"
         stopProcess(n)
@@ -373,9 +377,9 @@ class ExtensionManager(
         // path already preserves an existing config across an overwrite.
         val keptConfig = existed && keepConfig && File(dir, "config").isFile
         if (keptConfig) {
-            dir.listFiles()?.forEach { if (it.name != "config") it.deleteRecursively() }
+            dir.listFiles()?.forEach { if (it.name != "config") deleteTree(it) }
         } else {
-            dir.deleteRecursively()
+            deleteTree(dir)
         }
         val tail = watchMsg + if (keptConfig) "; kept its config (${File(dir, "config").path})" else ""
         notifyChanged()
@@ -595,7 +599,6 @@ class ExtensionManager(
 
     companion object {
         private const val ENABLED_KEY = "extensions.enabled"
-        private val VCS_DIRS = setOf(".git", ".hg", ".svn")
     }
 }
 
