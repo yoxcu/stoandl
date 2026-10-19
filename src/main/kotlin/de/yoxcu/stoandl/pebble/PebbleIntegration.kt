@@ -865,10 +865,10 @@ class PebbleIntegration(
         scope.launch {
             while (true) {
                 val btOn = libPebble.bluetoothEnabled.value.enabled()
-                val classicConnected = libPebble.watches.value.any {
-                    it.identifier is PebbleBtClassicIdentifier && it is ConnectedPebbleDevice
+                val classicConnecting = libPebble.watches.value.any {
+                    it.identifier is PebbleBtClassicIdentifier && it is ConnectingPebbleDevice
                 }
-                if (btOn && pairingGate.isOpen() && !classicConnected && !linkActivity.hostSuspending.value) {
+                if (btOn && PairingWindow.scanAllowed(pairingGate.isOpen(), classicConnecting, linkActivity.hostSuspending.value)) {
                     if (!libPebble.isScanningClassic.value) {
                         log.info { "BT Classic: discovering (BR/EDR inquiry — pairing window open)" }
                         libPebble.startClassicScan()
@@ -976,16 +976,15 @@ class PebbleIntegration(
                     continue
                 }
 
-                // Scan only to discover an *unbonded* watch while a pairing window is open. Stop once any
-                // connect is in flight (connected or connecting, even link-less): a scan collides with the
-                // connect on BlueZ's single discovery slot (org.bluez.Error.InProgress), and a scan during
-                // the PPoG handshake starves the watch's GATT traffic → the handshake times out and the
-                // link is torn down. A bonded watch needs no scan — it reconnects via the connector's
-                // standing Device1.Connect() (BlueZ's kernel auto-connect).
+                // Scan only to discover an *unbonded* watch while a pairing window is open. Stop while a
+                // connect is in flight (connecting, even link-less): a scan collides with the connect on
+                // BlueZ's single discovery slot (org.bluez.Error.InProgress), and a scan during the PPoG
+                // handshake starves the watch's GATT traffic → the handshake times out and the link is
+                // torn down. A watch that is already connected doesn't stop it: that's how a second watch
+                // is paired. A bonded watch needs no scan — it reconnects via the connector's standing
+                // Device1.Connect() (BlueZ's kernel auto-connect).
                 val devices = libPebble.watches.value
-                val connectInFlight = devices.any {
-                    it is ConnectedPebbleDevice || it is ConnectingPebbleDevice
-                }
+                val connectInFlight = devices.any { it is ConnectingPebbleDevice }
                 // The display doesn't matter: a pairing window is always an explicit, time-limited
                 // request — `watch pair` over ssh with the display off included — and closes on success,
                 // decline, timeout or expiry, taking the scan with it. It doesn't keep the host awake,
@@ -995,7 +994,7 @@ class PebbleIntegration(
                 // only discovers while something keeps it awake; PairStatus says so after such a suspend
                 // (PAIRING_PAUSED_SLEPT).
                 val windowOpen = pairingGate.isOpen()
-                val wantScan = windowOpen && !connectInFlight && !linkActivity.hostSuspending.value
+                val wantScan = PairingWindow.scanAllowed(windowOpen, connectInFlight, linkActivity.hostSuspending.value)
                 if (wantScan && !libPebble.isScanningBle.value) {
                     log.info { "Starting BLE scan" }
                     libPebble.startBleScan()
@@ -4164,11 +4163,8 @@ private class StoandlControlImpl(
 
     override fun Pair(): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
-        // Already connected — report immediately without a pairing window.
-        if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
-            pairingState.set("ok:Watch already connected")
-            return "ok:Pairing started"
-        }
+        // A connected watch doesn't stop it: the window is how a second watch gets paired, and it ends when
+        // a watch that wasn't connected at the start comes up (see launchPairingMonitor).
         // NB: 'pair' deliberately does NOT touch existing known watches or their bonds — that would
         // break multi-watch (it'd nuke a second watch that's merely out of range). It just opens the
         // pairing window to discover + pair whatever watch is in pairing mode. To re-pair a specific
@@ -4195,12 +4191,14 @@ private class StoandlControlImpl(
     private fun openPairingWindowAndMonitor(lp: LibPebble) {
         // A pairing window asks for a watch link: a manual disconnect would keep it from ever coming up.
         manualDisconnect.resume()
-        // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds.
+        // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds, and which
+        // are connected so only a watch that wasn't counts as the window's success.
         val alreadyBonded = lp.watches.value
             .mapNotNull { it.identifier as? PebbleBleIdentifier }
             .filter { isBonded(it) }
             .map { it.asString }
             .toSet()
+        val connectedAtOpen = connectedIds(lp.watches.value).toSet()
         val result = CompletableDeferred<String>()
         synchronized(pairingGate) {
             pairingMonitor?.cancel()
@@ -4216,7 +4214,7 @@ private class StoandlControlImpl(
             )
             // Client-initiated pairing → require an explicit ConfirmPairing before bonding (see onPairingConfirm).
             requireConfirm.set(true)
-            pairingMonitor = launchPairingMonitor(lp, result, alreadyBonded, deadlineMs)
+            pairingMonitor = launchPairingMonitor(lp, result, alreadyBonded, connectedAtOpen, deadlineMs)
         }
     }
 
@@ -4224,14 +4222,17 @@ private class StoandlControlImpl(
         lp: LibPebble,
         result: CompletableDeferred<String>,
         alreadyBonded: Set<String>,
+        connectedAtOpen: Set<String>,
         deadlineMs: Long,
     ): Job = scope.launch {
-        // Fast path: detect full connection via StateFlow collection. Not while the user is still
-        // comparing a code: that is a new watch pairing, and a known watch reconnecting meanwhile
-        // must not end the window (whose end declines the comparison).
+        // Fast path: detect full connection via StateFlow collection — of a watch that wasn't connected
+        // when the window opened, so a watch kept connected meanwhile doesn't end a second watch's
+        // pairing. Not while the user is still comparing a code: that is a new watch pairing, and a known
+        // watch reconnecting meanwhile must not end the window (whose end declines the comparison).
         val connectedJob = launch {
             lp.watches.first { devices ->
-                devices.any { it is ConnectedPebbleDevice } && !pairingState.get().startsWith("confirm:")
+                PairingWindow.newWatchConnected(connectedIds(devices), connectedAtOpen) &&
+                    !pairingState.get().startsWith("confirm:")
             }
             result.complete("ok:Paired and connected")
         }
@@ -4272,6 +4273,9 @@ private class StoandlControlImpl(
         }
         log.info { "Pairing result: $newState" }
     }
+
+    private fun connectedIds(devices: List<PebbleDevice>): List<String> =
+        devices.filterIsInstance<ConnectedPebbleDevice>().map { it.identifier.asString }
 
     override fun PairStatus(): String =
         pairingState.get().ifEmpty { "error:No pairing in progress" }

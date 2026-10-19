@@ -166,7 +166,9 @@ interface StoandlControl : DBusInterface {
     /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
      *  `ok:` immediately; poll [PairStatus] for the outcome. The window discovers whether or not the
      *  display is on (it is an explicit request), but only while the host is awake: discovery stops for
-     *  every suspend. */
+     *  every suspend. It opens while a watch is connected too (to pair a second one), and then ends with
+     *  `ok:` only once a watch that wasn't connected at the start connects (or a new BLE bond forms);
+     *  libpebble3 keeps one watch connected, so the new one takes over the link. */
     fun Pair(): String
 
     /** Return the current pairing status: `pending:<msg>`, `confirm:<code>`, `ok:<msg>`, `error:<msg>`,
