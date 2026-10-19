@@ -30,4 +30,12 @@ class ProcessTest {
         val out = runCommand(listOf("sh", "-c", "head -c 1048576 /dev/zero >&2; echo done"), 10)
         assertEquals("done\n", out)
     }
+
+    @Test
+    fun pathProbe() {
+        assertEquals("sh", onPath("sh")?.name)
+        assertNull(onPath("stoandl-no-such-program"))
+        assertNull(missingProgram("sh -c 'echo {lang}'"))
+        assertEquals("/nonexistent/tts", missingProgram("/nonexistent/tts --fast"))
+    }
 }

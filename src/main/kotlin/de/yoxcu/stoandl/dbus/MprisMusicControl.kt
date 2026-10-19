@@ -3,6 +3,7 @@ package de.yoxcu.stoandl.dbus
 import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.imaging.AlbumArt
+import de.yoxcu.stoandl.util.onPath
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -464,7 +465,7 @@ class SystemVolume private constructor(
                 return SystemVolume(listOf("sh", "-c", upOverride), listOf("sh", "-c", downOverride), "custom command")
             }
             for (b in BACKENDS) {
-                if (onPath(b.bin)) {
+                if (onPath(b.bin) != null) {
                     log.info { "Music volume: system via ${b.bin}" }
                     return SystemVolume(b.up, b.down, b.bin)
                 }
@@ -490,11 +491,6 @@ class SystemVolume private constructor(
                 listOf("amixer", "-q", "sset", "Master", "$STEP_PCT%+", "unmute"),
                 listOf("amixer", "-q", "sset", "Master", "$STEP_PCT%-")),
         )
-
-        private fun onPath(bin: String): Boolean = try {
-            val p = ProcessBuilder("sh", "-c", "command -v $bin").redirectErrorStream(true).start()
-            p.waitFor(3, TimeUnit.SECONDS) && p.exitValue() == 0
-        } catch (_: Exception) { false }
     }
 }
 

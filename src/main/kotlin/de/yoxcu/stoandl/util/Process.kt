@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.util
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import java.io.File
 import java.io.InputStream
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -58,6 +59,20 @@ fun runCommand(cmd: List<String>, timeoutSec: Long, redirectErrorStream: Boolean
         }
         else -> r.stdout
     }
+}
+
+/** [program] on `PATH` (the first executable of that name), or null. The one PATH probe: whether an engine,
+ *  a player or a volume tool is installed. */
+fun onPath(program: String): File? =
+    System.getenv("PATH").orEmpty().split(':').filter { it.isNotEmpty() }.map { File(it, program) }
+        .firstOrNull { it.isFile && it.canExecute() }
+
+/** The program of a user's shell command line (its first word, `~` expanded) when it can't be found, else
+ *  null: a custom engine command's readiness. */
+fun missingProgram(commandLine: String): String? {
+    val exe = commandLine.trim().substringBefore(' ').replace("~", System.getProperty("user.home"))
+    val found = if ('/' in exe) File(exe).canExecute() else onPath(exe) != null
+    return if (found) null else exe
 }
 
 private val pipeReaders = Executors.newVirtualThreadPerTaskExecutor()

@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.voice
 
 import de.yoxcu.stoandl.util.CacheDirs
+import de.yoxcu.stoandl.util.missingProgram
 import de.yoxcu.stoandl.util.runProcess
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
@@ -77,10 +78,7 @@ class CommandStt(private val template: String) : SpeechToText {
 
     override fun readiness(): String? {
         if (template.isBlank()) return "voice.command is empty"
-        val exe = template.trim().substringBefore(' ').replace("~", System.getProperty("user.home"))
-        val found = if ('/' in exe) File(exe).canExecute()
-            else System.getenv("PATH").orEmpty().split(':').any { File(it, exe).canExecute() }
-        return if (found) null else "'$exe' not found"
+        return missingProgram(template)?.let { "'$it' not found" }
     }
 
     override suspend fun transcribe(audio: SttAudio, language: String, timeoutMs: Long): SttOutcome = withContext(Dispatchers.IO) {

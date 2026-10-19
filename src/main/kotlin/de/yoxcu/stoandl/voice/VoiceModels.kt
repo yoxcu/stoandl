@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.voice
 
+import de.yoxcu.stoandl.util.onPath
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -187,9 +188,6 @@ class VoiceModels(private val scope: CoroutineScope, val dir: File = defaultDir(
             val xdg = System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotBlank() }
             return File(xdg ?: (System.getProperty("user.home") + "/.local/share"), "stoandl/stt")
         }
-
-        internal fun onPath(program: String): File? =
-            System.getenv("PATH").orEmpty().split(':').map { File(it, program) }.firstOrNull { it.canExecute() }
 
         internal fun shellQuote(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
