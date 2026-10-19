@@ -23,6 +23,7 @@ import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
 import de.yoxcu.stoandl.notification.AppNamePlacements
+import de.yoxcu.stoandl.notification.GlobalMute
 import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.notification.NotificationImageStore
 import de.yoxcu.stoandl.power.NoWakeups
@@ -379,6 +380,8 @@ class PebbleIntegration(
     private val notificationFilters = NotificationFilters(File(StoandlConfig.configDir(), "notification-filters"))
     // Per-app overrides of notification.app_name (own file under configDir; set live via NotifSetAppName).
     private val appNamePlacements = AppNamePlacements(File(StoandlConfig.configDir(), "notification-app-name"))
+    // "Mute all for a while", apart from the per-app mutes (own file under configDir; set via NotifSetMuteAll).
+    private val globalMute = GlobalMute(File(StoandlConfig.configDir(), "notification-muted-until"))
     // Secret store for CalDAV passwords: the system keyring (org.freedesktop.secrets) when it's unlocked,
     // else a 0600 file under the config dir (kept OUT of backups). So a password never sits in
     // stoandl.conf or a backup tarball. Used by the live calendar sources + the source-CRUD methods.
@@ -562,6 +565,7 @@ class PebbleIntegration(
         watchNotifier = WatchNotifier(
             libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements,
             notificationImages, vibePatterns::custom, deviceInUse = SessionLock::inUse,
+            mutedUntil = { globalMute.mutedUntil() },
         )
         val desktopOwner = DesktopNotifOwner(
             routeTable,
@@ -2242,7 +2246,7 @@ class PebbleIntegration(
     private fun registerControlService() {
         try {
             // Exported through timeSlowCalls, which logs any method that takes SLOW_DBUS_CALL_MS or longer.
-            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, watchTasks, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, ttsService, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
+            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, watchTasks, debugControl, developerControl, notificationAppsControl, globalMute, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, ttsService, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
             serviceConn.exportObject(STOANDL_OBJECT_PATH, timeSlowCalls(StoandlControl::class.java, control))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
@@ -3061,6 +3065,7 @@ private class StoandlControlImpl(
     private val developerControl: DeveloperControl,
     // Null when notification.per_app is off.
     private val notificationAppsControl: NotificationAppsControl?,
+    private val globalMute: GlobalMute,
     // Null when health.export is off (no exporter to re-project on demand).
     private val healthExporterRef: AtomicReference<HealthExporter?>,
     // Battery insights sources: heartbeat (primary) is preferred; the GATT-level series is the fallback.
@@ -3734,9 +3739,10 @@ private class StoandlControlImpl(
         notificationAppsControl?.setMute(query, spec)
             ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
 
-    override fun NotifSetMuteAll(spec: String): String =
-        notificationAppsControl?.setMuteAll(spec)
-            ?: "error:Per-app notifications are disabled (set notification.per_app = true)"
+    override fun NotifSetMuteAll(spec: String): String = globalMute.set(spec)
+
+    override fun NotifMuteAllStatus(): String =
+        globalMute.mutedUntil()?.let { "muted:${it.epochSeconds}" } ?: "none:"
 
     override fun NotifSetStyle(query: String, color: String, icon: String, vibe: String): String =
         notificationAppsControl?.setStyle(query, color, icon, vibe)

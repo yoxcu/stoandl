@@ -268,6 +268,8 @@ class WatchNotifier(
     // Whether the user is at the phone/desktop right now (screen on, session unlocked), for
     // notification.only_when_locked. Read per notification, only while that key is on.
     private val deviceInUse: suspend () -> Boolean = { false },
+    // The temporary mute over every app ([GlobalMute]): when it ends, or null while nothing is muted.
+    private val mutedUntil: () -> kotlin.time.Instant? = { null },
 ) {
     private val log = KotlinLogging.logger {}
 
@@ -315,6 +317,10 @@ class WatchNotifier(
         }
         if (!whitelisted && !cfg.notificationForward) {
             log.info { "Notification forwarding paused (notification.forward=false) — dropped from ${req.appName}" }
+            return null
+        }
+        if (!whitelisted) mutedUntil()?.let { until ->
+            log.info { "All notifications muted until $until — dropped from ${req.appName}" }
             return null
         }
         if (!whitelisted && req.transient) {

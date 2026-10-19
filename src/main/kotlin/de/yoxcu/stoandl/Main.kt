@@ -1076,8 +1076,12 @@ private fun ctlNotif(rest: List<String>) {
     withControl { control ->
         when (sub) {
             "list" -> {
-                val rows = control.NotifList()
-                printNotifList(rows)
+                val (muted, until) = splitStatus(control.NotifMuteAllStatus())
+                until.toLongOrNull()?.takeIf { muted == "muted" }?.let { epoch ->
+                    val at = LocalDateTime.ofEpochSecond(epoch, 0, ZoneId.systemDefault().rules.getOffset(java.time.Instant.ofEpochSecond(epoch)))
+                    println("All notifications muted until ${at.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))} (stoandl notif unmute-all)\n")
+                }
+                printNotifList(control.NotifList())
             }
             // Inject a synthetic notification to the watch (through the normal mute/style/filter path).
             "test" -> {
@@ -1124,7 +1128,10 @@ private fun ctlNotif(rest: List<String>) {
                 handleStatusResponse(control.NotifSetMute(query, spec))
             }
             "mute-all", "unmute-all" -> {
-                val spec = if (sub == "unmute-all") "never" else rest.getOrNull(1) ?: "always"
+                val spec = if (sub == "unmute-all") "never" else rest.getOrNull(1)
+                if (spec.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl notif mute-all <30m|1h|2d|today>  ·  stoandl notif unmute-all"); System.exit(EXIT_USAGE); return
+                }
                 handleStatusResponse(control.NotifSetMuteAll(spec))
             }
             "style" -> {
@@ -1197,7 +1204,7 @@ private fun ctlNotif(rest: List<String>) {
                 }
             }
             else -> {
-                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|images <app> on|off|default|vibes|vibe-test <v>|vibe-add <name> <ms,…>|vibe-remove <name>|filter <list|add|remove>>")
+                System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all <30m|1h|2d|today>|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|images <app> on|off|default|vibes|vibe-test <v>|vibe-add <name> <ms,…>|vibe-remove <name>|filter <list|add|remove>>")
                 System.exit(EXIT_USAGE)
             }
         }

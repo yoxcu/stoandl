@@ -75,18 +75,6 @@ class NotificationAppsControl(
         "error:${e.message ?: "failed"}"
     }
 
-    fun setMuteAll(spec: String): String = try {
-        val now = Clock.System.now()
-        val parsed = parseSpec(spec, now) ?: return "error:Unknown mute '$spec' (use always|weekdays|weekends|never or a duration like 1h/30m/2d)"
-        val apps = runBlocking { dao.allApps() }
-        if (apps.isEmpty()) return "ok:No tracked apps yet"
-        runBlocking { dao.insertOrReplace(apps.map { parsed.applyTo(it, now) }) }
-        "ok:${describe("all ${apps.size} app(s)", parsed)}"
-    } catch (e: Exception) {
-        log.warn(e) { "notif setMuteAll failed" }
-        "error:${e.message ?: "failed"}"
-    }
-
     /**
      * Set a per-app background [color] name, [icon] (a TimelineIcon enum name like
      * `NotificationSlack`), and/or [vibe] (a DefaultVibePattern name like `Double`, or a CSV of on/off

@@ -510,8 +510,14 @@ interface StoandlControl : DBusInterface {
      *  Status-prefixed return (`ok:`/`notfound:`/`ambiguous:`/`error:`). */
     fun NotifSetMute(query: String, spec: String): String
 
-    /** Apply [spec] (same grammar as [NotifSetMute]) to every tracked app. Status-prefixed return. */
+    /** Mute every app's notifications for a while, apart from (and without touching) the per-app mutes:
+     *  [spec] is a duration (`30m`/`1h`/`2d`), `today` (until the next local midnight) or `never` (resume
+     *  now). Persisted across restarts; an allow filter still gets through. Returns `ok:<msg>` or `error:<msg>`
+     *  (`always`/`weekdays`/`weekends` are per-app states: the indefinite form is `notification.forward`). */
     fun NotifSetMuteAll(spec: String): String
+
+    /** Whether [NotifSetMuteAll] has notifications muted: `muted:<epoch seconds it ends>` or `none:`. */
+    fun NotifMuteAllStatus(): String
 
     /** Set per-app notification styling for the app matching [query], applied host-side to its
      *  outgoing notifications: [color] (a TimelineColor name), [icon] (a TimelineIcon enum name), and
