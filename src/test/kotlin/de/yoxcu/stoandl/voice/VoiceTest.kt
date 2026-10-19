@@ -104,6 +104,26 @@ class VoiceTest {
         assertEquals(1600, Wav.resample(pcm, 8000, 16000).size)
     }
 
+    /** A WAV written to a pipe can't have its sizes filled in afterwards: espeak-ng leaves 0x7ffff000, others
+     *  0 or -1. The samples there are read all the same, and a LIST chunk ahead of the data is skipped. */
+    @Test
+    fun `WAV with a streaming header or a LIST chunk decodes`() {
+        val pcm = ShortArray(801) { (it * 13 - 4000).toShort() }
+        val wav = Wav.encode(pcm, 22050)
+        for (declared in listOf(0x7ffff000, 0, -1)) {
+            val streamed = wav.copyOf().also { java.nio.ByteBuffer.wrap(it).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4, declared).putInt(40, declared) }
+            val (back, rate) = assertNotNull(Wav.decode(streamed), "data size $declared")
+            assertEquals(22050, rate)
+            assertContentEquals(pcm, back)
+        }
+        // RIFF, fmt (as encode writes it), then an odd-sized LIST/INFO chunk with its pad byte, then data.
+        val list = "LIST".toByteArray() + byteArrayOf(5, 0, 0, 0) + "INFOx".toByteArray() + byteArrayOf(0)
+        val withList = wav.copyOfRange(0, 36) + list + wav.copyOfRange(36, wav.size)
+        assertContentEquals(pcm, assertNotNull(Wav.decode(withList)).first)
+        // A truncated fmt chunk is still not a WAV.
+        assertNull(Wav.decode(wav.copyOfRange(0, 30)))
+    }
+
     @Test
     fun `transcripts are normalised and kept inside the watch's message`() {
         assertEquals("hallo Welt", normalizeTranscript(" [BLANK_AUDIO]\n hallo\n  Welt \n"))
