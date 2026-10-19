@@ -115,11 +115,31 @@ class WatchPrefsControl(
         }
     }
 
-    /** Tab-separated records for the CLI: `id \t type \t current \t default \t allowed \t debug \t name \t description`. */
+    /** Every pref that has another value set back to its default; a pinned `watch.<id>` follows, as in
+     *  [setOne]. */
+    fun resetAll(): String {
+        val current = loadPrefs() ?: return "notready:Watch settings aren't loaded yet"
+        val changed = current.filter { it.valueOrDefault() != it.pref.defaultValue }.map { it.pref }
+        changed.forEach { pref ->
+            libPebble.setWatchPref(defaultOf(pref))
+            syncPinnedPref?.invoke(pref.id, confValue(pref, pref.defaultValue))
+        }
+        log.info { "Reset ${changed.size} watch settings to their defaults: ${changed.map { it.id }}" }
+        return "ok:Reset ${changed.size} watch settings to their defaults (syncs to the watch on next connect)"
+    }
+
+    /**
+     * Tab-separated records, grouped by [WatchPrefText] section: `id \t type \t current \t default \t allowed
+     * \t debug \t name \t description \t section \t help \t requires`. A requires clause naming a pref the
+     * connected firmware is too old for is left out: that firmware ignores it, so it gates nothing.
+     */
     fun list(): List<String> {
-        val current = runBlocking { withTimeoutOrNull(5_000) { libPebble.watchPrefs.first() } } ?: return emptyList()
-        return current.map { wp ->
+        val current = loadPrefs() ?: return emptyList()
+        val firmware = connectedFirmware()
+        return current.sortedBy { WatchPrefText.sectionIndex(WatchPrefText.section(it.pref)) }.map { wp ->
             val pref = wp.pref
+            val gatedBy = WatchPrefText.requiredPref(pref)?.let { WatchPref.from(it) }
+            val requires = if (gatedBy != null && tooOldFor(gatedBy, firmware) != null) "" else WatchPrefText.requires(pref)
             listOf(
                 pref.id,
                 typeName(pref),
@@ -127,18 +147,21 @@ class WatchPrefsControl(
                 format(pref, pref.defaultValue),
                 allowed(pref),
                 if (pref.isDebugSetting) "debug" else "",
-                pref.displayName,
-                describe(pref, quickLaunchNote(pref)).replace('\t', ' '),
-            ).joinToString("\t")
+                WatchPrefText.name(pref),
+                describe(pref, quickLaunchNote(pref)),
+                WatchPrefText.section(pref),
+                WatchPrefText.help(pref),
+                requires,
+            ).joinToString("\t") { it.replace('\t', ' ') }
         }
     }
 
-    internal companion object {
-        /** What stoandl adds to libpebble3's description where the firmware changed what a pref does. */
-        private val DESCRIPTION_NOTES = listOf(EnumWatchPref.SystemTextSize, EnumWatchPref.NotificationTextSize).associate {
-            it.id to "On older firmware change the size on the watch. Extra Large is set on the watch only."
-        }
+    private fun <T> defaultOf(pref: WatchPref<T>): WatchPreference<T> = WatchPreference(pref, pref.defaultValue)
 
+    private fun loadPrefs(): List<WatchPreference<*>>? =
+        runBlocking { withTimeoutOrNull(5_000) { libPebble.watchPrefs.first() } }
+
+    internal companion object {
         /** Why [firmware] can't take [pref] (it rejects keys newer than its whitelist), or null when it can. */
         fun tooOldFor(pref: WatchPref<*>, firmware: FirmwareVersion?): String? {
             val min = pref.minFirmware ?: return null
@@ -147,12 +170,12 @@ class WatchPrefsControl(
         }
 
         /** libpebble3's description, the firmware it needs (from [WatchPref.minFirmware], unless the description
-         *  already says so), stoandl's note and [extra], as sentences. */
+         *  already says so) and [extra], as sentences. stoandl's longer text is [WatchPrefText.help]. */
         fun describe(pref: WatchPref<*>, extra: String? = null): String {
             val description = pref.description
             val needs = pref.minFirmware?.let { "Needs PebbleOS $it or later." }
                 ?.takeUnless { description != null && "PebbleOS ${pref.minFirmware}" in description }
-            val notes = listOfNotNull(needs, DESCRIPTION_NOTES[pref.id], extra)
+            val notes = listOfNotNull(needs, extra)
             if (description.isNullOrBlank()) return notes.joinToString(" ")
             if (notes.isEmpty()) return description
             val sentence = if (description.trimEnd().last() in ".!?") description.trimEnd() else "${description.trimEnd()}."
@@ -281,6 +304,18 @@ class WatchPrefsControl(
         is QuicklaunchWatchPref -> (listOf("off") + offeredActions().map { it.name } + "<app name or uuid>").joinToString("|")
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
         is ScheduleWatchPref -> "HH:MM-HH:MM"
+    }
+
+    /** [value] as `stoandl.conf`'s `watch.<id>` takes it back ([parse]): unlike [format], no unit suffix and no
+     *  app title, which might name more than one app. */
+    private fun confValue(pref: WatchPref<*>, value: Any?): String = when (pref) {
+        is NumberWatchPref -> value.toString()
+        is EnumWatchPref -> (value as WatchPrefEnum).let { (it as Enum<*>).name }
+        is QuicklaunchWatchPref -> (value as QuickLaunchSetting).let { q ->
+            val u = q.uuid
+            if (!q.enabled || u == null) "off" else QuickLaunchActions.nameOf(u) ?: u.toString()
+        }
+        else -> format(pref, value)
     }
 
     private fun format(pref: WatchPref<*>, value: Any?): String = when (pref) {

@@ -3079,6 +3079,11 @@ private class StoandlControlImpl(
         return control.setOne(id, value)
     }
 
+    override fun ResetWatchPrefs(): String {
+        val control = watchPrefsControlRef.get() ?: return "notready:libPebble not ready"
+        return control.resetAll()
+    }
+
     override fun SyncWeather(): String {
         val ws = weatherSyncRef.get()
             ?: return "error:Weather sync not enabled (set weather.locations in stoandl.conf)"

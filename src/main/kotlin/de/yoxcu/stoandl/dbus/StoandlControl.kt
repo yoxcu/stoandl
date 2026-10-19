@@ -95,13 +95,24 @@ interface StoandlControl : DBusInterface {
      *  `ok:<message>` / `error:`. */
     fun AddWeatherLocation(name: String, latitude: Double, longitude: Double): String
 
-    /** List the watch's advanced settings (WatchPrefs). Each entry is a tab-separated record:
-     *  `id \t type \t current \t default \t allowed \t flags \t name \t description`. */
+    /** List the watch's advanced settings (WatchPrefs), grouped by section in display order. Each entry is a
+     *  tab-separated record: `id \t type \t current \t default \t allowed \t flags \t name \t description \t
+     *  section \t help \t requires` (columns 8–10 appended). `name` and `description` are libpebble3's, which
+     *  match the watch's own menu, except where two prefs would share a name; `section` is the GUI's section
+     *  title (`Other` for a pref stoandl doesn't know yet, `Advanced` for diagnostic ones); `help` is
+     *  stoandl's longer text (may be empty); `requires` is `id=value` alternatives joined by `|`, in the
+     *  `current` spelling, when the pref only matters while another one has that value (empty: always).
+     *  Blocks up to 5 s while the prefs load. */
     fun ListWatchPrefs(): List<String>
 
     /** Set a watch setting [id] to [value] (parsed per the pref's type). Status-prefixed return
      *  (`ok:`/`error:`/`notready:`) as for [LaunchApp]. */
     fun SetWatchPref(id: String, value: String): String
+
+    /** Set every watch setting that differs from its default back to the default (a pinned `watch.<id>`
+     *  line in `stoandl.conf` follows, as for [SetWatchPref]); syncs to the watch like [SetWatchPref].
+     *  `ok:<message>`, or `notready:` while the settings aren't loaded. */
+    fun ResetWatchPrefs(): String
 
     /** Request an immediate calendar re-sync (re-read sources → update timeline pins). Returns
      *  `ok:` once requested; `error:` if calendar sync is not enabled. */
