@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.voice
 
 import de.yoxcu.stoandl.util.onPath
+import de.yoxcu.stoandl.util.runProcess
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +16,7 @@ import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 
 private val log = KotlinLogging.logger {}
 
@@ -27,19 +29,33 @@ enum class ModelKind {
 }
 
 /** Which program runs a model: whisper.cpp's two CLIs (Alpine/postmarketOS `whisper.cpp`, Arch `whisper-cpp`),
- *  or Piper (`piper_exe` from libpiper, else the Python `piper`; see [programPath]). [install] names the
- *  package to install. */
+ *  or Piper (`piper_exe` from libpiper, `piper-tts`, else the Python `piper`; see [programPath]). [install]
+ *  names the package to install. */
 enum class SpeechEngine(val program: String, val kind: ModelKind, val install: String) {
     PARAKEET("parakeet-cli", ModelKind.STT, "whisper.cpp"),
     WHISPER("whisper-cli", ModelKind.STT, "whisper.cpp"),
     PIPER("piper", ModelKind.TTS, "piper-tts");
 
     /** The installed program that runs this engine, or null. Piper prefers libpiper's `piper_exe`: native, it
-     *  starts faster than the Python `piper` (same flags, text on stdin). */
+     *  starts faster than the Python `piper` (same flags, text on stdin). `piper-tts` is the name some distro
+     *  packages use; a bare `piper` counts only once [isPiperTts] says it isn't libratbag's mouse tool. */
     fun programPath(): File? = when (this) {
-        PIPER -> onPath("piper_exe") ?: onPath("piper")
+        PIPER -> onPath("piper_exe") ?: onPath("piper-tts") ?: onPath("piper")?.takeIf(::isPiperTts)
         else -> onPath(program)
     }
+}
+
+/** [isPiperTts]'s answers, by path and modification time: it runs the program. */
+private val piperChecks = ConcurrentHashMap<String, Boolean>()
+
+/**
+ * Whether [program] (a `piper` on PATH) is Piper text to speech. The name is also libratbag's gaming-mouse
+ * configurator (Arch extra, Alpine community); Piper's `--help` names its length scale, the mouse tool's
+ * doesn't. Asked once per file, for at most 10 s.
+ */
+internal fun isPiperTts(program: File): Boolean = piperChecks.getOrPut("${program.path}@${program.lastModified()}") {
+    val help = runProcess(listOf(program.path, "--help"), 10_000, redirectErrorStream = true)?.stdout.orEmpty()
+    ("length_scale" in help || "length-scale" in help).also { if (!it) log.info { "${program.path} isn't Piper text to speech" } }
 }
 
 /**
@@ -73,9 +89,11 @@ private fun piper(id: String, name: String, path: String, sizeMb: Int, lang: Str
 
 /**
  * The catalog, best choice first within each kind. Parakeet detects the language itself; Whisper takes
- * `voice.language`. Voices: a "low" one per language for the watch speaker (16 kHz, plenty for its 8 kHz),
- * "medium" ones for playback on this device; only voices whose training data may be used freely (the
- * dataset licence is in each note; lessac's Blizzard licence is unclear and ryan's is non-commercial).
+ * `voice.language`. Voices: a "low" one per language, fast and plenty for the watch speaker's 8 kHz;
+ * "medium" ones sound better on this device's speakers but take longer to make, and like any voice a
+ * downloaded one becomes `tts.local_voice`, the watch's voice for its language too. Only voices whose
+ * training data may be used freely (the dataset licence is in each note; lessac's Blizzard licence is
+ * unclear and ryan's is non-commercial).
  */
 val SPEECH_MODELS: List<SpeechModel> = listOf(
     SpeechModel(
@@ -110,9 +128,9 @@ val SPEECH_MODELS: List<SpeechModel> = listOf(
     piper("piper-de-eva_k-x_low", "Eva K (German, smallest)", "de/de_DE/eva_k/x_low/de_DE-eva_k-x_low", 21, "de",
         "German, female; the smallest and fastest, rougher. M-AILABS dataset (BSD-style licence)"),
     piper("piper-de-thorsten-medium", "Thorsten (German, medium)", "de/de_DE/thorsten/medium/de_DE-thorsten-medium", 63, "de",
-        "German, male; 22 kHz, for playback on this device. Thorsten-Voice dataset, CC0"),
+        "German, male; 22 kHz, clearer on this device's speakers, slower to make (the watch waits longer). Thorsten-Voice dataset, CC0"),
     piper("piper-en-ljspeech-medium", "LJSpeech (English, medium)", "en/en_US/ljspeech/medium/en_US-ljspeech-medium", 64, "en",
-        "US English, female; 22 kHz, for playback on this device. LJ Speech dataset, public domain"),
+        "US English, female; 22 kHz, clearer on this device's speakers, slower to make (the watch waits longer). LJ Speech dataset, public domain"),
 )
 
 /** The `tts.local_voice` that runs espeak-ng: no download, every language, robotic. Offered while
@@ -142,6 +160,9 @@ class VoiceModels(
     }
 
     @Volatile private var download: Download? = null
+
+    // Ask a bare `piper` what it is now, not in the first status or catalog call (a Python start: seconds).
+    init { scope.launch(Dispatchers.IO) { SpeechEngine.PIPER.programPath() } }
 
     fun model(id: String): SpeechModel? = catalog.firstOrNull { it.id == id }
 

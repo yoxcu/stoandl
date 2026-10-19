@@ -89,4 +89,20 @@ class VoiceModelsTest {
             root.deleteRecursively()
         }
     }
+
+    /** A bare `piper` may be libratbag's mouse configurator: only Piper's help names the length scale. */
+    @Test
+    fun `a piper on PATH counts only when it is Piper text to speech`() {
+        val dir = Files.createTempDirectory("piper").toFile()
+        fun script(name: String, help: String) = File(dir, name).apply {
+            writeText("#!/bin/sh\necho '$help' >&2\nexit 0\n"); setExecutable(true)
+        }
+        try {
+            assertTrue(isPiperTts(script("tts", "usage: piper [-h] -m MODEL [--length-scale LENGTH_SCALE]")))
+            assertTrue(isPiperTts(script("cpp", "   --length_scale        NUM   phoneme length (default: 1.0)")))
+            assertFalse(isPiperTts(script("mouse", "Usage:\n  piper [OPTION…]\n  --gapplication-service")))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }
