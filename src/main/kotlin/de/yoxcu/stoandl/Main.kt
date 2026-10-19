@@ -357,21 +357,19 @@ private fun ctl(args: Array<String>) {
         "plugins" -> ctlPlugins(args.drop(1))
         "perms" -> ctlPerms(args.drop(1))
         "screenshot" -> {
-            // Resolve the target against THIS process's cwd and send an absolute path: the daemon writes
-            // the file, and its cwd ($HOME) differs from the caller's. Default to a timestamped name;
-            // accept an explicit file or a directory; tack on .png if missing.
+            // No argument: the daemon picks a new file in Pictures/Screenshots, as it does for the GUI.
+            // Otherwise resolve the target against THIS process's cwd and send an absolute path (the
+            // daemon's cwd differs); accept a file or a directory; tack on .png if missing.
             val arg = args.getOrNull(1)
-            val target = resolveOutPath(arg, "pebble-screenshot-${timestamp()}.png", listOf(".png"))
-            val path = target.absolutePath
-            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+            val path = arg?.let { resolveOutPath(it, "pebble-screenshot-${timestamp()}.png", listOf(".png")).absolutePath }.orEmpty()
+            withControl { control ->
                 println("Capturing watch screen…")
-                val resp = control.TakeScreenshot(path)
+                val resp = awaitTask(control, "screenshot") { control.TakeScreenshot(path) }
                 val (kind, body) = splitStatus(resp)
                 if (kind == "ok") {
                     val f = body.split('\t')
-                    val saved = f.getOrElse(0) { path }
                     val dims = if (f.size >= 3) " (${f[1]}×${f[2]})" else ""
-                    println("Saved $saved$dims")
+                    println("Saved ${f[0]}$dims")
                 } else {
                     handleStatusResponse(resp)
                 }
@@ -1714,9 +1712,8 @@ private fun appSideload(pathArg: String?) {
     val file = File(pathArg)
     if (!file.isFile) { System.err.println("No such file: $pathArg"); System.exit(1); return }
     val path = file.absolutePath
-    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
-        val resp = control.SideloadApp(path)
-        handleStatusResponse(resp)
+    withControl { control ->
+        handleStatusResponse(awaitTask(control, "sideload") { control.SideloadApp(path) })
     }
 }
 
@@ -2354,18 +2351,36 @@ private fun doRestore(inPath: String, force: Boolean) {
     println("Start the daemon to pick it up: systemctl --user start stoandl")
 }
 
-/** Dump the watch's firmware logs to a text file. Resolves the target against THIS process's cwd
- *  and sends an absolute path (the daemon writes the file, and its cwd $HOME differs from ours). */
+/** Dump the watch's firmware logs to a text file: with no argument a new one the daemon picks in
+ *  Documents/stoandl, else the target resolved against THIS process's cwd and sent as an absolute path
+ *  (the daemon writes the file, and its cwd $HOME differs from ours). */
 private fun ctlLogs(rest: List<String>) {
     val arg = rest.firstOrNull { !it.startsWith("-") }
-    val target = resolveOutPath(arg, "pebble-logs-${timestamp()}.txt", listOf(".txt", ".log"))
-    val path = target.absolutePath
-    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+    val path = arg?.let { resolveOutPath(it, "pebble-logs-${timestamp()}.txt", listOf(".txt", ".log")).absolutePath }.orEmpty()
+    withControl { control ->
         println("Gathering watch logs… (this can take a few seconds)")
-        val resp = control.GatherLogs(path)
+        val resp = awaitTask(control, "logs") { control.GatherLogs(path) }
         val (kind, body) = splitStatus(resp)
         if (kind == "ok") println("Saved $body") else handleStatusResponse(resp)
     }
+}
+
+/** How long [awaitTask] follows a watch task before giving up on it (each transfer bounds itself well
+ *  inside this; a stuck one keeps running in the daemon). */
+private const val TASK_WAIT_MS = 300_000L
+
+/** Start a daemon watch task ([kind]: sideload, screenshot, logs, coredump) with [start] and follow it
+ *  through TaskStatus to its end: the start's own reply when it didn't start, else the task's result. */
+private fun awaitTask(control: StoandlControl, kind: String, start: () -> String): String {
+    val started = start()
+    if (started != "ok:started") return started
+    val deadline = System.currentTimeMillis() + TASK_WAIT_MS
+    while (System.currentTimeMillis() < deadline) {
+        Thread.sleep(300)
+        val status = control.TaskStatus(kind)
+        if (!status.startsWith("running:")) return status
+    }
+    return "error:still running after ${TASK_WAIT_MS / 60_000} min (stoandl keeps at it; see: stoandl status)"
 }
 
 /**
@@ -2404,14 +2419,14 @@ private fun ctlSupport(rest: List<String>) {
                 else note("watch info unavailable: ${wb.ifEmpty { wk }}")
 
                 println("  gathering watch logs… (a few seconds)")
-                val lr = try { control.GatherLogs(File(bundleDir, "watch-logs.txt").absolutePath) }
+                val lr = try { awaitTask(control, "logs") { control.GatherLogs(File(bundleDir, "watch-logs.txt").absolutePath) } }
                 catch (e: Exception) { "error:${e.message}" }
                 val (lk, lb) = splitStatus(lr)
                 if (lk == "ok") note("watch logs: included") else note("watch logs unavailable: ${lb.ifEmpty { lk }}")
 
                 if (wantCoredump) {
                     println("  fetching coredump…")
-                    val cr = try { control.GetCoreDump(File(bundleDir, "coredump.bin").absolutePath) }
+                    val cr = try { awaitTask(control, "coredump") { control.GetCoreDump(File(bundleDir, "coredump.bin").absolutePath) } }
                     catch (e: Exception) { "error:${e.message}" }
                     val (ck, cb) = splitStatus(cr)
                     when (ck) {

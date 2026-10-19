@@ -5,7 +5,9 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.services.WatchInfo
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
@@ -20,7 +22,8 @@ private val log = KotlinLogging.logger {}
  * `ConnectedPebble.Logs` (`gatherLogs`) and `ConnectedPebble.CoreDump` (`getCoreDump`) backed by
  * real common services (no JVM stub, unlike the screenshot path), and exposes [WatchInfo] directly.
  * So this is pure wiring: drive the suspend calls, copy the temp file libpebble3 writes onto the
- * caller's absolute path, and format the metadata. Purely local — no network, no egress opt-in.
+ * output file, and format the metadata. Purely local — no network, no egress opt-in. The two transfers run
+ * as [de.yoxcu.stoandl.pebble.WatchTasks] tasks, so no D-Bus call waits on them.
  *
  * Each method returns a status-prefixed string mirroring [de.yoxcu.stoandl.screenshot.ScreenshotControl]:
  * `ok:<...>`, `notready:<msg>` (no watch), `none:<msg>` (watch reachable but nothing to fetch), or
@@ -32,19 +35,20 @@ class LogsControl(
     private fun device(): CommonConnectedDevice? = libPebbleRef.connectedDevice()
 
     /**
-     * Dump the watch's firmware logs to the absolute [path] (the daemon's cwd differs from the CLI's,
-     * so the CLI resolves and sends an absolute path). Returns `ok:<path>`, `notready:<msg>`, or
-     * `error:<msg>`. The transfer streams several log "generations" with a 5 s per-generation timeout,
-     * so it can take a handful of seconds.
+     * Dump the watch's firmware logs to [out]. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`.
+     * The transfer streams several log "generations" with a 5 s per-generation timeout, so it can take a
+     * handful of seconds.
      */
-    fun gatherLogs(path: String): String {
+    suspend fun gatherLogs(out: File): String {
         val dev = device() ?: return "notready:No watch connected"
         return try {
-            val src = runBlocking { dev.gatherLogs() }
+            val src = dev.gatherLogs()
                 ?: return "error:Log dump failed (watch didn't respond)"
-            copyOut(src.toString(), path)
-            log.info { "Gathered watch logs → $path" }
-            "ok:$path"
+            copyOut(src.toString(), out)
+            log.info { "Gathered watch logs → ${out.path}" }
+            "ok:${out.path}"
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.warn(e) { "gatherLogs failed" }
             "error:${e.message ?: "log dump failed"}"
@@ -52,18 +56,20 @@ class LogsControl(
     }
 
     /**
-     * Fetch an existing coredump from the watch and write it to the absolute [path]. Returns
-     * `ok:<path>`, `none:<msg>` (the watch has no coredump to give), `notready:<msg>`, or `error:<msg>`.
-     * Fetches any coredump (read or unread).
+     * Fetch an existing coredump from the watch and write it to [out]. Returns `ok:<path>`, `none:<msg>`
+     * (the watch has no coredump to give), `notready:<msg>`, or `error:<msg>`. Fetches any coredump (read
+     * or unread).
      */
-    fun getCoreDump(path: String): String {
+    suspend fun getCoreDump(out: File): String {
         val dev = device() ?: return "notready:No watch connected"
         return try {
-            val src = runBlocking { dev.getCoreDump(unread = false) }
+            val src = dev.getCoreDump(unread = false)
                 ?: return "none:No coredump available on the watch"
-            copyOut(src.toString(), path)
-            log.info { "Fetched coredump → $path (${File(path).length()} bytes)" }
-            "ok:$path"
+            copyOut(src.toString(), out)
+            log.info { "Fetched coredump → ${out.path} (${out.length()} bytes)" }
+            "ok:${out.path}"
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.warn(e) { "getCoreDump failed" }
             "error:${e.message ?: "coredump fetch failed"}"
@@ -79,9 +85,8 @@ class LogsControl(
         return "ok:${formatWatchInfo(dev.watchInfo, dev.batteryLevel)}"
     }
 
-    /** Copy a libpebble3 temp file onto the caller's target path, creating parent dirs. */
-    private fun copyOut(srcPath: String, destPath: String) {
-        val dest = File(destPath)
+    /** Copy a libpebble3 temp file onto the output file, creating parent dirs. */
+    private suspend fun copyOut(srcPath: String, dest: File) = withContext(Dispatchers.IO) {
         dest.absoluteFile.parentFile?.mkdirs()
         File(srcPath).copyTo(dest, overwrite = true)
     }

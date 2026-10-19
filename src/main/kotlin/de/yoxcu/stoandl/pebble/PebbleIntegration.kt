@@ -92,6 +92,7 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
+import de.yoxcu.stoandl.util.connectedDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.ConnectionFailureReason
@@ -340,6 +341,10 @@ class PebbleIntegration(
     private lateinit var languageControl: LanguageControl
     private lateinit var screenshotControl: ScreenshotControl
     private lateinit var logsControl: LogsControl
+    /** Sideload, screenshot, watch logs and core dump: started over D-Bus, followed via TaskStatus/TaskChanged. */
+    private val watchTasks = WatchTasks(scope) { kind, status ->
+        emit(StoandlControl.TaskChanged(STOANDL_OBJECT_PATH, kind.token, status))
+    }
     private lateinit var debugControl: DebugControl
     private lateinit var developerControl: DeveloperControl
     // Null when notification.per_app is off (no store to manage).
@@ -2238,7 +2243,7 @@ class PebbleIntegration(
     private fun registerControlService() {
         try {
             // Exported through timeSlowCalls, which logs any method that takes SLOW_DBUS_CALL_MS or longer.
-            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, ttsService, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
+            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, watchTasks, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, ttsService, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
             serviceConn.exportObject(STOANDL_OBJECT_PATH, timeSlowCalls(StoandlControl::class.java, control))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
@@ -3047,6 +3052,7 @@ private class StoandlControlImpl(
     private val languageControl: LanguageControl,
     private val screenshotControl: ScreenshotControl,
     private val logsControl: LogsControl,
+    private val watchTasks: WatchTasks,
     private val debugControl: DebugControl,
     private val developerControl: DeveloperControl,
     // Null when notification.per_app is off.
@@ -3204,18 +3210,26 @@ private class StoandlControlImpl(
         // The daemon's cwd differs from the caller's, so a relative path resolves wrong here; reject
         // it with a clear message rather than the misleading "Pbw does not contain manifest" that a
         // missing file would otherwise produce. (The CLI already sends an absolute path.)
-        if (!java.io.File(path).isFile) {
+        val file = java.io.File(path)
+        if (!file.isAbsolute || !file.isFile) {
             log.warn { "SideloadApp($path): no such file (paths must be absolute on the daemon side)" }
             return "error:No such file: $path"
         }
-        return try {
-            val ok = runBlocking { lp.sideloadApp(Path(path)) }
-            if (ok) "ok:Sideloaded ${Path(path).name}"
+        return watchTasks.start(WatchTasks.Kind.SIDELOAD, "Installing ${file.name}") {
+            if (lp.sideloadApp(Path(path))) "ok:Sideloaded ${file.name}"
             else "error:Sideload rejected (not a valid .pbw, or no watch connected)"
-        } catch (e: Exception) {
-            log.warn(e) { "SideloadApp($path) failed" }
-            "error:${e.message ?: "sideload failed"}"
         }
+    }
+
+    override fun TaskStatus(kind: String): String =
+        WatchTasks.Kind.of(kind)?.let(watchTasks::status) ?: "error:unknown task '$kind'"
+
+    /** Start a screenshot, logs or core-dump task writing to [path] (empty: the daemon's pick). */
+    private fun startTransfer(kind: WatchTasks.Kind, path: String, running: String, work: suspend (java.io.File) -> String): String {
+        log.info { "${kind.token}: ${path.ifEmpty { "(default path)" }}" }
+        if (libPebbleRef.connectedDevice<CommonConnectedDevice>() == null) return "notready:No watch connected"
+        val out = WatchTasks.outputFile(kind, path) ?: return "error:The path must be absolute: $path"
+        return watchTasks.start(kind, running) { work(out) }
     }
 
     override fun SideloadFirmware(path: String): String {
@@ -3257,10 +3271,8 @@ private class StoandlControlImpl(
 
     override fun LanguageStatus(): String = languageControl.status()
 
-    override fun TakeScreenshot(path: String): String {
-        log.info { "TakeScreenshot: $path" }
-        return screenshotControl.capture(path)
-    }
+    override fun TakeScreenshot(path: String): String =
+        startTransfer(WatchTasks.Kind.SCREENSHOT, path, "Capturing the watch screen", screenshotControl::capture)
 
     override fun VoiceStatus(): String = voiceControl.status()
     override fun VoiceModels(): List<String> = voiceControl.models.records()
@@ -3277,15 +3289,11 @@ private class StoandlControlImpl(
     override fun Speak(text: String): String = ttsService.speak(text)
     override fun StopSpeaking(): String = ttsService.stop()
 
-    override fun GatherLogs(path: String): String {
-        log.info { "GatherLogs: $path" }
-        return logsControl.gatherLogs(path)
-    }
+    override fun GatherLogs(path: String): String =
+        startTransfer(WatchTasks.Kind.LOGS, path, "Reading the watch's logs", logsControl::gatherLogs)
 
-    override fun GetCoreDump(path: String): String {
-        log.info { "GetCoreDump: $path" }
-        return logsControl.getCoreDump(path)
-    }
+    override fun GetCoreDump(path: String): String =
+        startTransfer(WatchTasks.Kind.COREDUMP, path, "Reading the watch's core dump", logsControl::getCoreDump)
 
     override fun Battery(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"

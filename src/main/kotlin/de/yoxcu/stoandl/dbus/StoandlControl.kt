@@ -12,10 +12,17 @@ interface StoandlControl : DBusInterface {
     /** The version of the running daemon (from `git describe` at build time). */
     fun Version(): String
 
-    /** Install a `.pbw` from [path] onto the watch. Returns a status-prefixed string
-     *  (`ok:<msg>` / `error:<msg>` / `notready:<msg>`) so the real failure reason — e.g. an
-     *  invalid .pbw — reaches the CLI instead of a bare boolean. */
+    /** Start installing the `.pbw` at the absolute [path] onto the watch, as the `sideload` task: returns
+     *  `ok:started` (follow it with [TaskStatus]/[TaskChanged]), `busy:<msg>` (one is already running) or
+     *  `error:No such file: <path>`. The task ends `ok:Sideloaded <file>` or `error:<msg>` (e.g. an invalid
+     *  .pbw). */
     fun SideloadApp(path: String): String
+
+    /** The state of the watch task [kind] ∈ {sideload, screenshot, logs, coredump}: `idle:` (none since the
+     *  daemon started), `running:<what>`, or the last one's result, kept until the next start: `ok:<…>`,
+     *  `none:<msg>`, `notready:<msg>` or `error:<msg>` (each starter's KDoc gives its `ok:` shape).
+     *  `error:unknown task '<kind>'` for any other kind. [TaskChanged] carries the same string. */
+    fun TaskStatus(kind: String): String
 
     /** List the apps in the watch locker. Each entry is a tab-separated record:
      *  `uuid \t type \t order \t flags \t title \t developer \t version`, where flags is a comma-joined
@@ -403,9 +410,11 @@ interface StoandlControl : DBusInterface {
      *  Poll this after [SideloadLanguage]/[InstallLanguage]. */
     fun LanguageStatus(): String
 
-    /** Capture the connected watch's screen and write it as a PNG to the absolute [path]. Blocks until
-     *  the (chunked) transfer completes — a couple of seconds. Returns `ok:<path>\t<width>\t<height>`,
-     *  `notready:<msg>` (no watch), or `error:<msg>` (timeout, watch busy, or write failed). */
+    /** Start capturing the connected watch's screen as a PNG, as the `screenshot` task: to the absolute
+     *  [path], or with an empty one to a new `pebble-screenshot-<yyyyMMdd-HHmmss>.png` in the user's
+     *  Pictures/Screenshots (XDG_PICTURES_DIR). Returns `ok:started`, `busy:<msg>`, `notready:<msg>` (no
+     *  watch) or `error:<msg>` (a relative path). The task ends `ok:<path>\t<width>\t<height>`,
+     *  `notready:<msg>` or `error:<msg>` (timeout, watch busy, or write failed). */
     fun TakeScreenshot(path: String): String
 
     /** Speech to text: `off:`, `ready:<backend>\t<detail>` (backend `command` or `http`) or
@@ -449,12 +458,16 @@ interface StoandlControl : DBusInterface {
     /** Stop what [Speak] is reading: `ok:` or `none:`. */
     fun StopSpeaking(): String
 
-    /** Dump the watch's firmware logs to the absolute [path] as text. Blocks until the (multi-generation)
-     *  transfer completes — a handful of seconds. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`. */
+    /** Start dumping the watch's firmware logs as text, as the `logs` task: to the absolute [path], or with
+     *  an empty one to a new `pebble-logs-<yyyyMMdd-HHmmss>.txt` in the user's Documents/stoandl
+     *  (XDG_DOCUMENTS_DIR). Returns `ok:started`, `busy:<msg>`, `notready:<msg>` or `error:<msg>`. The task
+     *  (a handful of seconds) ends `ok:<path>`, `notready:<msg>` or `error:<msg>`. */
     fun GatherLogs(path: String): String
 
-    /** Fetch an existing coredump off the watch to the absolute [path]. Returns `ok:<path>`,
-     *  `none:<msg>` (no coredump on the watch), `notready:<msg>`, or `error:<msg>`. */
+    /** Start fetching an existing coredump off the watch, as the `coredump` task: to the absolute [path], or
+     *  with an empty one to a new `pebble-coredump-<yyyyMMdd-HHmmss>.bin` in Documents/stoandl. Returns
+     *  `ok:started`, `busy:<msg>`, `notready:<msg>` or `error:<msg>`. The task ends `ok:<path>`, `none:<msg>`
+     *  (no coredump on the watch), `notready:<msg>` or `error:<msg>`. */
     fun GetCoreDump(path: String): String
 
     /** The connected watch's metadata as a human-readable text block (model, firmware, board, serial,
@@ -751,4 +764,9 @@ interface StoandlControl : DBusInterface {
      *  or the daemon itself (a downloaded speech model). Re-call [GetConfig] (and [GetSyncStatus]). */
     // `configKey`, not `key`, for the same reason as `extensionName` above.
     class ConfigChanged(path: String, val configKey: String) : DBusSignal(path, configKey)
+
+    /** The watch task [taskKind] started or ended; [status] is what [TaskStatus] now returns for it
+     *  (`running:<what>` on start, the result on the end). */
+    // `taskKind`, not `kind`, to keep clear of DBusSignal's own members.
+    class TaskChanged(path: String, val taskKind: String, val status: String) : DBusSignal(path, taskKind, status)
 }
