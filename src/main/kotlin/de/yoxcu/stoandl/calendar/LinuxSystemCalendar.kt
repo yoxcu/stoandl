@@ -21,13 +21,14 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.runInterruptible
 import java.io.File
+import java.nio.file.ClosedWatchServiceException
 import java.nio.file.FileSystems
 import java.nio.file.Path
 import java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
 import java.nio.file.StandardWatchEventKinds.ENTRY_DELETE
 import java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY
-import java.util.concurrent.TimeUnit
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
@@ -203,8 +204,9 @@ class LinuxSystemCalendar(
         }
     }
 
-    /** Emit when a `.ics` under any watched directory changes. Best-effort: registration/poll errors
-     *  just disable file-watching (the ticker still covers refresh). Cancellable via the poll timeout. */
+    /** Emit when a `.ics` under any watched directory changes. Best-effort: registration errors just
+     *  disable file-watching (the ticker still covers refresh). Blocks in take() (cancellation interrupts
+     *  it) rather than polling, so an idle calendar costs no wakeups. */
     private fun fileWatch(): Flow<Unit> = flow {
         val dirs = watchDirs().filter { it.isDirectory }
         if (dirs.isEmpty()) return@flow
@@ -218,7 +220,11 @@ class LinuxSystemCalendar(
                 }
             }
             while (currentCoroutineContext().isActive) {
-                val key = ws.poll(1, TimeUnit.SECONDS) ?: continue
+                val key = try {
+                    runInterruptible { ws.take() }
+                } catch (_: ClosedWatchServiceException) {
+                    return@flow
+                }
                 val touchedIcs = key.pollEvents().any { ev ->
                     (ev.context() as? Path)?.toString()?.endsWith(".ics", ignoreCase = true) == true
                 }

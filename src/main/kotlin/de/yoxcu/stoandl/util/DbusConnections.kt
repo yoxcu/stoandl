@@ -1,8 +1,11 @@
 package de.yoxcu.stoandl.util
 
+import kotlinx.coroutines.CompletableDeferred
+import org.freedesktop.dbus.connections.IDisconnectCallback
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.types.Variant
+import java.io.IOException
 
 /**
  * Open a private (unshared) session-bus connection. The `withShared(false)` is load-bearing — a
@@ -42,6 +45,35 @@ fun openSystemBus(): DBusConnection =
  *  that keep per-peer state, like GeoClue's one client per peer. */
 fun openPrivateSystemBus(): DBusConnection =
     DBusConnectionBuilder.forSystemBus().withShared(false).build() as DBusConnection
+
+/**
+ * A private connection and [gone], completed when it ends: the bus dropped it (EOF, bus restarted) or it was
+ * disconnected. A long-lived listener suspends in [awaitDisconnect] instead of polling `isConnected`, which
+ * cost a wakeup per poll for as long as the daemon ran.
+ */
+class WatchedBus(val conn: DBusConnection, private val gone: CompletableDeferred<Unit>) {
+    suspend fun awaitDisconnect() = gone.await()
+}
+
+/** [openSessionBus] that tells when it ends ([WatchedBus.awaitDisconnect]). */
+fun openWatchedSessionBus(): WatchedBus = watched(DBusConnectionBuilder.forSessionBus())
+
+/** [openPrivateSystemBus] that tells when it ends ([WatchedBus.awaitDisconnect]). */
+fun openWatchedSystemBus(): WatchedBus = watched(DBusConnectionBuilder.forSystemBus())
+
+private fun watched(builder: DBusConnectionBuilder): WatchedBus {
+    val gone = CompletableDeferred<Unit>()
+    // dbus-java calls exactly one of these from its disconnect path, whichever way the connection ends.
+    val callback = object : IDisconnectCallback {
+        override fun disconnectOnError(ex: IOException) { gone.complete(Unit) }
+        override fun requestedDisconnect(connectionId: Int?) { gone.complete(Unit) }
+        override fun clientDisconnect() { gone.complete(Unit) }
+        override fun exceptionOnTerminate(ex: IOException) { gone.complete(Unit) }
+    }
+    val conn = builder.withShared(false).withDisconnectCallback(callback).build() as DBusConnection
+    if (!conn.isConnected) gone.complete(Unit)
+    return WatchedBus(conn, gone)
+}
 
 /** Unwrap a dbus-java [Variant] to its contained value; pass-through for anything that isn't a Variant. */
 fun unwrapVariant(v: Any?): Any? = if (v is Variant<*>) v.value else v

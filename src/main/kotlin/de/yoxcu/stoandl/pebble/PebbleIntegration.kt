@@ -29,6 +29,7 @@ import de.yoxcu.stoandl.notification.AppNamePlacements
 import de.yoxcu.stoandl.notification.GlobalMute
 import de.yoxcu.stoandl.notification.NotificationFilters
 import de.yoxcu.stoandl.notification.NotificationImageStore
+import de.yoxcu.stoandl.power.DisplayState
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.QuietTimeLink
 import de.yoxcu.stoandl.power.ScreenState
@@ -170,10 +171,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -245,17 +249,19 @@ private const val PAIRING_PAUSED_SLEPT =
  *  Pair/Re-pair button), which is why its scans don't depend on the display (see [PebbleIntegration]'s
  *  scan loop). */
 private class PairingGate {
-    private val expiryMs = java.util.concurrent.atomic.AtomicLong(0L)
+    private val expiryMs = MutableStateFlow(0L)
     // The host suspended (and resumed) while this window was open; cleared by the next open().
     private val slept = AtomicBoolean(false)
     val scanFailures = ScanFailures()
     fun open() {
         slept.set(false)
         scanFailures.windowOpened()
-        expiryMs.set(System.currentTimeMillis() + PAIRING_WINDOW_MS)
+        expiryMs.value = System.currentTimeMillis() + PAIRING_WINDOW_MS
     }
-    fun close() { expiryMs.set(0L) }
-    fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.get()
+    fun close() { expiryMs.value = 0L }
+    fun isOpen(): Boolean = System.currentTimeMillis() < expiryMs.value
+    /** Suspend until a window is open (at once if one is): the discovery loops wait here, not on a timer. */
+    suspend fun awaitOpen() { expiryMs.first { System.currentTimeMillis() < it } }
     /** Called on every resume: remembers that this window's discovery was interrupted by a suspend. */
     fun noteResume() { if (isOpen()) slept.set(true) }
     fun sleptDuringWindow(): Boolean = slept.get()
@@ -330,7 +336,6 @@ private const val NOTIFICATION_PICKUP_GRACE_MS = 1_000L
 // on a live link the watch's own 15-minute datalog flushes keep the data coming anyway).
 private val HEALTH_RECONNECT_MIN_AGE = 15.minutes
 // Datalog pause (power.pause_datalog_screen_off): how often the display state is sampled while awake.
-private val SCREEN_POLL = 5.seconds
 
 private val log = KotlinLogging.logger {}
 
@@ -479,6 +484,8 @@ class PebbleIntegration(
     // power.quiet_time_link_off: no watch link during the watch's scheduled Quiet Time; started before
     // libpebble3 connects anything, so a restart inside the window stays paused.
     private var quietTimeLink: QuietTimeLink? = null
+    /** The display's on/off state, sampled only while the datalog pause or the Quiet Time link pause follows it. */
+    private val displayState = DisplayState(scope)
     // `stoandl watch disconnect|connect`; restored before libpebble3 connects anything.
     private lateinit var manualDisconnect: ManualDisconnect
     private lateinit var linkActivity: WatchLinkActivity
@@ -725,7 +732,9 @@ class PebbleIntegration(
             scope = scope,
             libPebble = libPebble,
             watchConnector = watchConnector,
-            enabled = { config.powerQuietTimeLinkOff },
+            enabled = configStore.updates.map { it.powerQuietTimeLinkOff }
+                .stateIn(scope, SharingStarted.Eagerly, config.powerQuietTimeLinkOff),
+            display = displayState.on,
             mustStayOn = ::linkNeeded,
             pendingWork = ::watchTraffic,
             wakeups = wakeups(),
@@ -881,7 +890,8 @@ class PebbleIntegration(
                 val classicConnecting = libPebble.watches.value.any {
                     it.identifier is PebbleBtClassicIdentifier && it is ConnectingPebbleDevice
                 }
-                if (btOn && PairingWindow.scanAllowed(pairingGate.isOpen(), classicConnecting, linkActivity.hostSuspending.value)) {
+                val windowOpen = pairingGate.isOpen()
+                if (btOn && PairingWindow.scanAllowed(windowOpen, classicConnecting, linkActivity.hostSuspending.value)) {
                     if (!libPebble.isScanningClassic.value) {
                         log.info { "BT Classic: discovering (BR/EDR inquiry — pairing window open)" }
                         libPebble.startClassicScan()
@@ -889,7 +899,8 @@ class PebbleIntegration(
                 } else if (libPebble.isScanningClassic.value) {
                     libPebble.stopClassicScan()
                 }
-                delay(2.seconds)
+                // Outside a window there is nothing to tick for: sleep until the next one opens.
+                if (windowOpen) delay(2.seconds) else pairingGate.awaitOpen()
             }
         }
         // For each discovered classic Pebble: a BONDED one auto-connects; an UNBONDED one is only paired
@@ -1026,10 +1037,12 @@ class PebbleIntegration(
                                 "time-limited pairing request"
                         }
                     }
+                    delay(tick)
                 } else {
+                    // The scan was stopped above; nothing to tick for until the next window opens.
                     displayOffNoted = false
+                    pairingGate.awaitOpen()
                 }
-                delay(tick)
             }
         }
     }
@@ -1759,25 +1772,24 @@ class PebbleIntegration(
      *
      * The flag lives in watch RAM (PebbleOS `s_sends_enabled_pp`) and survives a disconnect, so every fresh
      * connect sends the wanted state — also with the option off, so turning the option off (or stoandl
-     * dying while paused) can't leave a watch that never sends its data again. Transitions are sampled every
-     * [SCREEN_POLL] while awake, and right before each suspend ([beforeSleep]).
+     * dying while paused) can't leave a watch that never sends its data again. Transitions follow the
+     * shared [displayState] while awake, and are settled right before each suspend ([beforeSleep]).
      *
-     * The option is read live (Settings → Deep sleep applies it without a restart), so the poll always
-     * runs: turned on, the next tick pauses a dark display; turned off while paused, the next tick resumes
-     * the watch instead of leaving it paused until its next fresh connect. With the option off a tick
-     * reads no display state and sends nothing once the watch has the "enabled" state.
+     * The option is read live (Settings → Deep sleep applies it without a restart): turned on, a dark
+     * display pauses the watch at the next sample; turned off while paused, the watch is resumed at once
+     * instead of staying paused until its next fresh connect. With the option off the display isn't
+     * followed at all, so it costs no wakeups.
      */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun startDatalogPolicy() {
         onFreshConnect { pushDatalogSendState(datalogSendWanted(), "watch connected", force = true) }
         if (config.powerPauseDatalogScreenOff) {
             log.info { "Datalog sends paused while the display is off (power.pause_datalog_screen_off)" }
         }
-        scope.launch {
-            while (true) {
-                delay(SCREEN_POLL)
-                pushDatalogSendState(datalogSendWanted(), "display state")
-            }
-        }
+        configStore.updates.map { it.powerPauseDatalogScreenOff }.distinctUntilChanged()
+            .flatMapLatest { pause -> if (pause) displayState.on.map { it != false } else flowOf(true) }
+            .onEach { pushDatalogSendState(it, "display state") }
+            .launchIn(scope)
     }
 
     private fun datalogSendWanted(): Boolean = !(config.powerPauseDatalogScreenOff && ScreenState.isOn() == false)
@@ -2502,7 +2514,13 @@ class PebbleIntegration(
         scope.launch {
             var armedId: String? = null      // identifier we last handed the goal to
             var armedAt = 0L                 // when we armed it (ms) — also the brief-drop grace anchor
+            // Only ticks while there is something to choose: autoswitch on and two or more known watches.
+            val needed = combine(
+                configStore.updates.map { it.connectionAutoswitch },
+                libPebble.watches.map { ws -> ws.count { it is KnownPebbleDevice } >= 2 },
+            ) { on, several -> on && several }
             while (true) {
+                if (!needed.first()) { armedId = null; needed.first { it } }
                 delay(WRIST_FOLLOW_TICK)
                 if (!config.connectionAutoswitch) { armedId = null; continue }
                 // Don't fight pairing (its discovery/connect path owns the radio) or a powered-off adapter,
@@ -2517,9 +2535,10 @@ class PebbleIntegration(
 
                 val connected = known.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
                 if (connected != null) {
-                    // Hold the live link: adopt it as the goal and keep the grace anchor fresh, so if it
-                    // later drops it gets the full window to self-heal before we'd consider rotating.
+                    // Hold the live link: adopt it as the goal and wait (no ticks) until it drops; the drop
+                    // starts the grace, so it gets the full window to self-heal before we'd consider rotating.
                     armedId = connected.identifier.asString
+                    libPebble.watches.first { ws -> ws.none { it is ConnectedPebbleDevice } }
                     armedAt = System.currentTimeMillis()
                     continue
                 }

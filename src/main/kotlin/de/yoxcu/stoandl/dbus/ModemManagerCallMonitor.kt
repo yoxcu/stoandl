@@ -12,7 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import de.yoxcu.stoandl.util.openSystemBus
+import de.yoxcu.stoandl.util.openWatchedSystemBus
 import org.freedesktop.dbus.connections.impl.DBusConnection
 import org.freedesktop.dbus.errors.UnknownObject
 import org.freedesktop.dbus.interfaces.ObjectManager
@@ -81,7 +81,8 @@ class ModemManagerCallMonitor(
     }
 
     private suspend fun runMonitor() {
-        val c = withContext(Dispatchers.IO) { openSystemBus() }
+        val bus = withContext(Dispatchers.IO) { openWatchedSystemBus() }
+        val c = bus.conn
         conn = c
         log.info { "ModemManager call monitor: connected to system bus" }
 
@@ -105,9 +106,7 @@ class ModemManagerCallMonitor(
         // Pick up a call already in progress (e.g. the daemon restarted mid-call).
         scanExisting(c)
 
-        while (coroutineContext.isActive && c.isConnected) {
-            delay(1.seconds)
-        }
+        bus.awaitDisconnect()
         if (coroutineContext.isActive) log.warn { "ModemManager system-bus connection lost, reconnecting…" }
     }
 

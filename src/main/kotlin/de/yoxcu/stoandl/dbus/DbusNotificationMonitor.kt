@@ -1,6 +1,6 @@
 package de.yoxcu.stoandl.dbus
 
-import de.yoxcu.stoandl.util.openSessionBus
+import de.yoxcu.stoandl.util.openWatchedSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
@@ -426,13 +426,14 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
             .also { it.isAccessible = true }
 
         while (isActive) {
-            val monitorConn = try {
-                openSessionBus()
+            val monitorBus = try {
+                openWatchedSessionBus()
             } catch (e: Exception) {
                 log.warn { "BecomeMonitor: cannot open DBus connection: ${e.message}" }
                 delay(2000)
                 continue
             }
+            val monitorConn = monitorBus.conn
             var tc: TransportConnection? = null
             var originalWriter: IMessageWriter? = null
             try {
@@ -516,9 +517,7 @@ fun monitorNotifications(): Flow<NotificationEvent> = callbackFlow {
 
                 log.info { "Notification monitor: BecomeMonitor active" }
 
-                while (isActive && monitorConn.isConnected()) {
-                    delay(500)
-                }
+                monitorBus.awaitDisconnect()
                 if (isActive) log.warn { "BecomeMonitor connection lost, reconnecting..." }
             } catch (e: CancellationException) {
                 throw e

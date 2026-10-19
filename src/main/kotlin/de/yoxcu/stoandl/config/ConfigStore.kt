@@ -1,6 +1,8 @@
 package de.yoxcu.stoandl.config
 
-import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The single, **live** source of truth for [StoandlConfig]. Seeded once at startup and re-read from
@@ -15,11 +17,14 @@ import java.util.concurrent.atomic.AtomicReference
  * `StoandlConfig` value.
  */
 class ConfigStore(initial: StoandlConfig = StoandlConfig.load()) {
-    private val ref = AtomicReference(initial)
+    private val state = MutableStateFlow(initial)
+
+    /** The current config, and every later one: for a loop that waits until a key allows it to run. */
+    val updates: StateFlow<StoandlConfig> = state.asStateFlow()
 
     /** The current config (atomic read). */
-    fun current(): StoandlConfig = ref.get()
+    fun current(): StoandlConfig = state.value
 
     /** Re-read `stoandl.conf` (quietly — no INFO summary) and publish it. Returns the new config. */
-    fun reload(): StoandlConfig = StoandlConfig.load(logResult = false).also { ref.set(it) }
+    fun reload(): StoandlConfig = StoandlConfig.load(logResult = false).also { state.value = it }
 }

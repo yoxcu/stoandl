@@ -4,7 +4,7 @@ import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.imaging.AlbumArt
 import de.yoxcu.stoandl.util.onPath
-import de.yoxcu.stoandl.util.openSessionBus
+import de.yoxcu.stoandl.util.openWatchedSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.endpointmanager.musiccontrol.MusicTrack
@@ -154,7 +154,8 @@ class MprisMusicControl(
     }
 
     private suspend fun runMonitor() {
-        val c = withContext(Dispatchers.IO) { openSessionBus() }
+        val bus = withContext(Dispatchers.IO) { openWatchedSessionBus() }
+        val c = bus.conn
         conn = c
         log.info { "MPRIS music monitor: connected to session bus" }
 
@@ -183,9 +184,7 @@ class MprisMusicControl(
 
         enumerateExisting(c)
 
-        while (coroutineContext.isActive && c.isConnected) {
-            delay(2.seconds)
-        }
+        bus.awaitDisconnect()
         if (coroutineContext.isActive) log.warn { "MPRIS session-bus connection lost, reconnecting…" }
     }
 

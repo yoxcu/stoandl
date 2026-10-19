@@ -13,6 +13,9 @@ import io.rebble.libpebblecommon.database.entity.QuietTimeSchedule
 import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,8 +51,10 @@ private val log = KotlinLogging.logger {}
  *  - nothing else needs the link ([mustStayOn]: a pairing window, a firmware or language update, a call).
  * Any of them turning false releases the hold: the window ends, the display comes on, the switch goes off.
  *
- * Evaluated every [TICK] while awake and on every resume. On a phone that sleeps through the window's
- * edges, the hold starts and ends at the first wake after them. The disconnect and, for a short while,
+ * Evaluated every [TICK] while awake, on every resume and on every display change, but only while the
+ * switch is on: off, it follows neither the clock nor the display, so it costs no wakeups (switching it on
+ * while the display is off counts as off long enough, like a start). On a phone that sleeps through the
+ * window's edges, the hold starts and ends at the first wake after them. The disconnect and, for a short while,
  * the reconnect after a release are reported as pending work ([pendingDescription]), so the sleep guard
  * lets them finish before a suspend. Notifications posted while paused reach the watch on reconnect:
  * paused time doesn't count towards the catch-up window (libpebble3 NotificationCatchUp).
@@ -58,7 +63,10 @@ class QuietTimeLink(
     private val scope: CoroutineScope,
     private val libPebble: LibPebble,
     private val watchConnector: WatchConnector,
-    private val enabled: () -> Boolean,
+    /** `power.quiet_time_link_off`, live. */
+    private val enabled: StateFlow<Boolean>,
+    /** The shared display state ([DisplayState.on]); followed only while [enabled]. */
+    private val display: StateFlow<Boolean?>,
     /** Why the link must stay up right now regardless of Quiet Time, or null. */
     private val mustStayOn: () -> String?,
     /** Watch traffic still owed (not counting this class's own); the hold waits until it is null. */
@@ -68,6 +76,7 @@ class QuietTimeLink(
     @Volatile private var hold: AutoCloseable? = null
     @Volatile private var releasedAtMs: Long? = null
     private var screenOffSinceMs: Long? = null
+    @Volatile private var screenOn = true // unknown counts as on: never pause blind
     private var callsNoted = false
     @Volatile private var prefs: List<WatchPreference<*>> = emptyList()
 
@@ -80,16 +89,39 @@ class QuietTimeLink(
      * Decides once before libpebble3 connects anything (a restart inside the window stays paused), then
      * follows the watch prefs and re-evaluates every [TICK] and on every resume.
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun start() {
         prefs = runBlocking { libPebble.watchPrefs.first() }
-        if (ScreenState.isOn() == false) screenOffSinceMs = 0L
+        noteDisplay(display.value, offLongEnough = true)
         evaluate()
         scope.launch { libPebble.watchPrefs.collect { prefs = it } }
         scope.launch {
-            while (true) {
-                withTimeoutOrNull(TICK) { wakeups.first() }
-                evaluate()
+            var atStart = true
+            enabled.collectLatest { on ->
+                val switchedOn = !atStart
+                atStart = false
+                if (!on) { evaluate(); return@collectLatest } // releases a hold; then nothing to follow
+                if (switchedOn) noteDisplay(ScreenState.isOn(), offLongEnough = true)
+                coroutineScope {
+                    launch { display.collect { noteDisplay(it); evaluate() } }
+                    while (true) {
+                        withTimeoutOrNull(TICK) { wakeups.first() }
+                        evaluate()
+                    }
+                }
             }
+        }
+    }
+
+    /** Track how long the display has been off; [offLongEnough] dates an off display back past
+     *  [SCREEN_OFF_MIN] (at start, or when switched on, nothing measured it). */
+    @Synchronized
+    private fun noteDisplay(state: Boolean?, offLongEnough: Boolean = false) {
+        screenOn = state != false
+        screenOffSinceMs = when {
+            screenOn -> null
+            offLongEnough -> 0L
+            else -> screenOffSinceMs ?: System.currentTimeMillis()
         }
     }
 
@@ -110,13 +142,11 @@ class QuietTimeLink(
     @Synchronized
     private fun evaluate() {
         val nowMs = System.currentTimeMillis()
-        val screenOn = ScreenState.isOn() != false // unknown counts as on: never pause blind
-        screenOffSinceMs = if (screenOn) null else screenOffSinceMs ?: nowMs
         val window = scheduledQuietTime(prefs, LocalDateTime.now())
         if (window == null) callsNoted = false
 
         val stayReason: String? = when {
-            !enabled() -> "switched off"
+            !enabled.value -> "switched off"
             window == null -> "Quiet Time over"
             callsMayInterrupt(prefs) -> {
                 if (!callsNoted) {
