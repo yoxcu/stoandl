@@ -70,12 +70,12 @@ class VoiceBackends(
 /** `voice.backend = local`: an installed catalog model run by its whisper.cpp program. */
 class LocalModelStt(private val models: VoiceModels, private val modelId: String) : SpeechToText {
     override val id = "local"
-    private val model = models.model(modelId)
+    private val model = models.model(modelId)?.takeIf { it.kind == ModelKind.STT }
 
     override fun readiness(): String? = when {
         model == null -> if (modelId.isEmpty()) "no model chosen (voice.local_model)" else "unknown model '$modelId'"
         !models.isInstalled(model) -> "${model.name} isn't downloaded yet"
-        !models.engineAvailable(model.engine) -> "${model.engine.program} not found (install whisper.cpp)"
+        !models.engineAvailable(model.engine) -> "${model.engine.program} not found (install ${model.engine.install})"
         else -> null
     }
 

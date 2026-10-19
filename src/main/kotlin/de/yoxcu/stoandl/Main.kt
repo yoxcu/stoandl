@@ -12,6 +12,7 @@ import de.yoxcu.stoandl.pebble.PebbleIntegration
 import de.yoxcu.stoandl.util.openServiceBus
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.softOpenSessionBus
+import de.yoxcu.stoandl.voice.ESPEAK_VOICE
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -2688,18 +2689,28 @@ private fun ctlVoice(rest: List<String>) {
             }
         }
         "models" -> withControl { control ->
-            control.VoiceModels().map { it.split('\t') }.forEach { r ->
-                val state = r.getOrElse(4) { "" }
-                val mark = when {
-                    state == "installed" -> "installed"
-                    state.startsWith("downloading:") -> "downloading ${state.substringAfter(':')}%"
-                    state.startsWith("failed:") -> "failed: ${state.substringAfter(':')}"
-                    else -> "${r.getOrElse(3) { "?" }} MB"
+            val rows = control.VoiceModels().map { it.split('\t') }
+            // Records without the kind column come from a daemon that only had speech-to-text models.
+            for ((kind, heading) in listOf("stt" to "Speech to text (voice.local_model)", "tts" to "Text to speech (tts.local_voice)")) {
+                val ofKind = rows.filter { it.getOrElse(8) { "stt" } == kind }
+                if (ofKind.isEmpty()) continue
+                println(heading)
+                ofKind.forEach { r ->
+                    val state = r.getOrElse(4) { "" }
+                    val mark = when {
+                        state == "installed" -> "installed"
+                        state.startsWith("downloading:") -> "downloading ${state.substringAfter(':')}%"
+                        state.startsWith("failed:") -> "failed: ${state.substringAfter(':')}"
+                        else -> "${r.getOrElse(3) { "?" }} MB"
+                    }
+                    val rec = if (r.getOrElse(5) { "" } == "true") " (recommended)" else ""
+                    println("  %-26s %-28s %s%s".format(r.getOrElse(0) { "" }, r.getOrElse(1) { "" }, mark, rec))
+                    println("  %-26s %s".format("", r.getOrElse(7) { "" }))
+                    if (r.getOrElse(6) { "true" } != "true") {
+                        val pkg = if (kind == "tts") "piper-tts" else "whisper.cpp"
+                        println("  %-26s needs ${r.getOrElse(2) { "" }} (install $pkg)".format(""))
+                    }
                 }
-                val rec = if (r.getOrElse(5) { "" } == "true") " (recommended)" else ""
-                println("%-18s %-24s %s%s".format(r.getOrElse(0) { "" }, r.getOrElse(1) { "" }, mark, rec))
-                println("%-18s %s".format("", r.getOrElse(7) { "" }))
-                if (r.getOrElse(6) { "true" } != "true") println("%-18s needs ${r.getOrElse(2) { "" }} (install whisper.cpp)".format(""))
             }
         }
         "download" -> {
@@ -2711,10 +2722,14 @@ private fun ctlVoice(rest: List<String>) {
                 // Follow the download until it lands (Ctrl-C leaves it running in the daemon).
                 while (true) {
                     Thread.sleep(2000)
-                    val state = control.VoiceModels().map { it.split('\t') }.firstOrNull { it[0] == id }?.getOrNull(4) ?: break
+                    val row = control.VoiceModels().map { it.split('\t') }.firstOrNull { it[0] == id } ?: break
+                    val state = row.getOrNull(4) ?: break
                     when {
                         state.startsWith("downloading:") -> print("\r  ${state.substringAfter(':')}% ")
-                        state == "installed" -> { println("\r  done — ${splitStatus(control.VoiceStatus()).second.replace('\t', ' ')}"); break }
+                        state == "installed" -> {
+                            val status = control.VoiceStatus()
+                            println("\r  done — ${splitStatus(status).second.replace('\t', ' ')}"); break
+                        }
                         state.startsWith("failed:") -> { println("\r  failed: ${state.substringAfter(':')}"); System.exit(1); return@withControl }
                         else -> break
                     }
@@ -2722,10 +2737,13 @@ private fun ctlVoice(rest: List<String>) {
             }
         }
         "use" -> {
-            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice use <model>"); System.exit(EXIT_USAGE); return }
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice use <model|voice>"); System.exit(EXIT_USAGE); return }
             withControl { control ->
-                printStatusOrExit(control.SetConfig("voice.local_model", id))
-                printStatusOrExit(control.SetConfig("voice.backend", "local"))
+                // A voice (or espeak-ng) sets text to speech; anything else is a speech-to-text model.
+                val tts = id == ESPEAK_VOICE || control.VoiceModels().any { r -> r.split('\t').let { it[0] == id && it.getOrNull(8) == "tts" } }
+                val (key, backend) = if (tts) "tts.local_voice" to "tts.backend" else "voice.local_model" to "voice.backend"
+                printStatusOrExit(control.SetConfig(key, id))
+                printStatusOrExit(control.SetConfig(backend, "local"))
             }
         }
         "remove" -> {

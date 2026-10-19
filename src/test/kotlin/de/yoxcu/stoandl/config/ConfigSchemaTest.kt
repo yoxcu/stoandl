@@ -543,7 +543,7 @@ class ConfigSchemaTest {
         val savedEnv = configEnvironment
         val savedHome = System.getProperty("user.home")
         val rendered = try {
-            configEnvironment = ConfigEnvironment(speechModels = { emptyList() }, ttsVoices = { emptyList() }, customVibeNames = { emptyList() })
+            configEnvironment = ConfigEnvironment(installedModels = { emptyList() }, customVibeNames = { emptyList() })
             System.setProperty("user.home", "/home/user")
             GUI_CONFIG_FIELDS.joinToString("") { it.schemaRow() + "\n" }
         } finally {

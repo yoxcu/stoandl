@@ -414,14 +414,15 @@ interface StoandlControl : DBusInterface {
      *  `unavailable:<reason>` or `error:<msg>`. With the http backend the audio leaves this machine. */
     fun Transcribe(path: String): String
 
-    /** The speech models stoandl can download and run, one record each:
-     *  `id\tname\tprogram\tsizeMb\tstate\trecommended\tprogramInstalled\tnote`; state ∈ installed, available,
-     *  `downloading:<percent>`, `failed:<message>`; recommended and programInstalled are true/false. Poll it while
-     *  a download runs. */
+    /** The speech-to-text models and text-to-speech voices stoandl can download and run, one record each:
+     *  `id\tname\tprogram\tsizeMb\tstate\trecommended\tprogramInstalled\tnote\tkind`; state ∈ installed,
+     *  available, `downloading:<percent>`, `failed:<message>`; recommended and programInstalled are true/false;
+     *  kind ∈ stt, tts. Poll it while a download runs. */
     fun VoiceModels(): List<String>
 
-    /** Download a model from [VoiceModels] (one at a time); when it is in place it becomes `voice.local_model`
-     *  and, unless a custom command or HTTP is set, `voice.backend` turns to `local`. `ok:`, `installed:`,
+    /** Download a model or voice from [VoiceModels] (one at a time). When it is in place, an STT model becomes
+     *  `voice.local_model` and, unless a custom command or HTTP is set, `voice.backend` turns to `local`; a TTS
+     *  voice becomes `tts.local_voice`, and `tts.backend` turns to `local` if it was off. `ok:`, `installed:`,
      *  `busy:` or `notfound:`. Downloads from huggingface.co (the user asked for it). */
     fun VoiceDownloadModel(id: String): String
 

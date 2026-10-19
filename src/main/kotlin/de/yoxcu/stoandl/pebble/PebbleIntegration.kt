@@ -48,6 +48,7 @@ import de.yoxcu.stoandl.plugin.PhoneState
 import de.yoxcu.stoandl.plugin.PluginSecretStore
 import de.yoxcu.stoandl.plugin.PluginControl
 import de.yoxcu.stoandl.plugin.WeatherPlugin
+import de.yoxcu.stoandl.voice.ModelKind
 import de.yoxcu.stoandl.voice.StoandlTranscriptionProvider
 import de.yoxcu.stoandl.voice.VoiceBackends
 import de.yoxcu.stoandl.voice.VoiceControl
@@ -381,13 +382,20 @@ class PebbleIntegration(
     /** Speech to text (`voice.*`): the watch's dictation, D-Bus Transcribe and extensions' transcribe. */
     private val voiceBackends = VoiceBackends(configStore, secretStore, VoiceModels(scope))
     private val voiceControl = VoiceControl(voiceBackends, configStore) { model ->
-        // A model downloaded from the GUI/CLI becomes the one in use, and voice comes on with it unless
-        // another backend (a custom command, HTTP) is set.
+        // A model downloaded from the GUI/CLI becomes the one in use. Speech to text comes on with it unless
+        // another backend (a custom command, HTTP) is set; text to speech only when it was off.
         val c = configStore.current()
-        if (c.voiceBackend == StoandlConfig.VoiceBackend.OFF || c.voiceBackend == StoandlConfig.VoiceBackend.LOCAL) {
-            persistConfig("voice.local_model", model.id)
-            persistConfig("voice.backend", "local")
-            log.info { "Voice: using ${model.name}" }
+        when (model.kind) {
+            ModelKind.STT -> if (c.voiceBackend == StoandlConfig.VoiceBackend.OFF || c.voiceBackend == StoandlConfig.VoiceBackend.LOCAL) {
+                persistConfig("voice.local_model", model.id)
+                persistConfig("voice.backend", "local")
+                log.info { "Voice: using ${model.name}" }
+            }
+            ModelKind.TTS -> {
+                persistConfig("tts.local_voice", model.id)
+                if (c.ttsBackend == StoandlConfig.VoiceBackend.OFF) persistConfig("tts.backend", "local")
+                log.info { "Text to speech: voice ${model.name}" }
+            }
         }
     }
     // libpebble3's Koin context, set in init(): for its DAOs.

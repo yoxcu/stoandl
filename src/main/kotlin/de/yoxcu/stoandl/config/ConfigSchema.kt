@@ -2,8 +2,7 @@ package de.yoxcu.stoandl.config
 
 import de.yoxcu.stoandl.notification.AppNamePlacement
 import de.yoxcu.stoandl.util.ConfFile
-import de.yoxcu.stoandl.voice.SPEECH_MODELS
-import de.yoxcu.stoandl.voice.SpeechModel
+import de.yoxcu.stoandl.voice.ModelKind
 import de.yoxcu.stoandl.voice.VoiceModels
 import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import java.io.File
@@ -279,29 +278,23 @@ private fun httpUrlValid(v: String): String? {
  * rendered schema doesn't depend on the machine it runs on.
  */
 internal data class ConfigEnvironment(
-    val speechModels: () -> List<SpeechModel> = {
-        val dir = VoiceModels.defaultDir()
-        SPEECH_MODELS.filter { File(dir, it.file).isFile }
-    },
-    /** Installed text-to-speech voices as (id, display name). */
-    val ttsVoices: () -> List<Pair<String, String>> = { emptyList() },
+    /** What `voice.local_model` (STT) and `tts.local_voice` (TTS) can be set to, as (id, display name). */
+    val installedModels: (ModelKind) -> List<Pair<String, String>> = { VoiceModels.choices(it) },
     val customVibeNames: () -> List<String> = { emptyList() },
 )
 
 @Volatile internal var configEnvironment = ConfigEnvironment()
 
-/** The `voice.local_model` options: the installed speech models, or a placeholder while none is. */
-private fun installedModelChoices(): List<ConfigChoice> {
-    val installed = configEnvironment.speechModels()
-    if (installed.isEmpty()) return listOf(ConfigChoice("No model installed", "") { true })
-    return installed.map { m -> ConfigChoice(m.name, m.id) { it.voiceLocalModel == m.id } }
-}
-
-/** The `tts.local_voice` options: the installed voices, or a placeholder while none is. */
-private fun installedVoiceChoices(): List<ConfigChoice> {
-    val installed = configEnvironment.ttsVoices()
-    if (installed.isEmpty()) return listOf(ConfigChoice("No voice installed", "") { true })
-    return installed.map { (id, name) -> ConfigChoice(name, id) { it.ttsLocalVoice == id } }
+/** The `voice.local_model` (STT) or `tts.local_voice` (TTS) options: what is installed of [kind], or a
+ *  placeholder while nothing is. */
+private fun installedModelChoices(kind: ModelKind): List<ConfigChoice> {
+    val installed = configEnvironment.installedModels(kind)
+    val (none, current) = when (kind) {
+        ModelKind.STT -> "No model installed" to StoandlConfig::voiceLocalModel
+        ModelKind.TTS -> "No voice installed" to StoandlConfig::ttsLocalVoice
+    }
+    if (installed.isEmpty()) return listOf(ConfigChoice(none, "") { true })
+    return installed.map { (id, name) -> ConfigChoice(name, id) { current(it) == id } }
 }
 
 private fun reminderVibeChoices(): List<ConfigChoice> =
@@ -635,7 +628,7 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     dynamicCombo("voice.local_model", S_STT, "Model",
         "The downloaded model Local model runs",
         help = "Download one below; bigger models are more accurate but slower. Parakeet v3 understands many " +
-            "languages.", choices = ::installedModelChoices),
+            "languages.", choices = { installedModelChoices(ModelKind.STT) }),
     text("voice.language", S_STT, "Language",
         "The language you speak, or auto",
         help = "A code such as en or de helps engines that guess badly. Passed to a custom command as {lang} and " +
@@ -660,7 +653,7 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         "A downloaded Piper voice, or espeak-ng",
         help = "Download voices below; \"low\" voices are enough for the watch speaker and fastest. espeak-ng needs " +
             "no download and speaks every language, but sounds robotic.",
-        requires = "tts.backend=Local model", choices = ::installedVoiceChoices),
+        requires = "tts.backend=Local model", choices = { installedModelChoices(ModelKind.TTS) }),
     int("tts.speed", S_TTS, "Speaking rate",
         "100 % is normal speed",
         help = "Applied as Piper's length scale, espeak's words per minute, or the HTTP speed field.",
