@@ -46,8 +46,6 @@ internal object WatchPrefText {
 
     private val helpOf: Map<String, String> = buildMap {
         sectionOf.filterValues { it == "Quick launch" }.keys.forEach { put(it, QUICK_LAUNCH_HELP) }
-        put("lightPreset", "Each mode sets brightness, duration and the light sensor together. Choose Advanced " +
-            "to set them one by one.")
         put("lightTouch", "Double Tap avoids lighting up by accident.")
         put("systemTextSize", TEXT_SIZE_HELP)
         put("notifTextSize", TEXT_SIZE_HELP)
