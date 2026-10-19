@@ -2084,7 +2084,9 @@ class PebbleIntegration(
             val before = field.value(configStore.current())
             applyGuiConfig(key, value, StoandlConfig.configFile()).also { r ->
                 if (!r.startsWith("ok:")) return r
-                log.info { "Config $key: '$before' → '${field.value(configStore.reload())}'" }
+                // Outside the lazy log lambda: it runs only when INFO is on, and the reload must always happen.
+                val after = configStore.reload()
+                log.info { "Config $key: '$before' → '${field.value(after)}'" }
                 serviceForConfigKey(key)?.let { reconcile(it) }
             }
         }
