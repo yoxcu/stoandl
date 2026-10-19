@@ -15,6 +15,7 @@ import de.yoxcu.stoandl.secret.SecretStore
 import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.runCommand
+import de.yoxcu.stoandl.voice.tts.Synthesis
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
@@ -51,6 +52,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.add
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -90,6 +93,8 @@ class ExtensionManager(
     private val notificationImagesOn: () -> Boolean = { false },
     /** Speech to text for `transcribe` (a VoiceControl result string: `ok:<ms>\t<text>`, `off:`, …). */
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
+    /** Text to speech for `synthesize` (TtsService.synthesize): text, language, format. */
+    private val synthesize: suspend (text: String, language: String?, format: String) -> Synthesis = { _, _, _ -> Synthesis.Error("off") },
     /** Where an extension's plugin (declared in its `initialize` result) is registered and removed. */
     private val pluginHost: ExtensionPluginHost? = null,
     /** Where `"secret": true` config fields live (ref [extSecretRef]); never the `config` file. */
@@ -175,7 +180,7 @@ class ExtensionManager(
                 if (state == "quarantined") notifyQuarantined(name, running[name]?.lastStderrLine)
                 onExtensionState?.invoke(name, state)
             },
-            notificationImagesOn = notificationImagesOn, transcribe = transcribe, pluginHost = pluginHost,
+            notificationImagesOn = notificationImagesOn, transcribe = transcribe, synthesize = synthesize, pluginHost = pluginHost,
             holdAwake = holdAwake)
         running[name] = proc
         proc.launch()
@@ -633,6 +638,7 @@ private class ExtensionProcess(
     private val onState: (String) -> Unit = {},
     private val notificationImagesOn: () -> Boolean = { false },
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
+    private val synthesize: suspend (text: String, language: String?, format: String) -> Synthesis = { _, _, _ -> Synthesis.Error("off") },
     private val pluginHost: ExtensionPluginHost? = null,
     holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
 ) {
@@ -804,8 +810,9 @@ private class ExtensionProcess(
             method == "launchApp" -> handleAppRunState(id, params, launch = true)
             method == "stopApp" -> handleAppRunState(id, params, launch = false)
             method == "installPbw" -> handleInstallPbw(id, params)
-            // Off the read loop: a transcription takes seconds.
+            // Off the read loop: a transcription or a synthesis takes seconds.
             method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
+            method == "synthesize" -> scope.launch { handleSynthesize(id, params) }
             method == "keepAwake" -> {
                 val maxMs = params?.get("maxMs")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.longOrNull }
                 awake.acquire(params?.str("why"), maxMs).fold(
@@ -819,7 +826,11 @@ private class ExtensionProcess(
             }
             method == "log" -> log.info { "[$tag] ${params?.str("message") ?: ""}" }
             method == "initialize" -> {}
-            else -> log.debug { "[$tag] unhandled message: method=$method" }
+            else -> {
+                log.debug { "[$tag] unhandled message: method=$method" }
+                // A request this daemon doesn't know (an extension newer than it) fails at once, not by timeout.
+                if (method != null && id != null) replyError(id, "method not found: $method", code = -32601)
+            }
         }
     }
 
@@ -902,6 +913,16 @@ private class ExtensionProcess(
         val body = result.substring(colon + 1)
         if (kind == "ok") reply(id) { put("text", body.substringAfter('\t')) }
         else replyError(id, if (kind == "off") "off" else "$kind: $body")
+    }
+
+    /** `synthesize {text, language?, format?}` → `{blocks:[base64…], ms}` (`pebble-adpcm`, the default) or
+     *  `{path, ms}` (`wav`), or an error `off` / `unavailable: …` / `busy` / the failure. The daemon's text to
+     *  speech (tts.*): the extension needs no engine of its own. */
+    private suspend fun handleSynthesize(id: JsonElement?, params: JsonObject?) {
+        val text = params?.str("text") ?: run { replyError(id, "synthesize: missing text"); return }
+        val result = synthesize(text, params.str("language"), params.str("format") ?: "pebble-adpcm")
+        synthesisResult(result)?.let { r -> reply(id) { r.forEach { (k, v) -> put(k, v) } } }
+            ?: replyError(id, (result as Synthesis.Error).message)
     }
 
     private suspend fun handleClose(params: JsonObject?) {
@@ -1026,13 +1047,26 @@ private class ExtensionProcess(
         enqueue(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("result", buildJsonObject(result)) })
     }
 
-    private fun replyError(id: JsonElement?, message: String) {
+    private fun replyError(id: JsonElement?, message: String, code: Int? = null) {
         if (id == null) { log.warn { "[$tag] $message" }; return }
-        enqueue(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("error", buildJsonObject { put("message", message) }) })
+        enqueue(buildJsonObject {
+            put("jsonrpc", "2.0"); put("id", id)
+            put("error", buildJsonObject { code?.let { put("code", it) }; put("message", message) })
+        })
     }
 }
 
 private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+/** A `synthesize` answer's result object, or null for an error (its message is the error). */
+internal fun synthesisResult(r: Synthesis): JsonObject? = when (r) {
+    is Synthesis.Blocks -> buildJsonObject {
+        putJsonArray("blocks") { r.blocks.forEach { add(java.util.Base64.getEncoder().encodeToString(it)) } }
+        put("ms", r.ms)
+    }
+    is Synthesis.WavFile -> buildJsonObject { put("path", r.path); put("ms", r.ms) }
+    is Synthesis.Error -> null
+}
 
 /**
  * Sideload [pbw] only when the locker doesn't already hold its UUID at the same `versionLabel`. This makes

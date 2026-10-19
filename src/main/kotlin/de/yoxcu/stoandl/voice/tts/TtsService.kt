@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.voice.tts
 
+import de.yoxcu.stoandl.util.CacheDirs
 import de.yoxcu.stoandl.util.onPath
 import de.yoxcu.stoandl.util.runProcess
 import de.yoxcu.stoandl.voice.Wav
@@ -13,7 +14,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
 
 private val log = KotlinLogging.logger {}
 
@@ -21,9 +24,23 @@ private val log = KotlinLogging.logger {}
 internal const val MAX_TTS_CHARS = 2_000
 /** The engine deadline for host playback, which nobody else waits on. */
 private const val SPEAK_TIMEOUT_MS = 60_000L
+/** The engine deadline for an extension's `synthesize`: inside the 30 s the assistant waits for an answer. */
+private const val SYNTHESIZE_TIMEOUT_MS = 25_000L
+/** How long a `synthesize` WAV file stays for its extension to read. */
+private const val WAV_KEEP_MS = 10 * 60_000L
 
 /** The programs that play a WAV file on this device, in order of preference (PipeWire, PulseAudio, ALSA). */
 internal val HOST_PLAYERS = listOf("pw-play", "paplay", "aplay")
+
+/** What an extension's `synthesize` gets back. */
+sealed interface Synthesis {
+    /** `pebble-adpcm`: the blocks for the watch speaker (docs/speaker-stream.md) and the audio's length. */
+    class Blocks(val blocks: List<ByteArray>, val ms: Long) : Synthesis
+    /** `wav`: a 16-bit WAV at the engine's rate, kept for [WAV_KEEP_MS]. */
+    class WavFile(val path: String, val ms: Long) : Synthesis
+    /** The JSON-RPC error message: `off`, `unavailable: <why>`, `busy`, or what went wrong. */
+    data class Error(val message: String) : Synthesis
+}
 
 /** [text] as one line of at most [MAX_TTS_CHARS] characters: an engine reads stdin line by line. */
 internal fun ttsText(text: String): String = text.replace(Regex("\\s+"), " ").trim().take(MAX_TTS_CHARS)
@@ -71,6 +88,37 @@ class TtsService(
             }
         } finally {
             engine.unlock()
+        }
+    }
+
+    /**
+     * An extension's `synthesize`: [text] in [language] as [format] (`pebble-adpcm` or `wav`). Refuses with
+     * `busy` while another synthesis runs rather than queueing: the caller is pacing a reading and would
+     * rather know.
+     */
+    suspend fun synthesize(text: String, language: String?, format: String): Synthesis {
+        if (format != "pebble-adpcm" && format != "wav") return Synthesis.Error("unsupported format '$format' (pebble-adpcm or wav)")
+        val (audio, status) = render(text, language, wait = false, timeoutMs = SYNTHESIZE_TIMEOUT_MS)
+        if (audio == null) {
+            val (kind, why) = status.substringBefore(':') to status.substringAfter(':')
+            return Synthesis.Error(when (kind) {
+                "off", "busy" -> kind
+                "unavailable" -> "unavailable: $why"
+                else -> why
+            })
+        }
+        return withContext(Dispatchers.Default) {
+            if (format == "wav") {
+                val dir = CacheDirs.runtime("tts")
+                dir.listFiles { f -> f.name.startsWith("synth-") && f.lastModified() < System.currentTimeMillis() - WAV_KEEP_MS }
+                    ?.forEach { it.delete() }
+                val file = File(dir, "synth-${UUID.randomUUID()}.wav")
+                file.writeBytes(Wav.encode(audio.samples, audio.sampleRate))
+                Synthesis.WavFile(file.path, audio.ms)
+            } else {
+                val (blocks, ms) = WatchSpeakerEncoding.encode(audio.samples, audio.sampleRate)
+                Synthesis.Blocks(blocks, ms)
+            }
         }
     }
 

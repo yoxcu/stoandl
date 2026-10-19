@@ -8,7 +8,9 @@ import de.yoxcu.stoandl.voice.ESPEAK_VOICE
 import de.yoxcu.stoandl.voice.SPEECH_MODELS
 import de.yoxcu.stoandl.voice.VoiceModels
 import de.yoxcu.stoandl.voice.Wav
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -126,5 +128,28 @@ class TtsTest {
         assertTrue((System.nanoTime() - start) / 1_000_000 < 4_000, "the first engine was killed, not waited for")
         first.join(5_000)
         assertEquals("stopped:", firstResult)
+    }
+
+    /** An extension's synthesize: blocks for the watch, or the error it shows (off, unavailable, busy). */
+    @Test
+    fun `synthesize answers with blocks, or off, unavailable and busy`() = runBlocking {
+        val file = Files.createTempFile("tts", ".wav").toFile().apply { writeBytes(Wav.encode(tone(16000, 1000), 16000)) }
+        val service = TtsService(backends(VoiceBackend.COMMAND, "sh -c 'read t; [ \"${'$'}t\" = slow ] && sleep 2; cat ${file.path}'"), GlobalScope)
+        val r = assertIs<Synthesis.Blocks>(service.synthesize("Hallo.", "de", "pebble-adpcm"))
+        assertEquals(1000, r.ms)
+        assertEquals(listOf(2000, 2000, 11), r.blocks.map { it.size }, "8000 samples: two full blocks, then 14 (13 codes padded to 14)")
+        val wav = assertIs<Synthesis.WavFile>(service.synthesize("Hallo.", null, "wav"))
+        assertEquals(16000, Wav.decode(File(wav.path).readBytes())!!.second)
+        File(wav.path).delete()
+
+        val slow = async(Dispatchers.IO) { service.synthesize("slow", null, "pebble-adpcm") }
+        Thread.sleep(500)
+        assertEquals(Synthesis.Error("busy"), service.synthesize("Hallo.", null, "pebble-adpcm"))
+        assertIs<Synthesis.Blocks>(slow.await())
+
+        assertEquals(Synthesis.Error("off"), TtsService(backends(VoiceBackend.OFF), GlobalScope).synthesize("x", null, "pebble-adpcm"))
+        assertEquals(Synthesis.Error("unavailable: tts.command is empty"),
+            TtsService(backends(VoiceBackend.COMMAND), GlobalScope).synthesize("x", null, "pebble-adpcm"))
+        assertTrue(service.synthesize("x", null, "mp3").let { it is Synthesis.Error && it.message.startsWith("unsupported format") })
     }
 }
