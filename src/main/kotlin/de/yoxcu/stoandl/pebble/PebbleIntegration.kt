@@ -311,9 +311,9 @@ private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification thi
 // recency + presence instead: arm the most-recently-connected watch, and if it doesn't come up within
 // [WRIST_ARM_GRACE] (out of range) rotate to the next candidate and try that. The grace also doubles as
 // the tolerance for a brief drop of a *connected* watch — long enough that BlueZ's standing
-// Device1.Connect re-links it before we'd rotate, so an in-use watch that flaps is never abandoned.
+// Device1.Connect re-links it before we'd rotate, so an in-use watch that flaps is never abandoned (and
+// [WRIST_RELINK_GRACE] for a drop that re-links slowly, see wristRotateGrace).
 private val WRIST_FOLLOW_TICK = 3.seconds
-private val WRIST_ARM_GRACE = 20.seconds
 // After a firmware/language op is last seen active, hold the goal for this long even while the watch is
 // disconnected — a firmware flash reboots the watch (a disconnect that can outlast [WRIST_ARM_GRACE]),
 // and it MUST be the same watch that reconnects to confirm the update, so the follower must not rotate
@@ -490,6 +490,11 @@ class PebbleIntegration(
     private lateinit var manualDisconnect: ManualDisconnect
     private lateinit var linkActivity: WatchLinkActivity
     @Volatile private var lastHealthRequestMs = 0L
+    // BlueZ's last Device1.Disconnected reason and when it came, by the device path's last segment
+    // ("dev_XX_…"); recorded by the churn detector, read by the wrist follower (wristRotateGrace).
+    private val linkDropReasons = ConcurrentHashMap<String, Pair<String, Long>>()
+    // When the host last resumed (ms, 0 = not yet); the wrist follower's post-resume grace keys on it.
+    @Volatile private var lastResumeMs = 0L
     // Datalog send state last pushed to the connected watch (null = none yet); see startDatalogPolicy.
     @Volatile private var datalogSendState: Boolean? = null
 
@@ -1249,6 +1254,7 @@ class PebbleIntegration(
                         if (!path.contains("/dev_")) return@addGenericSigHandler
                         val params = msg.getParameters() ?: return@addGenericSigHandler
                         val reason = params.getOrNull(0) as? String ?: return@addGenericSigHandler
+                        linkDropReasons[path.substringAfterLast('/')] = reason to System.currentTimeMillis()
                         if (reason == "org.bluez.Reason.Authentication") {
                             drops.getOrPut(path) { java.util.Collections.synchronizedList(ArrayList()) }
                                 .add(System.currentTimeMillis())
@@ -2506,9 +2512,11 @@ class PebbleIntegration(
         // the live phase right up to the reboot, so the last active-phase timestamp anchors [WRIST_OP_GRACE].
         scope.launch { firmwareControl.statusFlow().collect(::noteWatchOp) }
         scope.launch { languageControl.statusFlow().collect(::noteWatchOp) }
+        wakeups().onEach { lastResumeMs = System.currentTimeMillis() }.launchIn(scope)
         scope.launch {
             var armedId: String? = null      // identifier we last handed the goal to
             var armedAt = 0L                 // when we armed it (ms) — also the brief-drop grace anchor
+            var droppedAt: Long? = null      // set when armedAt is the armed watch's drop from connected
             // Only ticks while there is something to choose: autoswitch on and two or more known watches.
             val needed = combine(
                 configStore.updates.map { it.connectionAutoswitch },
@@ -2535,6 +2543,7 @@ class PebbleIntegration(
                     armedId = connected.identifier.asString
                     libPebble.watches.first { ws -> ws.none { it is ConnectedPebbleDevice } }
                     armedAt = System.currentTimeMillis()
+                    droppedAt = armedAt
                     continue
                 }
 
@@ -2549,18 +2558,31 @@ class PebbleIntegration(
                         armGoal(pick, "most recently connected")
                         armedId = pick.identifier.asString
                         armedAt = now
+                        droppedAt = null
                     }
-                    now - armedAt >= WRIST_ARM_GRACE.inWholeMilliseconds -> {
+                    now - armedAt >= rotateGrace(current, droppedAt).inWholeMilliseconds -> {
                         // Armed watch hasn't come up in time → it's out of range; try the next candidate.
                         val idx = byRecency.indexOfFirst { it.identifier.asString == armedId }
                         val next = byRecency[(idx + 1) % byRecency.size]
                         if (next.identifier.asString != armedId) armGoal(next, "${current.displayName()} unreachable")
                         armedId = next.identifier.asString
                         armedAt = now   // restart the grace whether we rotated or (lone candidate) kept waiting
+                        droppedAt = null
                     }
                 }
             }
         }
+    }
+
+    /** [wristRotateGrace] for the armed [watch]; [droppedAt] when it dropped from connected, if it did. */
+    private fun rotateGrace(watch: PebbleDevice, droppedAt: Long?): kotlin.time.Duration {
+        val key = when (val id = watch.identifier) {
+            is PebbleBleIdentifier -> bluezObjectPath(id.asString)?.substringAfterLast('/')
+            is PebbleBtClassicIdentifier -> "dev_" + id.macAddress.uppercase().replace(':', '_')
+            else -> null
+        }
+        val reason = key?.let(linkDropReasons::get)
+        return wristRotateGrace(droppedAt, lastResumeMs, reason?.first, reason?.second ?: 0L)
     }
 
     /** Hand the single connection slot to [device]: sets its connectGoal (clearing the others in
