@@ -30,6 +30,28 @@ client and a find-my-phone example ship in the box.
 → **[docs/features.md](docs/features.md)** — the full feature list, each with its CLI usage, a
 comparison with the other companion apps, and what's not yet implemented.
 
+## Quick start (postmarketOS / Alpine)
+
+From a [release](https://github.com/yoxcu/stoandl/releases), download the `.apk` files and the signing
+key (`mick@yoxcu.de-*.rsa.pub`), then:
+
+```sh
+doas cp mick@yoxcu.de-*.rsa.pub /etc/apk/keys/          # trust the signing key (once)
+doas apk add ./stoandl-[0-9]*.apk ./stoandl-systemd-*.apk  # OpenRC: ./stoandl-openrc-*.apk instead
+systemctl --user enable --now stoandl                   # as your user, not root
+```
+
+1. **Pair.** On the watch open **Settings → Bluetooth**, then run `stoandl watch pair` and answer `y`
+   when the code matches the one on the watch.
+2. **Check.** `stoandl notif test` puts a notification on the wrist; `stoandl watch list` shows the
+   watch, its battery and transport.
+3. **GUI (optional).** Install the [GUI](#desktop--mobile-gui-optional) for pairing, settings and
+   health charts on the phone's screen.
+4. **Stuck?** `stoandl support` builds a bundle for a bug report — see
+   [Logging & reporting bugs](#logging--reporting-bugs).
+
+Any other distro: [Build](#build), then [Install](#install-systemd-user-service).
+
 ## Desktop / mobile GUI (optional)
 
 The daemon is fully headless — but there's also an optional **GUI** ([`gui/`](gui/), a separate repo:
@@ -83,11 +105,11 @@ enable the Bluetooth Classic transport.
 > SQLite library in `~/.cache/stoandl/native/` instead of a new `/tmp/androidx_sqliteJni*.tmp` per
 > start. If the shim can't be loaded, the log has an `SQLite: could not provide __isnan` ERROR with the
 > manual fix: an `LD_PRELOAD` of the shim, naming the path of its cached copy or the `unzip` command
-> that extracts it from the JAR (no compiler needed). (The fat JAR still
-> *bundles* kable's btleplug/JNA blobs as an unused transitive dependency — kable's types back the
-> shared BLE abstraction, but its native backend is never instantiated on JVM/Linux, which uses
-> BlueZ.) BLE is verified end-to-end (pair, connect, notifications) on a glibc laptop and a OnePlus 6
-> running postmarketOS; the FFM Classic path is musl-clean by construction but not yet
+> that extracts it from the JAR (no compiler needed). (kable's types back the shared BLE abstraction,
+> but its native btleplug backend is never instantiated on JVM/Linux, which uses BlueZ: the fat JAR
+> leaves out its libraries and JNA, along with the other natives for macOS and Windows.) BLE is
+> verified end-to-end (pair, connect, notifications) on a glibc laptop and a OnePlus 6 running
+> postmarketOS; the FFM Classic path is musl-clean by construction but not yet
 > hardware-verified on musl.
 
 ## Build
@@ -162,7 +184,12 @@ and (re)starts it:
 
 `--remote` is handy for a phone (e.g. postmarketOS) where building on-device is
 slow — it builds the architecture-independent JAR on your fast machine and pushes
-it. (It uses `ssh -t` so `sudo` can prompt for a password.)
+it. (It uses `ssh -t` so `sudo` can prompt for a password.) With `rsync` on both machines it keeps
+the last JAR in the phone's `~/.cache/stoandl/install/` and sends only what changed; otherwise `scp`.
+
+The `stoandl` CLI tunes its JVM for short runs (C1 only, Serial GC) and keeps a class-data archive in
+`~/.cache/stoandl/cli-*.jsa`. The first command after each install writes it and takes about half a
+second longer; later commands start in about half the time.
 
 > The installed service + `stoandl` wrapper call `/usr/bin/java` / `java`, which **must be JDK 25**
 > on the target (see [Requirements](#requirements)). The build runs on JDK 21; `install.sh` pins
@@ -178,9 +205,23 @@ systemctl --user daemon-reload
 systemctl --user enable --now stoandl
 ```
 
+## Scripting
+
+The CLI exits 0 when done, 1 when the call failed, 2 on a usage error and 3 when the daemon isn't
+reachable (not running, or no session bus). Without the JVM, any D-Bus tool can drive the daemon
+through its `de.yoxcu.stoandl.Control` interface ([docs/dbus-interface.md](docs/dbus-interface.md)
+lists every method and record layout):
+
+```sh
+busctl --user call de.yoxcu.stoandl /de/yoxcu/stoandl de.yoxcu.stoandl.Control ListWatches
+busctl --user call de.yoxcu.stoandl /de/yoxcu/stoandl de.yoxcu.stoandl.Control SendTestNotification ss "Hi" "from busctl"
+busctl --user monitor de.yoxcu.stoandl   # the change signals (WatchesChanged, …)
+```
+
 ## Logging & reporting bugs
 
-Logs go to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO.
+The daemon logs to `/tmp/stoandl.log` (rolling, 5 MB × 3) and stdout. Default level is INFO. The
+`stoandl` CLI writes warnings and errors to stderr only, never to that file.
 
 **Filing a bug? Run with debug logging and attach the log** — a `STOANDL_LOG=DEBUG` log (connect and
 drop reasons, PPoG handshake, suspend/resume, PKJS lifecycle) is by far the most useful thing you can

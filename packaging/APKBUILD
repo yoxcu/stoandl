@@ -34,6 +34,9 @@ _libpebble3_commit=3b5a53b79bc14ed9fb328b021b6bb94ec4ab1ac1
 # the init-system files installed in package() into these subpackages, each
 # install_if its init system is present. No custom subpackage functions needed.
 subpackages="$pkgname-openrc $pkgname-systemd"
+# Prints how to start the daemon. No preset and no D-Bus activation: apk applies no presets, and an
+# activatable daemon would come back after the user stopped it (the GUI polls it).
+install="$pkgname.post-install"
 source="$pkgname-$_commit.tar.gz::https://github.com/yoxcu/stoandl/archive/$_commit.tar.gz
 	libpebble3-$_libpebble3_commit.tar.gz::https://github.com/yoxcu/libpebble3/archive/$_libpebble3_commit.tar.gz
 	stoandl.openrc
