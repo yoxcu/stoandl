@@ -30,6 +30,28 @@ app menu, or **Open app** on the anchor card): dictation starts at once, `Thinki
 streams in. Select asks a follow-up, hold Select starts a new chat, hold Up opens the presets. If you leave
 the app before the answer is done, it arrives as a notification instead; it is never lost.
 
+## Reading answers aloud
+
+On a watch with a speaker (Pebble Time 2, Pebble 2 Duo) the Assistant app can speak its answers. The
+daemon does the speech (its text to speech, **Settings → Voice**, `tts.backend`; off by default, so
+nothing is spoken until you set it up), the extension streams the audio to the app, and the app plays it
+on the watch speaker. The format and the reusable receiver are described in
+[speaker-stream.md](speaker-stream.md).
+
+- With `speak = always` (the default) every answer the app shows is read aloud once it is complete.
+  It stays silent while the watch is in Quiet Time or its speaker is muted.
+- **Hold Down** on an answer reads it (again), or stops the reading. It plays in Quiet Time too. The
+  header shows `Speaking...`.
+- Select (a follow-up), hold Select, a preset, Back, an incoming call or notification stop it first, so
+  the microphone doesn't hear the speaker.
+- `language = German` or `English` picks an installed voice of that language; other languages use the
+  daemon's default voice.
+- If text to speech is off or not working, Hold Down posts a short card saying so (`Text to speech is
+  off: Turn it on in stoandl: Settings → Voice.`). `speak = on_request` reads only on Hold Down;
+  `speak = off` never.
+- Each sentence is synthesised while the previous one plays. The phone stays out of suspend while it
+  reads (`keepAwake`, at most 120 s).
+
 ## Setup
 
 ```sh
@@ -56,6 +78,7 @@ the daemon moves it into the secret store at the next start and deletes the line
 | `keep_history` | `true` | Keep conversations for 24 h in a file, so replies to older cards survive a restart. |
 | `base_url` | `https://api.anthropic.com` | For a proxy. |
 | `language` | (empty) | Reply language, e.g. `German`. Empty: the language you spoke, which a misheard question can flip (Parakeet guesses the language itself). |
+| `speak` | `always` | `always`, `on_request` (Hold Down only) or `off`: read answers aloud on the watch speaker (above). |
 | `system_prompt_extra` | (empty) | Appended to the built-in prompt (Pebble screen: answer first, 1–3 sentences, at most 40 words, plain text, longer only when asked). |
 
 ## Conversations and history

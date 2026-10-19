@@ -2,7 +2,7 @@
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -17,7 +17,8 @@
     "keep_history": "true",
     "base_url": "https://api.anthropic.com",
     "system_prompt_extra": "",
-    "language": ""
+    "language": "",
+    "speak": "always"
   },
   "configSchema": [
     {"key": "api_key", "type": "string", "label": "Anthropic API key", "secret": true, "required": true},
@@ -31,6 +32,7 @@
     {"key": "keep_history", "type": "bool", "label": "Keep conversations for 24 h across restarts"},
     {"key": "base_url", "type": "string", "label": "API base URL"},
     {"key": "language", "type": "string", "label": "Reply language (e.g. German; empty = the language you speak)"},
+    {"key": "speak", "type": "enum", "label": "Read answers aloud on the watch speaker (needs text to speech: Settings → Voice)", "options": ["always", "on_request", "off"]},
     {"key": "system_prompt_extra", "type": "string", "label": "Extra instructions (no #)"}
   ]
 }

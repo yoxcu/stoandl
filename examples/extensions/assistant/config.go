@@ -19,6 +19,7 @@ type config struct {
 	BaseURL     string
 	SystemExtra string
 	Language    string
+	Speak       string
 }
 
 const (
@@ -46,6 +47,12 @@ func parseConfig(m map[string]string) config {
 		BaseURL:     get("base_url", "https://api.anthropic.com"),
 		SystemExtra: strings.TrimSpace(m["system_prompt_extra"]),
 		Language:    strings.TrimSpace(m["language"]),
+		Speak:       get("speak", speakAlways),
+	}
+	switch c.Speak {
+	case speakAlways, speakOnRequest, speakOff:
+	default:
+		c.Speak = speakAlways
 	}
 	switch c.Effort {
 	case "low", "medium", "high":

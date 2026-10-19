@@ -28,12 +28,14 @@ const (
 
 // Commands, watch to extension.
 const (
-	cmdHello   = 1
-	cmdAsk     = 2
-	cmdPreset  = 3
-	cmdNewConv = 4
-	cmdCancel  = 5
-	cmdBye     = 6
+	cmdHello     = 1
+	cmdAsk       = 2
+	cmdPreset    = 3
+	cmdNewConv   = 4
+	cmdCancel    = 5
+	cmdBye       = 6
+	cmdSpeak     = 7
+	cmdStopSpeak = 8
 )
 
 // Commands, extension to watch.
@@ -52,6 +54,9 @@ const (
 
 	flagTruncated = 0x01
 	flagReplay    = 0x02
+
+	capSpeaker = 0x08
+	capMuted   = 0x10 // muted, or Quiet Time: nothing is read aloud unasked
 
 	protoVersion = 1
 )
@@ -141,6 +146,7 @@ func (a *assistant) sendWait(data map[int]AppValue) string {
 func (a *assistant) appClosed() {
 	a.mu.Lock()
 	a.appOpen = false
+	a.stopSpeechLocked()
 	var sink *appSink
 	if a.job != nil {
 		sink = a.job.sink
@@ -192,9 +198,12 @@ func (a *assistant) handleApp(m map[string]any) {
 	conv := uint32(appInt(m, keyConv))
 	turn := appInt(m, keyTurn)
 	cmd := appInt(m, keyCmd)
-	if cmd == cmdAsk || cmd == cmdPreset {
-		// The app is open even if an earlier send to it failed (e.g. while it was dictating).
+	if cmd == cmdHello || cmd == cmdAsk || cmd == cmdPreset {
 		a.mu.Lock()
+		if _, ok := m[strconv.Itoa(keyCaps)]; ok {
+			a.caps = appInt(m, keyCaps)
+		}
+		// The app is open even if an earlier send to it failed (e.g. while it was dictating).
 		a.appOpen = true
 		a.mu.Unlock()
 	}
@@ -213,11 +222,13 @@ func (a *assistant) handleApp(m map[string]any) {
 		a.ask(originApp, convID(conv), turn, a.cfg.Presets[i])
 	case cmdNewConv:
 		a.mu.Lock()
+		a.stopSpeechLocked()
 		a.hist.Current = ""
 		a.saveLocked()
 		a.mu.Unlock()
 	case cmdCancel:
 		a.mu.Lock()
+		a.stopSpeechLocked()
 		if j := a.job; j != nil && convNum(j.conv) == conv && j.turn == turn {
 			j.cancel(errUserCancel)
 			a.job = nil
@@ -226,6 +237,10 @@ func (a *assistant) handleApp(m map[string]any) {
 		a.appSend(nil, msgError(conv, turn, newAskError(errCancelled, 0, "")))
 	case cmdBye:
 		a.appClosed()
+	case cmdSpeak:
+		a.speakTurn(conv, turn)
+	case cmdStopSpeak:
+		a.stopSpeech()
 	}
 }
 
@@ -234,6 +249,7 @@ func (a *assistant) handleApp(m map[string]any) {
 func (a *assistant) hello() {
 	a.mu.Lock()
 	a.appOpen = true
+	a.stopSpeechLocked() // a new app instance: the old stream's blocks would start mid-answer
 	if a.replay != nil {
 		a.replay.cancel()
 		a.replay = nil

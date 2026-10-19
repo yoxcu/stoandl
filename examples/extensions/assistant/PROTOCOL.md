@@ -10,7 +10,9 @@ format basics: [docs/extensions.md](../../../docs/extensions.md).
 | **B** extension `assistant` (Go) | Go | `examples/extensions/assistant/` except `watchapp/`, `examples/extensions/stoandl_ext.go`, `docs/assistant.md` (new), `docs/features.md`, `TESTING.md` |
 | **C** watchapp | C | `examples/extensions/assistant/watchapp/` only |
 
-Stage 1 (notifications) needs A and B. Stage 2 (watchapp) adds C. No fork change, no PKJS, no plugin runtime.
+Stage 1 (notifications) needs A and B. Stage 2 (watchapp) adds C. Reading answers aloud (C9) adds the
+daemon's text to speech (`synthesize`) and the shared speaker stream
+([docs/speaker-stream.md](../../../docs/speaker-stream.md)). No fork change, no PKJS, no plugin runtime.
 
 ---
 
@@ -100,7 +102,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -109,7 +111,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
     "presets": "Tell me a fun fact|Give me a quick dinner idea|How do I say thank you in Japanese?|Motivate me",
     "followups": "Explain more|Shorter|Retry",
     "idle_minutes": "15", "keep_history": "true",
-    "base_url": "https://api.anthropic.com", "system_prompt_extra": ""
+    "base_url": "https://api.anthropic.com", "system_prompt_extra": "", "language": "", "speak": "always"
   },
   "configSchema": [ …the rows of B3, in that order… ]
 }
@@ -132,6 +134,8 @@ The GUI renders the schema (an enum shows its first option when the value is unk
 | `keep_history` | bool | true | Persist conversations to the 24 h file (B6); otherwise memory only. |
 | `base_url` | string | `https://api.anthropic.com` | For a proxy (`option.WithBaseURL`). |
 | `system_prompt_extra` | string | `""` | Appended to the fixed system prompt. It can't contain `#`, because the config parser cuts there. |
+| `language` | string | `""` | Reply language, a free-form name (`German`). Also picks the voice for reading aloud: German and English map to `de` / `en` (C9); anything else gets the daemon's default voice. |
+| `speak` | enum `always`, `on_request`, `off` | `always` | Read answers aloud on the watch speaker (C9). Inert until the daemon's `tts.backend` is set, which is off by default. |
 
 `config.example` lists every key uncommented at its default, with `api_key =` empty and a comment to set it in the GUI (keyring).
 
@@ -265,6 +269,8 @@ the daemon (the daemon starts the binary with no arguments).
 | `Ext.KeepAwake(why string, maxMs int, cb func(token string))` | `cb("")` on an error reply |
 | `Ext.Release(token string)` | fire and forget |
 | error replies | a pending callback that registered for errors receives them (needed for `KeepAwake`); the others are still only logged |
+| `Ext.Synthesize(text, language string, cb func(blocks [][]byte, ms int, err string))` | ext `synthesize{text, language?, format:"pebble-adpcm"}`; `err` is the error message (`off`, `unavailable: …`, `busy`). A daemon without it never answers, so callers time out (the assistant after 30 s). |
+| `SpeakerPump` (`NewSpeakerPump(send)`, `Write`, `End`, `Abort`, `Sent`) and the `Spk*` keys | one speaker stream, paced to the watch's ring, sent through the caller's one-in-flight path ([docs/speaker-stream.md](../../../docs/speaker-stream.md)) |
 
 The assistant keeps an identical copy next to its `main.go`.
 
@@ -278,7 +284,7 @@ The assistant keeps an identical copy next to its `main.go`.
 |---|---|
 | UUID | **`5b24fc80-114d-4c28-b007-53e241b95856`** (Go constant `APP_UUID`; `package.json` `pebble.uuid`) |
 | displayName | `Assistant` |
-| package `name` / version | `assistant` / `1.0.0` (bump on every change, or the locker won't re-push it) |
+| package `name` / version | `assistant` / `1.1.0` (bump on every change, or the locker won't re-push it) |
 | sdkVersion | `3`, `enableMultiJS: false`, **no `src/pkjs`** |
 | targetPlatforms | `basalt`, `chalk`, `diorite`, `emery`, `flint`, `gabbro` (no aplite) |
 | messageKeys | `[]`: the C code uses the raw numeric keys below via `#define`, like findphone and matrix-preview |
@@ -297,23 +303,29 @@ The assistant keeps an identical copy next to its `main.go`.
 | 4 | CONV | uint32 (`U32`) | ASK, PRESET, STATUS, CHUNK, DONE, ERROR |
 | 5 | FLAGS | uint8 | DONE |
 | 6 | INBOX | uint16 | HELLO |
-| 7 | CAPS | uint8 | HELLO |
+| 7 | CAPS | uint8 | HELLO, ASK, PRESET (read fresh for each) |
 | 8 | PROTO | uint8, = 1 | HELLO, PRESETS |
 | 9 | CODE | uint8 | STATUS (state), ERROR (B8 code) |
 | 10 | INDEX | uint8 | PRESET |
 
 C reads every integer through one helper that switches on `tuple->length` (1/2/4 bytes), so a width mismatch can't misread. Missing keys read as 0 / `""`.
 
+The speaker stream uses four more keys, `0x7FFF0000`–`0x7FFF0003` (SPK_ID, SPK_SEQ, SPK_DATA, SPK_FLAGS),
+defined once in [docs/speaker-stream.md](../../../docs/speaker-stream.md). A message with SPK_ID carries no
+CMD; `stoandl_speaker_handle()` takes it before the CMD switch.
+
 ### C3. Watch to extension
 
 | CMD | Name | Keys | Extension reaction |
 |---|---|---|---|
-| 1 | HELLO | PROTO, INBOX, CAPS (`0x01` mic, `0x02` color, `0x04` round) | Mark app open. Send `PRESETS`, then `STATUS{CODE=0, CONV=current or 0, TURN=its last turn}`. If a request is running, send `STATUS{CODE=1\|2}` and re-stream from SEQ 0 (C5). Otherwise, if `current` is idle-valid (B7), replay its last turn (CHUNKs + `DONE` with REPLAY). |
-| 2 | ASK | TEXT (question ≤ 500 B), CONV, TURN | B7 with origin app. Answer: `STATUS{CODE=1}`, `CHUNK`s, `DONE`, or `ERROR`. |
-| 3 | PRESET | INDEX, CONV, TURN | As ASK with `presets[INDEX]`. Index out of range: `ERROR{CODE=8}`. |
-| 4 | NEW_CONV | none | `current = ""`. No reply message. |
-| 5 | CANCEL | CONV, TURN | Cancel the running request if it matches. Reply `ERROR{CODE=1}`. |
-| 6 | BYE | none | Sent from `deinit`, best effort. Mark app closed (C6). |
+| 1 | HELLO | PROTO, INBOX, CAPS (`0x01` mic, `0x02` color, `0x04` round, `0x08` speaker, `0x10` muted: the speaker is muted or Quiet Time is on) | Mark app open. Send `PRESETS`, then `STATUS{CODE=0, CONV=current or 0, TURN=its last turn}`. If a request is running, send `STATUS{CODE=1\|2}` and re-stream from SEQ 0 (C5). Otherwise, if `current` is idle-valid (B7), replay its last turn (CHUNKs + `DONE` with REPLAY). |
+| 2 | ASK | TEXT (question ≤ 500 B), CONV, TURN, CAPS | B7 with origin app. Stops reading aloud. Answer: `STATUS{CODE=1}`, `CHUNK`s, `DONE`, or `ERROR`. |
+| 3 | PRESET | INDEX, CONV, TURN, CAPS | As ASK with `presets[INDEX]`. Index out of range: `ERROR{CODE=8}`. |
+| 4 | NEW_CONV | none | `current = ""`. Stops reading aloud. No reply message. |
+| 5 | CANCEL | CONV, TURN | Stop reading aloud. Cancel the running request if it matches. Reply `ERROR{CODE=1}`. |
+| 6 | BYE | none | Sent from `deinit`, best effort. Mark app closed (C6), which stops reading aloud. |
+| 7 | SPEAK | CONV, TURN | Read that answer aloud (C9), whatever `speak` = `always` would decide. |
+| 8 | STOP_SPEAK | none | Stop reading aloud. No reply message. |
 
 ### C4. Extension to watch
 
@@ -324,6 +336,7 @@ C reads every integer through one helper that switches on `tuple->length` (1/2/4
 | 18 | CHUNK | CONV, TURN, SEQ, TEXT (≤ 120 B) | Append if CONV/TURN match the active request and SEQ is the next one expected (C5) |
 | 19 | DONE | CONV, TURN, SEQ = number of chunks sent, FLAGS (`0x01` TRUNCATED, `0x02` REPLAY) | Finish. TRUNCATED appends `…`. One short vibe unless REPLAY or the wait was under 3 s. |
 | 20 | ERROR | CONV, TURN, CODE (B8), TEXT (≤ 100 B, the B8 card title without `Claude: `) | Show the text. Select retries: `ASK{TEXT="Retry", CONV, TURN}` (B7). |
+| none | speaker stream | SPK_* | Played by `stoandl_speaker.c` (C9). |
 
 ### C5. Flow control
 
@@ -331,12 +344,12 @@ C reads every integer through one helper that switches on `tuple->length` (1/2/4
 |---|---|
 | Chunk size | TEXT ≤ 120 B UTF-8, never splitting a UTF-8 sequence |
 | Flush | When the buffer reaches 120 B, or 400 ms after its first unflushed byte, or at a sentence end (`. `, `! `, `? `, `\n`) once it holds ≥ 24 B. The text is cleaned up (B4) before chunking. |
-| In flight | **One** `sendAppMessage` at a time, in each direction. The next message is sent only after `ack`. |
+| In flight | **One** `sendAppMessage` at a time, in each direction, speech blocks included: they go through the same path as CHUNKs. The next message is sent only after `ack`. |
 | NACK | Retry the same message after 200, 400 and 800 ms. A `nack` that took ≥ 5 s, `timeout`, `error`, or a 4th failure means the app is closed (C6). A retried message keeps its SEQ. |
 | Watch dedupe | A CHUNK with SEQ below the expected one is ignored (a retry whose ACK was lost). A SEQ above the expected one appends `[…]` and resynchronises. Messages for another CONV/TURN are ignored, except STATUS, which sets them. |
 | Re-stream | After a HELLO during a running request, or a replay, the extension restarts from SEQ 0 with all text so far. The watch clears its buffer on STATUS. |
 | Watch send | Wait for `outbox_sent` before the next send. On `outbox_failed`, retry once after 500 ms, then show `Phone not reachable`. |
-| Buffers | `app_message_open(inbox 768, outbox 640)`. Answer buffer on the watch: 4096 B; overflow ends it with `…`. Question: dictation buffer 512 B, sent truncated to 500 B. |
+| Buffers | `app_message_open(inbox 768, outbox 640)`; inbox 2304 on watches with a speaker (`PBL_SPEAKER`), for 2000-byte speech blocks. Answer buffer on the watch: 4096 B; overflow ends it with `…`. Question: dictation buffer 512 B, sent truncated to 500 B. |
 | Ordering | Before streaming, the extension sends STATUS for every request, so the watch always knows the active CONV/TURN. |
 
 ### C6. App closed
@@ -356,11 +369,13 @@ C reads every integer through one helper that switches on `tuple->length` (1/2/4
 | Idle | `Ask Claude` + hint (`Select: ask · Hold Select: new chat · Hold Up: presets`) | Select: dictation or presets · Hold Up: presets |
 | Thinking | question (bold, top), `Thinking…` / `Searching…` | Select: CANCEL |
 | Streaming | question header + answer in a `ScrollLayer`; the view stays at the top while text grows | Up/Down scroll · Select: CANCEL |
-| Answer | same, complete | Select: follow-up (dictation or presets) with `CONV, TURN` of the answer shown · **Hold Select: NEW_CONV**, then dictation or presets · Hold Up: presets · Up/Down scroll |
+| Answer | same, complete; the header shows `Speaking...` while it is read aloud | Select: follow-up (dictation or presets) with `CONV, TURN` of the answer shown · **Hold Select: NEW_CONV**, then dictation or presets · Hold Up: presets · Up/Down scroll · **Hold Down** (speaker watches): read aloud, or stop |
 | Error | message + `Select: retry` | Select: retry (C4 ERROR) · Hold Select: new chat |
 | Presets menu | `MenuLayer` of PRESETS; until PRESETS arrives it shows `Loading…` | Select sends PRESET{INDEX, CONV, TURN of the shown answer, or 0, 0} |
 
-Back always exits, sending BYE first. A running answer then arrives as a notification (C6). No glance, no background worker, no persistent storage in v1.
+Select, Hold Select and a new question stop reading aloud first (and send STOP_SPEAK), so the
+microphone doesn't hear the speaker. On speaker watches Down is not repeating, like Up, because it has a
+long press. Back always exits, sending BYE first; the speech stops with the app. A running answer then arrives as a notification (C6). No glance, no background worker, no persistent storage in v1.
 
 ### C8. Sequence (Stage 2, happy path)
 
@@ -371,6 +386,23 @@ ext ◀── Claude stream ──  CHUNK{C,N,0,"About 384,400 km."} ─▶ ack 
 watch: Select → dictation "in miles?" → ASK{TEXT,CONV=C,TURN=N} ─▶ ext: appends turn N+1 to C
 ```
 
+### C9. Reading aloud
+
+The daemon synthesizes, the extension streams, the watchapp plays: [docs/speaker-stream.md](../../../docs/speaker-stream.md)
+is the shared format, sender and receiver contract.
+
+| Rule | Value |
+|---|---|
+| When | `speak=always`: after DONE of an answer the app showed (never for a replay or a notification answer), if the latest CAPS has speaker and not muted. `on_request` and `always`: on SPEAK (Hold Down), muted or not. `off`: SPEAK posts the card `Reading aloud is off` and an abort. |
+| Quiet Time | The watch sets CAPS `0x10` while `quiet_time_is_active()`, even though the firmware mutes the speaker in Quiet Time only when the user's "mute speaker" preference is on. So `always` stays silent at night; Hold Down still plays. A really muted speaker: Hold Down shows `Speaker muted` and sends nothing. |
+| Text | The answer as shown (cleaned, B4), bullets without their `- `, split into sentences: one shorter than 40 B joins the next, one longer than 300 B is cut at a space. |
+| Synthesis | `synthesize{text, language, format:"pebble-adpcm"}` per sentence, one call at a time; sentence N+1 is asked for while N is sent. `language` is `de` or `en` from `language` (German, Deutsch, de, de-AT … / English, en, en-GB …), else omitted. No answer in 30 s counts as `unavailable`. |
+| Stream | One `SpeakerPump` per reading: blocks paced to the watch's 6 KB ring, END after the last sentence. A synthesis error mid-way ends the stream with what was sent. |
+| Errors | On SPEAK with nothing sent yet: `off` → card `Text to speech is off` / `Turn it on in stoandl: Settings → Voice.`; `busy` → `Text to speech is busy`; `unavailable: <why>` → `Text to speech unavailable` / `<why>`; then an ABORT, which clears the watch's `Speaking...`. Card itemId `assistant:speech` (`ReplaceID`), urgent. An unasked (`always`) reading fails silently, since text to speech is off by default. |
+| Stop | ASK, PRESET, CANCEL, NEW_CONV, STOP_SPEAK, HELLO (a new app instance), BYE and a failed send stop the pump. If blocks went out and the app is still open, an ABORT follows. |
+| Sleep | `keepAwake{why:"reading an answer aloud"}` from the first synthesize to the end of the stream, renewed before each 60 s hold expires, 120 s at most. |
+| Watch | Hold Down sets `Speaking...` at once; the receiver's on-change callback clears it when the stream ends or is aborted. |
+
 ---
 
 ## Not verified (hardware rows go in TESTING.md, marked ⚠️ UNVERIFIED)
@@ -380,3 +412,6 @@ watch: Select → dictation "in miles?" → ASK{TEXT,CONV=C,TURN=N} ─▶ ext: 
 - Whether the 768 B inbox is enough on every platform, and the 10 s NACK behaviour when the app is closed versus busy in dictation.
 - Whether `PBL_MICROPHONE` is undefined on diorite and defined on flint.
 - Latency figures (`bench`, and the `ask … ttft=` log line).
+- Reading aloud (C9) on a Time 2 and a 2 Duo: time from DONE to the first sound, gaps between sentences,
+  ring overflows (`speaker: ring full` in the watch log), focus loss (call, notification, dictation),
+  Quiet Time and a muted speaker, and throughput at the reduced sniff interval over Linux PPoG.

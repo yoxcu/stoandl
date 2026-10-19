@@ -51,7 +51,9 @@ type assistant struct {
 	hist    *History
 	job     *job
 	replay  *appSink
+	speech  *speech
 	appOpen bool
+	caps    int // the watchapp's CAPS, from its latest HELLO, ASK or PRESET
 	state   appState
 
 	appMu   sync.Mutex // one AppMessage in flight
@@ -230,8 +232,9 @@ func (a *assistant) ask(o origin, conv string, turn int, text string) {
 	go a.run(j, req)
 }
 
-// cancelLocked abandons the running request and any replay to the watchapp.
+// cancelLocked abandons the running request, any replay to the watchapp and any reading aloud.
 func (a *assistant) cancelLocked(cause error) {
+	a.stopSpeechLocked()
 	if a.job != nil {
 		a.job.cancel(cause)
 		a.job = nil
@@ -245,7 +248,7 @@ func (a *assistant) cancelLocked(cause error) {
 func (a *assistant) prefix() string { return prefixKey(a.cfg.systemExtra(), a.cfg.WebSearch) }
 
 func (a *assistant) run(j *job, req askRequest) {
-	release := a.keepAwake()
+	release := a.keepAwake("answering a question", awakeHoldMax)
 	defer release()
 
 	var res askResult
@@ -317,7 +320,11 @@ func (a *assistant) run(j *job, req askRequest) {
 	if a.job == j {
 		a.job = nil
 	}
+	speak := delivered && res.Err == nil && a.job == nil && a.autoSpeakLocked()
 	a.mu.Unlock()
+	if speak {
+		a.startSpeech(text, false)
+	}
 	if delivered || context.Cause(j.ctx) != nil {
 		return
 	}
@@ -349,28 +356,4 @@ func (a *assistant) logAsk(j *job, model string, res askResult, cancelled bool) 
 	a.ext.Logf("%q ask conv=%s turn=%d model=%s ttft=%d total=%d in=%d out=%d searches=%d cost=$%.5f stop=%s sink=%s",
 		string(q), j.conv, j.turn, model, res.TTFT.Milliseconds(), res.Total.Milliseconds(),
 		res.In, res.Out, res.Searches, res.Cost, stop, j.origin)
-}
-
-// keepAwake holds off suspend while a request runs; the returned func releases the hold, also when
-// the token arrives after the request ended.
-func (a *assistant) keepAwake() func() {
-	var mu sync.Mutex
-	var tok string
-	released := false
-	a.ext.KeepAwake("answering a question", 60000, func(t string) {
-		mu.Lock()
-		defer mu.Unlock()
-		if released {
-			a.ext.Release(t)
-			return
-		}
-		tok = t
-	})
-	return func() {
-		mu.Lock()
-		released = true
-		t := tok
-		mu.Unlock()
-		a.ext.Release(t)
-	}
 }

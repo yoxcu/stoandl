@@ -27,6 +27,11 @@ keep_history = true
 base_url = https://api.anthropic.com
 # Reply language, e.g. German. Empty: the language you speak (a misheard question can then flip it).
 language =
+# Read answers aloud on the watch speaker (Pebble Time 2 and 2 Duo): always | on_request (hold Down in the
+# app) | off. Nothing is spoken until text to speech is set up in stoandl (Settings → Voice, tts.backend);
+# German and English answers use a voice of that language when one is installed. always stays quiet
+# while the watch is in Quiet Time or its speaker is muted.
+speak = always
 # Appended to the built-in system prompt (it cannot contain the character the config parser treats as
 # a comment).
 system_prompt_extra =

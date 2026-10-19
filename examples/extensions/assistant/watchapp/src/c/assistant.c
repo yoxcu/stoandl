@@ -1,8 +1,11 @@
 #include <pebble.h>
 #include <string.h>
 
+#include "stoandl_speaker.h"
+
 // "Ask Claude" watchapp. The companion is the stoandl `assistant` extension (no PebbleKit JS); the
-// AppMessage contract is section C of ../../PROTOCOL.md, which this file follows key for key.
+// AppMessage contract is section C of ../../PROTOCOL.md, which this file follows key for key. Answers
+// are read aloud through stoandl_speaker.c (a copy of examples/extensions/watchlib/, keep it identical).
 
 #define KEY_CMD 0
 #define KEY_TEXT 1
@@ -22,6 +25,8 @@
 #define CMD_NEW_CONV 4
 #define CMD_CANCEL 5
 #define CMD_BYE 6
+#define CMD_SPEAK 7
+#define CMD_STOP_SPEAK 8
 
 #define CMD_PRESETS 16
 #define CMD_STATUS 17
@@ -33,6 +38,8 @@
 #define CAP_MIC 0x01
 #define CAP_COLOR 0x02
 #define CAP_ROUND 0x04
+#define CAP_SPEAKER 0x08
+#define CAP_MUTED 0x10
 #define FLAG_TRUNCATED 0x01
 #define FLAG_REPLAY 0x02
 
@@ -43,7 +50,11 @@
 #define ERR_CANCELLED 1
 #define ERR_BAD_REQUEST 8
 
+#if defined(PBL_SPEAKER)
+#define INBOX_SIZE 2304  // a speaker block message (STOANDL_SPEAKER_INBOX_MIN) with room to spare
+#else
 #define INBOX_SIZE 768
+#endif
 #define OUTBOX_SIZE 640
 #define ANSWER_MAX 4096
 #define QUESTION_MAX 100
@@ -57,6 +68,7 @@
 #define SEND_RETRY_MS 500
 #define QUIET_DONE_MS 3000
 #define LONG_PRESS_MS 500
+#define NOTE_MS 2000
 
 typedef enum {
   ST_IDLE,
@@ -97,6 +109,11 @@ static uint16_t s_expected_seq;
 static bool s_awaiting_status;
 static bool s_cancel_pending;
 static uint64_t s_request_start_ms;
+// Hold Down asked to hear the answer and no audio has arrived yet.
+static bool s_speak_wait;
+// A short note in place of the header ("Speaker muted"), cleared by a timer.
+static const char *s_note;
+static AppTimer *s_note_timer;
 
 static char s_question[QUESTION_MAX + 1];
 static char s_answer[ANSWER_MAX];
@@ -246,9 +263,17 @@ static const char *body_for_state(void) {
   return "";
 }
 
+static bool speaking(void) { return s_speak_wait || stoandl_speaker_active(); }
+
 static const char *header_for_state(void) {
+  if (s_note) {
+    return s_note;
+  }
   if (s_state == ST_IDLE) {
     return "Ask Claude";
+  }
+  if (s_state == ST_ANSWER && speaking()) {
+    return "Speaking...";
   }
   return s_question[0] ? s_question : "Claude";
 }
@@ -331,6 +356,24 @@ static void show_local_error(const char *text);
 
 static void send_head(void);
 
+// Read fresh for every HELLO, ASK and PRESET: the speaker can be muted, and Quiet Time can begin, while
+// the app is open. MUTED keeps the extension from reading answers aloud unasked; Hold Down still plays.
+static uint8_t caps(void) {
+  uint8_t c = PBL_IF_COLOR_ELSE(CAP_COLOR, 0) | PBL_IF_ROUND_ELSE(CAP_ROUND, 0);
+#if defined(PBL_MICROPHONE)
+  if (s_dictation) {
+    c |= CAP_MIC;
+  }
+#endif
+#if defined(PBL_SPEAKER)
+  c |= CAP_SPEAKER;
+  if (!stoandl_speaker_usable() || quiet_time_is_active()) {
+    c |= CAP_MUTED;
+  }
+#endif
+  return c;
+}
+
 static void retry_cb(void *ctx) {
   s_retry_timer = NULL;
   send_head();
@@ -368,19 +411,22 @@ static void send_head(void) {
     case CMD_HELLO:
       dict_write_uint8(iter, KEY_PROTO, PROTO_VERSION);
       dict_write_uint16(iter, KEY_INBOX, INBOX_SIZE);
-      dict_write_uint8(iter, KEY_CAPS, m->index);
+      dict_write_uint8(iter, KEY_CAPS, caps());
       break;
     case CMD_ASK:
       dict_write_cstring(iter, KEY_TEXT, m->text);
       dict_write_uint32(iter, KEY_CONV, m->conv);
       dict_write_uint8(iter, KEY_TURN, m->turn);
+      dict_write_uint8(iter, KEY_CAPS, caps());
       break;
     case CMD_PRESET:
       dict_write_uint8(iter, KEY_INDEX, m->index);
       dict_write_uint32(iter, KEY_CONV, m->conv);
       dict_write_uint8(iter, KEY_TURN, m->turn);
+      dict_write_uint8(iter, KEY_CAPS, caps());
       break;
     case CMD_CANCEL:
+    case CMD_SPEAK:
       dict_write_uint32(iter, KEY_CONV, m->conv);
       dict_write_uint8(iter, KEY_TURN, m->turn);
       break;
@@ -421,6 +467,9 @@ static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason, voi
 }
 
 static void begin_request(const char *question, size_t len) {
+  // A new question stops the answer being read aloud; the extension stops sending it on ASK/PRESET.
+  s_speak_wait = false;
+  stoandl_speaker_stop();
   copy_cut(s_question, sizeof(s_question), question, len);
   clear_answer();
   s_awaiting_status = true;
@@ -469,19 +518,47 @@ static void send_simple(uint8_t cmd, uint32_t conv, uint8_t turn) {
 }
 
 static void send_hello(void) {
-  OutMsg *m = enqueue(CMD_HELLO);
-  if (!m) {
+  if (enqueue(CMD_HELLO)) {
+    send_head();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading aloud (stoandl_speaker.c plays what the extension streams)
+
+// Stops what is being read, or was asked for, so the microphone won't hear it, and tells the extension.
+static void stop_speech(void) {
+  if (!speaking()) {
     return;
   }
-  uint8_t caps = PBL_IF_COLOR_ELSE(CAP_COLOR, 0) | PBL_IF_ROUND_ELSE(CAP_ROUND, 0);
-#if defined(PBL_MICROPHONE)
-  if (s_dictation) {
-    caps |= CAP_MIC;
-  }
-#endif
-  m->index = caps;
-  send_head();
+  s_speak_wait = false;
+  stoandl_speaker_stop();
+  send_simple(CMD_STOP_SPEAK, 0, 0);
+  relayout();
 }
+
+static void speaker_changed(bool active, void *ctx) {
+  s_speak_wait = false;  // the stream took over, or there will be none
+  relayout();
+}
+
+#if defined(PBL_SPEAKER)
+static void note_done(void *ctx) {
+  s_note_timer = NULL;
+  s_note = NULL;
+  relayout();
+}
+
+static void show_note(const char *text) {
+  s_note = text;
+  if (s_note_timer) {
+    app_timer_reschedule(s_note_timer, NOTE_MS);
+  } else {
+    s_note_timer = app_timer_register(NOTE_MS, note_done, NULL);
+  }
+  relayout();
+}
+#endif
 
 static void show_local_error(const char *text) {
   s_awaiting_status = false;
@@ -788,6 +865,9 @@ static void handle_error(DictionaryIterator *iter) {
 }
 
 static void inbox_received(DictionaryIterator *iter, void *ctx) {
+  if (stoandl_speaker_handle(iter)) {
+    return;
+  }
   switch (read_uint(iter, KEY_CMD)) {
     case CMD_PRESETS: {
       size_t len;
@@ -820,6 +900,7 @@ static void inbox_dropped(AppMessageResult reason, void *ctx) {
 // Main window
 
 static void select_click(ClickRecognizerRef ref, void *ctx) {
+  stop_speech();
   switch (s_state) {
     case ST_IDLE:
       start_ask(0, 0);
@@ -852,6 +933,7 @@ static void select_click(ClickRecognizerRef ref, void *ctx) {
 }
 
 static void select_long(ClickRecognizerRef ref, void *ctx) {
+  stop_speech();
   new_conversation();
   start_ask(0, 0);
 }
@@ -864,6 +946,26 @@ static void down_click(ClickRecognizerRef ref, void *ctx) {
   scroll_layer_scroll_down_click_handler(ref, s_scroll);
 }
 
+#if defined(PBL_SPEAKER)
+// Hold Down: read the answer on screen aloud, or stop reading.
+static void down_long(ClickRecognizerRef ref, void *ctx) {
+  if (speaking()) {
+    stop_speech();
+    return;
+  }
+  if (s_state != ST_ANSWER) {
+    return;
+  }
+  if (!stoandl_speaker_usable()) {
+    show_note("Speaker muted");
+    return;
+  }
+  s_speak_wait = true;
+  send_simple(CMD_SPEAK, s_conv, s_turn);
+  relayout();
+}
+#endif
+
 static void up_long(ClickRecognizerRef ref, void *ctx) {
   uint32_t conv;
   uint8_t turn;
@@ -872,10 +974,15 @@ static void up_long(ClickRecognizerRef ref, void *ctx) {
 }
 
 static void click_config(void *ctx) {
-  // Up is not repeating: a repeating click and a long click can't share a button.
+  // Up (and Down with a speaker) is not repeating: a repeating click and a long click can't share a button.
   window_single_click_subscribe(BUTTON_ID_UP, up_click);
   window_long_click_subscribe(BUTTON_ID_UP, LONG_PRESS_MS, up_long, NULL);
+#if defined(PBL_SPEAKER)
+  window_single_click_subscribe(BUTTON_ID_DOWN, down_click);
+  window_long_click_subscribe(BUTTON_ID_DOWN, LONG_PRESS_MS, down_long, NULL);
+#else
   window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, down_click);
+#endif
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
   window_long_click_subscribe(BUTTON_ID_SELECT, LONG_PRESS_MS, select_long, NULL);
 }
@@ -933,6 +1040,7 @@ static void win_unload(Window *w) {
 static void launch_ask(void *ctx) { start_ask(0, 0); }
 
 static void init(void) {
+  stoandl_speaker_init(speaker_changed, NULL);
   app_message_register_inbox_received(inbox_received);
   app_message_register_inbox_dropped(inbox_dropped);
   app_message_register_outbox_sent(outbox_sent);
@@ -960,8 +1068,12 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  stoandl_speaker_deinit();  // Back: the speech stops with the app; BYE stops the extension's stream
   if (s_retry_timer) {
     app_timer_cancel(s_retry_timer);
+  }
+  if (s_note_timer) {
+    app_timer_cancel(s_note_timer);
   }
   DictionaryIterator *iter;
   if (!s_out_busy && app_message_outbox_begin(&iter) == APP_MSG_OK) {

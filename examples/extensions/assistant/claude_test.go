@@ -327,6 +327,41 @@ func waitFor(t *testing.T, out *syncBuf, what string, pred func(map[string]any) 
 	return nil
 }
 
+// fakeHost answers the extension's requests, each once, until the returned stop is called: reply gives
+// the result for a request line, or nil to leave it unanswered.
+func fakeHost(a *assistant, out *syncBuf, reply func(l map[string]any) map[string]any) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		answered := map[float64]bool{}
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			for _, l := range out.lines() {
+				id, _ := l["id"].(float64)
+				if l["method"] == nil || answered[id] {
+					continue
+				}
+				res := reply(l)
+				if res == nil {
+					continue
+				}
+				answered[id] = true
+				a.ext.pendMu.Lock()
+				cb := a.ext.pending[int(id)]
+				delete(a.ext.pending, int(id))
+				a.ext.pendMu.Unlock()
+				if cb != nil {
+					cb(res)
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func isNotify(l map[string]any) bool { return l["method"] == "notify" }
 
 func params(l map[string]any) map[string]any { p, _ := l["params"].(map[string]any); return p }
@@ -398,32 +433,12 @@ func TestAppStreamsChunks(t *testing.T) {
 	f := newFakeAPI(t, textResponse(answer[:40], answer[40:]))
 	a, out := newTestAssistant(t, f, nil)
 
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() { // the watch: ACK every AppMessage, one at a time
-		acked := map[float64]bool{}
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-			for _, l := range out.lines() {
-				id, _ := l["id"].(float64)
-				if l["method"] != "sendAppMessage" || acked[id] {
-					continue
-				}
-				acked[id] = true
-				a.ext.pendMu.Lock()
-				cb := a.ext.pending[int(id)]
-				delete(a.ext.pending, int(id))
-				a.ext.pendMu.Unlock()
-				if cb != nil {
-					cb(map[string]any{"result": "ack"})
-				}
-			}
+	defer fakeHost(a, out, func(l map[string]any) map[string]any { // the watch ACKs every AppMessage
+		if l["method"] == "sendAppMessage" {
+			return map[string]any{"result": "ack"}
 		}
-	}()
+		return nil
+	})()
 
 	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello), "8": float64(1), "6": float64(768), "7": float64(1)})
 	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdAsk), "1": "how far is the moon", "4": float64(0), "3": float64(0)})
@@ -470,7 +485,11 @@ func TestAppStreamsChunks(t *testing.T) {
 
 func appCmd(l map[string]any) int {
 	d := params(l)["data"].(map[string]any)
-	v, _ := d["0"].(map[string]any)["v"].(float64)
+	c, ok := d["0"].(map[string]any)
+	if !ok {
+		return -1 // a speaker-stream message
+	}
+	v, _ := c["v"].(float64)
 	return int(v)
 }
 
@@ -478,36 +497,15 @@ func appCmd(l map[string]any) int {
 func TestAppClosedFallsBackToCard(t *testing.T) {
 	f := newFakeAPI(t, textResponse("About 384,400 km. That is far away from here."))
 	a, out := newTestAssistant(t, f, nil)
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		answered := map[float64]bool{}
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(5 * time.Millisecond):
-			}
-			for _, l := range out.lines() {
-				id, _ := l["id"].(float64)
-				if l["method"] != "sendAppMessage" || answered[id] {
-					continue
-				}
-				answered[id] = true
-				r := "ack"
-				if appCmd(l) == cmdChunk {
-					r = "timeout"
-				}
-				a.ext.pendMu.Lock()
-				cb := a.ext.pending[int(id)]
-				delete(a.ext.pending, int(id))
-				a.ext.pendMu.Unlock()
-				if cb != nil {
-					cb(map[string]any{"result": r})
-				}
-			}
+	defer fakeHost(a, out, func(l map[string]any) map[string]any {
+		switch {
+		case l["method"] != "sendAppMessage":
+			return nil
+		case appCmd(l) == cmdChunk:
+			return map[string]any{"result": "timeout"}
 		}
-	}()
+		return map[string]any{"result": "ack"}
+	})()
 	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello)})
 	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdAsk), "1": "how far is the moon"})
 	n := params(waitFor(t, out, "fallback card", isNotify))
