@@ -101,7 +101,8 @@ class FirmwareControl(
     private data class CheckKey(val source: String, val board: String, val firmware: String)
     private class CachedCheck(val resolution: FirmwareSource.Resolution, val atMs: Long)
     private val checkLock = Mutex()
-    private val checkCache = HashMap<CheckKey, CachedCheck>()                              // under checkLock
+    // Written under checkLock; [status] reads it without the lock.
+    private val checkCache = java.util.concurrent.ConcurrentHashMap<CheckKey, CachedCheck>()
     private val checksInFlight = HashMap<CheckKey, Deferred<FirmwareSource.Resolution>>()  // under checkLock
 
     /** An online update before the watch takes over: downloading, or the reason it stopped there. */
@@ -198,11 +199,34 @@ class FirmwareControl(
      * `idle:`, `downloading:<asset>`, `waiting:`, `inprogress:<percent>`, `reboot:` (success, watch
      * rebooting), `prf:<version>` (a downgrade: the watch is rebooting into recovery, nothing flashed
      * yet; [resumeDowngradesInRecovery] flashes it there), `failed:<reason>` (also a downgrade the watch
-     * dropped, see [droppedDowngrade]), or `notready:` (no watch).
+     * dropped, see [droppedDowngrade]), or `notready:` (no watch). An `idle:` reads `idle:available
+     * <version>` while the check cache knows newer firmware for the watch: never a network call, so a
+     * status poll can't cost egress.
      */
     fun status(): String {
         val dev = device() ?: return "notready:No watch connected"
-        return statusString(dev, dev.firmwareUpdateState)
+        val s = statusString(dev, dev.firmwareUpdateState)
+        if (s != "idle:") return s
+        return cachedUpdate(dev)?.let { "idle:available $it" } ?: s
+    }
+
+    /** The newer firmware version a fresh cached check found for [dev], or null (nothing cached, up to
+     *  date, the source off). Reads only the cache. */
+    private fun cachedUpdate(dev: CommonConnectedDevice): String? {
+        val (_, key) = checkTarget(dev) ?: return null
+        val found = checkCache[key]?.takeIf { isFresh(it) }?.resolution as? FirmwareSource.Resolution.Found ?: return null
+        return found.version.takeIf { needsUpdate(it, dev.watchInfo.runningFwVersion) }
+    }
+
+    /** The source that answers for [dev] and its check-cache key, or null while that source is off. */
+    private fun checkTarget(dev: CommonConnectedDevice): Pair<FirmwareSource, CheckKey>? {
+        val platform = dev.watchInfo.platform
+        val core = platform.isCoreDevice()
+        if (!(if (core) config.firmwareGithub else config.firmwareCohorts)) return null
+        val source = sourceFor(core)
+        val running = dev.watchInfo.runningFwVersion
+        val current = running.stringVersion
+        return source to CheckKey(source.cacheKey, platform.revision, if (running.isRecovery) "$current/prf" else current)
     }
 
     /** Map a [FirmwareUpdateStatus] to the status-prefixed string (shared by [status] and [statusFlow]).
@@ -412,16 +436,11 @@ class FirmwareControl(
      */
     private suspend fun doCheck(force: Boolean = false): CheckResult {
         val dev = device() ?: return CheckResult.NoWatch
-        val platform = dev.watchInfo.platform
-        val core = platform.isCoreDevice()
-        val source = sourceFor(core)
-        val enabled = if (core) config.firmwareGithub else config.firmwareCohorts
-        if (!enabled) return CheckResult.Disabled(source.disabledHint)
-
+        val (source, key) = checkTarget(dev)
+            ?: return CheckResult.Disabled(sourceFor(dev.watchInfo.platform.isCoreDevice()).disabledHint)
         val running = dev.watchInfo.runningFwVersion
         val current = running.stringVersion
-        val board = platform.revision
-        val key = CheckKey(source.cacheKey, board, if (running.isRecovery) "$current/prf" else current)
+        val board = key.board
         return when (val r = resolveShared(source, key, force)) {
             is FirmwareSource.Resolution.Unreachable -> CheckResult.Error(r.message)
             FirmwareSource.Resolution.NoFirmware -> CheckResult.NoAsset(board, current, source.label)

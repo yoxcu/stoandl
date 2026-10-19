@@ -143,6 +143,18 @@ class FirmwareCheckCacheTest {
         assertEquals(2, source.lookups.get())
     }
 
+    @Test
+    fun statusNamesACachedUpdateWithoutLookingOnline() = runBlocking {
+        watches.value = listOf(watch("v4.41.1"))
+        assertEquals("idle:", control.status(), "nothing checked yet: no lookup either")
+        assertEquals(0, source.lookups.get())
+        control.check()
+        assertEquals("idle:available v4.41.2", control.status())
+        clock.addAndGet(FirmwareControl.CHECK_TTL_MS)
+        assertEquals("idle:", control.status(), "an expired answer isn't offered")
+        assertEquals(1, source.lookups.get())
+    }
+
     private class FakeSource : FirmwareSource {
         val lookups = AtomicInteger()
         @Volatile var latest = "v4.41.2"

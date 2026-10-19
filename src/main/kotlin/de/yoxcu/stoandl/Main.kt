@@ -61,7 +61,7 @@ internal const val EXIT_FAILURE = 1
 internal const val EXIT_USAGE = 2
 internal const val EXIT_UNREACHABLE = 3
 
-private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
+private val CTL_COMMANDS = setOf("status", "watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
 
 private const val LOGBACK_CONFIG_PROPERTY = "logback.configurationFile"
 
@@ -146,6 +146,7 @@ private fun printUsage() {
     println()
     println("  stoandl <command> [args]")
     println()
+    row("status", "the daemon, watch and services at a glance")
     println("Watch & apps")
     row("watch", "list connect disconnect pair")
     row("", "unpair repair")
@@ -384,6 +385,7 @@ private fun ctl(args: Array<String>) {
         "reset" -> ctlReset(args.drop(1))
         "developer" -> ctlDeveloper(args.drop(1))
         "sync" -> ctlSync(args.drop(1))
+        "status" -> ctlStatus()
         in VERSION_FLAGS -> printVersion()
         in HELP_FLAGS -> printUsage()
         else -> {
@@ -991,7 +993,9 @@ private fun printLanguageNote(board: String, current: String, latest: String) {
 private fun printFirmwareStatusOnce(resp: String) {
     val (kind, body) = splitStatus(resp)
     val human = when (kind) {
-        "idle" -> "Idle (no firmware update in progress)"
+        "idle" -> body.removePrefix("available ").takeIf { body.startsWith("available ") }
+            ?.let { "Idle — firmware $it is available (stoandl firmware update)" }
+            ?: "Idle (no firmware update in progress)"
         "downloading" -> "Downloading $body…"
         "waiting" -> "Starting firmware transfer…"
         "inprogress" -> "Flashing: $body%"
@@ -2729,6 +2733,78 @@ internal fun ctlError(e: DBusExecutionException): Pair<String, Int> =
         else -> "Error: ${e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.name}" to EXIT_FAILURE
     }
 
+/** A VoiceStatus/TtsStatus reply as the user reads it: `off`, `ready — <backend> <detail>`, `unavailable — <why>`. */
+private fun engineState(status: String): String {
+    val (kind, body) = splitStatus(status)
+    return when (kind) {
+        "off" -> "off"
+        "ready" -> "ready — ${body.replace('\t', ' ')}"
+        else -> "unavailable — $body"
+    }
+}
+
+// ---- status (QOL-D17) ---------------------------------------------------------------------------------
+
+/**
+ * `stoandl status`: the daemon, the watch and every service at a glance, composed from the methods the
+ * other verbs use, one line each. A method an older daemon lacks just leaves its line out. Firmware comes
+ * only from the check cache (FirmwareStatus), never a new online check. Exits 0 when a watch is connected,
+ * 1 when none is (3 when the daemon isn't running, as everywhere).
+ */
+private fun ctlStatus() = withControl { control ->
+    // Version() unguarded: every daemon has it, so its failure is the daemon not running (withControl's exit 3).
+    val daemon = control.Version()
+    fun <T> ask(call: () -> T): T? = try { call() } catch (_: DBusExecutionException) { null }
+    println("stoandl ${BuildInfo.version}" + if (daemon != BuildInfo.version) " (daemon $daemon)" else "")
+
+    val watches = ask { control.ListWatches() }.orEmpty().map { it.split('\t') }
+    val live = watches.firstOrNull { it.getOrNull(1) == "connected" || it.getOrNull(1) == "recovery" }
+    println("Watch: " + when {
+        live != null -> "${live[0]} — ${live[1]}" +
+            live.getOrNull(3)?.takeIf { it.isNotBlank() }?.let { " over ${if (it == "ble") "BLE" else "Bluetooth Classic"}" }.orEmpty() +
+            live.getOrNull(2)?.takeIf { it.isNotBlank() }?.let { ", battery $it%" }.orEmpty()
+        watches.isEmpty() -> "none paired (stoandl watch pair)"
+        else -> "not connected (${watches.size} paired: ${watches.joinToString(", ") { "${it[0]} ${it.getOrElse(1) { "" }}" }})"
+    })
+    if (ask { control.BluetoothStatus() } == "ok:off") println("Bluetooth: off")
+    ask { control.LinkPause() }?.removePrefix("ok:")?.takeIf { it.isNotBlank() }?.let { why ->
+        println("Link: paused (${why.replace("quiet_time", "Quiet Time").replace(",", ", ")}) — stoandl watch connect resumes a manual pause")
+    }
+
+    val sync = ask { control.GetSyncStatus() }.orEmpty().map { it.split('\t') }
+    val forwarding = sync.firstOrNull { it[0] == "notifications" }?.getOrNull(1) == "enabled"
+    val muted = ask { control.NotifMuteAllStatus() }?.let(::splitStatus)
+        ?.takeIf { it.first == "muted" }?.second?.toLongOrNull()
+    println("Notifications: " + (if (forwarding) "forwarded" else "not forwarded (notification.forward)") +
+        muted?.let { " · all muted until ${LocalDateTime.ofInstant(java.time.Instant.ofEpochSecond(it), ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))}" }.orEmpty())
+    sync.filter { it[0] != "notifications" }.takeIf { it.isNotEmpty() }?.let { rows ->
+        println("Sync: " + rows.joinToString(" · ") { f ->
+            "${f[0]} " + if (f.getOrNull(1) == "enabled") f.getOrElse(3) { "on" } else f.getOrElse(3) { "off" }
+        })
+    }
+
+    ask { control.FirmwareStatus() }?.let(::splitStatus)?.let { (kind, body) ->
+        when {
+            kind == "idle" && body.startsWith("available ") -> "${body.removePrefix("available ")} available (stoandl firmware update)"
+            kind in setOf("downloading", "waiting", "inprogress", "reboot", "prf") -> "updating ($kind${if (body.isNotBlank()) " $body" else ""})"
+            kind == "failed" -> "last update failed: $body"
+            else -> null
+        }
+    }?.let { println("Firmware: $it") }
+
+    val exts = ask { control.ExtList() }.orEmpty().map { it.split('\t') }.filter { it.getOrNull(2) == "enabled" }
+    if (exts.isNotEmpty()) println("Extensions: " + exts.joinToString(", ") { "${it[0]} ${it.getOrElse(3) { "" }}" })
+    ask { control.PermPending() }?.takeIf { it.isNotEmpty() }?.let {
+        println("Permission requests: ${it.size} waiting (stoandl perms pending)")
+    }
+
+    ask { control.VoiceStatus() }?.let { println("Speech to text: ${engineState(it)}") }
+    ask { control.TtsStatus() }?.let { println("Text to speech: ${engineState(it)}") }
+    if (ask { control.DevConnectionStatus() } == "ok:active") println("Developer connection: on (LAN port 9000)")
+
+    if (live == null) exitProcess(EXIT_FAILURE)
+}
+
 // ---- voice group (speech to text, text to speech) ---------------------------------------------------
 
 /** `stoandl voice [status]` shows the speech-to-text and text-to-speech backends; `models`/`download`/`use`/
@@ -2742,16 +2818,10 @@ private fun ctlVoice(rest: List<String>) {
                 Triple("Speech to text", control.VoiceStatus(), "stoandl voice models, then stoandl voice download <model>"),
                 Triple("Text to speech", control.TtsStatus(), "stoandl voice download <voice>, or install espeak-ng and run stoandl voice use espeak-ng"),
             )
-            var unavailable = false
             for ((what, status, hint) in lines) {
-                val (kind, body) = splitStatus(status)
-                when (kind) {
-                    "off" -> println("$what: off (to turn it on: $hint)")
-                    "ready" -> println("$what: ready — ${body.replace('\t', ' ')}")
-                    else -> { println("$what: unavailable — $body"); unavailable = true }
-                }
+                println("$what: ${engineState(status)}" + if (status.startsWith("off:")) " (to turn it on: $hint)" else "")
             }
-            if (unavailable) System.exit(1)
+            if (lines.any { (_, status, _) -> status.startsWith("unavailable:") }) System.exit(1)
         }
         "say" -> {
             val text = rest.drop(1).joinToString(" ").trim()
