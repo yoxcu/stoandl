@@ -38,4 +38,27 @@ class ProcessTest {
         assertNull(missingProgram("sh -c 'echo {lang}'"))
         assertEquals("/nonexistent/tts", missingProgram("/nonexistent/tts --fast"))
     }
+
+    @Test
+    fun stdinInBinaryOut() {
+        val bytes = byteArrayOf(0, -1, 10, 'R'.code.toByte())
+        kotlin.test.assertContentEquals(bytes, runProcess(listOf("cat"), 5_000, stdin = bytes)?.stdoutBytes)
+    }
+
+    /** A cancelled engine (runInterruptible) must not leave its process running. */
+    @Test
+    fun interruptKillsTheChild() {
+        val marker = java.io.File.createTempFile("child", ".pid")
+        val t = Thread { runCatching { runProcess(listOf("sh", "-c", "echo $$ > ${marker.path}; exec sleep 30"), 60_000) } }
+        t.start()
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (marker.length() == 0L && System.nanoTime() < deadline) Thread.sleep(20)
+        val pid = marker.readText().trim().toLong()
+        t.interrupt()
+        t.join(3_000)
+        assertTrue(!t.isAlive, "runProcess returned")
+        Thread.sleep(200)
+        assertTrue(ProcessHandle.of(pid).map { !it.isAlive }.orElse(true), "the child was killed")
+        marker.delete()
+    }
 }

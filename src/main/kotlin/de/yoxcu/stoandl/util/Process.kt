@@ -13,33 +13,41 @@ private val log = KotlinLogging.logger {}
 private const val STDERR_TAIL = 4096
 
 /** How a finished child went: its exit code, stdout and the tail of stderr. Null [exitCode] = timed out. */
-class ProcessResult(val exitCode: Int?, val stdout: String, val stderr: String) {
+class ProcessResult(val exitCode: Int?, val stdoutBytes: ByteArray, val stderr: String) {
+    val stdout: String get() = stdoutBytes.toString(Charsets.UTF_8)
     val timedOut: Boolean get() = exitCode == null
 }
 
 /**
- * The one child-process runner. Runs [cmd] for at most [timeoutMs]: stdout and stderr are drained on their
- * own threads, so the deadline holds even for a child that hangs with its pipes open or fills a pipe, and
- * on timeout the child and all its descendants are killed. Blocks the calling thread; null when [cmd]
- * can't be started (logged at warn).
+ * The one child-process runner. Runs [cmd] for at most [timeoutMs], with [stdin] as its input (none: closed
+ * at once): stdin is fed and stdout and stderr are drained on their own threads, so the deadline holds even
+ * for a child that hangs with its pipes open or fills a pipe, and on timeout the child and all its
+ * descendants are killed. Blocks the calling thread; an interrupt kills the child too and rethrows (so a
+ * cancelled `runInterruptible` stops an engine). Null when [cmd] can't be started (logged at warn).
  */
-fun runProcess(cmd: List<String>, timeoutMs: Long, redirectErrorStream: Boolean = false): ProcessResult? {
+fun runProcess(cmd: List<String>, timeoutMs: Long, redirectErrorStream: Boolean = false, stdin: ByteArray? = null): ProcessResult? {
     val p = try {
         ProcessBuilder(cmd).redirectErrorStream(redirectErrorStream).start()
     } catch (e: Exception) {
         log.warn { "cannot run '${cmd.firstOrNull()}': ${e.message}" }
         return null
     }
-    p.outputStream.close()
+    if (stdin == null) p.outputStream.close()
+    else CompletableFuture.runAsync({ runCatching { p.outputStream.use { it.write(stdin) } } }, pipeReaders)
     val out = drain(p.inputStream) { it.readBytes() }
     val err = if (redirectErrorStream) null else drain(p.errorStream) { tail(it) }
-    if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+    val exited = try {
+        p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+    } catch (e: InterruptedException) {
         killTree(p)
-        return ProcessResult(null, "", err?.getQuietly().orEmpty())
+        throw e
+    }
+    if (!exited) {
+        killTree(p)
+        return ProcessResult(null, ByteArray(0), err?.getQuietly().orEmpty())
     }
     // The child has exited, so its pipes are at EOF unless a grandchild still holds them; don't wait on that.
-    val stdout = out.getQuietly()?.toString(Charsets.UTF_8).orEmpty()
-    return ProcessResult(p.exitValue(), stdout, err?.getQuietly().orEmpty())
+    return ProcessResult(p.exitValue(), out.getQuietly() ?: ByteArray(0), err?.getQuietly().orEmpty())
 }
 
 /**

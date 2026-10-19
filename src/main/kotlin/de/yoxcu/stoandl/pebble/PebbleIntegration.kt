@@ -53,6 +53,8 @@ import de.yoxcu.stoandl.voice.StoandlTranscriptionProvider
 import de.yoxcu.stoandl.voice.VoiceBackends
 import de.yoxcu.stoandl.voice.VoiceControl
 import de.yoxcu.stoandl.voice.VoiceModels
+import de.yoxcu.stoandl.voice.tts.TtsBackends
+import de.yoxcu.stoandl.voice.tts.TtsService
 import de.yoxcu.stoandl.debug.DebugControl
 import de.yoxcu.stoandl.developer.DeveloperControl
 import de.yoxcu.stoandl.dnd.DndSync
@@ -379,8 +381,14 @@ class PebbleIntegration(
     // stoandl.conf or a backup tarball. Used by the live calendar sources + the source-CRUD methods.
     private val secretStore: SecretStore =
         LayeredSecretStore(SecretServiceStore(), FileSecretStore(File(StoandlConfig.configDir(), "secrets")))
+    /** The speech models and voices, shared by speech to text and text to speech. */
+    private val voiceModels = VoiceModels(scope)
     /** Speech to text (`voice.*`): the watch's dictation, D-Bus Transcribe and extensions' transcribe. */
-    private val voiceBackends = VoiceBackends(configStore, secretStore, VoiceModels(scope))
+    private val voiceBackends = VoiceBackends(configStore, secretStore, voiceModels)
+    /** Text to speech (`tts.*`): extensions' synthesize for the watch speaker, D-Bus Speak on this device. The
+     *  sleep guard is built later; a synthesis or a reading keeps the system awake once it is. */
+    private val ttsService = TtsService(TtsBackends(configStore, secretStore, voiceModels), scope,
+        keepAwake = { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} })
     private val voiceControl = VoiceControl(voiceBackends, configStore) { model ->
         // A model downloaded from the GUI/CLI becomes the one in use. Speech to text comes on with it unless
         // another backend (a custom command, HTTP) is set; text to speech only when it was off.
@@ -2229,7 +2237,7 @@ class PebbleIntegration(
     private fun registerControlService() {
         try {
             // Exported through timeSlowCalls, which logs any method that takes SLOW_DBUS_CALL_MS or longer.
-            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
+            val control = StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, ttsService, pluginControl, vibePatterns, manualDisconnect, { quietTimeLink?.held == true }, ::watchUpdateRunning) { libPebble.bluetoothEnabled.value.enabled() }
             serviceConn.exportObject(STOANDL_OBJECT_PATH, timeSlowCalls(StoandlControl::class.java, control))
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
@@ -3073,6 +3081,8 @@ private class StoandlControlImpl(
     private val wakeups: () -> Flow<Unit>,
     // Speech to text (VoiceStatus, Transcribe).
     private val voiceControl: VoiceControl,
+    // Text to speech on this device (TtsStatus, Speak, StopSpeaking).
+    private val ttsService: TtsService,
     // Plugins and app permissions (Plugin*, Perm*).
     private val pluginControl: PluginControl,
     // Named custom vibes (NotifSetVibePattern, NotifStyleChoices, NotifVibeTest).
@@ -3261,6 +3271,10 @@ private class StoandlControlImpl(
         log.info { "Transcribe: $path" }
         return voiceControl.transcribeBlocking(path)
     }
+
+    override fun TtsStatus(): String = ttsService.status()
+    override fun Speak(text: String): String = ttsService.speak(text)
+    override fun StopSpeaking(): String = ttsService.stop()
 
     override fun GatherLogs(path: String): String {
         log.info { "GatherLogs: $path" }

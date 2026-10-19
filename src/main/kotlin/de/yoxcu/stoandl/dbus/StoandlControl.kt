@@ -432,6 +432,20 @@ interface StoandlControl : DBusInterface {
     /** Delete a downloaded model: `ok:` or `notfound:`. */
     fun VoiceRemoveModel(id: String): String
 
+    /** Text to speech: `off:`, `ready:<backend>\t<detail>` (backend `local`, `command` or `http`; detail the
+     *  voice's name, `espeak-ng`, the command's program or the server URL) or `unavailable:<reason>`. */
+    fun TtsStatus(): String
+
+    /** Read [text] aloud on this device (not the watch) with the configured text to speech, through the first
+     *  of pw-play, paplay and aplay installed; a new call stops the one before. Blocks while the audio is made
+     *  (seconds), then plays it in the background. Returns `ok:<ms of audio>`, `off:`, `unavailable:<reason>`,
+     *  `error:<msg>`, or `stopped:` (stopped before it played). With the http backend the text leaves this
+     *  machine. */
+    fun Speak(text: String): String
+
+    /** Stop what [Speak] is reading: `ok:` or `none:`. */
+    fun StopSpeaking(): String
+
     /** Dump the watch's firmware logs to the absolute [path] as text. Blocks until the (multi-generation)
      *  transfer completes — a handful of seconds. Returns `ok:<path>`, `notready:<msg>`, or `error:<msg>`. */
     fun GatherLogs(path: String): String

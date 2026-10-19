@@ -165,7 +165,7 @@ private fun printUsage() {
     row("firmware", "sideload check update status")
     row("language", "list install sideload status")
     row("screenshot", "[path]")
-    row("voice", "status · models · download · use · test")
+    row("voice", "status · models · download · use · test · say · stop")
     row("plugins", "list · read · invoke")
     row("perms", "pending · list · allow · deny · reset · later")
     row("logs", "[path]")
@@ -2660,21 +2660,44 @@ internal fun ctlError(e: DBusExecutionException): Pair<String, Int> =
         else -> "Error: ${e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.name}" to EXIT_FAILURE
     }
 
-// ---- voice group (speech to text) --------------------------------------------------------------------
+// ---- voice group (speech to text, text to speech) ---------------------------------------------------
 
-/** `stoandl voice [status]` shows the speech-to-text backend; `models`/`download`/`use`/`remove`/`cancel`
- *  manage the local speech models (a download makes the model the active one when voice was off or local);
- *  `test <file>` transcribes a WAV or Ogg/Opus file (the daemon reads it, so the path is made absolute here). */
+/** `stoandl voice [status]` shows the speech-to-text and text-to-speech backends; `models`/`download`/`use`/
+ *  `remove`/`cancel` manage the local speech models and voices (a download makes the model or voice the active
+ *  one: see VoiceDownloadModel); `test <file>` transcribes a WAV or Ogg/Opus file (the daemon reads it, so the
+ *  path is made absolute here); `say <text>` reads text aloud on this device and `stop` stops it. */
 private fun ctlVoice(rest: List<String>) {
     when (rest.firstOrNull() ?: "status") {
         "status" -> withControl { control ->
-            val (kind, body) = splitStatus(control.VoiceStatus())
-            when (kind) {
-                "off" -> println("Voice: off (pick a model: stoandl voice models, then stoandl voice download <model>)")
-                "ready" -> println("Voice: ready — ${body.replace('\t', ' ')}")
-                else -> { println("Voice: unavailable — $body"); System.exit(1) }
+            val lines = listOf(
+                Triple("Speech to text", control.VoiceStatus(), "stoandl voice models, then stoandl voice download <model>"),
+                Triple("Text to speech", control.TtsStatus(), "stoandl voice download <voice>, or install espeak-ng and run stoandl voice use espeak-ng"),
+            )
+            var unavailable = false
+            for ((what, status, hint) in lines) {
+                val (kind, body) = splitStatus(status)
+                when (kind) {
+                    "off" -> println("$what: off (to turn it on: $hint)")
+                    "ready" -> println("$what: ready — ${body.replace('\t', ' ')}")
+                    else -> { println("$what: unavailable — $body"); unavailable = true }
+                }
+            }
+            if (unavailable) System.exit(1)
+        }
+        "say" -> {
+            val text = rest.drop(1).joinToString(" ").trim()
+            if (text.isEmpty()) { System.err.println("Usage: stoandl voice say <text>"); System.exit(EXIT_USAGE); return }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+                val (kind, body) = splitStatus(control.Speak(text))
+                when (kind) {
+                    "ok" -> println("Reading aloud (%.1f s) — stoandl voice stop to stop".format(java.util.Locale.ROOT, (body.toLongOrNull() ?: 0) / 1000.0))
+                    "off" -> { System.err.println("Text to speech is off (tts.backend)"); System.exit(1) }
+                    "stopped" -> println("Stopped")
+                    else -> { System.err.println("${kind.replaceFirstChar { it.uppercase() }}: $body"); System.exit(1) }
+                }
             }
         }
+        "stop" -> withControl { control -> println(splitStatus(control.StopSpeaking()).second) }
         "test" -> {
             val file = rest.getOrNull(1)?.let { File(it).absoluteFile }
                 ?: run { System.err.println("Usage: stoandl voice test <file.wav|file.ogg>"); System.exit(EXIT_USAGE); return }
@@ -2727,7 +2750,7 @@ private fun ctlVoice(rest: List<String>) {
                     when {
                         state.startsWith("downloading:") -> print("\r  ${state.substringAfter(':')}% ")
                         state == "installed" -> {
-                            val status = control.VoiceStatus()
+                            val status = if (row.getOrNull(8) == "tts") control.TtsStatus() else control.VoiceStatus()
                             println("\r  done — ${splitStatus(status).second.replace('\t', ' ')}"); break
                         }
                         state.startsWith("failed:") -> { println("\r  failed: ${state.substringAfter(':')}"); System.exit(1); return@withControl }
@@ -2751,7 +2774,7 @@ private fun ctlVoice(rest: List<String>) {
             withControl { control -> printStatusOrExit(control.VoiceRemoveModel(id)) }
         }
         "cancel" -> withControl { control -> println(splitStatus(control.VoiceCancelDownload()).second) }
-        else -> { System.err.println("Usage: stoandl voice [status | models | download <model> | use <model> | remove <model> | cancel | test <file>]"); System.exit(EXIT_USAGE) }
+        else -> { System.err.println("Usage: stoandl voice [status | models | download <model> | use <model> | remove <model> | cancel | test <file> | say <text> | stop]"); System.exit(EXIT_USAGE) }
     }
 }
 
