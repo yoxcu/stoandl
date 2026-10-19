@@ -156,7 +156,7 @@ class LinuxSystemCalendar(
         eventCache[calendar.platformId] = CachedEvents(gen, fetchStart, fetchEnd, all)
         val events = all.filter { it.endTime > startDate && it.startTime < endDate }
         onSync?.invoke()
-        log.info { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
+        log.debug { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
         log.debug {
             "Calendar '${calendar.name}' events: " + events.sortedBy { it.startTime }.joinToString("; ") {
                 "${it.startTime}${if (it.allDay) " (all-day)" else ""} ${it.title}" +
