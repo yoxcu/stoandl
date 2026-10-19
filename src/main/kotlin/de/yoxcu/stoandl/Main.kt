@@ -1720,7 +1720,9 @@ private fun appLaunchOrRemove(launch: Boolean, query: String?) {
     if (query.isNullOrBlank()) {
         System.err.println("Usage: stoandl apps ${if (launch) "launch" else "remove"} <name|uuid>"); System.exit(EXIT_USAGE); return
     }
-    withControl { control ->
+    // A launch waits until the watch runs the app (a fetch over BLE first when it isn't on the watch); a
+    // remove may ask the remote locker.
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
         val resp = if (launch) control.LaunchApp(query) else control.RemoveApp(query)
         handleStatusResponse(resp)
     }
