@@ -2630,7 +2630,7 @@ private inline fun withControl(replyTimeoutMs: Long = CTL_REPLY_TIMEOUT_MS, bloc
     try {
         block(conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java))
     } catch (e: DBusExecutionException) {
-        val (message, code) = ctlError(e.javaClass.name, e.message)
+        val (message, code) = ctlError(e)
         System.err.println(message)
         exitProcess(code)
     } finally {
@@ -2639,19 +2639,22 @@ private inline fun withControl(replyTimeoutMs: Long = CTL_REPLY_TIMEOUT_MS, bloc
 }
 
 /**
- * What the CLI says, and its exit code, when a call to the daemon failed with D-Bus error [errorName]
- * (dbus-java turns the well-known errors into `org.freedesktop.dbus.errors.*` classes; anything else,
- * such as an exception thrown in the daemon, arrives as a plain DBusExecutionException carrying its message).
+ * What the CLI says, and its exit code, when a call to the daemon failed with [e]. dbus-java turns the
+ * error names it has a class for (`org.freedesktop.DBus.Error.X` → `org.freedesktop.dbus.errors.X`) into
+ * that class; any other error, such as an exception thrown in the daemon, arrives as a plain
+ * DBusExecutionException carrying only its message (dbus-java drops the name). That includes
+ * `NameHasNoOwner`, which only a failed D-Bus activation sends; stoandl isn't activated, and a call to a
+ * name nobody owns is `ServiceUnknown`.
  */
-internal fun ctlError(errorName: String, message: String?): Pair<String, Int> =
-    when (errorName.substringAfterLast('.')) {
-        "ServiceUnknown", "NameHasNoOwner" ->
+internal fun ctlError(e: DBusExecutionException): Pair<String, Int> =
+    when (e.javaClass.simpleName) {
+        "ServiceUnknown" ->
             "stoandl isn't running — systemctl --user start stoandl (OpenRC: rc-service stoandl start)" to EXIT_UNREACHABLE
         "UnknownMethod", "UnknownInterface" ->
             "The CLI and daemon versions differ (the daemon doesn't know this call) — see: stoandl version" to EXIT_FAILURE
         "UnknownObject" -> "stoandl is still starting — try again in a moment" to EXIT_FAILURE
         "NoReply", "Timeout" -> "stoandl didn't answer in time (it may still be working)" to EXIT_FAILURE
-        else -> "Error: ${message?.takeIf { it.isNotBlank() } ?: errorName}" to EXIT_FAILURE
+        else -> "Error: ${e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.name}" to EXIT_FAILURE
     }
 
 // ---- voice group (speech to text) --------------------------------------------------------------------
