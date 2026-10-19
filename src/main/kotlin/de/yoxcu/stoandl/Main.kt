@@ -9,6 +9,7 @@ import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.monitorNotifications
 import de.yoxcu.stoandl.pebble.PebbleIntegration
+import de.yoxcu.stoandl.util.openServiceBus
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.softOpenSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -76,7 +77,7 @@ fun main(args: Array<String>) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val notificationBus = MutableSharedFlow<NotificationEvent>(extraBufferCapacity = 64)
 
-    val serviceConn = openSessionBus()
+    val serviceConn = openServiceBus()
     serviceConn.requestBusName(STOANDL_BUS_NAME)
     log.info { "D-Bus bus name acquired: $STOANDL_BUS_NAME" }
 

@@ -12,6 +12,18 @@ import org.freedesktop.dbus.types.Variant
 fun openSessionBus(): DBusConnection =
     DBusConnectionBuilder.forSessionBus().withShared(false).build() as DBusConnection
 
+/**
+ * The daemon's own session-bus connection, which exports `de.yoxcu.stoandl.Control`. dbus-java runs
+ * incoming method calls on a pool of 4 threads by default; a few slow calls (a firmware check, a
+ * screenshot, a transcription) then held every worker and queued the GUI's quick reads behind them.
+ */
+fun openServiceBus(): DBusConnection =
+    DBusConnectionBuilder.forSessionBus().withShared(false)
+        .receivingThreadConfig().withMethodCallThreadCount(SERVICE_METHOD_CALL_THREADS).connectionConfig()
+        .build() as DBusConnection
+
+private const val SERVICE_METHOD_CALL_THREADS = 12
+
 /** [openSessionBus] but returns null instead of throwing, for the soft callers that degrade gracefully. */
 fun softOpenSessionBus(): DBusConnection? = try {
     openSessionBus()
