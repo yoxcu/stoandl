@@ -373,8 +373,11 @@ CMD; `stoandl_speaker_handle()` takes it before the CMD switch.
 | Error | message + `Select: retry` | Select: retry (C4 ERROR) · Hold Select: new chat |
 | Presets menu | `MenuLayer` of PRESETS; until PRESETS arrives it shows `Loading…` | Select sends PRESET{INDEX, CONV, TURN of the shown answer, or 0, 0} |
 
-Select, Hold Select and a new question stop reading aloud first (and send STOP_SPEAK), so the
-microphone doesn't hear the speaker. On speaker watches Down is not repeating, like Up, because it has a
+Select, Hold Select and a new question stop reading aloud first, so the microphone doesn't hear the
+speaker. They send STOP_SPEAK whenever something is read or an answer is on screen, since an unasked
+reading may still be synthesising, and the app holds the receiver off (`stoandl_speaker_suppress`)
+from `dictation_session_start` to the dictation callback: the voice window opens in the app's own
+window stack, so dictation is no focus change. On speaker watches Down is not repeating, like Up, because it has a
 long press. Back always exits, sending BYE first; the speech stops with the app. A running answer then arrives as a notification (C6). No glance, no background worker, no persistent storage in v1.
 
 ### C8. Sequence (Stage 2, happy path)
@@ -396,12 +399,12 @@ is the shared format, sender and receiver contract.
 | When | `speak=always`: after DONE of an answer the app showed (never for a replay or a notification answer), if the latest CAPS has speaker and not muted. `on_request` and `always`: on SPEAK (Hold Down), muted or not. `off`: SPEAK posts the card `Reading aloud is off` and an abort. |
 | Quiet Time | The watch sets CAPS `0x10` while `quiet_time_is_active()`, even though the firmware mutes the speaker in Quiet Time only when the user's "mute speaker" preference is on. So `always` stays silent at night; Hold Down still plays. A really muted speaker: Hold Down shows `Speaker muted` and sends nothing. |
 | Text | The answer as shown (cleaned, B4), bullets without their `- `, split into sentences: one shorter than 40 B joins the next, one longer than 300 B is cut at a space. |
-| Synthesis | `synthesize{text, language, format:"pebble-adpcm"}` per sentence, one call at a time; sentence N+1 is asked for while N is sent. `language` is `de` or `en` from `language` (German, Deutsch, de, de-AT … / English, en, en-GB …), else omitted. No answer in 30 s counts as `unavailable`. |
+| Synthesis | `synthesize{text, language, format:"pebble-adpcm"}` per sentence, one call at a time; sentence N+1 is asked for while N is sent. `language` is `de` or `en` from `language` (German, Deutsch, de, de-AT … / English, en, en-GB …), else omitted. No answer in 30 s counts as `unavailable`, and `always` then reads nothing unasked until a later `synthesize` is answered (a stoandl without text to speech never answers). |
 | Stream | One `SpeakerPump` per reading: blocks paced to the watch's 6 KB ring, END after the last sentence. A synthesis error mid-way ends the stream with what was sent. |
 | Errors | On SPEAK with nothing sent yet: `off` → card `Text to speech is off` / `Turn it on in stoandl: Settings → Voice.`; `busy` → `Text to speech is busy`; `unavailable: <why>` → `Text to speech unavailable` / `<why>`; then an ABORT, which clears the watch's `Speaking...`. Card itemId `assistant:speech` (`ReplaceID`), urgent. An unasked (`always`) reading fails silently, since text to speech is off by default. |
-| Stop | ASK, PRESET, CANCEL, NEW_CONV, STOP_SPEAK, HELLO (a new app instance), BYE and a failed send stop the pump. If blocks went out and the app is still open, an ABORT follows. |
-| Sleep | `keepAwake{why:"reading an answer aloud"}` from the first synthesize to the end of the stream, renewed before each 60 s hold expires, 120 s at most. |
-| Watch | Hold Down sets `Speaking...` at once; the receiver's on-change callback clears it when the stream ends or is aborted. |
+| Stop | ASK, PRESET, CANCEL, NEW_CONV, STOP_SPEAK, HELLO (a new app instance), BYE and a failed send stop the pump. If the app is still open, an ABORT follows when blocks went out, or when the reading was asked for (SPEAK) and no other reading replaced it, so the watch's `Speaking...` clears. |
+| Sleep | `keepAwake{why:"reading an answer aloud"}` to the end of the stream, renewed before each 60 s hold expires, 120 s at most. It starts with the first `synthesize` once the daemon has answered one before, otherwise with the first answered sentence, so a daemon that never answers holds off no suspend. |
+| Watch | Hold Down sets `Speaking...` at once; the receiver's on-change callback clears it when the stream ends, is aborted, stalls (35 s without a message) or is ignored (it began during dictation or under a modal window). |
 
 ---
 
@@ -413,5 +416,6 @@ is the shared format, sender and receiver contract.
 - Whether `PBL_MICROPHONE` is undefined on diorite and defined on flint.
 - Latency figures (`bench`, and the `ask … ttft=` log line).
 - Reading aloud (C9) on a Time 2 and a 2 Duo: time from DONE to the first sound, gaps between sentences,
-  ring overflows (`speaker: ring full` in the watch log), focus loss (call, notification, dictation),
+  ring overflows (`speaker: ring full` in the watch log), focus loss (call, notification), a late
+  reading during dictation, the 35 s stall drop (`speaker: stream stalled`),
   Quiet Time and a muted speaker, and throughput at the reduced sniff interval over Linux PPoG.

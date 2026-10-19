@@ -19,11 +19,20 @@ const (
 
 const (
 	speechHold    = 120 * time.Second // keepAwake cap while speaking
-	synthTimeout  = 30 * time.Second  // a daemon without text to speech never answers
 	sentenceMin   = 40                // a shorter sentence is joined to the next
 	sentenceMax   = 300               // a longer one is cut at a space
 	speechCardID  = "assistant:speech"
 	speechOffHint = "Turn it on in stoandl: Settings → Voice."
+)
+
+// ttsState is what the daemon did with the last `synthesize`. A stoandl without text to speech never
+// answers it, so an unanswered call keeps unasked readings off until a later call is answered.
+type ttsState int
+
+const (
+	ttsUnknown ttsState = iota // nothing asked yet
+	ttsAnswers                 // answered (with blocks or an error such as "off")
+	ttsSilent                  // the last call got no answer within synthTimeout
 )
 
 // speech is the one answer being read aloud.
@@ -85,7 +94,8 @@ func firstSentenceEnd(s string, from int) int {
 
 // autoSpeakLocked: an answer just shown in the app is read aloud unasked.
 func (a *assistant) autoSpeakLocked() bool {
-	return a.cfg.Speak == speakAlways && a.appOpen && a.caps&capSpeaker != 0 && a.caps&capMuted == 0
+	return a.cfg.Speak == speakAlways && a.appOpen && a.caps&capSpeaker != 0 && a.caps&capMuted == 0 &&
+		a.tts != ttsSilent
 }
 
 func (a *assistant) stopSpeechLocked() {
@@ -138,26 +148,56 @@ type synthResult struct {
 	err    string
 }
 
-// synthesize asks the daemon for one sentence; the channel gets exactly one result.
+// synthesize asks the daemon for one sentence; the channel gets exactly one result. It also records
+// whether the daemon answers (a.tts), late answers included.
 func (a *assistant) synthesize(text, lang string) <-chan synthResult {
 	ch := make(chan synthResult, 1)
-	deliver := func(r synthResult) {
+	deliver := func(r synthResult) bool {
 		select {
 		case ch <- r:
+			return true
 		default: // the timeout came first, or the answer did
+			return false
 		}
 	}
-	t := time.AfterFunc(synthTimeout, func() { deliver(synthResult{err: "unavailable: no answer from stoandl"}) })
+	setTTS := func(st ttsState) {
+		a.mu.Lock()
+		a.tts = st
+		a.mu.Unlock()
+	}
+	t := time.AfterFunc(synthTimeout, func() {
+		if deliver(synthResult{err: "unavailable: no answer from stoandl"}) {
+			setTTS(ttsSilent)
+		}
+	})
 	a.ext.Synthesize(text, lang, func(blocks [][]byte, _ int, err string) {
 		t.Stop()
+		setTTS(ttsAnswers)
 		deliver(synthResult{blocks: blocks, err: err})
 	})
 	return ch
 }
 
 func (a *assistant) speak(s *speech, text string, explicit bool) {
-	release := a.keepAwake("reading an answer aloud", speechHold)
-	defer release()
+	// The hold starts with the first synthesize only once the daemon is known to answer it: a daemon
+	// without text to speech would otherwise block suspend for synthTimeout after every answer.
+	var release func()
+	hold := func() {
+		if release == nil {
+			release = a.keepAwake("reading an answer aloud", speechHold)
+		}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	a.mu.Lock()
+	known := a.tts == ttsAnswers
+	a.mu.Unlock()
+	if known {
+		hold()
+	}
 	pump := NewSpeakerPump(a.appSend)
 	lang := ttsLanguage(a.cfg.Language)
 	sentences := speechSentences(text)
@@ -181,6 +221,7 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 			}
 			break
 		}
+		hold()
 		if i+1 < len(sentences) {
 			next = a.synthesize(sentences[i+1], lang) // while this one plays
 		}
@@ -191,6 +232,7 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 
 	a.mu.Lock()
 	open := a.appOpen
+	replaced := a.speech != s && a.speech != nil // the new reading clears the watch's wait itself
 	if a.speech == s {
 		a.speech = nil
 	}
@@ -198,7 +240,9 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 	switch {
 	case !open:
 	case s.ctx.Err() != nil:
-		if pump.Sent() {
+		// Also when nothing was sent but the user asked: the stop may not have come from the watch (an
+		// ASK from a notification reply), and the watch shows "Speaking..." until told.
+		if pump.Sent() || explicit && !replaced {
 			pump.Abort(context.Background())
 		}
 	case pump.Sent() || explicit:
@@ -280,4 +324,7 @@ func (a *assistant) keepAwake(why string, total time.Duration) func() {
 var (
 	awakeHoldMax    = 60 * time.Second // the host's cap per hold
 	awakeRenewEarly = 5 * time.Second
+	// A daemon without text to speech never answers `synthesize`. Below the watch receiver's 35 s
+	// stall limit (docs/speaker-stream.md), so a stream that waits this long still ends with END.
+	synthTimeout = 30 * time.Second
 )

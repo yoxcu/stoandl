@@ -43,14 +43,17 @@ on the watch speaker. The format and the reusable receiver are described in
 - **Hold Down** on an answer reads it (again), or stops the reading. It plays in Quiet Time too. The
   header shows `Speaking...`.
 - Select (a follow-up), hold Select, a preset, Back, an incoming call or notification stop it first, so
-  the microphone doesn't hear the speaker.
+  the microphone doesn't hear the speaker. While you dictate, the app also ignores a reading that
+  arrives late (one still being synthesised when you pressed Select).
 - `language = German` or `English` picks an installed voice of that language; other languages use the
   daemon's default voice.
 - If text to speech is off or not working, Hold Down posts a short card saying so (`Text to speech is
   off: Turn it on in stoandl: Settings → Voice.`). `speak = on_request` reads only on Hold Down;
-  `speak = off` never.
+  `speak = off` never. A stoandl too old to synthesise never answers: after one unanswered try (30 s)
+  answers are no longer read unasked until a later Hold Down gets an answer.
 - Each sentence is synthesised while the previous one plays. The phone stays out of suspend while it
-  reads (`keepAwake`, at most 120 s).
+  reads (`keepAwake`, at most 120 s), from the first sentence stoandl answers. If the stream stops
+  without an end (the phone left range or slept), the watch drops it after 35 s.
 
 ## Setup
 

@@ -527,14 +527,18 @@ static void send_hello(void) {
 // Reading aloud (stoandl_speaker.c plays what the extension streams)
 
 // Stops what is being read, or was asked for, so the microphone won't hear it, and tells the extension.
+// With an answer on screen the extension may still be synthesizing an unasked reading that hasn't
+// reached the watch yet, so it is told even when nothing plays.
 static void stop_speech(void) {
-  if (!speaking()) {
+#if defined(PBL_SPEAKER)
+  if (!speaking() && s_state != ST_ANSWER) {
     return;
   }
   s_speak_wait = false;
   stoandl_speaker_stop();
   send_simple(CMD_STOP_SPEAK, 0, 0);
   relayout();
+#endif
 }
 
 static void speaker_changed(bool active, void *ctx) {
@@ -576,6 +580,7 @@ static void open_presets(uint32_t conv, uint8_t turn);
 #if defined(PBL_MICROPHONE)
 static void dictation_cb(DictationSession *session, DictationSessionStatus status, char *text,
                          void *ctx) {
+  stoandl_speaker_suppress(false);
   if (status == DictationSessionStatusSuccess && text && text[0]) {
     send_ask(text, s_ask_conv, s_ask_turn);
   } else if (status == DictationSessionStatusFailureDisabled) {
@@ -599,9 +604,13 @@ static void start_ask(uint32_t conv, uint8_t turn) {
   s_ask_conv = conv;
   s_ask_turn = turn;
 #if defined(PBL_MICROPHONE)
+  // The voice window opens in the app's own window stack, so the app keeps focus: hold the speaker off
+  // by hand until the dictation callback, or the microphone hears an answer that arrives meanwhile.
+  stoandl_speaker_suppress(true);
   if (ensure_dictation() && dictation_session_start(s_dictation) == DictationSessionStatusSuccess) {
     return;
   }
+  stoandl_speaker_suppress(false);
 #endif
   open_presets(conv, turn);
 }

@@ -52,6 +52,7 @@ type assistant struct {
 	job     *job
 	replay  *appSink
 	speech  *speech
+	tts     ttsState
 	appOpen bool
 	caps    int // the watchapp's CAPS, from its latest HELLO, ASK or PRESET
 	state   appState

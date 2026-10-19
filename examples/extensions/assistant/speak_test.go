@@ -262,6 +262,63 @@ func TestSpeechOffCard(t *testing.T) {
 	waitFor(t, out, "abort", func(l map[string]any) bool { return spkFlags(l) == SpkFlagAbort })
 }
 
+// A stoandl without text to speech never answers synthesize. The reading holds off no suspend, and
+// once a call went unanswered unasked readings stop; Hold Down still tries and shows why it failed.
+func TestSilentDaemon(t *testing.T) {
+	defer func(d time.Duration) { synthTimeout = d }(synthTimeout)
+	synthTimeout = 100 * time.Millisecond
+	f := newFakeAPI(t)
+	a, out := newTestAssistant(t, f, nil)
+	a.mu.Lock()
+	c, n := a.hist.addTurn(base{}, Turn{Q: "q", Text: "An answer."}, a.cfg.Model, a.prefix(), a.now())
+	a.mu.Unlock()
+	defer speakHost(a, out, func(string) map[string]any { return nil })()
+	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello), "7": float64(helloSpeaker)})
+	auto := func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.autoSpeakLocked()
+	}
+	waitFor(t, out, "HELLO handled", func(l map[string]any) bool { return l["method"] == "sendAppMessage" })
+	if !auto() {
+		t.Fatal("always doesn't speak before the daemon was asked")
+	}
+
+	a.startSpeech("An answer.", false)
+	time.Sleep(300 * time.Millisecond)
+	if auto() {
+		t.Fatal("still speaks unasked after an unanswered synthesize")
+	}
+	if count(out, isNotify) != 0 || count(out, isSpk) != 0 {
+		t.Fatal("unasked reading wasn't silent")
+	}
+
+	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdSpeak), "4": float64(convNum(c.ID)), "3": float64(n)})
+	if card := params(waitFor(t, out, "card", isNotify)); card["title"] != "Text to speech unavailable" {
+		t.Fatalf("card %v", card)
+	}
+	waitFor(t, out, "abort", func(l map[string]any) bool { return spkFlags(l) == SpkFlagAbort })
+	if n := count(out, func(l map[string]any) bool { return l["method"] == "keepAwake" }); n != 0 {
+		t.Fatalf("%d suspend holds for a daemon that never answered", n)
+	}
+}
+
+// A requested reading stopped before any block went out (here by the extension, as an ASK from a
+// notification reply does) still aborts, so the watch stops showing "Speaking...".
+func TestStoppedRequestAborts(t *testing.T) {
+	f := newFakeAPI(t)
+	a, out := newTestAssistant(t, f, nil)
+	a.mu.Lock()
+	c, n := a.hist.addTurn(base{}, Turn{Q: "q", Text: "An answer."}, a.cfg.Model, a.prefix(), a.now())
+	a.mu.Unlock()
+	defer speakHost(a, out, func(string) map[string]any { return nil })()
+	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello), "7": float64(helloSpeaker)})
+	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdSpeak), "4": float64(convNum(c.ID)), "3": float64(n)})
+	waitFor(t, out, "synthesize", func(l map[string]any) bool { return l["method"] == "synthesize" })
+	a.stopSpeech()
+	waitFor(t, out, "abort", func(l map[string]any) bool { return spkFlags(l) == SpkFlagAbort })
+}
+
 // A hold longer than the host's 60 s cap is renewed before it expires; each replaced token is
 // released, and so is the last one.
 func TestKeepAwakeRenews(t *testing.T) {
