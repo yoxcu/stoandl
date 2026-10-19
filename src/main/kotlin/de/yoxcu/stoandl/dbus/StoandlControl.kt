@@ -602,13 +602,6 @@ interface StoandlControl : DBusInterface {
      *  (no schema declared), or `notfound:`. */
     fun ExtConfigSchema(name: String): String
 
-    /** The config entry point for extension [name] when it ships the **`url` config backend** — a hosted
-     *  settings page the GUI opens in a browser. Extensions have no `url` backend (the config-page server
-     *  fronts PKJS pages only), so this never returns a URL today: `error:<msg>` when the extension declares a
-     *  `configSchema` (the GUI renders that as a native form via [ExtConfigSchema] instead), `none:` when
-     *  it has no config, or `notfound:`. Kept for contract parity; wire it up if a URL backend is added. */
-    fun ExtOpenConfig(name: String): String
-
     // --- Plugins and app permissions (`stoandl plugins`, `stoandl perms`) ---------------------------
 
     /** Installed plugins while `plugins.enabled` is on (empty while off), one record each:

@@ -272,18 +272,6 @@ class ExtensionManager(
         return if (configKindOf(json) == "schema") "ok:$json" else "none:"
     }
 
-    /** The config entry point for the GUI when an extension declares a `url` config backend (a hosted
-     *  settings page opened in a browser). Extensions have no `url` backend (the daemon's config-page
-     *  server serves PKJS pages only), so this never returns a URL: `error:` when the extension is
-     *  schema-backed (the GUI renders the native form from [configSchema] instead), `none:` when it has
-     *  no config, or `notfound:`. */
-    fun openConfig(name: String): String {
-        val n = sanitize(name) ?: return "error:Invalid name"
-        if (!isKnown(n)) return "notfound:'$name' is not installed"
-        val json = readExtManifestMeta(File(extDir, n)).configSchemaJson
-        return if (configKindOf(json) == "schema") "error:'$n' uses a native config form" else "none:"
-    }
-
     /** Install from an archive (.tar.gz/.tgz/.tar/.zip) or an unpacked directory (an extension being
      *  written, a git checkout) into `<extDir>/<name>/`, sideload a bundled `.pbw`, enable it, and
      *  hotplug-start it. A directory is copied (links as links, at most [MAX_INSTALL_BYTES]), so later
@@ -504,7 +492,7 @@ class ExtensionManager(
 
     /** The GUI config-kind for an extension, derived from its manifest `configSchema`: `schema` when a
      *  non-empty schema is declared (the GUI renders a native form), else `none`. There is no `url`
-     *  backend (a hosted config page) for extensions, so it never appears here. Single source of truth for [list], [configSchema] and [openConfig]. */
+     *  backend (a hosted config page) for extensions, so it never appears here. Single source of truth for [list] and [configSchema]. */
     private fun configKindOf(configSchemaJson: String?): String =
         if (!configSchemaJson.isNullOrBlank() && configSchemaJson != "[]") "schema" else "none"
 
