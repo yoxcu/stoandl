@@ -2096,10 +2096,10 @@ class PebbleIntegration(
 
     /**
      * `Restart()`: restart the daemon through its service manager, so the GUI can apply the restart-only
-     * keys (it can't run `systemctl` from a Flatpak). Under systemd (`INVOCATION_ID` is set) the user
-     * manager's `ResetFailedUnit` comes first, so `StartLimitBurst` can't leave a GUI-requested restart
-     * stopped, then `RestartUnit(<own unit>, "replace")` — a moment after this returns, so the caller gets
-     * the reply before the manager stops this process. Refused while a pairing window or a watch update
+     * keys (it can't run `systemctl` from a Flatpak). Under systemd (`INVOCATION_ID` is set, and this process
+     * is the main process of its unit, a `.service`) the user manager's `ResetFailedUnit` comes first, so
+     * `StartLimitBurst` can't leave a GUI-requested restart stopped, then `RestartUnit(<own unit>, "replace")`
+     * — a moment after this returns, so the caller gets the reply before the manager stops this process. Refused while a pairing window or a watch update
      * is running, since the restart would break it off.
      */
     private fun restartDaemon(): String {
@@ -2116,11 +2116,21 @@ class PebbleIntegration(
         }
         return try {
             val manager = serviceConn.getRemoteObject(SYSTEMD_BUS_NAME, SYSTEMD_OBJECT_PATH, SystemdManager::class.java)
-            val unitPath = manager.GetUnitByPID(UInt32(ProcessHandle.current().pid()))
-            val unit = unwrapVariant(
-                serviceConn.getRemoteObject(SYSTEMD_BUS_NAME, unitPath.path, Properties::class.java)
-                    .Get<Any>("org.freedesktop.systemd1.Unit", "Id"),
-            ) as String
+            val pid = ProcessHandle.current().pid()
+            val unitProps = serviceConn.getRemoteObject(
+                SYSTEMD_BUS_NAME, manager.GetUnitByPID(UInt32(pid)).path, Properties::class.java,
+            )
+            val unit = unwrapVariant(unitProps.Get<Any>("org.freedesktop.systemd1.Unit", "Id")) as String
+            // INVOCATION_ID leaks into children, so stoandl started from a terminal or `gradlew run` under
+            // some other unit sees it too: restart only a service whose main process is this one, never
+            // the terminal's scope or service.
+            val mainPid = if (unit.endsWith(".service")) {
+                (unwrapVariant(unitProps.Get<Any>("org.freedesktop.systemd1.Service", "MainPID")) as? Number)?.toLong()
+            } else null
+            if (mainPid != pid) {
+                log.warn { "Restart: stoandl (pid $pid) isn't the main process of $unit (main pid $mainPid)" }
+                return "error:stoandl isn't running as its own service (it is in $unit); stop it and start it again"
+            }
             scope.launch {
                 delay(RESTART_REPLY_GRACE_MS)
                 log.info { "Restarting $unit as requested over D-Bus" }
