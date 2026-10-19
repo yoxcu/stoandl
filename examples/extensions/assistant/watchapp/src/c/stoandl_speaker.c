@@ -15,6 +15,7 @@
 #define TICK_MS 40
 #define FRAME_SAMPLES 256
 #define VOLUME 100              // the watch scales it by the user's volume cap
+#define STALL_MS 35000          // a stream with no message for this long is dropped (senders: 30 s at most)
 
 typedef enum {
   SPK_IDLE,
@@ -44,8 +45,10 @@ static bool s_ended;
 // A stream stopped on the watch (or refused) whose late messages are ignored until a new id arrives.
 static uint32_t s_dead_id;
 static bool s_has_dead;
-// A modal window (dictation, a call, a notification) covers the app: nothing starts playing.
+// Nothing starts playing while a modal window (a call, a notification) covers the app, or while the app
+// holds the receiver off (dictation).
 static bool s_unfocused;
+static bool s_suppressed;
 
 static uint8_t s_ring[RING_BYTES];
 static uint16_t s_ring_head;
@@ -64,6 +67,7 @@ static uint16_t s_frame_len;  // bytes
 static uint16_t s_frame_off;  // bytes already written to the stream
 
 static AppTimer *s_timer;
+static AppTimer *s_stall_timer;  // runs while a stream is buffering or playing; every message restarts it
 
 static void notify(bool active) {
   if (s_on_change) {
@@ -184,6 +188,10 @@ static void go_idle(void) {
     app_timer_cancel(s_timer);
     s_timer = NULL;
   }
+  if (s_stall_timer) {
+    app_timer_cancel(s_stall_timer);
+    s_stall_timer = NULL;
+  }
   if (s_state != SPK_IDLE) {
     app_comm_set_sniff_interval(SNIFF_INTERVAL_NORMAL);
   }
@@ -204,6 +212,22 @@ static void kill_stream(void) {
   s_has_dead = true;
   reset();
   notify(false);
+}
+
+// The sender went quiet without END or ABORT (its app link failed, it restarted, the phone slept): an
+// open stream would play silence, and hold the reduced sniff interval, until the app closes.
+static void stalled(void *ctx) {
+  s_stall_timer = NULL;
+  if (s_state == SPK_BUFFERING || s_state == SPK_PLAYING) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "speaker: stream stalled, dropped");
+    kill_stream();
+  }
+}
+
+static void restart_stall_timer(void) {
+  if (!s_stall_timer || !app_timer_reschedule(s_stall_timer, STALL_MS)) {
+    s_stall_timer = app_timer_register(STALL_MS, stalled, NULL);
+  }
 }
 
 // Writes decoded frames until the stream takes only part of one (its buffer is full); the rest of
@@ -285,9 +309,10 @@ bool stoandl_speaker_handle(DictionaryIterator *iter) {
   if (s_state != SPK_IDLE && id != s_id) {
     reset();  // a new stream replaces the one playing
   }
-  if (s_state == SPK_IDLE && s_unfocused) {
+  if (s_state == SPK_IDLE && (s_unfocused || s_suppressed)) {
     s_dead_id = id;  // e.g. an answer read aloud unasked arriving during dictation: the mic would hear it
     s_has_dead = true;
+    notify(false);   // clears an app's "waiting for speech"; once per id, later blocks are dead above
     return true;
   }
   if (s_state == SPK_IDLE) {
@@ -302,6 +327,7 @@ bool stoandl_speaker_handle(DictionaryIterator *iter) {
     return true;  // a retry whose ACK was lost
   }
   s_next_seq = seq + 1;
+  restart_stall_timer();
 
   Tuple *data = dict_find(iter, STOANDL_SPK_KEY_DATA);
   if (data && data->type == TUPLE_BYTE_ARRAY && data->length > BLOCK_HEADER && data->length <= BLOCK_MAX &&
@@ -328,6 +354,13 @@ void stoandl_speaker_stop(void) {
   }
 }
 
+void stoandl_speaker_suppress(bool on) {
+  s_suppressed = on;
+  if (on) {
+    stoandl_speaker_stop();
+  }
+}
+
 bool stoandl_speaker_active(void) { return s_state != SPK_IDLE; }
 
 bool stoandl_speaker_usable(void) { return !speaker_is_muted(); }
@@ -350,6 +383,8 @@ void stoandl_speaker_deinit(void) {
 bool stoandl_speaker_handle(DictionaryIterator *iter) { return dict_find(iter, STOANDL_SPK_KEY_ID) != NULL; }
 
 void stoandl_speaker_stop(void) {}
+
+void stoandl_speaker_suppress(bool on) {}
 
 bool stoandl_speaker_active(void) { return false; }
 

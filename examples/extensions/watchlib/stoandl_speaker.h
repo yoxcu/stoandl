@@ -16,8 +16,12 @@
 //   deinit():         stoandl_speaker_deinit();
 //
 // The receiver subscribes to the app focus service: playback stops when a modal window (a call, a
-// notification, dictation) covers the app. An app that needs focus events itself calls
-// stoandl_speaker_stop() from its own handler, after stoandl_speaker_init().
+// notification) covers the app. An app that needs focus events itself calls stoandl_speaker_stop() from
+// its own handler, after stoandl_speaker_init(). Dictation is not a focus change (its window opens in
+// the app's own window stack), so an app that dictates holds the receiver off around it:
+//   stoandl_speaker_suppress(true); dictation_session_start(…);  …  in the dictation callback:
+//   stoandl_speaker_suppress(false);
+// A stream with no message for 35 s (the sender vanished without END or ABORT) is dropped.
 
 #define STOANDL_SPK_KEY_ID 0x7FFF0000     // uint32: stream id, new for every stream
 #define STOANDL_SPK_KEY_SEQ 0x7FFF0001    // uint16: block number within the stream, from 0
@@ -32,7 +36,8 @@
 #define STOANDL_SPEAKER_INBOX_MIN 2048
 
 // Called with true when a stream starts (its first block arrived) and with false when it ends: played
-// out, stopped, aborted by the extension, or refused. A false can repeat; treat it as "not speaking".
+// out, stopped, aborted by the extension, stalled, or refused (also a stream ignored because it began
+// while suppressed or unfocused). A false can repeat; treat it as "not speaking".
 typedef void (*StoandlSpeakerChanged)(bool active, void *ctx);
 
 void stoandl_speaker_init(StoandlSpeakerChanged on_change, void *ctx);
@@ -43,6 +48,10 @@ bool stoandl_speaker_handle(DictionaryIterator *iter);
 
 // Stops playback now and ignores the rest of the current stream; the next stream id plays again.
 void stoandl_speaker_stop(void);
+
+// While on, nothing plays: the current stream stops, and a stream that begins is ignored (on_change
+// false). For the time the microphone listens.
+void stoandl_speaker_suppress(bool on);
 
 // A stream is buffering or playing.
 bool stoandl_speaker_active(void);

@@ -67,6 +67,9 @@ One block per message, so a message is at most about 2040 bytes: the watchapp's 
   request that produced no audio; that abort may carry a fresh id.
 - **Pipelining.** The sender asks for the next sentence's blocks while the current one plays, one
   `synthesize` call at a time.
+- **Gaps.** At most 30 s between two messages of a stream (the assistant's `synthesize` timeout); the
+  receiver drops a stream after 35 s without one. A sender that gives up waits no longer and sends END
+  or ABORT.
 
 ## Receiver rules (`stoandl_speaker.c`)
 
@@ -74,17 +77,26 @@ One block per message, so a message is at most about 2040 bytes: the watchapp's 
   (a lost block) plays on.
 - **Ids.** A new SPK_ID replaces the stream that is playing. A stream the watch stopped (its user, focus
   loss, a preempting call) is remembered, and its late blocks are ignored until another id arrives. A
-  stream that begins while a modal window covers the app (dictation, a call) is ignored the same way.
+  stream that begins while a modal window covers the app (a call, a notification) or while the app
+  suppresses the receiver (dictation) is ignored the same way, and `on_change(false)` reports it.
 - **Start.** The stream opens (`SpeakerPcmFormat_8kHz_16bit`, volume 100, which the watch scales by the
   user's cap) once 0.4 s is buffered, or at END for a shorter clip.
 - **Drain.** A 40 ms timer decodes 256-sample frames and writes them until `speaker_stream_write`
   takes only part of one; the rest of that frame goes first on the next tick. On underrun the firmware
   plays silence and keeps the stream open.
 - **Link.** `SNIFF_INTERVAL_REDUCED` from the first block until the stream is idle again.
+- **Stall.** A buffering or playing stream with no message for 35 s is dropped like an ABORT
+  (`speaker: stream stalled` in the watch log): the sender vanished without END or ABORT (its app link
+  failed, it restarted, the phone left range or slept), and an open stream would play silence, keep the
+  speaker on and hold the reduced sniff interval until the app closes.
 - **Stop.** END closes the stream after the ring is empty (`speaker_stream_close()`; the finish
-  callback marks it idle). ABORT, `stoandl_speaker_stop()`, focus loss (a call, a notification,
-  dictation) and `stoandl_speaker_deinit()` call `speaker_stop()` at once, since an open stream fed
-  silence keeps the speaker running.
+  callback marks it idle). ABORT, a stall, `stoandl_speaker_stop()`, `stoandl_speaker_suppress(true)`,
+  focus loss (a call, a notification) and `stoandl_speaker_deinit()` call `speaker_stop()` at once,
+  since an open stream fed silence keeps the speaker running.
+- **Dictation.** The voice window opens in the app's own window stack, so dictation is no focus change
+  and the focus service can't keep speech out of the microphone. An app that dictates calls
+  `stoandl_speaker_suppress(true)` before `dictation_session_start()` and `(false)` in the dictation
+  callback (or when the start fails).
 - **No speaker.** Without `PBL_SPEAKER` the file compiles to a stub that only consumes the keys
   (no ring, no RAM cost on basalt, chalk, diorite or gabbro).
 
@@ -95,12 +107,13 @@ void stoandl_speaker_init(StoandlSpeakerChanged on_change, void *ctx);  // on_ch
 void stoandl_speaker_deinit(void);
 bool stoandl_speaker_handle(DictionaryIterator *iter);  // first thing in inbox_received
 void stoandl_speaker_stop(void);
+void stoandl_speaker_suppress(bool on);  // while on, nothing plays (dictation)
 bool stoandl_speaker_active(void);   // buffering or playing
 bool stoandl_speaker_usable(void);   // a speaker, and not muted (Settings, or Quiet Time with "mute speaker")
 ```
 
 `on_change(true)` fires when a stream's first message arrives, and `on_change(false)` when it ends for any
-reason (it may repeat). The receiver subscribes to the app focus service; an app that needs focus events
+reason, or when a stream is ignored because it began while suppressed or unfocused (it may repeat). The receiver subscribes to the app focus service; an app that needs focus events
 itself calls `stoandl_speaker_stop()` from its own handler.
 
 Quiet Time mutes the speaker only when the watch's "mute speaker in Quiet Time" preference is on, so an
