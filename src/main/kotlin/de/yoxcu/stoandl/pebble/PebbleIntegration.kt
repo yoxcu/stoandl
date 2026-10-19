@@ -170,6 +170,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -381,6 +382,10 @@ class PebbleIntegration(
     // than a frozen startup snapshot — that's what makes settings apply without a restart.
     private val configStore = ConfigStore()
     private val config: StoandlConfig get() = configStore.current()
+    // The config [reloadConfig] last applied: what it diffs a reload against. Not configStore.current(),
+    // which other readers of the file (CalendarSources' read-modify-write) also publish to, so a hand edit
+    // they picked up first would otherwise never be applied.
+    private var appliedConfig: StoandlConfig = configStore.current()
     /** Pictures attached to notifications: stored when sent, served when the watch pulls them. */
     private val notificationImages = NotificationImageStore(File(CacheDirs.root(), "images/notifications"))
     /** libpebble3's config, pinned under all four config flows; re-projected from stoandl.conf on change. */
@@ -1873,12 +1878,13 @@ class PebbleIntegration(
      */
     private fun syncPinnedWatchPref(id: String, raw: String) {
         try {
-            ConfFile.withLock {
-                if (configStore.current().watchPrefs[id] == null) return@withLock
+            val written = ConfFile.withLock {
+                if (configStore.current().watchPrefs[id] == null) return@withLock false
                 ConfFile.upsert(StoandlConfig.configFile(), mapOf("watch.$id" to raw))
-                configStore.reload()
                 log.info { "Updated pinned watch.$id = $raw in stoandl.conf to match" }
+                true
             }
+            if (written) reloadConfig()
         } catch (e: Exception) {
             // Never fail the pref write over this — the pref itself already applied.
             log.warn { "Couldn't update pinned watch.$id in stoandl.conf: ${e.message}" }
@@ -2144,17 +2150,19 @@ class PebbleIntegration(
     }
 
     /**
-     * Re-read `stoandl.conf` and apply what changed since the last read — after the daemon's own write
-     * ([persistConfig]) and after any other edit of the file (QOL-D8: a text editor, `restore`, another
-     * process), which [startConfigReload] follows. Serialised, so the write path and the file watch that
-     * sees the same write apply it once: whichever comes second finds nothing changed.
+     * Re-read `stoandl.conf` and apply what changed since it last applied the file ([appliedConfig]) —
+     * after the daemon's own writes ([persistConfig], calendar sources, a pinned watch pref) and after any
+     * other edit of the file (QOL-D8: a text editor, `restore`, another process), which [startConfigReload]
+     * follows. Serialised, so the write path and the file watch that sees the same write apply it once:
+     * whichever comes second finds nothing changed.
      *
      * Each changed schema key is logged and announced with `ConfigChanged`; a LIVE one re-reconciles its
      * subsystem (each once), a RESTART one is only logged, since its value was captured at startup.
      */
     private fun reloadConfig() = synchronized(configReloadLock) {
-        val before = configStore.current()
+        val before = appliedConfig
         val after = configStore.reload()
+        appliedConfig = after
         val changed = changedConfigFields(before, after)
         val services = linkedSetOf<String>()
         for (field in changed) {
@@ -2175,10 +2183,20 @@ class PebbleIntegration(
 
     private val configReloadLock = Any()
 
-    /** QOL-D8: apply hand edits of `stoandl.conf` without a restart (see [reloadConfig]). */
+    /** QOL-D8: apply hand edits of `stoandl.conf` without a restart (see [reloadConfig]). A reload that
+     *  fails (a subsystem's reconcile throwing) is logged and the watch goes on: it must not end the
+     *  collector, or every later edit would be ignored until a restart. */
     private fun startConfigReload() {
         fileEdits(StoandlConfig.configFile())
-            .onEach { reloadConfig() }
+            .onEach {
+                try {
+                    reloadConfig()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.warn(e) { "Applying the edit of stoandl.conf failed; later edits still apply" }
+                }
+            }
             .launchIn(scope)
     }
 
@@ -2286,9 +2304,10 @@ class PebbleIntegration(
             crudCalendarSource { CalendarSources.remove(id, configStore, StoandlConfig.configFile(), secretStore) }
     }
 
-    /** Run a [CalendarSources] CRUD op (it persists + reloads the store under the conf lock) then live-
-     *  re-reconcile so the change reaches the watch with no restart: a successful write triggers a
-     *  refresh (new account's calendars appear / removed account's pins drop within ~5 s). */
+    /** Run a [CalendarSources] CRUD op (it persists under the conf lock), then apply it through
+     *  [reloadConfig] like any other edit of the file, so the change reaches the watch with no restart: the
+     *  changed sources request a refresh (new account's calendars appear / removed account's pins drop
+     *  within ~5 s). */
     private fun crudCalendarSource(op: () -> String): String {
         val result = try {
             op()
@@ -2296,7 +2315,7 @@ class PebbleIntegration(
             log.warn(e) { "Calendar source CRUD failed" }
             "error:${e.message ?: "failed to update calendar sources"}"
         }
-        if (result.startsWith("ok:")) applyCalendar()
+        if (result.startsWith("ok:")) reloadConfig()
         return result
     }
 
