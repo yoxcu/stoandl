@@ -1793,6 +1793,12 @@ class PebbleIntegration(
             connectedWatchType = {
                 libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.platform?.watchType
             },
+            lastKnownFirmware = {
+                val watches = libPebble.watches.value
+                watches.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
+                    ?: watches.filterIsInstance<KnownPebbleDevice>().maxByOrNull { it.lastConnected }
+                        ?.let { WatchPrefsControl.firmwareOf(it.runningFwVersion) }
+            },
         )
         watchPrefsControlRef.set(control)
         log.info {

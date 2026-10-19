@@ -15,7 +15,6 @@ import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import kotlin.time.Instant
 
 /**
  * [WatchPrefText] is keyed by libpebble3's pref ids, which a fork bump can add or rename silently: a new pref
@@ -68,6 +67,7 @@ class WatchPrefTextTest {
             WatchPreference(NumberWatchPref.BacklightTimeoutMs, null),
             WatchPreference(QuicklaunchWatchPref.QlUp, null),
         )
+        firmware = fw("v4.41.1")
         val rows = control().list().map { it.split('\t') }
         assertTrue(rows.all { it.size == 11 }, rows.toString())
         assertEquals(listOf("qlUp", "lightTimeoutMs", "clock24h"), rows.map { it[0] })
@@ -84,6 +84,26 @@ class WatchPrefTextTest {
         assertEquals("", control().list().single().split('\t')[10])
         firmware = fw("v4.22.0")
         assertEquals("lightPreset=Advanced", control().list().single().split('\t')[10])
+    }
+
+    /** With the watch away the last firmware it ran decides; with none known the rows stay editable. */
+    @Test
+    fun `the last known firmware decides while no watch is connected`() {
+        listed = listOf(
+            WatchPreference(NumberWatchPref.BacklightTimeoutMs, null),
+            WatchPreference(ScheduleWatchPref.QuietTimeWeekdaySchedule, null),
+        )
+        fun requires(lastKnown: FirmwareVersion?) =
+            control(lastKnown = lastKnown).list().map { it.split('\t')[10] }
+        assertEquals(listOf("", "dndWeekdayScheduleEnabled=true"), requires(lastKnown = fw("v4.4.0")))
+        assertEquals(listOf("lightPreset=Advanced", "dndWeekdayScheduleEnabled=true"), requires(lastKnown = fw("v4.41.1")))
+        assertEquals(listOf("", "dndWeekdayScheduleEnabled=true"), requires(lastKnown = null))
+    }
+
+    @Test
+    fun `a stored firmware tag parses`() {
+        assertEquals(listOf(4, 4, 0), WatchPrefsControl.firmwareOf("v4.4.0")!!.let { listOf(it.major, it.minor, it.patch) })
+        assertEquals(null, WatchPrefsControl.firmwareOf(""))
     }
 
     @Test
@@ -107,17 +127,16 @@ class WatchPrefTextTest {
     private val pins = mutableListOf<Pair<String, String>>()
     private var firmware: FirmwareVersion? = null
 
-    private fun control() = WatchPrefsControl(
+    private fun control(lastKnown: FirmwareVersion? = null) = WatchPrefsControl(
         fakeLibPebble(),
         resolveAppUuid = { null },
         appName = { null },
         syncPinnedPref = { id, raw -> pins.add(id to raw) },
         connectedFirmware = { firmware },
+        lastKnownFirmware = { firmware ?: lastKnown },
     )
 
-    private fun fw(tag: String) = FirmwareVersion.from(
-        tag = tag, isRecovery = false, gitHash = "", timestamp = Instant.DISTANT_PAST, isDualSlot = false, isSlot0 = false,
-    )!!
+    private fun fw(tag: String) = WatchPrefsControl.firmwareOf(tag)!!
 
     private fun fakeLibPebble(): LibPebble =
         Proxy.newProxyInstance(LibPebble::class.java.classLoader, arrayOf(LibPebble::class.java)) { proxy, method, args ->

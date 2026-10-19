@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
@@ -56,6 +57,9 @@ class WatchPrefsControl(
     private val connectedFirmware: () -> FirmwareVersion? = { null },
     /** The connected watch's platform, or null when none is connected (or in tests). */
     private val connectedWatchType: () -> WatchType? = { null },
+    /** The connected watch's firmware, else the one the most recently connected watch ran: [list]'s requires
+     *  clauses should not change while the watch is away. Null when no watch has been seen. */
+    private val lastKnownFirmware: () -> FirmwareVersion? = connectedFirmware,
 ) {
     /** `<id>@<firmware>` pins already reported as too new for the watch, so a reconnect logs them at DEBUG. */
     private val tooNewReported: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -131,15 +135,18 @@ class WatchPrefsControl(
     /**
      * Tab-separated records, grouped by [WatchPrefText] section: `id \t type \t current \t default \t allowed
      * \t debug \t name \t description \t section \t help \t requires`. A requires clause naming a pref the
-     * connected firmware is too old for is left out: that firmware ignores it, so it gates nothing.
+     * watch's firmware ([lastKnownFirmware]) is too old for is left out: that firmware ignores it, so it gates
+     * nothing. So is one naming a pref only some firmware has while no firmware is known, rather than lock
+     * rows that may be the user's to set.
      */
     fun list(): List<String> {
         val current = loadPrefs() ?: return emptyList()
-        val firmware = connectedFirmware()
+        val firmware = lastKnownFirmware()
         return current.sortedBy { WatchPrefText.sectionIndex(WatchPrefText.section(it.pref)) }.map { wp ->
             val pref = wp.pref
             val gatedBy = WatchPrefText.requiredPref(pref)?.let { WatchPref.from(it) }
-            val requires = if (gatedBy != null && tooOldFor(gatedBy, firmware) != null) "" else WatchPrefText.requires(pref)
+            val gateMissing = gatedBy?.minFirmware != null && (firmware == null || tooOldFor(gatedBy, firmware) != null)
+            val requires = if (gateMissing) "" else WatchPrefText.requires(pref)
             listOf(
                 pref.id,
                 typeName(pref),
@@ -162,6 +169,12 @@ class WatchPrefsControl(
         runBlocking { withTimeoutOrNull(5_000) { libPebble.watchPrefs.first() } }
 
     internal companion object {
+        /** A firmware tag as [KnownPebbleDevice][io.rebble.libpebblecommon.connection.KnownPebbleDevice]
+         *  stores it (`v4.4.0`), or null when it doesn't parse. */
+        fun firmwareOf(tag: String): FirmwareVersion? = FirmwareVersion.from(
+            tag, isRecovery = false, gitHash = "", timestamp = Instant.DISTANT_PAST, isDualSlot = false, isSlot0 = false,
+        )
+
         /** Why [firmware] can't take [pref] (it rejects keys newer than its whitelist), or null when it can. */
         fun tooOldFor(pref: WatchPref<*>, firmware: FirmwareVersion?): String? {
             val min = pref.minFirmware ?: return null
