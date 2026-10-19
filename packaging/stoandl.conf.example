@@ -498,7 +498,7 @@ tts.backend = off
 tts.local_voice =
 # Speaking rate in percent of normal, 50-200.
 tts.speed = 100
-# Example: {lang} is replaced by the language of the text.
+# Example: {lang} is replaced by the language of the text (the system language when the text has none).
 #   tts.command = my-tts --lang {lang}
 tts.command =
 # Example: speaches, LocalAI or openedai-speech on the LAN.

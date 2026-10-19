@@ -5,5 +5,7 @@ cat <<'MSG'
 * OpenRC: set STOANDL_USER and its bus address in /etc/conf.d/stoandl, then as root:
 *   rc-update add stoandl && rc-service stoandl start
 * Then pair a watch: stoandl watch pair   (quick start: /usr/share/doc/stoandl/README.md)
+* Optional text to speech: apk add espeak-ng, or apk add piper-tts and
+*   stoandl voice download <voice>   (stoandl voice models lists them, with their licences)
 MSG
 exit 0
