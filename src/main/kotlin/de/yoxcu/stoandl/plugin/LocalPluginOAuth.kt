@@ -86,7 +86,9 @@ class LocalPluginOAuth(
     /** Shows the sign-in page: the browser, plus a desktop notification when it can't be opened. */
     private val openUrl: (title: String, url: String) -> Unit,
 ) : PluginOAuthApi {
-    private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build()
+    // Built on first sign-in or refresh: a JDK HttpClient starts its selector thread when built, and most
+    // hosts never configure a connector.
+    private val http by lazy { HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build() }
     private val random = SecureRandom()
 
     internal fun connector(slug: String): OAuthConnector? {
