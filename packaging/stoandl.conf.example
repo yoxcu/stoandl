@@ -55,8 +55,8 @@ notification.open_action = true
 # it was disconnected (a phone that drops the Bluetooth link on every suspend and wakes for a push
 # message, a watch out of range). Never older than the daemon's start or the watch's pairing; what the
 # watch already has is not re-sent. 0 = only notifications posted after the connection came up (the
-# libpebble3 default). 0-1440; startup-only. An hour covers a phone that only reconnects on its longer
-# wakes; a larger value only means older notifications can arrive after a long absence.
+# libpebble3 default). 0-1440; applies from the next connection. An hour covers a phone that only reconnects
+# on its longer wakes; a larger value only means older notifications can arrive after a long absence.
 notification.catch_up_minutes = 60
 # The watch's Reply list (comma-separated, `\,` inside a reply) for desktop notifications that take a reply -- on Plasma with
 # the InvokeReply patch (docs/features.md) -- and for extensions that don't bring their own. Whole items
@@ -486,6 +486,29 @@ voice.http_model =
 voice.language = auto
 # Keep each dictation's audio in ~/.cache/stoandl/voice (debugging).
 voice.save_audio = false
+
+# ── Text to speech ──────────────────────────────────────────────────────────────────────────────────
+# Reads the assistant's answers aloud on the watch speaker (Pebble Time 2, Pebble 2 Duo), and `stoandl voice
+# say` on this machine. off = nothing is spoken. local = Piper or espeak-ng on this machine (no egress).
+# command = your own engine: tts.command reads the text on stdin and writes a WAV to stdout. http = an
+# OpenAI-compatible /v1/audio/speech server (egress: the text leaves this machine). Off by default.
+tts.backend = off
+# tts.backend = local: the voice's id (`stoandl voice models`, a downloaded one) or espeak-ng; also the
+# voice for a language no downloaded voice speaks.
+tts.local_voice =
+# Speaking rate in percent of normal, 50-200.
+tts.speed = 100
+# Example: {lang} is replaced by the language of the text.
+#   tts.command = my-tts --lang {lang}
+tts.command =
+# Example: speaches, LocalAI or openedai-speech on the LAN.
+#   tts.url = http://127.0.0.1:8000/v1/audio/speech
+tts.url =
+# The model and voice fields sent to tts.url (e.g. tts-1, alloy); empty = the server's default.
+tts.http_model =
+tts.http_voice =
+# The API key for tts.url is separate from voice.api_key and not stored here: set it with
+# `stoandl daemon set tts.api_key <key>` or in the GUI. Empty sends no key.
 
 # ── Apps & faces ────────────────────────────────────────────────────────────────────────────────
 # Move a watchface to the top of the locker order whenever it becomes the active face (the official app

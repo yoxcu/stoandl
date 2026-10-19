@@ -615,10 +615,11 @@ interface StoandlControl : DBusInterface {
      *  `ambiguous:` or `error:`. */
     fun PermSet(app: String, key: String, decision: String): String
 
-    /** Per-feature sync/bridge status for the GUI Settings/Sync screen: one tab-separated
-     *  `service\tenabled\tavailable\tlastSync` for {notifications, weather, calendar, music, health,
+    /** Per-feature sync/bridge status for the GUI Settings pages: one tab-separated
+     *  `service\tenabled\tavailable\tlastSync\tkey` for {notifications, weather, calendar, music, health,
      *  dnd}, reflecting live runtime state. `available` is false for weather/calendar when no source is
-     *  configured (the toggle is then greyed); `lastSync` is `live`/`off`/`no source` (and the dnd mode). */
+     *  configured; `lastSync` is `live`/`off`/`no source` (and the dnd mode); `key` (appended) is the
+     *  `stoandl.conf` key that switches the service, a [GetConfigSchema] row. */
     fun GetSyncStatus(): List<String>
 
     /** Current now-playing state from the desktop MPRIS bridge, for the GUI Sync screen's Music row.
@@ -626,10 +627,9 @@ interface StoandlControl : DBusInterface {
      *  `none:` (music control on but nothing playing / no player), or `notready:` (music control off). */
     fun MusicStatus(): String
 
-    /** Turn a sync service on/off at runtime: [service] is one of {notifications, weather, calendar,
-     *  music, health, dnd}. Persists the backing key and **starts/stops the live service** (no restart) —
-     *  the dnd boolean maps to its mode (false→off; true→the direction it had before, or both when the daemon
-     *  has seen none; the direction stays editable in Settings).
+    /** Turn a sync service on/off: an alias for [SetConfig] of the service's `key` from [GetSyncStatus]
+     *  ([service] ∈ {notifications, weather, calendar, music, health}), applied live. dnd's key is four-way,
+     *  so `SetSyncEnabled("dnd", …)` returns `error:use dnd.sync (off|to_watch|to_host|both)`.
      *  Status-prefixed return (`ok:<service> enabled|disabled`, `notfound:` for an unknown service). */
     fun SetSyncEnabled(service: String, enabled: Boolean): String
 
@@ -638,11 +638,17 @@ interface StoandlControl : DBusInterface {
      *  read off the live (reloaded-on-write) config store. */
     fun GetConfig(): List<String>
 
-    /** Schema for the curated daemon-config keys, one tab-separated row each:
-     *  `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder` — type `toggle`|`combo`|
-     *  `text`|`int`|`list`; `options` is a CSV for combos; `apply` is `live` or `restart`; `min`/`max`/`unit`
-     *  are set for `int`, `placeholder` for `text`/`list`. Columns 6–11 were appended to the original five,
-     *  so a client that reads the first five positionally still works. Paired with [GetConfig]. */
+    /** Schema for the curated daemon-config keys, one tab-separated row each, in display order:
+     *  `key\ttype\tlabel\toptions\tdesc\tgroup\tapply\tmin\tmax\tunit\tplaceholder\tpage\thelp\trequires\t
+     *  default\tegress` — type `toggle`|`combo`|`text`|`int`|`list`|`secret`; `options` is a CSV for combos;
+     *  `desc` is a one-sentence subtitle and `help` the longer text behind a help button (never repeating
+     *  `desc`); `group` is the section title on GUI page `page` (a page's collapsed last section is titled
+     *  `Advanced <page>`); `apply` is `live` or `restart`; `min`/`max`/`unit` are set for `int`, `placeholder`
+     *  for `text`/`list`; `requires` is `key=value`/`key!=value` alternatives joined by `|` (values as
+     *  [GetConfig] shows them) under which the row matters, empty = always; `default` is the value of an
+     *  empty `stoandl.conf` (empty for a secret); `egress` names the hosts the key makes stoandl contact.
+     *  Columns 6 onward were appended to the original five, so a client that reads columns positionally
+     *  still works. Paired with [GetConfig]. */
     fun GetConfigSchema(): List<String>
 
     /** Set one curated daemon-config [key] to [value] (a toggle's `true`/`false`, a combo's option label,
@@ -652,6 +658,12 @@ interface StoandlControl : DBusInterface {
      *  "(restart stoandl to apply)". `notfound:` for an unknown key, `error:` for an invalid value or a
      *  write failure. */
     fun SetConfig(key: String, value: String): String
+
+    /** Restart the daemon through its service manager, e.g. to apply `apply=restart` keys. Under systemd it
+     *  resets the unit's start limit and restarts it, a moment after replying `ok:restarting <unit>`; the
+     *  name then drops and comes back. `busy:<why>` while a pairing window or a watch update is running;
+     *  `error:<msg>` elsewhere (under OpenRC: `error:restart with rc-service stoandl restart`). */
+    fun Restart(): String
 
     // --- Signals -----------------------------------------------------------------------------------
     // The daemon EMITS these (the first place it does — it otherwise only consumes signals). They are a
@@ -711,4 +723,9 @@ interface StoandlControl : DBusInterface {
     // name doesn't affect the signature.
     class ExtensionStateChanged(path: String, val extensionName: String, val state: String) :
         DBusSignal(path, extensionName, state)
+
+    /** A `stoandl.conf` key the schema lists ([GetConfigSchema]) was written by [SetConfig], [SetSyncEnabled]
+     *  or the daemon itself (a downloaded speech model). Re-call [GetConfig] (and [GetSyncStatus]). */
+    // `configKey`, not `key`, for the same reason as `extensionName` above.
+    class ConfigChanged(path: String, val configKey: String) : DBusSignal(path, configKey)
 }

@@ -40,6 +40,15 @@ class ConfigSchemaTest {
     private fun defaults(): StoandlConfig =
         StoandlConfig.load(File("/nonexistent/stoandl.conf"), logResult = false)
 
+    /** S1: [StoandlConfig.defaults] is what an existing but empty `stoandl.conf` loads as, so the schema's
+     *  `default` column is what a user without the key really gets. */
+    @Test
+    fun `an empty conf file loads as the defaults`(): Unit = withTempConf { conf ->
+        conf.writeText("# nothing set\n")
+        assertEquals(StoandlConfig.defaults(), StoandlConfig.load(conf, logResult = false))
+        assertEquals(StoandlConfig.defaults(), defaults())
+    }
+
     // --- per-kind parsing ---------------------------------------------------------------------
 
     @Test
@@ -53,14 +62,14 @@ class ConfigSchemaTest {
     @Test
     fun `combo accepts either the display label or the raw conf token`() {
         val f = field("music.volume")
-        assertEquals("player", ok(f, "Player"))
+        assertEquals("player", ok(f, "Player volume"))
         assertEquals("player", ok(f, "player"))
         assertEquals("player", ok(f, "PLAYER"))
-        assertEquals("system", ok(f, "System"))
+        assertEquals("system", ok(f, "System volume"))
         // The message names the valid options, since that is what a CLI/GUI shows the user.
         val msg = err(f, "headphones")
-        assertContains(msg, "System")
-        assertContains(msg, "Player")
+        assertContains(msg, "System volume")
+        assertContains(msg, "Player volume")
     }
 
     @Test
@@ -148,25 +157,30 @@ class ConfigSchemaTest {
     // --- wire format --------------------------------------------------------------------------
 
     @Test
-    fun `schema rows carry the eleven columns in the documented order`() {
+    fun `schema rows carry the sixteen columns in the documented order`() {
         val f = field("weather.interval")
         val cols = f.schemaRow().split('\t')
-        assertEquals(11, cols.size, "GetConfigSchema column count changed — update both front-ends")
+        assertEquals(SCHEMA_COLUMNS, cols.size, "GetConfigSchema column count changed — update the GUI and the mock")
         assertEquals(
-            listOf("weather.interval", "int", "Refresh interval", "", f.desc, "Weather", "live", "5", "1440", "min", ""),
+            listOf("weather.interval", "int", "Refresh every", "", f.desc, "Weather on the watch", "live", "5", "1440",
+                "min", "", "Weather", f.help, "", "30", ""),
             cols,
         )
         // The first five columns are the original contract an older client reads positionally.
         val combo = field("music.volume")
         val c = combo.schemaRow().split('\t')
-        assertEquals(listOf("music.volume", "combo", "Volume buttons", "System,Player"), c.take(4))
+        assertEquals(listOf("music.volume", "combo", "Volume buttons change", "System volume,Player volume"), c.take(4))
+        assertEquals(listOf("music.enabled=true", "System volume", ""), c.drop(13))
+        // A secret's default is never shown, and an egress host is named.
+        assertEquals("", field("voice.api_key").schemaRow().split('\t')[14])
+        assertEquals("api.open-meteo.com", field("weather.enabled").schemaRow().split('\t')[15])
     }
 
     @Test
     fun `no schema text can corrupt the tab-separated record framing`() {
         GUI_CONFIG_FIELDS.forEach { f ->
             val row = f.schemaRow()
-            assertEquals(11, row.split('\t').size, "${f.key}: a label/desc/group contains a tab")
+            assertEquals(SCHEMA_COLUMNS, row.split('\t').size, "${f.key}: a label/desc/help/group contains a tab")
             assertTrue('\n' !in row && '\r' !in row, "${f.key}: schema text contains a newline")
             // `options` is a CSV, so a comma inside an option label would split it in both front-ends.
             f.choices.forEach { c ->
@@ -244,7 +258,12 @@ class ConfigSchemaTest {
     @Test
     fun `restart-only keys say so in the write result`(): Unit = withTempConf { conf ->
         val restartKeys = GUI_CONFIG_FIELDS.filter { it.apply == ConfigApply.RESTART }
-        assertTrue(restartKeys.isNotEmpty(), "expected some restart-required keys")
+        // A key moves in or out of this list only together with docs/settings-parity.md.
+        assertEquals(
+            setOf("notification.sync_to_watch", "classic.discover", "power.sleep_guard", "power.sleep_guard_max_ms",
+                "datalog.enabled"),
+            restartKeys.map { it.key }.toSet(),
+        )
         restartKeys.forEach { f ->
             val r = applyGuiConfig(f.key, f.parse(f.value(defaults())).let { (it as ConfigParse.Ok).token }, conf)
             assertContains(r, "restart stoandl to apply", message = "${f.key}: no restart hint in '$r'")
@@ -345,6 +364,7 @@ class ConfigSchemaTest {
         else -> when (f.key) {
             "weather.locations" -> "Testville:1.5:2.5"
             "voice.url" -> "http://127.0.0.1:8080/v1/audio/transcriptions"
+            "tts.url" -> "http://127.0.0.1:8000/v1/audio/speech"
             "voice.language" -> "de"
             "firmware.github_repo" -> "example/fork"
             "firmware.cohorts_url" -> "https://example.invalid"
@@ -391,8 +411,8 @@ class ConfigSchemaTest {
     fun `reminder vibe offers and takes the custom vibrations`() {
         val f = field("calendar.reminder_vibe")
         err(f, "Work")
-        val saved = customVibeNames
-        customVibeNames = { listOf("Work", "a,b") }
+        val saved = configEnvironment
+        configEnvironment = saved.copy(customVibeNames = { listOf("Work", "a,b") })
         try {
             assertEquals("Work", ok(f, "work"))
             assertEquals("a,b", ok(f, "ab"))
@@ -400,7 +420,166 @@ class ConfigSchemaTest {
             assertTrue(f.options.split(",").containsAll(listOf("Work", "ab")))
             assertEquals("Work", f.value(defaults().copy(calendarReminderVibe = "work")))
         } finally {
-            customVibeNames = saved
+            configEnvironment = saved
         }
+    }
+
+    // --- page layout and texts (S2) -------------------------------------------------------------
+
+    /** The GUI renders a page from consecutive rows; a row out of place would start a second copy of its
+     *  page or section. */
+    @Test
+    fun `pages and their sections are contiguous`() {
+        fun assertRuns(what: String, keys: List<String>) {
+            val runs = keys.fold(mutableListOf<String>()) { acc, k -> if (acc.lastOrNull() != k) acc.add(k); acc }
+            assertEquals(runs.distinct(), runs, "$what interleaved: $runs")
+        }
+        assertRuns("pages", GUI_CONFIG_FIELDS.map { it.page })
+        assertRuns("sections", GUI_CONFIG_FIELDS.map { "${it.page} › ${it.group}" })
+    }
+
+    /** An older GUI lists every section on one page and merges same-named ones, so a title must be unique
+     *  across pages; an `Advanced` section is a page's last one and named after it. */
+    @Test
+    fun `section titles are unique and Advanced comes last on its page`() {
+        val pagesOf = GUI_CONFIG_FIELDS.groupBy({ it.group }, { it.page }).mapValues { it.value.distinct() }
+        assertTrue(pagesOf.all { it.value.size == 1 }, "section titles shared by pages: ${pagesOf.filterValues { it.size > 1 }}")
+        GUI_CONFIG_FIELDS.groupBy { it.page }.forEach { (page, rows) ->
+            val advanced = rows.filter { it.group.startsWith("Advanced") }
+            if (advanced.isEmpty()) return@forEach
+            assertTrue(advanced.all { it.group == "Advanced ${page.lowercase()}" }, "$page: ${advanced.map { it.group }}")
+            assertEquals(advanced, rows.takeLast(advanced.size), "$page: the Advanced section is not last")
+        }
+    }
+
+    @Test
+    fun `every subtitle is one short sentence and the help never repeats it`() {
+        GUI_CONFIG_FIELDS.forEach { f ->
+            assertTrue(f.desc.isNotBlank() && f.desc.length <= 90, "${f.key}: desc has ${f.desc.length} chars")
+            assertTrue(". " !in f.desc && !f.desc.endsWith("."), "${f.key}: desc is more than one sentence: ${f.desc}")
+            assertTrue(f.help.isNotBlank(), "${f.key}: no help")
+            assertTrue(!f.help.startsWith(f.desc, ignoreCase = true), "${f.key}: help repeats desc")
+        }
+    }
+
+    /** A `requires` clause names a real key and a value it can have, as GetConfig spells it. */
+    @Test
+    fun `requires clauses name real keys and values`() {
+        GUI_CONFIG_FIELDS.filter { it.requires.isNotEmpty() }.forEach { f ->
+            requirements(f).forEach { (key, _, value) ->
+                val other = guiConfigField(key) ?: fail("${f.key}: requires unknown key '$key'")
+                assertTrue(other !== f, "${f.key}: requires itself")
+                when {
+                    other.type == "toggle" -> assertTrue(value == "true" || value == "false", "${f.key}: '$value' for a toggle")
+                    other.type == "combo" && other.choicesOf == null ->
+                        assertTrue(other.choices.any { it.label == value }, "${f.key}: '$value' is not an option of $key")
+                    other.type == "combo" -> Unit // runtime options (models, vibrations): nothing fixed to check
+                    else -> fail("${f.key}: requires a ${other.type} key ($key)")
+                }
+            }
+        }
+    }
+
+    /**
+     * Every web call is opt-in and off by default: a row that names an egress host is off in an empty
+     * `stoandl.conf`, or only matters under a requirement that is. The two exceptions are masters that are
+     * on but contact nothing until a place or a calendar source is added.
+     */
+    @Test
+    fun `keys that contact a host are off by default`() {
+        val d = StoandlConfig.defaults()
+        val inertMasters = setOf("weather.enabled", "calendar.enabled")
+        fun off(f: ConfigField): Boolean = when (f.type) {
+            "toggle" -> f.value(d) == "false"
+            "combo" -> f.choices.firstOrNull { it.selected(d) }?.token == "off"
+            else -> f.value(d).isEmpty()
+        }
+        fun requirementMet(f: ConfigField): Boolean = f.requires.isEmpty() || requirements(f).any { (key, negated, value) ->
+            (guiConfigField(key)!!.value(d) == value) != negated
+        }
+        GUI_CONFIG_FIELDS.filter { it.egress.isNotEmpty() && it.key !in inertMasters }.forEach { f ->
+            assertTrue(off(f) || !requirementMet(f), "${f.key} contacts ${f.egress} with the default config")
+        }
+        inertMasters.forEach { assertEquals("true", field(it).value(d)) }
+    }
+
+    /** `SetSyncEnabled` is an alias: each sync service names the row that switches it. */
+    @Test
+    fun `every sync service names a schema row`() {
+        assertEquals(setOf("notifications", "weather", "calendar", "music", "health", "dnd"), SYNC_SERVICE_KEYS.keys)
+        SYNC_SERVICE_KEYS.forEach { (service, key) ->
+            val f = field(key)
+            assertEquals(if (service == "dnd") "combo" else "toggle", f.type, key)
+        }
+    }
+
+    @Test
+    fun `tts keys parse with their defaults and bounds`(): Unit = withTempConf { conf ->
+        val d = StoandlConfig.load(conf, logResult = false)
+        assertEquals(StoandlConfig.VoiceBackend.OFF, d.ttsBackend)
+        assertEquals(100, d.ttsSpeed)
+        assertEquals("", d.ttsLocalVoice)
+        conf.writeText("tts.backend = http\ntts.speed = 400\ntts.url = http://box:8000/v1/audio/speech\ntts.http_voice = alloy\n")
+        val c = StoandlConfig.load(conf, logResult = false)
+        assertEquals(StoandlConfig.VoiceBackend.HTTP, c.ttsBackend)
+        assertEquals(200, c.ttsSpeed)
+        assertEquals("alloy", c.ttsHttpVoice)
+        assertEquals("HTTP service", field("tts.backend").value(c))
+        // The engine lists are one helper: the same labels for speech to text and text to speech.
+        assertEquals(field("voice.backend").options, field("tts.backend").options)
+        assertContains(err(field("tts.speed"), "20"), "at least 50")
+    }
+
+    // --- shipped files ----------------------------------------------------------------------------
+
+    /**
+     * S7: `gui/tools/config-schema.tsv` is the mock daemon's schema (and its GetConfig defaults), so the GUI
+     * is tested against the real contract. It is rendered with no speech models, voices or custom
+     * vibrations and a fixed home, so it doesn't vary per machine. `STOANDL_UPDATE_GOLDEN=1` rewrites it;
+     * skipped where the gui submodule isn't checked out (CI, the release archive).
+     */
+    @Test
+    fun `the gui mock's schema fixture is current`() {
+        val golden = File("gui/tools/config-schema.tsv")
+        if (!golden.parentFile.isDirectory) return
+        val savedEnv = configEnvironment
+        val savedHome = System.getProperty("user.home")
+        val rendered = try {
+            configEnvironment = ConfigEnvironment(speechModels = { emptyList() }, ttsVoices = { emptyList() }, customVibeNames = { emptyList() })
+            System.setProperty("user.home", "/home/user")
+            GUI_CONFIG_FIELDS.joinToString("") { it.schemaRow() + "\n" }
+        } finally {
+            configEnvironment = savedEnv
+            System.setProperty("user.home", savedHome)
+        }
+        if (System.getenv("STOANDL_UPDATE_GOLDEN") == "1") golden.writeText(rendered)
+        assertEquals(rendered, golden.takeIf { it.isFile }?.readText(),
+            "${golden.path} is stale: rerun the test with STOANDL_UPDATE_GOLDEN=1")
+    }
+
+    /** conf.example shows every real setting uncommented at its default (only templates are commented). */
+    @Test
+    fun `conf_example matches the defaults`() {
+        val example = File("packaging/stoandl.conf.example")
+        assertEquals(StoandlConfig.defaults(), StoandlConfig.load(example, logResult = false),
+            "an uncommented line in ${example.path} differs from the default")
+        val uncommented = example.readLines().map { it.substringBefore('#').substringBefore('=').trim() }.toSet()
+        // A runtime combo's default is a placeholder ("No model installed"), not a value one writes down.
+        GUI_CONFIG_FIELDS.filter { it.type != "secret" && it.choicesOf == null && it.defaultValue().isNotEmpty() }.forEach { f ->
+            assertTrue(f.key in uncommented, "${f.key} is missing from ${example.path} (uncommented, at its default)")
+        }
+    }
+
+    /** One `requires` alternative: key, whether it's `!=`, value. */
+    private fun requirements(f: ConfigField): List<Triple<String, Boolean, String>> = f.requires.split('|').map { alt ->
+        val negated = "!=" in alt
+        val (key, value) = alt.split(if (negated) "!=" else "=", limit = 2).also {
+            assertEquals(2, it.size, "${f.key}: malformed requires '${f.requires}'")
+        }
+        Triple(key, negated, value)
+    }
+
+    private companion object {
+        const val SCHEMA_COLUMNS = 16
     }
 }

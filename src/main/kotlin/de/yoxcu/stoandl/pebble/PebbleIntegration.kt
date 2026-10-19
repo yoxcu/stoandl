@@ -16,6 +16,8 @@ import de.yoxcu.stoandl.config.ConfigStore
 import de.yoxcu.stoandl.config.ConfigParse
 import de.yoxcu.stoandl.config.ConfigField
 import de.yoxcu.stoandl.config.GUI_CONFIG_FIELDS
+import de.yoxcu.stoandl.config.SYNC_SERVICE_KEYS
+import de.yoxcu.stoandl.config.configEnvironment
 import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.guiConfigField
@@ -539,7 +541,7 @@ class PebbleIntegration(
         // (watchClaims advertises SupportsTwoWayDismissal), so routes outlive the popup.
         val routeTable = NotifRouteTable()
         vibePatterns = VibePatterns(koin.get())
-        de.yoxcu.stoandl.config.customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } }
+        configEnvironment = configEnvironment.copy(customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } })
         watchNotifier = WatchNotifier(
             libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements,
             notificationImages, vibePatterns::custom, deviceInUse = SessionLock::inUse,
@@ -1999,6 +2001,8 @@ class PebbleIntegration(
             "battery" -> applyBattery()
             "dnd" -> applyDnd()
             "notifications" -> log.info { "Notification forwarding ${if (config.notificationForward) "on" else "paused"}" }
+            // Only the pinned libpebble3 config changed (re-projected above), which libpebble3 reads live.
+            "libpebble" -> log.info { "Catch-up window ${config.notificationCatchUpMinutes} min" }
             "plugins" -> log.info { "Plugins ${if (config.pluginsEnabled) "on (permission policy ${config.pluginsPermissionPolicy.name.lowercase()})" else "off"}" }
             "apps" -> log.info { "Watchfaces ${if (config.appsOrderFacesByLastUsed) "move to the top when activated" else "keep their order"}" }
             "images" -> if (!config.notificationImages) {
@@ -2010,7 +2014,8 @@ class PebbleIntegration(
 
     /** Map a GUI config key to the sync subsystem that must be re-applied for it to take effect live, or
      *  null when the value is read live by its consumer with nothing to restart (notification.per_app →
-     *  the push gate; geolocation.enabled → LiveGeolocation; firmware.notify → the notifier loop). */
+     *  the push gate; geolocation.enabled → LiveGeolocation; firmware.notify → the notifier loop; tts.* →
+     *  each synthesis). `libpebble` only re-projects the config libpebble3 reads live (the catch-up window). */
     private fun serviceForConfigKey(key: String): String? = when {
         key.startsWith("weather.") -> "weather"
         key.startsWith("music.") -> "music"
@@ -2022,13 +2027,15 @@ class PebbleIntegration(
         key.startsWith("apps.") -> "apps"
         key == "notification.forward" -> "notifications"
         key == "notification.images" -> "images"
+        key == "notification.catch_up_minutes" -> "libpebble"
         else -> null
     }
 
     private fun buildSyncStatus(): List<String> {
         val cfg = configStore.current()
         fun row(service: String, available: Boolean, enabled: Boolean, lastSync: String) =
-            "$service\t${if (enabled) "enabled" else "disabled"}\t${if (available) "available" else "unavailable"}\t$lastSync"
+            "$service\t${if (enabled) "enabled" else "disabled"}\t${if (available) "available" else "unavailable"}\t" +
+                "$lastSync\t${SYNC_SERVICE_KEYS.getValue(service)}"
         // Discrete syncers report a real relative age ("just now"/"5 min ago"/"never"); continuous ones
         // (notifications/music/dnd) report live/mode since they don't sync on a schedule.
         fun synced(service: String): String = relAge(lastSyncAt[service] ?: 0L)
@@ -2056,70 +2063,77 @@ class PebbleIntegration(
         )
     }
 
-    // The dnd.sync direction a Sync-screen "off" replaced, so turning the switch back on restores it. Held
-    // for the daemon's lifetime only: after a restart, "on" falls back to `both`.
-    @Volatile private var dndModeBeforeOff: StoandlConfig.DndSyncMode? = null
-
-    /** Persist + live-apply a Sync-screen toggle. The dnd boolean maps to its 4-way mode (true→the
-     *  direction it had, else both; false→off; the precise direction stays editable in Settings). Returns
-     *  the GUI status string. */
+    /** `SetSyncEnabled`: an alias that writes the service's master key ([SYNC_SERVICE_KEYS]) through
+     *  [persistConfig]. dnd's key is four-way, so a switch can't say which direction it means. */
     private fun setSyncEnabledLive(service: String, enabled: Boolean): String {
-        val (key, token) = when (service) {
-            "notifications" -> "notification.forward" to enabled.toString()
-            "weather" -> "weather.enabled" to enabled.toString()
-            "calendar" -> "calendar.enabled" to enabled.toString()
-            "music" -> "music.enabled" to enabled.toString()
-            "health" -> "health.sync" to enabled.toString()
-            // dnd is a 4-way mode behind a 2-way switch. Turning it ON must not flatten a direction the
-            // user picked on the Settings page: keep a non-off mode that is stored, else restore the one
-            // the last "off" replaced, and only fall back to `both` when there is neither (a fresh daemon).
-            "dnd" -> "dnd.sync" to when {
-                !enabled -> {
-                    config.dndSync.takeIf { it != StoandlConfig.DndSyncMode.OFF }?.let { dndModeBeforeOff = it }
-                    "off"
-                }
-                config.dndSync != StoandlConfig.DndSyncMode.OFF -> config.dndSync.name.lowercase()
-                else -> (dndModeBeforeOff ?: StoandlConfig.DndSyncMode.BOTH).name.lowercase()
-            }
-            else -> return "notfound:no sync service '$service'"
-        }
-        // Same persist path as SetConfig (validate where a schema field exists, write under the shared
-        // conf lock, reload, reconcile) rather than a second inline copy of it.
-        val result = persistConfig(key, token, service)
+        val key = SYNC_SERVICE_KEYS[service] ?: return "notfound:no sync service '$service'"
+        if (service == "dnd") return "error:use dnd.sync (off|to_watch|to_host|both)"
+        val result = persistConfig(key, enabled.toString())
         return if (result.startsWith("ok:")) "ok:$service ${if (enabled) "enabled" else "disabled"}" else result
     }
 
     /**
-     * The single write path for a `stoandl.conf` key: validate + persist, then reload the store and
-     * re-reconcile the affected subsystem. Validation is [applyGuiConfig] whenever the key has a
-     * [de.yoxcu.stoandl.config.ConfigField]; three of the six sync masters (`notification.forward`,
-     * `weather.enabled`, `calendar.enabled`) deliberately have none, and those are written directly —
-     * they are plain booleans this daemon generates itself, not user input.
-     *
-     * [service] forces a reconcile bucket (the Sync screen knows its own); when null it is derived from
-     * the key. Both `SetConfig` and `SetSyncEnabled` come through here, so there is one place that
-     * writes, reloads and reconciles instead of two that could drift.
+     * The single write path for a `stoandl.conf` key (`SetConfig`, the `SetSyncEnabled` alias and the
+     * daemon's own writes): validate + persist via [applyGuiConfig] (a secret goes to the secret store),
+     * then reload the store, re-reconcile the affected subsystem and emit `ConfigChanged`. Refuses anything
+     * outside the schema, so a typo is reported rather than silently written.
      */
-    private fun persistConfig(key: String, value: String, service: String? = null): String {
-        val field = guiConfigField(key)
-        if (field?.type == "secret") return persistSecret(field, value)
-        val before = field?.value(configStore.current())
-        val result = if (field != null) {
-            applyGuiConfig(key, value, StoandlConfig.configFile())
-        } else {
-            try {
-                ConfFile.upsert(StoandlConfig.configFile(), mapOf(key to value))
-                "ok:$key = $value"
-            } catch (e: Exception) {
-                log.warn(e) { "Config write $key=$value failed" }
-                "error:${e.message ?: "failed to write ${StoandlConfig.configFile().name}"}"
+    private fun persistConfig(key: String, value: String): String {
+        val field = guiConfigField(key) ?: return "notfound:no config key '$key'"
+        val result = if (field.type == "secret") persistSecret(field, value) else {
+            val before = field.value(configStore.current())
+            applyGuiConfig(key, value, StoandlConfig.configFile()).also { r ->
+                if (!r.startsWith("ok:")) return r
+                log.info { "Config $key: '$before' → '${field.value(configStore.reload())}'" }
+                serviceForConfigKey(key)?.let { reconcile(it) }
             }
         }
-        if (!result.startsWith("ok:")) return result
-        val after = configStore.reload()
-        log.info { if (field != null) "Config $key: '$before' → '${field.value(after)}'" else "Config $key set to '$value'" }
-        (service ?: serviceForConfigKey(key))?.let { reconcile(it) }
+        if (result.startsWith("ok:")) emit(StoandlControl.ConfigChanged(STOANDL_OBJECT_PATH, key))
         return result
+    }
+
+    /**
+     * `Restart()`: restart the daemon through its service manager, so the GUI can apply the restart-only
+     * keys (it can't run `systemctl` from a Flatpak). Under systemd (`INVOCATION_ID` is set) the user
+     * manager's `ResetFailedUnit` comes first, so `StartLimitBurst` can't leave a GUI-requested restart
+     * stopped, then `RestartUnit(<own unit>, "replace")` — a moment after this returns, so the caller gets
+     * the reply before the manager stops this process. Refused while a pairing window or a watch update
+     * is running, since the restart would break it off.
+     */
+    private fun restartDaemon(): String {
+        when {
+            pairingGate.isOpen() -> return "busy:a pairing window is open"
+            watchUpdateRunning() -> return "busy:a firmware or language update is running"
+        }
+        if (System.getenv("INVOCATION_ID").isNullOrEmpty()) {
+            return if (System.getenv("RC_SVCNAME") != null || File("/run/openrc").isDirectory) {
+                "error:restart with rc-service stoandl restart"
+            } else {
+                "error:stoandl isn't running as a service; stop it and start it again"
+            }
+        }
+        return try {
+            val manager = serviceConn.getRemoteObject(SYSTEMD_BUS_NAME, SYSTEMD_OBJECT_PATH, SystemdManager::class.java)
+            val unitPath = manager.GetUnitByPID(UInt32(ProcessHandle.current().pid()))
+            val unit = unwrapVariant(
+                serviceConn.getRemoteObject(SYSTEMD_BUS_NAME, unitPath.path, Properties::class.java)
+                    .Get<Any>("org.freedesktop.systemd1.Unit", "Id"),
+            ) as String
+            scope.launch {
+                delay(RESTART_REPLY_GRACE_MS)
+                log.info { "Restarting $unit as requested over D-Bus" }
+                try {
+                    runCatching { manager.ResetFailedUnit(unit) }
+                    manager.RestartUnit(unit, "replace")
+                } catch (e: Exception) {
+                    log.warn { "Restarting $unit failed: ${e.message}" }
+                }
+            }
+            "ok:restarting $unit"
+        } catch (e: Exception) {
+            log.warn { "Restart: couldn't find stoandl's own systemd unit: ${e.message}" }
+            "error:couldn't ask systemd to restart stoandl (${e.message}); use systemctl --user restart stoandl"
+        }
     }
 
     /** A `secret` key goes to the secret store, never stoandl.conf; empty removes it. */
@@ -2144,12 +2158,6 @@ class PebbleIntegration(
         }
     }
 
-    /** Persist + live-apply a single GUI config key. Refuses anything outside the schema (so a typo is
-     *  reported rather than silently written), then goes through the shared [persistConfig] path. */
-    private fun setConfigLive(key: String, value: String): String =
-        if (guiConfigField(key) == null) "notfound:no config key '$key'"
-        else persistConfig(key, value)
-
     // City search for weather.locations; its own HTTP client, built on the first search.
     private val weatherPlaces by lazy {
         WeatherPlaces(OpenMeteoNow(stoandlHttpClient()), configStore::current) { persistConfig("weather.locations", it) }
@@ -2164,7 +2172,8 @@ class PebbleIntegration(
                 else f.value(configStore.current())
             "${f.key}\t$v"
         }
-        override fun setConfig(key: String, value: String): String = setConfigLive(key, value)
+        override fun setConfig(key: String, value: String): String = persistConfig(key, value)
+        override fun restart(): String = restartDaemon()
         override fun searchWeatherPlace(query: String): String = runBlocking { weatherPlaces.search(query) }
         override fun addWeatherLocation(name: String, latitude: Double, longitude: Double): String =
             weatherPlaces.add(name, latitude, longitude)
@@ -2756,6 +2765,22 @@ private interface BluezAdapter1Ctl : DBusInterface {
     fun RemoveDevice(device: DBusPath)
 }
 
+private const val SYSTEMD_BUS_NAME = "org.freedesktop.systemd1"
+private const val SYSTEMD_OBJECT_PATH = "/org/freedesktop/systemd1"
+/** How long `Restart()` waits before asking systemd, so its D-Bus reply leaves first. */
+private const val RESTART_REPLY_GRACE_MS = 300L
+
+/** The (user) service manager, for `Restart()`. */
+@DBusInterfaceName("org.freedesktop.systemd1.Manager")
+private interface SystemdManager : DBusInterface {
+    @Suppress("FunctionName")
+    fun GetUnitByPID(pid: UInt32): DBusPath
+    @Suppress("FunctionName")
+    fun ResetFailedUnit(name: String)
+    @Suppress("FunctionName")
+    fun RestartUnit(name: String, mode: String): DBusPath
+}
+
 @DBusInterfaceName("org.bluez.Device1")
 private interface BluezDevice1Ctl : DBusInterface {
     @Suppress("FunctionName")
@@ -2954,14 +2979,16 @@ private fun disconnectBluezDevice(devicePath: String) {
  * the affected subsystem, so changes take effect without a daemon restart.
  */
 internal interface SyncControl {
-    /** GetSyncStatus rows: `service\tenabled|disabled\tavailable|unavailable\tlastSync`. */
+    /** GetSyncStatus rows: `service\tenabled|disabled\tavailable|unavailable\tlastSync\tkey`. */
     fun status(): List<String>
-    /** Persist + live-apply a Sync-screen toggle for one of the six services. */
+    /** SetSyncEnabled: write one of the five boolean sync masters (an alias of [setConfig]). */
     fun setEnabled(service: String, enabled: Boolean): String
     /** GetConfig rows: `key\tvalue` over the current (live) config. */
     fun getConfig(): List<String>
     /** Persist + live-apply a single GUI config key. */
     fun setConfig(key: String, value: String): String
+    /** Restart the daemon through its service manager (see `Restart()`). */
+    fun restart(): String
     /** Geocode a place name for `weather.locations` (gated on weather.enabled + weather.place_search). */
     fun searchWeatherPlace(query: String): String
     /** Upsert a `weather.locations` entry by name; persists + re-applies weather. */
@@ -4397,20 +4424,23 @@ private class StoandlControlImpl(
         }
     }
 
-    // The six sync services' live runtime state (enabled/available/lastSync), assembled by
+    // The six sync services' live runtime state (enabled/available/lastSync/key), assembled by
     // PebbleIntegration from its service refs + the live config store — see SyncControl.
     override fun GetSyncStatus(): List<String> = syncControl.status()
 
-    // Persist + live-apply a Sync-screen toggle (start/stop the service, no restart needed).
+    // An alias that writes the service's master key (SYNC_SERVICE_KEYS) like SetConfig.
     override fun SetSyncEnabled(service: String, enabled: Boolean): String =
         syncControl.setEnabled(service, enabled)
+
+    override fun Restart(): String = syncControl.restart()
 
     // Read off the live config store (reloaded on every write) so a just-set value sticks.
     override fun GetConfig(): List<String> = syncControl.getConfig()
 
-    // `key type label options desc group apply min max unit placeholder` — the first five columns are
-    // the original contract, everything after is appended, so an older client that reads five columns
-    // positionally is unaffected. ConfigField owns the row so the schema can't drift from the write path.
+    // `key type label options desc group apply min max unit placeholder page help requires default egress`
+    // — the first five columns are the original contract, everything after is appended, so an older client
+    // that reads columns positionally is unaffected. ConfigField owns the row so the schema can't drift
+    // from the write path.
     override fun GetConfigSchema(): List<String> = GUI_CONFIG_FIELDS.map { it.schemaRow() }
 
     // Persist + live-apply (validate, write, reload, reconcile the affected subsystem).
