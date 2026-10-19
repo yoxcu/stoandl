@@ -28,7 +28,11 @@ in a GUI's plugin row. See [`../../docs/extensions.md`](../../docs/extensions.md
   `register_app`/`send_app_message`/`launch_app`/`install_pbw` + `on_app_message`). Ship a copy in your
   extension dir.
 - **`stoandl_ext.go`** — the same helper for Go (`package main`): copy it next to your extension and
-  drive it from your own service loop. Used by `matrix/` and `assistant/`.
+  drive it from your own service loop. Used by `matrix/` and `assistant/`. It also has `Synthesize` (the
+  daemon's text to speech) and `SpeakerPump`, which streams the speech to a watchapp.
+- **`watchlib/stoandl_speaker.{c,h}`** — the watch half of that: copy it into your watchapp's `src/c/` and
+  it plays the speech on the watch speaker (Pebble Time 2, 2 Duo; a no-op stub elsewhere). Format and
+  API: [`../../docs/speaker-stream.md`](../../docs/speaker-stream.md). Used by `assistant/`.
 - **`matrix/`** — a git submodule ([yoxcu/stoandl-matrix](https://github.com/yoxcu/stoandl-matrix)): a
   **Matrix** extension (Go) — messages on the wrist + canned replies, decrypting E2EE rooms. Logs in as a
   second device of your account; builds to a static, musl-clean binary (`mautrix-go` + pure-Go `goolm`).

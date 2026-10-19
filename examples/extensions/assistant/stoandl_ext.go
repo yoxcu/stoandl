@@ -10,13 +10,16 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Namespace for turning a human-friendly ReplaceID string into a stable UUID (so re-sends replace the
@@ -244,6 +247,40 @@ func (e *Ext) Release(token string) {
 	e.request("release", map[string]any{"token": token}, nil)
 }
 
+// Synthesize asks the host's text to speech (tts.*) for speech the watch speaker can play: cb gets the
+// self-contained ADPCM blocks (docs/speaker-stream.md) and their length in ms, or err: "off",
+// "unavailable: …", "busy" or what else went wrong. Feed the blocks to a SpeakerPump. A host without
+// text to speech never answers, so wait with a timeout.
+func (e *Ext) Synthesize(text, language string, cb func(blocks [][]byte, ms int, err string)) {
+	params := map[string]any{"text": text, "format": "pebble-adpcm"}
+	if language != "" {
+		params["language"] = language
+	}
+	e.requestE("synthesize", params, func(res map[string]any) {
+		if failure, failed := res["error"]; failed {
+			msg, _ := failure.(map[string]any)["message"].(string)
+			if msg == "" {
+				msg = "synthesize failed"
+			}
+			cb(nil, 0, msg)
+			return
+		}
+		raw, _ := res["blocks"].([]any)
+		blocks := make([][]byte, 0, len(raw))
+		for _, r := range raw {
+			s, _ := r.(string)
+			b, err := base64.StdEncoding.DecodeString(s)
+			if err != nil || len(b) <= spkBlockHeader {
+				cb(nil, 0, "synthesize: bad block")
+				return
+			}
+			blocks = append(blocks, b)
+		}
+		ms, _ := res["ms"].(float64)
+		cb(blocks, int(ms), "")
+	}, true)
+}
+
 // RegisterApp arms inbound AppMessages from a watchapp UUID — they arrive via OnAppMessage.
 func (e *Ext) RegisterApp(uuid string) {
 	e.request("registerApp", map[string]any{"uuid": uuid}, nil)
@@ -398,4 +435,164 @@ func uuid5(ns [16]byte, name string) string {
 	u[6] = (u[6] & 0x0f) | 0x50 // version 5
 	u[8] = (u[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}
+
+// Speaker stream (docs/speaker-stream.md): the reserved AppMessage keys a watchapp that vendors
+// watchlib/stoandl_speaker.c consumes, and the receiver ring SpeakerPump paces against.
+const (
+	SpkKeyID    = 0x7FFF0000
+	SpkKeySeq   = 0x7FFF0001
+	SpkKeyData  = 0x7FFF0002
+	SpkKeyFlags = 0x7FFF0003
+
+	SpkFlagStart = 0x01
+	SpkFlagEnd   = 0x02
+	SpkFlagAbort = 0x04
+
+	spkRingBytes   = 6144 // the watch's ADPCM ring
+	spkLenBytes    = 2    // the ring stores each block behind its length
+	spkBlockHeader = 4
+	spkRate        = 8000
+	spkPrebuffer   = 400 * time.Millisecond // the watch opens its stream with this much buffered
+)
+
+// SpeakerPump streams speech blocks to a watchapp that vendors stoandl_speaker.c, one stream per pump.
+// send must be the extension's own one-in-flight path to that watchapp (it retries NACKs and reports
+// whether the watch ACKed), so speech never races the app's other messages.
+type SpeakerPump struct {
+	send  func(ctx context.Context, data map[int]AppValue) bool
+	id    uint32
+	seq   int
+	clock speakerClock
+	now   func() time.Time
+}
+
+func NewSpeakerPump(send func(ctx context.Context, data map[int]AppValue) bool) *SpeakerPump {
+	id := rand.Uint32()
+	for id == 0 {
+		id = rand.Uint32()
+	}
+	return &SpeakerPump{send: send, id: id, now: time.Now}
+}
+
+// Sent reports whether a block went out.
+func (p *SpeakerPump) Sent() bool { return p.seq > 0 }
+
+// Write sends blocks in order, each once the watch's ring has room for it. It returns false when ctx
+// ended or the watch didn't take a block.
+func (p *SpeakerPump) Write(ctx context.Context, blocks [][]byte) bool {
+	for _, b := range blocks {
+		if w := p.clock.wait(p.now(), len(b)); w > 0 {
+			t := time.NewTimer(w)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				return false
+			}
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		m := p.msg(0)
+		m[SpkKeyData] = Blob(b)
+		if p.seq == 0 {
+			m[SpkKeyFlags] = U8(SpkFlagStart)
+		}
+		if !p.send(ctx, m) {
+			return false
+		}
+		p.seq++
+		p.clock.sent(p.now(), len(b))
+	}
+	return true
+}
+
+// End tells the watch the stream is complete; it plays out what it holds. With nothing sent it aborts.
+func (p *SpeakerPump) End(ctx context.Context) bool {
+	if p.seq == 0 {
+		return p.Abort(ctx)
+	}
+	return p.send(ctx, p.msg(SpkFlagEnd))
+}
+
+// Abort stops the watch playing this stream, and clears a watch waiting for one that never came.
+func (p *SpeakerPump) Abort(ctx context.Context) bool { return p.send(ctx, p.msg(SpkFlagAbort)) }
+
+func (p *SpeakerPump) msg(flags int) map[int]AppValue {
+	m := map[int]AppValue{SpkKeyID: U32(int(p.id)), SpkKeySeq: U16(p.seq)}
+	if flags != 0 {
+		m[SpkKeyFlags] = U8(flags)
+	}
+	return m
+}
+
+// speakerClock estimates what the watch still holds of a stream, so a block is sent only when the
+// ring has room for it. A block counts as held until it has played, which errs on the safe side: the
+// watch frees it once decoded into the firmware's stream buffer.
+type speakerClock struct {
+	started bool
+	end     time.Time // when everything sent so far will have played
+	pre     time.Duration
+	held    []heldBlock // oldest first
+}
+
+type heldBlock struct {
+	bytes int
+	dur   time.Duration
+	until time.Time // zero until playback has started
+}
+
+func blockDuration(n int) time.Duration {
+	return time.Duration(1+2*(n-spkBlockHeader)) * time.Second / spkRate
+}
+
+func (c *speakerClock) expire(now time.Time) {
+	i := 0
+	for i < len(c.held) && c.started && !c.held[i].until.After(now) {
+		i++
+	}
+	c.held = c.held[i:]
+}
+
+// wait is how long until a block of n bytes fits in the ring.
+func (c *speakerClock) wait(now time.Time, n int) time.Duration {
+	c.expire(now)
+	over := n + spkLenBytes - spkRingBytes
+	for _, b := range c.held {
+		over += b.bytes
+	}
+	if over <= 0 || !c.started {
+		return 0 // before playback the ring holds less than a block's worth: it can't be full
+	}
+	for _, b := range c.held {
+		if over -= b.bytes; over <= 0 {
+			return b.until.Sub(now)
+		}
+	}
+	return 0
+}
+
+// sent records a block of n bytes the watch ACKed at now.
+func (c *speakerClock) sent(now time.Time, n int) {
+	c.expire(now)
+	b := heldBlock{bytes: n + spkLenBytes, dur: blockDuration(n)}
+	if c.started {
+		if c.end.Before(now) {
+			c.end = now // the watch ran dry: this block plays at once
+		}
+		c.end = c.end.Add(b.dur)
+		b.until = c.end
+		c.held = append(c.held, b)
+		return
+	}
+	c.held = append(c.held, b)
+	c.pre += b.dur
+	if c.pre >= spkPrebuffer {
+		c.started, c.end = true, now
+		for i := range c.held {
+			c.end = c.end.Add(c.held[i].dur)
+			c.held[i].until = c.end
+		}
+	}
 }
