@@ -1216,30 +1216,37 @@ private fun ctlNotif(rest: List<String>) {
 
 // ---- sync group (list / enable / disable a sync service) ---------------------------------------
 
+/** dnd.sync has four modes, so `sync enable|disable dnd` can't say which one (the daemon refuses it too). */
+private const val DND_SYNC_HINT = "Do Not Disturb sync has four modes: stoandl daemon set dnd.sync off|to_watch|to_host|both"
+
 private fun ctlSync(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
+    if (sub == "dnd" || (sub in setOf("enable", "disable") && rest.getOrNull(1) == "dnd")) {
+        System.err.println(DND_SYNC_HINT); System.exit(EXIT_USAGE); return
+    }
     withControl { control ->
         when (sub) {
             "list", "status" -> {
                 val rows = control.GetSyncStatus()
-                println("  %-14s %-9s %-12s %s".format("SERVICE", "STATE", "AVAILABLE", "LAST SYNC"))
+                println("  %-14s %-9s %-12s %-12s %s".format("SERVICE", "STATE", "AVAILABLE", "LAST SYNC", "KEY"))
                 rows.forEach { entry ->
-                    val f = entry.split('\t') // service \t enabled|disabled \t available|unavailable \t lastSync
-                    println("  %-14s %-9s %-12s %s".format(
-                        f.getOrElse(0) { "" }, f.getOrElse(1) { "" }, f.getOrElse(2) { "" }, f.getOrElse(3) { "" }))
+                    // service \t enabled|disabled \t available|unavailable \t lastSync \t key
+                    val f = entry.split('\t')
+                    println("  %-14s %-9s %-12s %-12s %s".format(
+                        f.getOrElse(0) { "" }, f.getOrElse(1) { "" }, f.getOrElse(2) { "" }, f.getOrElse(3) { "" }, f.getOrElse(4) { "" }))
                 }
-                println("\nToggle one with:  stoandl sync enable|disable <service>")
+                println("\nToggle one with:  stoandl sync enable|disable <service>  (dnd: stoandl daemon set dnd.sync <mode>)")
             }
             "enable", "disable" -> {
                 val service = rest.getOrNull(1)
                 if (service.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl sync $sub <service>  (notifications weather calendar music health dnd)")
+                    System.err.println("Usage: stoandl sync $sub <service>  (notifications weather calendar music health)")
                     System.exit(EXIT_USAGE); return
                 }
                 handleStatusResponse(control.SetSyncEnabled(service, sub == "enable"))
             }
             else -> {
-                System.err.println("Usage: stoandl sync <list | enable <service> | disable <service>>  (notifications weather calendar music health dnd)")
+                System.err.println("Usage: stoandl sync <list | enable <service> | disable <service>>  (notifications weather calendar music health)")
                 System.exit(EXIT_USAGE)
             }
         }
