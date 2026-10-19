@@ -29,24 +29,10 @@
         </encoder>
     </appender>
 
-    <!-- stoandl own code: startup, scan, connect, notify — always INFO -->
-    <logger name="de.yoxcu.stoandl" level="INFO"/>
-
-    <!-- Datalog capture: per-frame detail is DEBUG — honor STOANDL_LOG so `STOANDL_LOG=DEBUG`
-         surfaces each captured custom-watchapp frame (otherwise the parent pins it to INFO). -->
-    <logger name="de.yoxcu.stoandl.datalog" level="${logLevel}"/>
-
-    <!-- Suspend/resume (SleepGuard: `resumed`, `PrepareForSleep: nothing pending`, delay-lock retries) —
-         honor STOANDL_LOG, or the parent's INFO pin hides the lines TESTING.md §5.32 times against. -->
-    <logger name="de.yoxcu.stoandl.power" level="${logLevel}"/>
-
-    <!-- GeoClue client start/stop (`GeoClue client started at city`, `… stopped`): honor STOANDL_LOG so
-         DEBUG shows when the location radios are held on (TESTING.md §5.41). -->
-    <logger name="de.yoxcu.stoandl.location" level="${logLevel}"/>
-
-    <!-- Firmware check cache (`Firmware check for <board> answered from the cache`, `Not modified: <url>`):
-         honor STOANDL_LOG so DEBUG shows whether a check went to the network (TESTING.md §5.11j–l). -->
-    <logger name="de.yoxcu.stoandl.firmware" level="${logLevel}"/>
+    <!-- stoandl's own code follows STOANDL_LOG: INFO for startup, scan, connect and notifications; DEBUG
+         adds the decisions behind them (sleep guard, datalog frames, GeoClue start/stop, the firmware
+         check cache, …) that TESTING.md times against. -->
+    <logger name="de.yoxcu.stoandl" level="${logLevel}"/>
 
     <!-- PKJS lifecycle events (JS bridge init, ready, webhook, status) — always INFO -->
     <logger name="PrivatePKJSInterface" level="INFO"/>
@@ -102,7 +88,8 @@
          capability (e.g. SupportsWeatherApp) — the decisive signal for diagnosing empty weather. -->
     <logger name="BlobDB" level="${logLevel}"/>
     <!-- Calendar sync detail from libpebble3 (Got N calendars, New/Deleting Pin, Synced) — follows
-         STOANDL_LOG. stoandl's own calendar reader logs a per-sync summary at INFO regardless. -->
+         STOANDL_LOG. stoandl's own calendar reader logs one summary line per sync at INFO
+         ("Calendar: N calendar(s) […]") and each calendar's event count at DEBUG. -->
     <logger name="PhoneCalendarSyncer" level="${logLevel}"/>
     <!-- Music control (MPRIS bridge) watch-side protocol detail — follows STOANDL_LOG.
          stoandl's MprisMusicControl logs the user-facing music activity at INFO regardless. -->
