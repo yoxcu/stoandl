@@ -189,7 +189,8 @@ the last JAR in the phone's `~/.cache/stoandl/install/` and sends only what chan
 
 The `stoandl` CLI tunes its JVM for short runs (C1 only, Serial GC) and keeps a class-data archive in
 `~/.cache/stoandl/cli-*.jsa`. The first command after each install writes it and takes about half a
-second longer; later commands start in about half the time.
+second longer; later commands start in about half the time. When it can't be written (a JDK without
+its own class-data archive, a full disk) the CLI runs without it until the next install.
 
 > The installed service + `stoandl` wrapper call `/usr/bin/java` / `java`, which **must be JDK 25**
 > on the target (see [Requirements](#requirements)). The build runs on JDK 21; `install.sh` pins

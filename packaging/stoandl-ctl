@@ -5,12 +5,16 @@
 # A CLI call is short-lived, so the JVM is set up to start fast (about 470 → 270 ms for `watch list` on
 # x86):
 # - C1 only, Serial GC, and no hsperfdata file in /tmp.
-# - a CDS archive of the classes the CLI loads (-XX:+AutoCreateSharedArchive, JDK 19+, on top of the
-#   JDK's own classes.jsa). It holds what the run that wrote it loaded, so a `stoandl version` (D-Bus
-#   connect and call, the start every command shares) writes it before the first command. The JVM does
-#   not rewrite it when the JAR changes, it just stops using it, so the file name carries the JAR's size
-#   and mtime: an upgrade writes a new archive and drops the old one. A failed write makes the JVM exit 1
-#   after the command ran, so the archive is only used when its directory is writable.
+# - a CDS archive of the classes the CLI loads (on top of the JDK's own classes.jsa). It holds what the
+#   run that wrote it loaded, so the first call after an install or upgrade first runs a hidden
+#   `stoandl version` (D-Bus connect and call, the start every command shares) with
+#   -XX:+AutoCreateSharedArchive (JDK 19+). Only that seed writes: it dumps to a name of its own and the
+#   file is moved into place only when the dump worked, because a failed dump (a full disk) makes the JVM
+#   exit 1 after its command ran. Commands only read the archive (-XX:SharedArchiveFile, -Xshare:auto),
+#   and the JVM skips an unusable one silently. The JVM does not rewrite the archive when the JAR changes,
+#   it just stops using it, so the file name carries the JAR's size and mtime: an upgrade seeds a new
+#   archive and drops the old one. A seed that wrote nothing (no base CDS archive in this JDK, CDS off,
+#   a full disk) leaves a `.nocds` marker, so commands don't run a seed each time; the next JAR retries.
 #   -Xlog:cds/aot=off: the JVM prints CDS warnings on stdout.
 # No --enable-native-access (the JAR's manifest grants it) and no --add-opens (only the daemon's
 # BecomeMonitor reflection needed those, and on the classpath dbus-java is in the unnamed module anyway).
@@ -20,12 +24,20 @@ set -- -jar "$jar" ctl "$@"
 cds=${XDG_CACHE_HOME:-$HOME/.cache}/stoandl
 if id=$(stat -c %s-%Y "$jar" 2>/dev/null) && mkdir -p "$cds" 2>/dev/null && [ -w "$cds" ]; then
     jsa="$cds/cli-$id.jsa"
-    set -- -XX:+AutoCreateSharedArchive "-XX:SharedArchiveFile=$jsa" -Xlog:cds=off -Xlog:aot=off "$@"
-    if [ ! -f "$jsa" ]; then
-        rm -f "$cds"/cli-*.jsa
-        "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData \
-            -XX:+AutoCreateSharedArchive "-XX:SharedArchiveFile=$jsa" -Xlog:cds=off -Xlog:aot=off \
-            -jar "$jar" ctl version > /dev/null 2>&1 < /dev/null
+    if [ ! -f "$jsa" ] && [ ! -f "$cds/cli-$id.nocds" ]; then
+        # Another JAR's files go; a parallel first run's seed (cli-$id.jsa.<pid>) stays.
+        for f in "$cds"/cli-*; do
+            case $f in "$cds/cli-$id".*) ;; *) rm -f "$f" ;; esac
+        done
+        if "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData \
+            -XX:+AutoCreateSharedArchive "-XX:SharedArchiveFile=$jsa.$$" -Xlog:cds=off -Xlog:aot=off \
+            -jar "$jar" ctl version > /dev/null 2>&1 < /dev/null && mv -f "$jsa.$$" "$jsa" 2>/dev/null; then
+            :
+        else
+            rm -f "$jsa.$$"
+            : > "$cds/cli-$id.nocds"
+        fi
     fi
+    [ -f "$jsa" ] && set -- "-XX:SharedArchiveFile=$jsa" -Xlog:cds=off -Xlog:aot=off "$@"
 fi
 exec "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData "$@"
