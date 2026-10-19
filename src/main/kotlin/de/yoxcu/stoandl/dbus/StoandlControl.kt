@@ -561,10 +561,11 @@ interface StoandlControl : DBusInterface {
     fun DevConnectionStatus(): String
 
     /** Installed/enabled extensions, one tab-separated row each: `name \t installed|missing \t
-     *  enabled|disabled \t running|stopped \t config \t description \t author \t version`, where
-     *  config ∈ {none, schema} (`schema` = the manifest declares a `configSchema`; the `url` backend
-     *  isn't implemented), description is the manifest's one-line summary, and author/version are the
-     *  manifest's `author`/`version` (all empty if not declared). */
+     *  enabled|disabled \t running|stopped \t config \t description \t author \t version \t lastStderr`,
+     *  where config ∈ {none, schema} (`schema` = the manifest declares a `configSchema`), description is
+     *  the manifest's one-line summary, author/version are the manifest's `author`/`version` (all empty
+     *  if not declared), and lastStderr is the child's last non-blank stderr line since the daemon started
+     *  it (kept across its restarts and a quarantine, empty once it is stopped). */
     fun ExtList(): List<String>
 
     /** Install an extension from an archive (.tar.gz/.tgz/.tar/.zip) into `<configDir>/ext/<name>/`:

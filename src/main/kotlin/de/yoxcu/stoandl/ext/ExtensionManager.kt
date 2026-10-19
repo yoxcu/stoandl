@@ -259,6 +259,7 @@ class ExtensionManager(
                 meta.description.replace('\t', ' ').replace('\n', ' '),
                 meta.author.replace('\t', ' ').replace('\n', ' '),
                 meta.version.replace('\t', ' ').replace('\n', ' '),
+                running[n]?.lastStderrLine.orEmpty().replace('\t', ' ').replace('\n', ' '),
             ).joinToString("\t")
         }
     }

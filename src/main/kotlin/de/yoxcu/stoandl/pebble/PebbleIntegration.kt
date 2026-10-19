@@ -576,6 +576,10 @@ class PebbleIntegration(
             libPebbleRef = libPebbleRef,
             scope = scope,
             alertsAllowed = { alertsAllow { c -> c.alertsExtensions } },
+            // The quarantine alert's Restart button, through the one desktop-action path.
+            alertWithAction = { summary, body, label, onAction ->
+                sendDesktopPrompt(summary, body, listOf("restart" to label)) { onAction() }
+            },
             notificationImagesOn = { configStore.current().notificationImages },
             transcribe = { path, language -> voiceControl.transcribe(path, language) },
             synthesize = ttsService::synthesize,

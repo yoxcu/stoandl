@@ -1741,6 +1741,8 @@ private fun ctlExt(rest: List<String>) {
                     val c = row.split('\t')
                     println(String.format("%-20s %-10s %-9s %s",
                         c.getOrElse(0) { "" }, c.getOrElse(1) { "" }, c.getOrElse(2) { "" }, c.getOrElse(3) { "" }))
+                    // Column 8: the child's last stderr line, which names why a crashed or quarantined one stopped.
+                    c.getOrNull(8)?.takeIf { it.isNotBlank() }?.let { println("  stderr: ${it.take(160)}") }
                 }
             }
             "install" -> {
