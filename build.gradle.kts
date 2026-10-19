@@ -157,4 +157,20 @@ tasks.shadowJar {
         attributes["Enable-Native-Access"] = "ALL-UNNAMED"
     }
     mergeServiceFiles()
+    // Same sources, same JAR: no build timestamps in the entries, a fixed entry order.
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    // Natives the daemon can never load, about 21 MB of the JAR:
+    // - androidx sqlite-bundled's macOS and Windows libraries (Linux only).
+    // - kable's btleplug backend: its native library (every platform, Linux too) and JNA, which only it
+    //   uses. stoandl drives BLE over BlueZ D-Bus and never builds a kable peripheral or scanner, and
+    //   kable's JVM `Bluetooth.availability` is a constant flow; the Classic transport uses FFM.
+    // - Truffle's attach library for macOS and Windows.
+    exclude(
+        "natives/osx_*/**", "natives/windows_*/**",
+        "darwin-*/libbtleplug_ffi.*", "linux-*/libbtleplug_ffi.so", "win32-*/btleplug_ffi.dll",
+        "com/sun/jna/**",
+        "META-INF/resources/engine/libtruffleattach/darwin/**",
+        "META-INF/resources/engine/libtruffleattach/windows/**",
+    )
 }
