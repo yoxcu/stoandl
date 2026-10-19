@@ -10,8 +10,9 @@
 
 # Per-app mute store. When on, every desktop app that notifies is tracked and its mute state is
 # enforced host-side before sending (the notification is dropped before it crosses BLE). Manage it at
-# runtime with `stoandl notif` (list / mute <app> [always|weekdays|weekends|1h|2d] / unmute /
-# mute-all / style), or with the "Mute" action on a notification on the watch. On by default.
+# runtime with `stoandl notif` (list / mute <app> [always|weekdays|weekends|1h|2d] / unmute / style),
+# or with the "Mute" action on a notification on the watch. On by default. (`stoandl notif mute-all
+# <30m|1h|2d|today>` is separate: a temporary mute over every app that works whatever this says.)
 notification.per_app = true
 # Mute state applied to a newly observed app: never (deliver), always (mute), weekdays, or weekends.
 notification.default_mute = never
