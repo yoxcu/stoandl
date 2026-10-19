@@ -11,6 +11,7 @@ import de.yoxcu.stoandl.voice.Wav
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -39,7 +40,9 @@ class TtsTest {
             EspeakTts.espeakArgv("de-DE", 150, out))
         assertEquals(listOf("espeak-ng", "-b", "1", "-s", "175", "-w", out.path, "--stdin"), EspeakTts.espeakArgv(null, 100, out))
         assertEquals(listOf("sh", "-c", "my-tts --lang en"), CommandTts.commandArgv("my-tts --lang {lang}", "EN"))
-        assertEquals(listOf("sh", "-c", "my-tts --lang auto"), CommandTts.commandArgv("my-tts --lang {lang}", null))
+        assertEquals("my-tts --lang de", CommandTts.commandArgv("my-tts --lang {lang}", "de-DE", "en").last(), "the primary subtag")
+        assertEquals("my-tts --lang de", CommandTts.commandArgv("my-tts --lang {lang}", null, "de").last(), "none given: the system's")
+        assertEquals("my-tts --lang en", CommandTts.commandArgv("my-tts --lang {lang}", "x; rm", "").last(), "never empty, never shell")
         val body = Json.parseToJsonElement(HttpTts.requestBody("Hallo", "tts-1", "", 125)).jsonObject
         assertEquals(setOf("model", "input", "speed", "response_format"), body.keys, "an empty voice is left out")
         assertEquals("1.25", body["speed"]!!.jsonPrimitive.content)
@@ -100,34 +103,50 @@ class TtsTest {
         assertTrue((CommandTts("exit 3").synthesize("x", null, 100, 5_000) as TtsOutcome.Failed).message.contains("exited 3"))
     }
 
+    /** The keep-awake holds a service takes, and how many are still open. */
+    private class Holds {
+        val taken = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val open = java.util.concurrent.atomic.AtomicInteger()
+        fun hold(why: String): AutoCloseable { taken += why; open.incrementAndGet(); return AutoCloseable { open.decrementAndGet() } }
+        /** Wait until every hold is closed and at least [n] were taken; false after [ms]. */
+        fun settle(n: Int, ms: Long = 4_000): Boolean {
+            val end = System.nanoTime() + ms * 1_000_000
+            while (System.nanoTime() < end) { if (taken.size >= n && open.get() == 0) return true; Thread.sleep(20) }
+            return false
+        }
+    }
+
     @Test
-    fun `Speak plays on this device, and refuses with the backend's state`() {
+    fun `Speak answers at once, plays on this device, and refuses with the backend's state`() {
         val file = Files.createTempFile("tts", ".wav").toFile().apply { writeBytes(Wav.encode(tone(16000, 500), 16000)) }
-        val awake = mutableListOf<String>()
-        // `true` stands in for pw-play: it exits at once.
-        val service = TtsService(backends(VoiceBackend.COMMAND, "cat ${file.path}"), GlobalScope,
-            { why -> awake += why; AutoCloseable {} }, players = listOf("true"))
-        assertEquals("ok:500", service.speak("Hello"))
-        assertTrue("Reading text aloud" in awake && "Text to speech" in awake)
+        val holds = Holds()
+        // The engine takes 2 s; `true` stands in for pw-play: it exits at once.
+        val service = TtsService(backends(VoiceBackend.COMMAND, "sh -c 'sleep 2; cat ${file.path}'"), GlobalScope, holds::hold, players = listOf("true"))
+        val start = System.nanoTime()
+        assertEquals("ok:speaking 5 characters", service.speak("Hello"))
+        assertTrue((System.nanoTime() - start) / 1_000_000 < 1_000, "the caller doesn't wait for the engine")
+        assertTrue(holds.settle(2), "read and played")
+        assertEquals(setOf("Reading text aloud", "Text to speech"), holds.taken.toSet())
         assertEquals("off:", TtsService(backends(VoiceBackend.OFF), GlobalScope, players = listOf("true")).speak("Hello"))
         assertEquals("error:no text", service.speak(" \n "))
+        assertEquals("unavailable:tts.command is empty", TtsService(backends(VoiceBackend.COMMAND), GlobalScope, players = listOf("true")).speak("x"))
         assertTrue(TtsService(backends(VoiceBackend.OFF), GlobalScope, players = listOf("stoandl-no-player")).speak("x").startsWith("unavailable:no audio player"))
     }
 
     @Test
     fun `a new Speak stops the reading before it`() {
         val file = Files.createTempFile("tts", ".wav").toFile().apply { writeBytes(Wav.encode(tone(16000, 200), 16000)) }
+        val holds = Holds()
         // The engine takes 5 s for the first text and none for the second.
         val service = TtsService(backends(VoiceBackend.COMMAND, "sh -c 'read t; [ \"${'$'}t\" = slow ] && sleep 5; cat ${file.path}'"),
-            GlobalScope, players = listOf("true"))
-        var firstResult: String? = null
-        val first = Thread { firstResult = service.speak("slow") }.apply { start() }
+            GlobalScope, holds::hold, players = listOf("true"))
+        service.speak("slow")
         Thread.sleep(500)
         val start = System.nanoTime()
-        assertEquals("ok:200", service.speak("fast"))
+        service.speak("fast")
+        assertTrue(holds.settle(4), "both readings ended")
         assertTrue((System.nanoTime() - start) / 1_000_000 < 4_000, "the first engine was killed, not waited for")
-        first.join(5_000)
-        assertEquals("stopped:", firstResult)
+        assertEquals("none:nothing is being read aloud", service.stop())
     }
 
     /** An extension's synthesize: blocks for the watch, or the error it shows (off, unavailable, busy). */
@@ -146,6 +165,14 @@ class TtsTest {
         Thread.sleep(500)
         assertEquals(Synthesis.Error("busy"), service.synthesize("Hallo.", null, "pebble-adpcm"))
         assertIs<Synthesis.Blocks>(slow.await())
+
+        // Cancelled (an extension's newer request replaces it): the engine is killed and free at once.
+        val replaced = async(Dispatchers.IO) { service.synthesize("slow", null, "pebble-adpcm") }
+        Thread.sleep(500)
+        val start = System.nanoTime()
+        replaced.cancelAndJoin()
+        assertIs<Synthesis.Blocks>(service.synthesize("Hallo.", null, "pebble-adpcm"))
+        assertTrue((System.nanoTime() - start) / 1_000_000 < 1_500, "not waited out")
 
         assertEquals(Synthesis.Error("off"), TtsService(backends(VoiceBackend.OFF), GlobalScope).synthesize("x", null, "pebble-adpcm"))
         assertEquals(Synthesis.Error("unavailable: tts.command is empty"),

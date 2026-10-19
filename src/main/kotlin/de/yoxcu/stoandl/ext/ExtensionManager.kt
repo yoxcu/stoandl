@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.booleanOrNull
@@ -663,6 +664,9 @@ private class ExtensionProcess(
     private val owner = ExtensionOwner(def.name) { obj -> enqueue(obj) }.also { owners.register(it) }
     private val registeredApps = ConcurrentHashMap.newKeySet<Uuid>()
     private val awake = AwakeHolds(def.name, scope, holdAwake)
+    /** The `synthesize` in flight. A new one replaces it: a reading that asks for its next sentence while one
+     *  plays only wants its latest request, and the engine is freed for it at once rather than answering `busy`. */
+    @Volatile private var synthesizing: Job? = null
 
     fun onWatchConnected() {
         if (!ready) return
@@ -812,7 +816,10 @@ private class ExtensionProcess(
             method == "installPbw" -> handleInstallPbw(id, params)
             // Off the read loop: a transcription or a synthesis takes seconds.
             method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
-            method == "synthesize" -> scope.launch { handleSynthesize(id, params) }
+            method == "synthesize" -> {
+                val before = synthesizing
+                synthesizing = scope.launch { before?.cancelAndJoin(); handleSynthesize(id, params) }
+            }
             method == "keepAwake" -> {
                 val maxMs = params?.get("maxMs")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.longOrNull }
                 awake.acquire(params?.str("why"), maxMs).fold(
@@ -916,11 +923,16 @@ private class ExtensionProcess(
     }
 
     /** `synthesize {text, language?, format?}` → `{blocks:[base64…], ms}` (`pebble-adpcm`, the default) or
-     *  `{path, ms}` (`wav`), or an error `off` / `unavailable: …` / `busy` / the failure. The daemon's text to
-     *  speech (tts.*): the extension needs no engine of its own. */
+     *  `{path, ms}` (`wav`), or an error `off` / `unavailable: …` / `busy` / `cancelled` (a newer `synthesize`
+     *  replaced it) / the failure. The daemon's text to speech (tts.*): the extension needs no engine of its own. */
     private suspend fun handleSynthesize(id: JsonElement?, params: JsonObject?) {
         val text = params?.str("text") ?: run { replyError(id, "synthesize: missing text"); return }
-        val result = synthesize(text, params.str("language"), params.str("format") ?: "pebble-adpcm")
+        val result = try {
+            synthesize(text, params.str("language"), params.str("format") ?: "pebble-adpcm")
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            replyError(id, "cancelled")
+            throw e
+        }
         synthesisResult(result)?.let { r -> reply(id) { r.forEach { (k, v) -> put(k, v) } } }
             ?: replyError(id, (result as Synthesis.Error).message)
     }

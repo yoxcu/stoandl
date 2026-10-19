@@ -437,10 +437,10 @@ interface StoandlControl : DBusInterface {
     fun TtsStatus(): String
 
     /** Read [text] aloud on this device (not the watch) with the configured text to speech, through the first
-     *  of pw-play, paplay and aplay installed; a new call stops the one before. Blocks while the audio is made
-     *  (seconds), then plays it in the background. Returns `ok:<ms of audio>`, `off:`, `unavailable:<reason>`,
-     *  `error:<msg>`, or `stopped:` (stopped before it played). With the http backend the text leaves this
-     *  machine. */
+     *  of pw-play, paplay and aplay installed; a new call stops the one before. Answers at once: the audio is
+     *  made (seconds) and played in the background, and a synthesis that fails then is only logged. Returns
+     *  `ok:speaking <n> characters`, `off:`, `unavailable:<reason>` (engine or player missing) or
+     *  `error:no text`. With the http backend the text leaves this machine. */
     fun Speak(text: String): String
 
     /** Stop what [Speak] is reading: `ok:` or `none:`. */

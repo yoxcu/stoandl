@@ -5,13 +5,11 @@ import de.yoxcu.stoandl.util.onPath
 import de.yoxcu.stoandl.util.runProcess
 import de.yoxcu.stoandl.voice.Wav
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -67,9 +65,8 @@ class TtsService(
      */
     internal suspend fun render(text: String, lang: String?, wait: Boolean, timeoutMs: Long): Pair<TtsOutcome.Audio?, String> {
         val tts = backends.current(lang) ?: return null to "off:"
-        tts.readiness()?.let { return null to "unavailable:$it" }
         val line = ttsText(text)
-        if (line.isEmpty()) return null to "error:no text"
+        refusal(tts, line)?.let { return null to it }
         if (!wait && !engine.tryLock()) return null to "busy:"
         if (wait) engine.lock()
         try {
@@ -91,10 +88,14 @@ class TtsService(
         }
     }
 
+    /** Why [tts] can't read [line] now (`unavailable:<why>`, `error:no text`), or null. Cheap. */
+    private fun refusal(tts: TextToSpeech, line: String): String? =
+        tts.readiness()?.let { "unavailable:$it" } ?: "error:no text".takeIf { line.isEmpty() }
+
     /**
      * An extension's `synthesize`: [text] in [language] as [format] (`pebble-adpcm` or `wav`). Refuses with
      * `busy` while another synthesis runs rather than queueing: the caller is pacing a reading and would
-     * rather know.
+     * rather know. (An extension's own earlier request is cancelled first: ExtensionProcess.)
      */
     suspend fun synthesize(text: String, language: String?, format: String): Synthesis {
         if (format != "pebble-adpcm" && format != "wav") return Synthesis.Error("unsupported format '$format' (pebble-adpcm or wav)")
@@ -123,22 +124,27 @@ class TtsService(
     }
 
     /**
-     * D-Bus `Speak`: read [text] aloud on this device through the first of [players] installed. A new call
-     * stops the one before. Blocks until the audio is ready, then plays it in the background:
-     * `ok:<ms of audio>`, `off:`, `unavailable:<why>`, `error:<msg>`, or `stopped:` when stopped first.
+     * D-Bus `Speak`: read [text] aloud on this device through the first of [players] installed; a new call
+     * stops the one before. Answers at once, without waiting for the audio (seconds, or longer behind an
+     * extension's synthesis): `ok:speaking <n> characters` once the engine and a player are there, else `off:`,
+     * `unavailable:<why>` or `error:no text`. A synthesis that fails afterwards is only logged.
      */
     fun speak(text: String): String {
         val player = players.firstNotNullOfOrNull { onPath(it) }
             ?: return "unavailable:no audio player found (${players.joinToString(", ")})"
-        val reply = CompletableDeferred<String>()
+        val line = ttsText(text)
+        refusal(backends.current() ?: return "off:", line)?.let { return it }
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             keepAwake("Reading text aloud").use {
-                val (audio, status) = render(text, null, wait = true, timeoutMs = SPEAK_TIMEOUT_MS)
-                if (audio == null) { reply.complete(status); return@launch }
+                val (audio, status) = render(line, null, wait = true, timeoutMs = SPEAK_TIMEOUT_MS)
+                if (audio == null) {
+                    // An engine failure is logged by render; this is a backend that changed meanwhile.
+                    if (!status.startsWith("error:")) log.warn { "Text to speech: can't read aloud: $status" }
+                    return@launch
+                }
                 val file = ttsScratchWav()
                 try {
                     file.writeBytes(Wav.encode(audio.samples, audio.sampleRate))
-                    reply.complete("ok:${audio.ms}")
                     val r = runInterruptible { runProcess(listOf(player.path, file.path), audio.ms + 10_000) }
                     if (r != null && r.exitCode != 0) log.warn { "${player.name} exited ${r.exitCode}: ${r.stderr.trim().takeLast(200)}" }
                 } finally {
@@ -146,11 +152,10 @@ class TtsService(
                 }
             }
         }
-        job.invokeOnCompletion { reply.complete("stopped:") }
         val before = synchronized(this) { speaking.also { speaking = job } }
         before?.cancel()
         job.start()
-        return runBlocking { reply.await() }
+        return "ok:speaking ${line.length} characters"
     }
 
     /** D-Bus `StopSpeaking`: `ok:` when something was being read aloud, else `none:`. */

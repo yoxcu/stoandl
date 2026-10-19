@@ -2687,12 +2687,12 @@ private fun ctlVoice(rest: List<String>) {
         "say" -> {
             val text = rest.drop(1).joinToString(" ").trim()
             if (text.isEmpty()) { System.err.println("Usage: stoandl voice say <text>"); System.exit(EXIT_USAGE); return }
-            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+            withControl { control ->
                 val (kind, body) = splitStatus(control.Speak(text))
                 when (kind) {
-                    "ok" -> println("Reading aloud (%.1f s) — stoandl voice stop to stop".format(java.util.Locale.ROOT, (body.toLongOrNull() ?: 0) / 1000.0))
+                    // The daemon answers before the audio is made; a failure after that is in its log.
+                    "ok" -> println("Reading aloud — stoandl voice stop to stop")
                     "off" -> { System.err.println("Text to speech is off (tts.backend)"); System.exit(1) }
-                    "stopped" -> println("Stopped")
                     else -> { System.err.println("${kind.replaceFirstChar { it.uppercase() }}: $body"); System.exit(1) }
                 }
             }
