@@ -2361,7 +2361,12 @@ class PebbleIntegration(
         // Name suffixes we've already reported as "deferred to Classic", so the notice logs once per
         // watch instead of on every watches emission.
         val classicDeferred = ConcurrentHashMap.newKeySet<String>()
+        // Unbonded watches already logged as skipped: the watches flow re-emits on every scan result, so
+        // someone else's Pebble in range would otherwise log a line per emission at DEBUG. Cleared by a
+        // pairing window, after which a still-unbonded watch is worth one more line.
+        val unbondedSkipped = ConcurrentHashMap.newKeySet<String>()
         libPebble.watches.onEach { devices ->
+            if (pairingGate.isOpen()) unbondedSkipped.clear()
             for (device in devices.filterIsInstance<BleDiscoveredPebbleDevice>()) {
                 // Dual-mode pick: if this same watch is reachable over BT Classic (a classic Pebble with
                 // the matching name suffix is present, e.g. "Pebble B349" on both), let Classic claim it
@@ -2402,7 +2407,7 @@ class PebbleIntegration(
                         result
                     }
                     if (!bonded) {
-                        log.debug { "Skipping $bleId: not bonded, pairing mode inactive" }
+                        if (unbondedSkipped.add(key)) log.debug { "Skipping $bleId: not bonded, pairing mode inactive" }
                         continue
                     }
                 }
