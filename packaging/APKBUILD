@@ -67,21 +67,14 @@ package() {
 	# Fat JAR.
 	install -Dm644 "$jar" "$pkgdir/usr/share/java/$pkgname/$pkgname.jar"
 
-	# `stoandl` CLI wrapper (sideload / settings / fakecall). Runs on the JDK 25 runtime, with
-	# --enable-native-access=ALL-UNNAMED for libpebble3's java.lang.foreign use.
-	install -Dm755 /dev/stdin "$pkgdir/usr/bin/stoandl" <<-EOF
-		#!/bin/sh
-		# Thin wrapper: delegates to the stoandl fat JAR in ctl mode.
-		exec "$_runtime_java" --enable-native-access=ALL-UNNAMED -jar /usr/share/java/$pkgname/$pkgname.jar ctl "\$@"
-	EOF
-
-	# systemd *user* service (Plasma Mobile / Phosh on systemd). Patch the repo's
-	# unit so it calls the openjdk25 java by absolute path rather than /usr/bin/java,
-	# which Alpine does not put on PATH (the --enable-native-access flag is already in the
-	# repo unit). default_systemd() splits this out into the -systemd subpackage.
-	sed "s|/usr/bin/java|$_runtime_java|; s|/usr/lib/stoandl/stoandl.jar|/usr/share/java/$pkgname/$pkgname.jar|" \
-		packaging/stoandl.service \
-		> "$srcdir/stoandl.service.patched"
+	# The repo's `stoandl` CLI launcher and systemd *user* service (Plasma Mobile / Phosh on systemd),
+	# patched to call the openjdk25 java by absolute path (Alpine puts no java on PATH) and to find the
+	# JAR here. Native access comes from the JAR's manifest. default_systemd() splits the unit out into
+	# the -systemd subpackage.
+	local paths="s|/usr/lib/stoandl/stoandl.jar|/usr/share/java/$pkgname/$pkgname.jar|"
+	sed "$paths; s|^java=java\$|java=$_runtime_java|" packaging/stoandl-ctl > "$srcdir/stoandl-ctl.patched"
+	install -Dm755 "$srcdir/stoandl-ctl.patched" "$pkgdir/usr/bin/stoandl"
+	sed "$paths; s|/usr/bin/java|$_runtime_java|" packaging/stoandl.service > "$srcdir/stoandl.service.patched"
 	install -Dm644 "$srcdir/stoandl.service.patched" \
 		"$pkgdir/usr/lib/systemd/user/stoandl.service"
 

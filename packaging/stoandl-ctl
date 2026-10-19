@@ -1,9 +1,8 @@
 #!/bin/sh
-# Thin wrapper: delegates to the stoandl fat JAR in ctl mode.
+# `stoandl` CLI: the stoandl fat JAR in ctl mode. The one launcher: install.sh copies it, the APKBUILD
+# installs it with its JDK 25 path and JAR location.
 #
-# No --add-opens flags here: those exist only for the daemon's BecomeMonitor reflection
-# (DbusNotificationMonitor). CLI subcommands just make plain D-Bus client calls, and on the
-# classpath dbus-java is in the unnamed module anyway — passing them only produced
-# "WARNING: Unknown module: org.freedesktop.dbus specified to --add-opens".
-# --enable-native-access=ALL-UNNAMED: libpebble3 reaches libc via java.lang.foreign on JDK 25.
-exec java --enable-native-access=ALL-UNNAMED -jar /usr/lib/stoandl/stoandl.jar ctl "$@"
+# No --enable-native-access (the JAR's manifest grants it) and no --add-opens (only the daemon's
+# BecomeMonitor reflection needed those, and on the classpath dbus-java is in the unnamed module anyway).
+java=java
+exec "$java" -jar /usr/lib/stoandl/stoandl.jar ctl "$@"

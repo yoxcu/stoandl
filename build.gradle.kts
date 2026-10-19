@@ -136,9 +136,8 @@ application {
     mainClass.set("de.yoxcu.stoandl.MainKt")
     // libpebble3's BT Classic transport reaches libc via java.lang.foreign; on JDK 25 native access
     // for unnamed-module code is restricted and warns without this. NEVER --enable-preview (FFM is a
-    // final API on 22+; --enable-preview would fail on a release JDK). The packaging launchers
-    // (stoandl.service / stoandl.openrc / stoandl-ctl / APKBUILD) pass the same flag, since the fat
-    // JAR is run directly there rather than via the application start scripts.
+    // final API on 22+; --enable-preview would fail on a release JDK). Only for `gradlew run`, which
+    // runs from the classpath: the packaged launchers run the fat JAR, whose manifest grants it.
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
@@ -152,9 +151,9 @@ tasks.shadowJar {
         // Truffle's CheckMultiReleaseSupport throws "Multi-Release … lost" at Context.build() (PKJS
         // init). Re-declaring it makes the JVM load the versioned Truffle classes again.
         attributes["Multi-Release"] = "true"
-        // The manifest form of --enable-native-access=ALL-UNNAMED (JDK 22+, honoured for `java -jar`), so
-        // a bare `java -jar stoandl-*-all.jar` runs the FFM code (Classic transport, SqliteNative) and the
-        // SQLite driver's JNI load without restricted-method warnings too. The launchers keep the flag.
+        // The manifest form of --enable-native-access=ALL-UNNAMED (JDK 22+, honoured for `java -jar`): the
+        // FFM code (Classic transport, SqliteNative) and the SQLite driver's JNI load run without
+        // restricted-method warnings. Every launcher (service, OpenRC, stoandl-ctl) relies on it.
         attributes["Enable-Native-Access"] = "ALL-UNNAMED"
     }
     mergeServiceFiles()

@@ -13,14 +13,14 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# Requires a JDK 25 runtime (libpebble3's BT Classic transport uses java.lang.foreign).
-# --enable-native-access=ALL-UNNAMED silences JDK 25's restricted-native-access warning; never
-# --enable-preview (FFM is final on 22+, that flag would fail on a release JDK).
+# Requires a JDK 25 runtime (libpebble3's BT Classic transport uses java.lang.foreign). The JAR's manifest
+# grants native access (Enable-Native-Access), so no --enable-native-access; never --enable-preview (FFM is
+# final on 22+, that flag would fail on a release JDK).
 # -XX:ErrorFile puts a JVM crash report (native + Java stacks, some memory, the environment) in the
 # user's runtime dir (%t = $XDG_RUNTIME_DIR, mode 0700) rather than the working directory ($HOME) or
 # /tmp, where it would be world-readable and a predictable name another user could plant. %%p is the
 # JVM's pid placeholder, escaped from systemd's %p specifier.
-ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -XX:ErrorFile=%t/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
+ExecStart=/usr/bin/java -XX:ErrorFile=%t/stoandl-hs_err_pid%%p.log -jar /usr/lib/stoandl/stoandl.jar
 Restart=on-failure
 RestartSec=5
 # The JVM exits 128+SIGTERM after its shutdown hooks on a normal stop; that is a clean stop, not a failure.
