@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.config
 
+import de.yoxcu.stoandl.assertGuiFixture
 import de.yoxcu.stoandl.notification.AppNamePlacement
 import java.io.File
 import kotlin.test.Test
@@ -535,13 +536,10 @@ class ConfigSchemaTest {
     /**
      * S7: `gui/tools/config-schema.tsv` is the mock daemon's schema (and its GetConfig defaults), so the GUI
      * is tested against the real contract. It is rendered with no speech models, voices or custom
-     * vibrations and a fixed home, so it doesn't vary per machine. `STOANDL_UPDATE_GOLDEN=1` rewrites it;
-     * skipped where the gui submodule isn't checked out (CI, the release archive).
+     * vibrations and a fixed home, so it doesn't vary per machine.
      */
     @Test
     fun `the gui mock's schema fixture is current`() {
-        val golden = File("gui/tools/config-schema.tsv")
-        if (!golden.parentFile.isDirectory) return
         val savedEnv = configEnvironment
         val savedHome = System.getProperty("user.home")
         val rendered = try {
@@ -552,9 +550,7 @@ class ConfigSchemaTest {
             configEnvironment = savedEnv
             System.setProperty("user.home", savedHome)
         }
-        if (System.getenv("STOANDL_UPDATE_GOLDEN") == "1") golden.writeText(rendered)
-        assertEquals(rendered, golden.takeIf { it.isFile }?.readText(),
-            "${golden.path} is stale: rerun the test with STOANDL_UPDATE_GOLDEN=1")
+        assertGuiFixture("config-schema.tsv", rendered)
     }
 
     /** conf.example shows every real setting uncommented at its default (only templates are commented). */

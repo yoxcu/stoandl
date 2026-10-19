@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.pebble
 
+import de.yoxcu.stoandl.assertGuiFixture
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
@@ -104,6 +105,19 @@ class WatchPrefTextTest {
     fun `a stored firmware tag parses`() {
         assertEquals(listOf(4, 4, 0), WatchPrefsControl.firmwareOf("v4.4.0")!!.let { listOf(it.major, it.minor, it.patch) })
         assertEquals(null, WatchPrefsControl.firmwareOf(""))
+    }
+
+    /**
+     * `gui/tools/watch-pref-text.tsv` is the mock daemon's copy of this table (`id \t section \t help \t
+     * requires`, in display order), so the GUI is tested against the real text.
+     */
+    @Test
+    fun `the gui mock's watch-pref fixture is current`() {
+        val rendered = all.sortedBy { WatchPrefText.sectionIndex(WatchPrefText.section(it)) }.joinToString("") { pref ->
+            listOf(pref.id, WatchPrefText.section(pref), WatchPrefText.help(pref), WatchPrefText.requires(pref))
+                .joinToString("\t", postfix = "\n")
+        }
+        assertGuiFixture("watch-pref-text.tsv", rendered)
     }
 
     @Test
