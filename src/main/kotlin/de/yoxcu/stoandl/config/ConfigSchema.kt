@@ -55,8 +55,9 @@ data class ConfigChoice(
 /**
  * Whether a key takes effect the moment it is written, or only after a daemon restart.
  *
- * [LIVE] means `setConfigLive` (PebbleIntegration) reloads the store and — where a subsystem must be
- * re-run — re-reconciles it, **or** the consumer reads the value off the live config on every use.
+ * [LIVE] means `persistConfig` (PebbleIntegration, the single write path) reloads the store and — where
+ * a subsystem must be re-run — re-reconciles it, **or** the consumer reads the value off the live config
+ * on every use.
  * [RESTART] means the value is captured once during startup wiring (a Koin binding, a constructor
  * snapshot, a one-shot `if` in `init()`), so a write persists but changes nothing until the daemon is
  * restarted. The GUI surfaces the difference; `docs/settings-parity.md` records why per key.
@@ -894,9 +895,9 @@ fun guiConfigField(key: String): ConfigField? = GUI_CONFIG_FIELDS.firstOrNull { 
  * Validate and persist a single GUI config key to [confFile]. Maps the GUI's value (a toggle's
  * `true`/`false`, a combo's option label, or raw text/number/list) to the raw `stoandl.conf` token and
  * upserts it atomically (via [ConfFile], sharing the lock with the extension-config writers). The
- * **caller** (PebbleIntegration's `setConfigLive`) reloads the live [ConfigStore] and re-reconciles the
- * affected subsystem after this returns `ok:`, so a [ConfigApply.LIVE] change takes effect without a
- * restart. Returns a status-prefixed string: `ok:`, `notfound:` (unknown key), or `error:` (bad value /
+ * **caller** (PebbleIntegration's `persistConfig`, the single write path for `SetConfig`, `SetSyncEnabled`
+ * and the daemon's own writes) reloads the live [ConfigStore] and re-reconciles the affected subsystem
+ * after this returns `ok:`, so a [ConfigApply.LIVE] change takes effect without a restart. Returns a status-prefixed string: `ok:`, `notfound:` (unknown key), or `error:` (bad value /
  * IO). An `ok:` for a [ConfigApply.RESTART] key carries the restart hint in its message.
  */
 fun applyGuiConfig(key: String, value: String, confFile: File): String {
