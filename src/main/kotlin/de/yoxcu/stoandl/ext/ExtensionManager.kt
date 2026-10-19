@@ -94,6 +94,9 @@ class ExtensionManager(
     private val secrets: SecretStore,
     /** A logind sleep block for `keepAwake` (SleepGuard.holdAwake in the daemon). */
     private val holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
+    /** Posts a host alert with one action button and runs the callback when it is pressed (the daemon's
+     *  desktop prompt). Null: alerts go out as plain notifications, with the command to run instead. */
+    private val alertWithAction: ((summary: String, body: String, actionLabel: String, onAction: () -> Unit) -> Unit)? = null,
 ) {
     private val running = ConcurrentHashMap<String, ExtensionProcess>()
     private val extSecrets = ExtensionSecrets(extDir, secrets)
@@ -166,7 +169,10 @@ class ExtensionManager(
             return StartResult.NEEDS_CONFIG
         }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
-            onState = { state -> onExtensionState?.invoke(name, state) },
+            onState = { state ->
+                if (state == "quarantined") notifyQuarantined(name, running[name]?.lastStderrLine)
+                onExtensionState?.invoke(name, state)
+            },
             notificationImagesOn = notificationImagesOn, transcribe = transcribe, pluginHost = pluginHost,
             holdAwake = holdAwake)
         running[name] = proc
@@ -183,6 +189,19 @@ class ExtensionManager(
         if (!alertsAllowed()) return
         scope.launch(Dispatchers.IO) {
             sendDesktopNotification("$name needs setup", "$name can't start until it's set up. $hint")
+        }
+    }
+
+    /** An extension that kept crashing was stopped ([ExtensionProcess] quarantine): say so with its last
+     *  stderr line, which usually names the problem, and offer the restart. */
+    private fun notifyQuarantined(name: String, lastStderrLine: String?) {
+        if (!alertsAllowed()) return
+        val summary = "$name stopped"
+        val body = "$name kept crashing and was stopped." + (lastStderrLine?.let { " Last error: ${it.take(200)}" } ?: "")
+        val prompt = alertWithAction
+        scope.launch(Dispatchers.IO) {
+            if (prompt != null) prompt(summary, body, "Restart") { restart(name) }
+            else sendDesktopNotification(summary, "$body Restart it with: stoandl ext restart $name")
         }
     }
 
@@ -621,6 +640,9 @@ private class ExtensionProcess(
     private val pendingRequests = ConcurrentHashMap<Long, CompletableDeferred<JsonElement>>()
     private val sourceChanges = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
     @Volatile private var plugin: ExtensionPlugin? = null
+    /** The child's last non-blank stderr line (kept across restarts): what a quarantine alert shows. */
+    @Volatile var lastStderrLine: String? = null
+        private set
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job)
     @Volatile private var writeChannel: Channel<String>? = null
@@ -713,7 +735,12 @@ private class ExtensionProcess(
             }
         }
         val stderrJob = scope.launch(Dispatchers.IO) {
-            try { process.errorStream.bufferedReader().forEachLine { log.info { "[$tag] $it" } } } catch (e: Exception) { log.debug { "[$tag] stderr reader ended: ${e.message}" } }
+            try {
+                process.errorStream.bufferedReader().forEachLine { line ->
+                    log.info { "[$tag] $line" }
+                    if (line.isNotBlank()) lastStderrLine = line.trim()
+                }
+            } catch (e: Exception) { log.debug { "[$tag] stderr reader ended: ${e.message}" } }
         }
         val inbound = Channel<String>(Channel.UNLIMITED)
         val readerJob = scope.launch(Dispatchers.IO) {
