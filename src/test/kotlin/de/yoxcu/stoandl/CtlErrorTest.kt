@@ -19,6 +19,13 @@ class CtlErrorTest {
     }
 
     @Test
+    fun `a daemon that holds its instance guard but not yet its name is starting`() {
+        val (message, code) = ctlError(ServiceUnknown("The name de.yoxcu.stoandl was not provided by any .service files")) { true }
+        assertEquals(EXIT_FAILURE, code)
+        assertTrue("still starting" in message, message)
+    }
+
+    @Test
     fun `an unknown method means the CLI and daemon versions differ`() {
         val (message, code) = ctlError(UnknownMethod("No such method"))
         assertEquals(EXIT_FAILURE, code)
