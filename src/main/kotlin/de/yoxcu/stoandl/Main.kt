@@ -10,6 +10,7 @@ import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.monitorNotifications
 import de.yoxcu.stoandl.pebble.PebbleIntegration
+import de.yoxcu.stoandl.pebble.WatchTasks
 import de.yoxcu.stoandl.util.openServiceBus
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.softOpenSessionBus
@@ -2798,6 +2799,12 @@ private fun ctlStatus() = withControl { control ->
             else -> null
         }
     }?.let { println("Firmware: $it") }
+
+    // The watch tasks a verb follows (sideload, screenshot, logs, core dump): running, or the last result.
+    WatchTasks.Kind.entries.mapNotNull { k ->
+        ask { control.TaskStatus(k.token) }?.let(::splitStatus)?.takeIf { it.first != "idle" }
+            ?.let { (state, body) -> "${k.token} $state" + if (body.isNotBlank()) " ($body)" else "" }
+    }.takeIf { it.isNotEmpty() }?.let { println("Watch tasks: " + it.joinToString(" · ")) }
 
     val exts = ask { control.ExtList() }.orEmpty().map { it.split('\t') }.filter { it.getOrNull(2) == "enabled" }
     if (exts.isNotEmpty()) println("Extensions: " + exts.joinToString(", ") { "${it[0]} ${it.getOrElse(3) { "" }}" })
