@@ -22,6 +22,9 @@ import de.yoxcu.stoandl.config.StoandlConfig
 import de.yoxcu.stoandl.config.applyGuiConfig
 import de.yoxcu.stoandl.config.guiConfigField
 import de.yoxcu.stoandl.config.StoandlConfig.WeatherLocationSource
+import de.yoxcu.stoandl.config.ConfigApply
+import de.yoxcu.stoandl.config.changedConfigFields
+import de.yoxcu.stoandl.config.fileEdits
 import de.yoxcu.stoandl.notification.AppNamePlacements
 import de.yoxcu.stoandl.notification.GlobalMute
 import de.yoxcu.stoandl.notification.NotificationFilters
@@ -770,6 +773,7 @@ class PebbleIntegration(
         startCallMonitor()
         applyWeather()
         startWatchPrefsSync()
+        startConfigReload()
         startDatalogPolicy()
         applyDnd()
         // User extensions (companion apps): host-side child processes that drive watch notifications
@@ -2110,24 +2114,59 @@ class PebbleIntegration(
 
     /**
      * The single write path for a `stoandl.conf` key (`SetConfig`, the `SetSyncEnabled` alias and the
-     * daemon's own writes): validate + persist via [applyGuiConfig] (a secret goes to the secret store),
-     * then reload the store, re-reconcile the affected subsystem and emit `ConfigChanged`. Refuses anything
-     * outside the schema, so a typo is reported rather than silently written.
+     * daemon's own writes): validate + persist via [applyGuiConfig] (a secret goes to the secret store,
+     * and announces itself), then [reloadConfig] applies the change like any other edit of the file.
+     * Refuses anything outside the schema, so a typo is reported rather than silently written.
      */
     private fun persistConfig(key: String, value: String): String {
         val field = guiConfigField(key) ?: return "notfound:no config key '$key'"
-        val result = if (field.type == "secret") persistSecret(field, value) else {
-            val before = field.value(configStore.current())
-            applyGuiConfig(key, value, StoandlConfig.configFile()).also { r ->
-                if (!r.startsWith("ok:")) return r
-                // Outside the lazy log lambda: it runs only when INFO is on, and the reload must always happen.
-                val after = configStore.reload()
-                log.info { "Config $key: '$before' → '${field.value(after)}'" }
-                serviceForConfigKey(key)?.let { reconcile(it) }
+        if (field.type == "secret") {
+            return persistSecret(field, value).also { r ->
+                if (r.startsWith("ok:")) emit(StoandlControl.ConfigChanged(STOANDL_OBJECT_PATH, key))
             }
         }
-        if (result.startsWith("ok:")) emit(StoandlControl.ConfigChanged(STOANDL_OBJECT_PATH, key))
-        return result
+        return applyGuiConfig(key, value, StoandlConfig.configFile()).also { r ->
+            if (r.startsWith("ok:")) reloadConfig()
+        }
+    }
+
+    /**
+     * Re-read `stoandl.conf` and apply what changed since the last read — after the daemon's own write
+     * ([persistConfig]) and after any other edit of the file (QOL-D8: a text editor, `restore`, another
+     * process), which [startConfigReload] follows. Serialised, so the write path and the file watch that
+     * sees the same write apply it once: whichever comes second finds nothing changed.
+     *
+     * Each changed schema key is logged and announced with `ConfigChanged`; a LIVE one re-reconciles its
+     * subsystem (each once), a RESTART one is only logged, since its value was captured at startup.
+     */
+    private fun reloadConfig() = synchronized(configReloadLock) {
+        val before = configStore.current()
+        val after = configStore.reload()
+        val changed = changedConfigFields(before, after)
+        val services = linkedSetOf<String>()
+        for (field in changed) {
+            log.info { "Config ${field.key}: '${field.value(before)}' → '${field.value(after)}'" }
+            if (field.apply == ConfigApply.RESTART) {
+                log.info { "Config ${field.key} applies after stoandl restarts" }
+            } else {
+                serviceForConfigKey(field.key)?.let(services::add)
+            }
+        }
+        // Calendar sources aren't schema rows (CalendarSources edits them), but the reader only re-reads
+        // them on a refresh.
+        if (before.calendarCalDav != after.calendarCalDav || before.calendarIcalUrls != after.calendarIcalUrls ||
+            before.calendarIcsPaths != after.calendarIcsPaths) services += "calendar"
+        services.forEach(::reconcile)
+        changed.forEach { emit(StoandlControl.ConfigChanged(STOANDL_OBJECT_PATH, it.key)) }
+    }
+
+    private val configReloadLock = Any()
+
+    /** QOL-D8: apply hand edits of `stoandl.conf` without a restart (see [reloadConfig]). */
+    private fun startConfigReload() {
+        fileEdits(StoandlConfig.configFile())
+            .onEach { reloadConfig() }
+            .launchIn(scope)
     }
 
     /**

@@ -54,9 +54,9 @@ data class ConfigChoice(
 /**
  * Whether a key takes effect the moment it is written, or only after a daemon restart.
  *
- * [LIVE] means `persistConfig` (PebbleIntegration, the single write path) reloads the store and — where
- * a subsystem must be re-run — re-reconciles it, **or** the consumer reads the value off the live config
- * on every use.
+ * [LIVE] means the daemon's reload of `stoandl.conf` (after its own write, `persistConfig`, or any other
+ * edit of the file) reloads the store and — where a subsystem must be re-run — re-reconciles it, **or**
+ * the consumer reads the value off the live config on every use.
  * [RESTART] means the value is captured once during startup wiring (a Koin binding, a constructor
  * snapshot, a one-shot `if` in `init()`), so a write persists but changes nothing until the daemon is
  * restarted. The GUI surfaces the difference; `docs/settings-parity.md` records why per key.
