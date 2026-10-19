@@ -32,17 +32,27 @@ import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import org.freedesktop.dbus.connections.impl.DBusConnection
+import org.freedesktop.dbus.exceptions.DBusExecutionException
+import org.freedesktop.dbus.messages.MethodCall
 import java.io.File
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import kotlin.system.exitProcess
 
 // Lazy: initialising it would configure logback, and main() first picks the CLI's configuration.
 private val log by lazy { KotlinLogging.logger("de.yoxcu.stoandl.Main") }
 
-/** How long the CLI waits for the daemon's answer (the daemon bounds each long call itself). */
-private const val CTL_REPLY_TIMEOUT_MS = 120_000L
+/** How long the CLI waits for the daemon's answer. Most methods answer at once; the verbs that wait on
+ *  the watch or the network pass [CTL_SLOW_REPLY_TIMEOUT_MS] (the daemon bounds each of those itself). */
+private const val CTL_REPLY_TIMEOUT_MS = 15_000L
+private const val CTL_SLOW_REPLY_TIMEOUT_MS = 120_000L
+
+/** CLI exit codes, listed in `stoandl --help`: 0 = done, 1 = failed, 2 = usage, 3 = daemon unreachable. */
+internal const val EXIT_FAILURE = 1
+internal const val EXIT_USAGE = 2
+internal const val EXIT_UNREACHABLE = 3
 
 private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
 
@@ -75,7 +85,7 @@ fun main(args: Array<String>) {
     if (args.isNotEmpty()) {
         System.err.println("Unknown command: ${args.joinToString(" ")}\n")
         printUsage()
-        System.exit(1); return
+        System.exit(EXIT_USAGE); return
     }
 
     Logger.setLogWriters(KermitSlf4jWriter())
@@ -164,6 +174,9 @@ private fun printUsage() {
     println()
     println("Run a group with no verb for its options")
     println("(e.g. `stoandl watch` lists its verbs).")
+    println()
+    println("Exit status: 0 done · 1 failed")
+    println("2 usage error · 3 daemon not reachable")
 }
 
 /** Report the running daemon's version (over D-Bus), falling back to this CLI's own embedded version. */
@@ -187,9 +200,8 @@ private fun printVersion() {
 }
 
 private fun ctl(args: Array<String>) {
-    // dbus-java waits 20 s for a reply by default; Transcribe (a slow local engine) and the plugin reads
-    // can take longer, and the daemon bounds each of them itself.
-    org.freedesktop.dbus.messages.MethodCall.setDefaultTimeout(CTL_REPLY_TIMEOUT_MS)
+    // The calls that don't go through withControl (version, language list, support) too.
+    MethodCall.setDefaultTimeout(CTL_REPLY_TIMEOUT_MS)
     if (args.isEmpty()) {
         printUsage()
         return
@@ -209,17 +221,14 @@ private fun ctl(args: Array<String>) {
             val force = rest.any { it == "--force" || it == "-f" }
             val path = rest.firstOrNull { !it.startsWith("-") }
             if (path == null) {
-                System.err.println("Usage: stoandl restore <in.tar.gz> [--force]"); System.exit(1); return
+                System.err.println("Usage: stoandl restore <in.tar.gz> [--force]"); System.exit(EXIT_USAGE); return
             }
             doRestore(path, force)
         }
         "config" -> {
             val app = args.getOrNull(1) ?: ""
-            withControl { control ->
-                val configUrl = try { control.OpenConfig(app) } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}")
-                    System.exit(1); return
-                }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+                val configUrl = control.OpenConfig(app)
                 if (configUrl.isEmpty()) {
                     System.err.println("No config page available (app not found, not configurable, or it didn't start in time)")
                     System.exit(1)
@@ -235,26 +244,21 @@ private fun ctl(args: Array<String>) {
         "fakecall" -> {
             val sub = args.getOrNull(1) ?: "ring"
             withControl { control ->
-                try {
-                    when (sub) {
-                        "ring" -> {
-                            val name = args.getOrNull(2) ?: "Test Caller"
-                            val number = args.getOrNull(3) ?: "+15551234567"
-                            if (control.FakeCallRing(name, number)) println("Ringing watch: $name <$number>")
-                            else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
-                        }
-                        "end" -> {
-                            control.FakeCallEnd()
-                            println("Call ended")
-                        }
-                        else -> {
-                            System.err.println("Usage: stoandl fakecall [ring [name] [number] | end]")
-                            System.exit(1)
-                        }
+                when (sub) {
+                    "ring" -> {
+                        val name = args.getOrNull(2) ?: "Test Caller"
+                        val number = args.getOrNull(3) ?: "+15551234567"
+                        if (control.FakeCallRing(name, number)) println("Ringing watch: $name <$number>")
+                        else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
                     }
-                } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}")
-                    System.exit(1)
+                    "end" -> {
+                        control.FakeCallEnd()
+                        println("Call ended")
+                    }
+                    else -> {
+                        System.err.println("Usage: stoandl fakecall [ring [name] [number] | end]")
+                        System.exit(EXIT_USAGE)
+                    }
                 }
             }
         }
@@ -267,14 +271,12 @@ private fun ctl(args: Array<String>) {
                 "dump" -> {
                     val src = args.getOrNull(2)
                     if (src == null) {
-                        System.err.println("Usage: stoandl calendar dump <file.ics|url>"); System.exit(1); return
+                        System.err.println("Usage: stoandl calendar dump <file.ics|url>"); System.exit(EXIT_USAGE); return
                     }
                     dumpCalendar(src)
                 }
                 "list" -> withControl { control ->
-                    val cals = try { control.ListCalendars() } catch (e: Exception) {
-                        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                    }
+                    val cals = control.ListCalendars()
                     if (cals.isEmpty()) {
                         println("No calendars synced (configure calendar.* in stoandl.conf, or none discovered yet).")
                     } else {
@@ -285,20 +287,16 @@ private fun ctl(args: Array<String>) {
                         println("\nToggle one with:  stoandl calendar disable <id|name>")
                     }
                 }
-                "sync" -> withControl { control ->
-                    handleStatusResponse(try { control.SyncCalendar() } catch (e: Exception) {
-                        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                    })
+                "sync" -> withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+                    handleStatusResponse(control.SyncCalendar())
                 }
                 "enable", "disable" -> {
                     val query = args.drop(2).joinToString(" ")
                     if (query.isBlank()) {
-                        System.err.println("Usage: stoandl calendar $sub <id|name>"); System.exit(1); return
+                        System.err.println("Usage: stoandl calendar $sub <id|name>"); System.exit(EXIT_USAGE); return
                     }
                     withControl { control ->
-                        handleStatusResponse(try { control.SetCalendarEnabled(query, sub == "enable") } catch (e: Exception) {
-                            System.err.println("Error: ${e.message}"); System.exit(1); return
-                        })
+                        handleStatusResponse(control.SetCalendarEnabled(query, sub == "enable"))
                     }
                 }
                 "sources", "accounts" -> withControl { control -> printCalendarSources(control) }
@@ -307,12 +305,10 @@ private fun ctl(args: Array<String>) {
                     val id = args.getOrNull(2)
                     if (id.isNullOrBlank()) {
                         System.err.println("Usage: stoandl calendar remove <id>   (id from `stoandl calendar sources`)")
-                        System.exit(1); return
+                        System.exit(EXIT_USAGE); return
                     }
                     withControl { control ->
-                        handleStatusResponse(try { control.RemoveCalendarSource(id) } catch (e: Exception) {
-                            System.err.println("Error: ${e.message}"); System.exit(1); return
-                        })
+                        handleStatusResponse(control.RemoveCalendarSource(id))
                     }
                 }
                 "passwd", "password" -> ctlCalendarPasswd(args.drop(2))
@@ -321,7 +317,7 @@ private fun ctl(args: Array<String>) {
                         "Usage: stoandl calendar <list|sources|sync|enable <id|name>|disable <id|name>|\n" +
                             "                          add <caldav|ical|ics> <url|path> [username]|passwd <id>|remove <id>|dump <file|url>>",
                     )
-                    System.exit(1)
+                    System.exit(EXIT_USAGE)
                 }
             }
         }
@@ -341,13 +337,13 @@ private fun ctl(args: Array<String>) {
                     if (pos.isEmpty()) {
                         System.err.println("Usage: stoandl datalog $sub <app uuid> [tag]" + if (sub == "tail") " [-n lines]" else "")
                         System.err.println("Run 'stoandl datalog list' to see captured apps and tags.")
-                        System.exit(1); return
+                        System.exit(EXIT_USAGE); return
                     }
                     datalogShow(pos[0], pos.getOrNull(1), tail = if (sub == "tail") n else null)
                 }
                 else -> {
                     System.err.println("Usage: stoandl datalog <list | dump <uuid> [tag] | tail <uuid> [tag] [-n lines]>")
-                    System.exit(1)
+                    System.exit(EXIT_USAGE)
                 }
             }
         }
@@ -361,11 +357,9 @@ private fun ctl(args: Array<String>) {
             val arg = args.getOrNull(1)
             val target = resolveOutPath(arg, "pebble-screenshot-${timestamp()}.png", listOf(".png"))
             val path = target.absolutePath
-            withControl { control ->
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
                 println("Capturing watch screen…")
-                val resp = try { control.TakeScreenshot(path) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.TakeScreenshot(path)
                 val (kind, body) = splitStatus(resp)
                 if (kind == "ok") {
                     val f = body.split('\t')
@@ -388,7 +382,7 @@ private fun ctl(args: Array<String>) {
             System.err.println("Unknown command: ${args[0]}")
             System.err.println()
             printUsage()
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
@@ -408,21 +402,17 @@ private fun handleStatusResponse(resp: String) {
  *  the city up (Open-Meteo, gated by weather.place_search) and with `--add` stores result n (default 1). */
 private fun ctlWeather(rest: List<String>) {
     when (rest.firstOrNull() ?: "sync") {
-        "sync" -> withControl { control ->
-            val resp = try { control.SyncWeather() } catch (e: Exception) {
-                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-            }
+        "sync" -> withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+            val resp = control.SyncWeather()
             handleStatusResponse(resp)
         }
         "search" -> {
             val opts = parseWeatherSearchArgs(rest.drop(1)) ?: run {
                 System.err.println("Usage: stoandl weather search <city> [--add [n]] [--as <label>]")
-                System.exit(1); return
+                System.exit(EXIT_USAGE); return
             }
-            withControl { control ->
-                val resp = try { control.SearchWeatherPlace(opts.query) } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+                val resp = control.SearchWeatherPlace(opts.query)
                 val (status, body) = splitStatus(resp)
                 if (status != "ok") { System.err.println(body.ifEmpty { status }); System.exit(1); return }
                 val places = body.lines().map { it.split('\t') }.filter { it.size >= 3 }
@@ -442,15 +432,13 @@ private fun ctlWeather(rest: List<String>) {
                 val lat = p[1].toDoubleOrNull()
                 val lon = p[2].toDoubleOrNull()
                 if (lat == null || lon == null) { System.err.println("Bad coordinates in result $pick"); System.exit(1); return }
-                val added = try { control.AddWeatherLocation(opts.label ?: p[0], lat, lon) } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+                val added = control.AddWeatherLocation(opts.label ?: p[0], lat, lon)
                 handleStatusResponse(added)
             }
         }
         else -> {
             System.err.println("Usage: stoandl weather [sync | search <city> [--add [n]] [--as <label>]]")
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
@@ -483,9 +471,7 @@ private fun shellQuote(s: String): String = if (s.all { it.isLetterOrDigit() || 
 /** Print the editable calendar sources (CalDAV accounts / iCal feeds / .ics paths) with their ids — the
  *  handle for `calendar add|remove|passwd`. The password is never shown (write-only). */
 private fun printCalendarSources(control: StoandlControl) {
-    val rows = try { control.ListCalendarSources() } catch (e: Exception) {
-        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-    }
+    val rows = control.ListCalendarSources()
     if (rows.isEmpty()) {
         println("No calendar sources configured.")
         println("Add one with:  stoandl calendar add <caldav|ical|ics> <url|path> [username]")
@@ -507,14 +493,12 @@ private fun ctlCalendarAdd(rest: List<String>) {
     val type = rest.getOrNull(0)?.lowercase()
     val target = rest.getOrNull(1)
     if (type == null || target == null || type !in setOf("caldav", "ical", "ics")) {
-        System.err.println("Usage: stoandl calendar add <caldav|ical|ics> <url|path> [username]"); System.exit(1); return
+        System.err.println("Usage: stoandl calendar add <caldav|ical|ics> <url|path> [username]"); System.exit(EXIT_USAGE); return
     }
     val username = rest.getOrNull(2) ?: ""
     val password = if (type == "caldav") promptPassword("CalDAV password (leave blank for none): ") else ""
-    withControl { control ->
-        val resp = try { control.AddCalendarSource(type, target, username, password) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        val resp = control.AddCalendarSource(type, target, username, password)
         val (status, message) = splitStatus(resp)
         if (status != "ok") { System.err.println(message.ifEmpty { status }); System.exit(1); return }
         val parts = message.split('\t')
@@ -528,18 +512,14 @@ private fun ctlCalendarPasswd(rest: List<String>) {
     val id = rest.getOrNull(0)
     if (id.isNullOrBlank() || !id.startsWith("caldav:")) {
         System.err.println("Usage: stoandl calendar passwd <caldav:id>   (id from `stoandl calendar sources`)")
-        System.exit(1); return
+        System.exit(EXIT_USAGE); return
     }
     val password = promptPassword("New CalDAV password: ")
     if (password.isEmpty()) { System.err.println("No password entered; aborting."); System.exit(1); return }
-    withControl { control ->
-        val src = (try { control.ListCalendarSources() } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }).map { it.split('\t') }.firstOrNull { it.getOrNull(0) == id }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        val src = control.ListCalendarSources().map { it.split('\t') }.firstOrNull { it.getOrNull(0) == id }
         if (src == null) { System.err.println("No CalDAV account with id $id"); System.exit(1); return }
-        val resp = try {
-            control.UpdateCalendarSource(id, src.getOrElse(2) { "" }, src.getOrElse(3) { "" }, password)
-        } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+        val resp = control.UpdateCalendarSource(id, src.getOrElse(2) { "" }, src.getOrElse(3) { "" }, password)
         val (status, message) = splitStatus(resp)
         if (status != "ok") { System.err.println(message.ifEmpty { status }); System.exit(1); return }
         println("Password updated for $id" + secretNote(message.split('\t').getOrElse(1) { "none" }))
@@ -670,7 +650,7 @@ private fun ctlHealth(rest: List<String>) {
             val file = when (which) {
                 "daily" -> File(healthDir(), "daily.ndjson")
                 "activities" -> File(healthDir(), "activities.ndjson")
-                else -> { System.err.println("Usage: stoandl health dump [daily|activities]"); System.exit(1); return }
+                else -> { System.err.println("Usage: stoandl health dump [daily|activities]"); System.exit(EXIT_USAGE); return }
             }
             if (!file.isFile) { System.err.println("No $which export yet at ${file.path}"); return }
             file.bufferedReader().useLines { seq -> seq.forEach { println(it) } }
@@ -680,7 +660,7 @@ private fun ctlHealth(rest: List<String>) {
             if (days != null && days > 0) healthSummary(days)
             else {
                 System.err.println("Usage: stoandl health [days | hr | sync | profile [set <key> <value>] | activities [days] | dump [daily|activities]]")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -697,18 +677,15 @@ private fun healthProfile(args: List<String>) {
             System.err.println("Usage: stoandl health profile set <key> <value>\n" +
                 "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (5min/10min/30min/1h/off; 5min needs fw 4.39.0+), hrm_activity (on/off),\n" +
                 "        units (metric/imperial), height_cm, weight_kg, age, gender (female/male/other), resting_hr, max_hr")
-            System.exit(1); return
+            System.exit(EXIT_USAGE); return
         }
         withControl { control ->
-            try { handleStatusResponse(control.SetHealthProfile(key, value)) }
-            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+            handleStatusResponse(control.SetHealthProfile(key, value))
         }
         return
     }
     withControl { control ->
-        val records = try { control.GetHealthProfile() } catch (e: Exception) {
-            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-        }
+        val records = control.GetHealthProfile()
         if (records.isEmpty()) { println("No health profile available (is a health-capable watch set up?)"); return }
         // A third field lists the values the daemon accepts for that key right now.
         val rows = records.mapNotNull { val f = it.split('\t'); if (f.size < 2) null else f }
@@ -793,18 +770,14 @@ private fun healthActivities(days: Int) {
 }
 
 private fun healthSync() {
-    withControl { control ->
-        val resp = try { control.SyncHealth() } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        val resp = control.SyncHealth()
         handleStatusResponse(resp)
     }
 }
 
 private fun healthHr(): Unit = withControl { control ->
-    val resp = try { control.HeartRate() } catch (e: Exception) {
-        System.err.println("Error: ${e.message}"); System.exit(1); return
-    }
+    val resp = control.HeartRate()
     val (kind, body) = splitStatus(resp)
     when (kind) {
         "ok" -> {
@@ -843,9 +816,7 @@ private fun pollPairStatus(control: StoandlControl, assumeYes: Boolean) {
     val startMs = System.currentTimeMillis()
     while (true) {
         Thread.sleep(1_500)
-        val status = try { control.PairStatus() } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val status = control.PairStatus()
         if (status.startsWith("confirm:")) {
             // Numeric comparison: the daemon waits for this side's answer (see confirmPairingCode). One
             // answer per code; the daemon declines on its own timeout.
@@ -853,9 +824,7 @@ private fun pollPairStatus(control: StoandlControl, assumeYes: Boolean) {
             if (code != lastConfirmCode) {
                 lastConfirmCode = code
                 val accept = confirmPairingCode(code, assumeYes)
-                try { control.ConfirmPairing(accept) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                control.ConfirmPairing(accept)
             }
         } else if (status.startsWith("pending:")) {
             // `Confirm code <digits> on the watch` means this side has already accepted and only the watch
@@ -916,28 +885,22 @@ private fun ctlFirmware(rest: List<String>) {
     val sub = rest.firstOrNull()
     if (sub == null) {
         System.err.println("Usage: stoandl firmware <sideload <file.pbz> | check [--refresh] | update | status>")
-        System.exit(1); return
+        System.exit(EXIT_USAGE); return
     }
     // `firmware sideload <file>` is the explicit verb; `firmware <file>` still works (handled below).
     val target = if (sub == "sideload") (rest.getOrNull(1) ?: run {
-        System.err.println("Usage: stoandl firmware sideload <file.pbz>"); System.exit(1); return
+        System.err.println("Usage: stoandl firmware sideload <file.pbz>"); System.exit(EXIT_USAGE); return
     }) else sub
-    withControl { control ->
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
         when (sub) {
             "check" -> {
                 // --refresh skips the daemon's 3 h check cache (and refreshes it).
                 val refresh = "--refresh" in rest.drop(1)
-                val resp = try {
-                    if (refresh) control.CheckFirmwareForce() else control.CheckFirmware()
-                } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = if (refresh) control.CheckFirmwareForce() else control.CheckFirmware()
                 printFirmwareCheck(resp)
             }
             "update" -> {
-                val resp = try { control.UpdateFirmware() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.UpdateFirmware()
                 val (kind, body) = splitStatus(resp)
                 when (kind) {
                     "ok" -> {
@@ -952,9 +915,7 @@ private fun ctlFirmware(rest: List<String>) {
                 }
             }
             "status" -> {
-                val resp = try { control.FirmwareStatus() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.FirmwareStatus()
                 printFirmwareStatusOnce(resp)
             }
             else -> {
@@ -965,9 +926,7 @@ private fun ctlFirmware(rest: List<String>) {
                     System.err.println("Not a firmware bundle (expected a .pbz): $target"); System.exit(1); return
                 }
                 // Send an absolute path: the daemon's cwd differs from the caller's.
-                val resp = try { control.SideloadFirmware(file.absolutePath) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.SideloadFirmware(file.absolutePath)
                 if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
                 println("Flashing ${file.name} onto the watch — keep it close and charged.")
                 pollFirmwareStatus(control)
@@ -1045,10 +1004,8 @@ private fun pollFirmwareStatus(control: StoandlControl) {
     var lastDownloading = ""
     while (true) {
         Thread.sleep(800)
-        val st = try { control.FirmwareStatus() } catch (e: Exception) {
-            if (barShown) System.err.println()
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        // End the progress bar's line before withControl reports the error.
+        val st = try { control.FirmwareStatus() } catch (e: DBusExecutionException) { if (barShown) println(); throw e }
         val (kind, body) = splitStatus(st)
         when (kind) {
             "downloading" -> {
@@ -1112,33 +1069,26 @@ private fun ctlNotif(rest: List<String>) {
     withControl { control ->
         when (sub) {
             "list" -> {
-                val rows = try { control.NotifList() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+                val rows = control.NotifList()
                 printNotifList(rows)
             }
             // Inject a synthetic notification to the watch (through the normal mute/style/filter path).
             "test" -> {
                 val title = rest.getOrNull(1) ?: "Test notification"
                 val body = rest.drop(2).joinToString(" ")
-                try { handleStatusResponse(control.SendTestNotification(title, body)) }
-                catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+                handleStatusResponse(control.SendTestNotification(title, body))
             }
             // Buzz the watch with a vibration (name, CSV or `default`) — the preview for `--vibe`.
             "vibe-test" -> {
                 val spec = rest.drop(1).joinToString(" ")
                 if (spec.isBlank()) {
-                    System.err.println("Usage: stoandl notif vibe-test <name|ms,ms,…|default>  ('stoandl notif vibes' lists the names)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif vibe-test <name|ms,ms,…|default>  ('stoandl notif vibes' lists the names)"); System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.NotifVibeTest(spec) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifVibeTest(spec))
             }
             // Every vibration the daemon takes, with the custom ones stored there.
             "vibes" -> {
-                val rows = try { control.NotifStyleChoices() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+                val rows = control.NotifStyleChoices()
                 printVibes(rows)
             }
             // Named custom vibrations; quote multi-word names: `stoandl notif vibe-add "Work chat" 100,50,100`.
@@ -1146,42 +1096,34 @@ private fun ctlNotif(rest: List<String>) {
                 val name = rest.getOrNull(1)
                 val pattern = rest.getOrNull(2)
                 if (name.isNullOrBlank() || pattern.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif vibe-add <name> <ms,ms,…>  (on/off milliseconds, e.g. 100,50,100)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif vibe-add <name> <ms,ms,…>  (on/off milliseconds, e.g. 100,50,100)"); System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.NotifSetVibePattern(name, pattern) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifSetVibePattern(name, pattern))
             }
             "vibe-remove" -> {
                 val name = rest.drop(1).joinToString(" ")
                 if (name.isBlank()) {
-                    System.err.println("Usage: stoandl notif vibe-remove <name>"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif vibe-remove <name>"); System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.NotifSetVibePattern(name, "") } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifSetVibePattern(name, ""))
             }
             // Quote multi-word app names: `stoandl notif mute "My App" 1h`.
             "mute", "unmute" -> {
                 val query = rest.getOrNull(1)
                 if (query.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif $sub <app>" + if (sub == "mute") " [always|weekdays|weekends|<1h|30m|2d>]" else ""); System.exit(1); return
+                    System.err.println("Usage: stoandl notif $sub <app>" + if (sub == "mute") " [always|weekdays|weekends|<1h|30m|2d>]" else ""); System.exit(EXIT_USAGE); return
                 }
                 val spec = if (sub == "unmute") "never" else rest.getOrNull(2) ?: "always"
-                handleStatusResponse(try { control.NotifSetMute(query, spec) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifSetMute(query, spec))
             }
             "mute-all", "unmute-all" -> {
                 val spec = if (sub == "unmute-all") "never" else rest.getOrNull(1) ?: "always"
-                handleStatusResponse(try { control.NotifSetMuteAll(spec) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifSetMuteAll(spec))
             }
             "style" -> {
                 val query = rest.getOrNull(1)
                 if (query.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>] [--app-name small|subtitle|off]  (use 'default' to reset; 'stoandl notif styles' lists the choices)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif style <app> [--color <name>] [--icon <name>] [--vibe <preset|ms,ms,…>] [--app-name small|subtitle|off]  (use 'default' to reset; 'stoandl notif styles' lists the choices)"); System.exit(EXIT_USAGE); return
                 }
                 val color = flagValue(rest, "--color") ?: ""
                 val icon = flagValue(rest, "--icon") ?: ""
@@ -1189,17 +1131,13 @@ private fun ctlNotif(rest: List<String>) {
                 // Its own D-Bus method (NotifSetStyle's signature is fixed); null = not asked for.
                 val appName = flagValue(rest, "--app-name")
                 if (color.isEmpty() && icon.isEmpty() && vibe.isEmpty() && appName == null) {
-                    System.err.println("Nothing to set: pass --color <name>, --icon <name>, --vibe <preset|ms,ms,…> and/or --app-name small|subtitle|off"); System.exit(1); return
+                    System.err.println("Nothing to set: pass --color <name>, --icon <name>, --vibe <preset|ms,ms,…> and/or --app-name small|subtitle|off"); System.exit(EXIT_USAGE); return
                 }
                 if (color.isNotEmpty() || icon.isNotEmpty() || vibe.isNotEmpty()) {
-                    handleStatusResponse(try { control.NotifSetStyle(query, color, icon, vibe) } catch (e: Exception) {
-                        System.err.println("Error: ${e.message}"); System.exit(1); return
-                    })
+                    handleStatusResponse(control.NotifSetStyle(query, color, icon, vibe))
                 }
                 if (appName != null) {
-                    handleStatusResponse(try { control.NotifSetAppName(query, appName) } catch (e: Exception) {
-                        System.err.println("Error: ${e.message}"); System.exit(1); return
-                    })
+                    handleStatusResponse(control.NotifSetAppName(query, appName))
                 }
             }
             // An app's pictures off while notification.images stays on, or back to following it.
@@ -1207,20 +1145,16 @@ private fun ctlNotif(rest: List<String>) {
                 val query = rest.getOrNull(1)
                 val mode = rest.getOrNull(2)
                 if (query.isNullOrBlank() || mode.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl notif images <app> on|off|default  (on and default follow notification.images)"); System.exit(1); return
+                    System.err.println("Usage: stoandl notif images <app> on|off|default  (on and default follow notification.images)"); System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.NotifSetImages(query, mode) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.NotifSetImages(query, mode))
             }
             // Global allow/block notification filters (regex on app/title/body). `allow` is a whitelist
             // that bypasses block filters, the forwarding switch and per-app mute; `block` drops a match.
             "filter", "filters" -> {
                 when (val fsub = rest.getOrNull(1)?.lowercase() ?: "list") {
                     "list" -> {
-                        val rows = try { control.NotifListFilters() } catch (e: Exception) {
-                            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                        }
+                        val rows = control.NotifListFilters()
                         if (rows.isEmpty()) {
                             println("No notification filters.")
                         } else {
@@ -1235,33 +1169,29 @@ private fun ctlNotif(rest: List<String>) {
                         val pattern = rest.getOrNull(2)
                         val action = rest.getOrNull(3)?.lowercase() ?: "block"
                         if (pattern.isNullOrBlank()) {
-                            System.err.println("Usage: stoandl notif filter add <regex> [allow|block]"); System.exit(1); return
+                            System.err.println("Usage: stoandl notif filter add <regex> [allow|block]"); System.exit(EXIT_USAGE); return
                         }
                         if (action != "allow" && action != "block") {
-                            System.err.println("Action must be 'allow' or 'block'"); System.exit(1); return
+                            System.err.println("Action must be 'allow' or 'block'"); System.exit(EXIT_USAGE); return
                         }
-                        handleStatusResponse(try { control.NotifAddFilter(pattern, action) } catch (e: Exception) {
-                            System.err.println("Error: ${e.message}"); System.exit(1); return
-                        })
+                        handleStatusResponse(control.NotifAddFilter(pattern, action))
                     }
                     "remove", "rm", "del" -> {
                         val pattern = rest.drop(2).joinToString(" ")
                         if (pattern.isBlank()) {
-                            System.err.println("Usage: stoandl notif filter remove <regex>"); System.exit(1); return
+                            System.err.println("Usage: stoandl notif filter remove <regex>"); System.exit(EXIT_USAGE); return
                         }
-                        handleStatusResponse(try { control.NotifRemoveFilter(pattern) } catch (e: Exception) {
-                            System.err.println("Error: ${e.message}"); System.exit(1); return
-                        })
+                        handleStatusResponse(control.NotifRemoveFilter(pattern))
                     }
                     else -> {
                         System.err.println("Usage: stoandl notif filter <list | add <regex> [allow|block] | remove <regex>>")
-                        System.exit(1)
+                        System.exit(EXIT_USAGE)
                     }
                 }
             }
             else -> {
                 System.err.println("Usage: stoandl notif <list|styles|mute <app> [spec]|unmute <app>|mute-all [spec]|unmute-all|style <app> [--color <c>] [--icon <i>] [--vibe <v>] [--app-name <a>]|images <app> on|off|default|vibes|vibe-test <v>|vibe-add <name> <ms,…>|vibe-remove <name>|filter <list|add|remove>>")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -1274,9 +1204,7 @@ private fun ctlSync(rest: List<String>) {
     withControl { control ->
         when (sub) {
             "list", "status" -> {
-                val rows = try { control.GetSyncStatus() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+                val rows = control.GetSyncStatus()
                 println("  %-14s %-9s %-12s %s".format("SERVICE", "STATE", "AVAILABLE", "LAST SYNC"))
                 rows.forEach { entry ->
                     val f = entry.split('\t') // service \t enabled|disabled \t available|unavailable \t lastSync
@@ -1289,15 +1217,13 @@ private fun ctlSync(rest: List<String>) {
                 val service = rest.getOrNull(1)
                 if (service.isNullOrBlank()) {
                     System.err.println("Usage: stoandl sync $sub <service>  (notifications weather calendar music health dnd)")
-                    System.exit(1); return
+                    System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.SetSyncEnabled(service, sub == "enable") } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.SetSyncEnabled(service, sub == "enable"))
             }
             else -> {
                 System.err.println("Usage: stoandl sync <list | enable <service> | disable <service>>  (notifications weather calendar music health dnd)")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -1318,15 +1244,11 @@ private fun ctlSync(rest: List<String>) {
 private fun ctlDaemon(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
     withControl { control ->
-        val schema = try { control.GetConfigSchema() } catch (e: Exception) {
-            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-        }
+        val schema = control.GetConfigSchema()
         // key -> row fields (see StoandlControl.GetConfigSchema for the column order).
         val fields = schema.map { it.split('\t') }.filter { it.isNotEmpty() && it[0].isNotBlank() }
         fun col(f: List<String>, i: Int) = f.getOrElse(i) { "" }
-        val values = try { control.GetConfig() } catch (e: Exception) {
-            System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-        }.associate { val p = it.split('\t'); p.getOrElse(0) { "" } to p.getOrElse(1) { "" } }
+        val values = control.GetConfig().associate { val p = it.split('\t'); p.getOrElse(0) { "" } to p.getOrElse(1) { "" } }
 
         when (sub) {
             "list", "status" -> {
@@ -1344,7 +1266,7 @@ private fun ctlDaemon(rest: List<String>) {
             }
             "get" -> {
                 val key = rest.getOrNull(1)
-                if (key.isNullOrBlank()) { System.err.println("Usage: stoandl daemon get <key>"); System.exit(1); return }
+                if (key.isNullOrBlank()) { System.err.println("Usage: stoandl daemon get <key>"); System.exit(EXIT_USAGE); return }
                 val f = fields.firstOrNull { it[0] == key }
                 if (f == null) {
                     System.err.println("No config key '$key'  (list them with: stoandl daemon list)")
@@ -1369,15 +1291,13 @@ private fun ctlDaemon(rest: List<String>) {
                 val value = rest.drop(2).joinToString(" ")
                 if (key.isNullOrBlank() || rest.size < 3) {
                     System.err.println("Usage: stoandl daemon set <key> <value>   (list keys with: stoandl daemon list)")
-                    System.exit(1); return
+                    System.exit(EXIT_USAGE); return
                 }
-                handleStatusResponse(try { control.SetConfig(key, value) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.SetConfig(key, value))
             }
             else -> {
                 System.err.println("Usage: stoandl daemon <list | get <key> | set <key> <value>>")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -1392,8 +1312,7 @@ private fun ctlWatch(rest: List<String>) {
         "list" -> watchList()
         "connect" -> watchConnect(rest.getOrNull(1))
         "disconnect" -> withControl { control ->
-            try { handleStatusResponse(control.Disconnect()) }
-            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+            handleStatusResponse(control.Disconnect())
         }
         "pair" -> watchPair(assumeYes)
         "unpair" -> watchUnpair(rest.getOrNull(1))
@@ -1401,23 +1320,20 @@ private fun ctlWatch(rest: List<String>) {
         "battery" -> ctlBattery(rest.drop(1))
         "find" -> watchFind()
         "ping" -> withControl { control ->
-            try { handleStatusResponse(control.Ping()) }
-            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+            handleStatusResponse(control.Ping())
         }
         "running" -> watchRunning()
         "rename", "nickname" -> watchRename(rest.getOrNull(1), rest.drop(2).joinToString(" "))
         else -> {
             System.err.println("Usage: stoandl watch <list|connect [n]|disconnect|pair [--yes]|unpair [n]|repair <n> [--yes]|rename <n> <name>|battery|find|ping|running>")
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
 
 /** Show the app/watchface currently on the watch's screen (distinct from the default watchface). */
 private fun watchRunning(): Unit = withControl { control ->
-    val resp = try { control.RunningApp() } catch (e: Exception) {
-        System.err.println("Error: ${e.message}"); System.exit(1); return
-    }
+    val resp = control.RunningApp()
     when {
         resp.startsWith("ok:") -> {
             val parts = resp.removePrefix("ok:").split('\t')
@@ -1433,77 +1349,64 @@ private fun watchRunning(): Unit = withControl { control ->
 /** Rename (set the nickname of) the watch matching [query] — the CLI counterpart of the GUI rename. */
 private fun watchRename(query: String?, nickname: String) {
     if (query.isNullOrBlank() || nickname.isBlank()) {
-        System.err.println("Usage: stoandl watch rename <name|uuid> <new name>"); System.exit(1); return
+        System.err.println("Usage: stoandl watch rename <name|uuid> <new name>"); System.exit(EXIT_USAGE); return
     }
     withControl { control ->
-        try { handleStatusResponse(control.SetWatchNickname(query, nickname)) }
-        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        handleStatusResponse(control.SetWatchNickname(query, nickname))
     }
 }
 
 private fun watchList() = withControl { control ->
-    try {
-        val watches = control.ListWatches()
-        if (watches.isEmpty()) {
-            println("No known watches. Run 'stoandl watch pair' to add one.")
-        } else {
-            watches.forEach { entry ->
-                val parts = entry.split('\t')
-                val battery = parts.getOrElse(2) { "" }
-                val transport = parts.getOrElse(3) { "" }
-                val tail = buildString {
-                    if (battery.isNotBlank()) append("  ${battery}%")
-                    if (transport.isNotBlank()) append("  $transport")
-                }
-                println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, tail))
+    val watches = control.ListWatches()
+    if (watches.isEmpty()) {
+        println("No known watches. Run 'stoandl watch pair' to add one.")
+    } else {
+        watches.forEach { entry ->
+            val parts = entry.split('\t')
+            val battery = parts.getOrElse(2) { "" }
+            val transport = parts.getOrElse(3) { "" }
+            val tail = buildString {
+                if (battery.isNotBlank()) append("  ${battery}%")
+                if (transport.isNotBlank()) append("  $transport")
             }
+            println("  %-24s %-12s%s".format(parts.getOrElse(0) { entry }, parts.getOrElse(1) { "" }, tail))
         }
-        if (control.BluetoothStatus() == "ok:off") println("Bluetooth is off — no watch can connect until it is on.")
-        val pause = runCatching { control.LinkPause() }.getOrNull()?.removePrefix("ok:")?.split(',').orEmpty()
-        when {
-            "manual" in pause -> println("Watch connection paused — 'stoandl watch connect' resumes it.")
-            "quiet_time" in pause -> println("Watch connection paused for Quiet Time (power.quiet_time_link_off).")
-        }
-    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    }
+    if (control.BluetoothStatus() == "ok:off") println("Bluetooth is off — no watch can connect until it is on.")
+    val pause = runCatching { control.LinkPause() }.getOrNull()?.removePrefix("ok:")?.split(',').orEmpty()
+    when {
+        "manual" in pause -> println("Watch connection paused — 'stoandl watch connect' resumes it.")
+        "quiet_time" in pause -> println("Watch connection paused for Quiet Time (power.quiet_time_link_off).")
+    }
 }
 
 // `watch connect` resumes after `watch disconnect`; `watch connect <name>` also switches to that watch.
 private fun watchConnect(name: String?) {
     withControl { control ->
-        try { handleStatusResponse(control.Connect(name ?: "")) }
-        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        handleStatusResponse(control.Connect(name ?: ""))
     }
 }
 
 private fun watchPair(assumeYes: Boolean): Unit = withControl { control ->
-    try {
-        val startResp = try { control.Pair() } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
-        if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
-        println("Searching for watch to pair (up to 2 minutes)...")
-        pollPairStatus(control, assumeYes)
-    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    val startResp = control.Pair()
+    if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+    println("Searching for watch to pair (up to 2 minutes)...")
+    pollPairStatus(control, assumeYes)
 }
 
 private fun watchRepair(name: String?, assumeYes: Boolean) {
-    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch repair <name> [--yes]"); System.exit(1); return }
+    if (name.isNullOrBlank()) { System.err.println("Usage: stoandl watch repair <name> [--yes]"); System.exit(EXIT_USAGE); return }
     withControl { control ->
-        try {
-            val startResp = try { control.Repair(name) } catch (e: Exception) {
-                System.err.println("Error: ${e.message}"); System.exit(1); return
-            }
-            if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
-            println(startResp.removePrefix("ok:"))
-            pollPairStatus(control, assumeYes)
-        } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+        val startResp = control.Repair(name)
+        if (!startResp.startsWith("ok:")) { handleStatusResponse(startResp); return }
+        println(startResp.removePrefix("ok:"))
+        pollPairStatus(control, assumeYes)
     }
 }
 
 // `watch unpair` = blanket (all); `watch unpair <name>` = just the matching watch.
 private fun watchUnpair(name: String?) = withControl { control ->
-    try { handleStatusResponse(control.Unpair(name ?: "")) }
-    catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    handleStatusResponse(control.Unpair(name ?: ""))
 }
 
 // `watch battery` = live level; `history`/`insights` show the recorded trend (daemon-computed);
@@ -1519,15 +1422,13 @@ private fun ctlBattery(rest: List<String>) {
         else -> {
             System.err.println("Usage: stoandl watch battery [history|insights|activity|power|heartbeat] [--watch <name>] [--since <dur>]")
             System.err.println("       heartbeat [--limit <n>] [--raw] [--all]   (--all = every metric of the newest record)")
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
 
 private fun watchBattery(): Unit = withControl { control ->
-    val resp = try { control.Battery() } catch (e: Exception) {
-        System.err.println("Error: ${e.message}"); System.exit(1); return
-    }
+    val resp = control.Battery()
     val (kind, body) = splitStatus(resp)
     when (kind) {
         "ok" -> { val f = body.split('\t'); println("%s: %s%%".format(f.getOrElse(0) { "Watch" }, f.getOrElse(1) { "?" })) }
@@ -1553,9 +1454,7 @@ private fun batteryHistory(args: List<String>) {
     val watch = flagValue(args, "--watch") ?: ""
     val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
     withControl { control ->
-        val resp = try { control.BatteryHistory(watch, since) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.BatteryHistory(watch, since)
         val (kind, body) = splitStatus(resp)
         when (kind) {
             "ok" -> {
@@ -1577,9 +1476,7 @@ private fun batteryHistory(args: List<String>) {
 private fun batteryInsights(args: List<String>) {
     val watch = flagValue(args, "--watch") ?: ""
     withControl { control ->
-        val resp = try { control.BatteryInsights(watch) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.BatteryInsights(watch)
         val (kind, body) = splitStatus(resp)
         when (kind) {
             "ok" -> {
@@ -1610,9 +1507,7 @@ private fun batteryActivity(args: List<String>) {
     val watch = flagValue(args, "--watch") ?: ""
     val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
     withControl { control ->
-        val resp = try { control.BatteryActivity(watch, since) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.BatteryActivity(watch, since)
         val (kind, body) = splitStatus(resp)
         when (kind) {
             "ok" -> {
@@ -1636,9 +1531,7 @@ private fun batteryPower(args: List<String>) {
     val watch = flagValue(args, "--watch") ?: ""
     val since = System.currentTimeMillis() / 1000 - parseDurationSeconds(flagValue(args, "--since") ?: "24h")
     withControl { control ->
-        val resp = try { control.BatteryPower(watch, since) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.BatteryPower(watch, since)
         val (kind, body) = splitStatus(resp)
         when (kind) {
             "ok" -> {
@@ -1734,10 +1627,8 @@ private fun formatEpoch(epochSeconds: Long): String =
         .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
 
 private fun watchFind() = withControl { control ->
-    try {
-        if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
-        else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
-    } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    if (control.FindWatch()) println("Ringing watch — press a button on the watch to silence it")
+    else { System.err.println("Daemon not ready (no watch connected?)"); System.exit(1) }
 }
 
 // ---- settings group (list/set) ------------------------------------------------------------------
@@ -1752,20 +1643,16 @@ private fun ctlSettings(rest: List<String>) {
 }
 
 private fun settingsList(filter: String?): Unit = withControl { control ->
-    val records = try { control.ListWatchPrefs() } catch (e: Exception) {
-        System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-    }
+    val records = control.ListWatchPrefs()
     printWatchPrefs(records, filter)
 }
 
 private fun settingsSet(id: String?, value: String?) {
     if (id.isNullOrBlank() || value.isNullOrBlank()) {
-        System.err.println("Usage: stoandl settings set <id> <value>"); System.exit(1); return
+        System.err.println("Usage: stoandl settings set <id> <value>"); System.exit(EXIT_USAGE); return
     }
     withControl { control ->
-        val resp = try { control.SetWatchPref(id, value) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.SetWatchPref(id, value)
         handleStatusResponse(resp)
     }
 }
@@ -1773,9 +1660,7 @@ private fun settingsSet(id: String?, value: String?) {
 private fun ctlApps(rest: List<String>) {
     when (val sub = rest.firstOrNull() ?: "list") {
         "list" -> withControl { control ->
-            val records = try { control.ListApps() } catch (e: Exception) {
-                System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-            }
+            val records = control.ListApps()
             printAppList(records)
         }
         "launch" -> appLaunchOrRemove(true, rest.drop(1).joinToString(" ").takeIf { it.isNotBlank() })
@@ -1784,7 +1669,7 @@ private fun ctlApps(rest: List<String>) {
         "order" -> appOrder(rest.drop(1))
         else -> {
             System.err.println("Usage: stoandl apps <list|launch <name|uuid>|remove <name|uuid>|install <path.pbw>|order <name|uuid> <pos>|order reset>")
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
@@ -1795,8 +1680,7 @@ private fun ctlApps(rest: List<String>) {
 private fun appOrder(args: List<String>) {
     if (args.firstOrNull() == "reset") {
         withControl { control ->
-            try { handleStatusResponse(control.RestoreSystemAppOrder()) }
-            catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+            handleStatusResponse(control.RestoreSystemAppOrder())
         }
         return
     }
@@ -1804,11 +1688,10 @@ private fun appOrder(args: List<String>) {
     val query = args.dropLast(1).joinToString(" ")
     if (args.size < 2 || pos == null || pos < 0 || query.isBlank()) {
         System.err.println("Usage: stoandl apps order <name|uuid> <position≥0> | apps order reset")
-        System.exit(1); return
+        System.exit(EXIT_USAGE); return
     }
-    withControl { control ->
-        try { handleStatusResponse(control.SetAppOrder(query, pos)) }
-        catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1) }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        handleStatusResponse(control.SetAppOrder(query, pos))
     }
 }
 
@@ -1817,41 +1700,33 @@ private fun appOrder(args: List<String>) {
  *  path would be looked up in the wrong place (a misleading "Pbw does not contain manifest"). */
 private fun appSideload(pathArg: String?) {
     if (pathArg.isNullOrBlank()) {
-        System.err.println("Usage: stoandl apps install <path.pbw>  (aliases: sideload, add)"); System.exit(1); return
+        System.err.println("Usage: stoandl apps install <path.pbw>  (aliases: sideload, add)"); System.exit(EXIT_USAGE); return
     }
     val file = File(pathArg)
     if (!file.isFile) { System.err.println("No such file: $pathArg"); System.exit(1); return }
     val path = file.absolutePath
-    withControl { control ->
-        val resp = try { control.SideloadApp(path) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        val resp = control.SideloadApp(path)
         handleStatusResponse(resp)
     }
 }
 
 private fun appLaunchOrRemove(launch: Boolean, query: String?) {
     if (query.isNullOrBlank()) {
-        System.err.println("Usage: stoandl apps ${if (launch) "launch" else "remove"} <name|uuid>"); System.exit(1); return
+        System.err.println("Usage: stoandl apps ${if (launch) "launch" else "remove"} <name|uuid>"); System.exit(EXIT_USAGE); return
     }
     withControl { control ->
-        val resp = try {
-            if (launch) control.LaunchApp(query) else control.RemoveApp(query)
-        } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = if (launch) control.LaunchApp(query) else control.RemoveApp(query)
         handleStatusResponse(resp)
     }
 }
 
 private fun ctlExt(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
-    withControl { control ->
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
         when (sub) {
             "list", "status" -> {
-                val rows = try { control.ExtList() } catch (e: Exception) {
-                    System.err.println("Error contacting daemon: ${e.message}"); System.exit(1); return
-                }
+                val rows = control.ExtList()
                 if (rows.isEmpty()) { println("No extensions installed. (stoandl ext install <archive>)"); return }
                 println(String.format("%-20s %-10s %-9s %s", "NAME", "INSTALLED", "ENABLED", "RUNNING"))
                 rows.forEach { row ->
@@ -1863,41 +1738,36 @@ private fun ctlExt(rest: List<String>) {
             "install" -> {
                 val p = rest.getOrNull(1)
                 if (p.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl ext install <archive.tar.gz|.tgz|.tar|.zip>"); System.exit(1); return
+                    System.err.println("Usage: stoandl ext install <archive.tar.gz|.tgz|.tar|.zip>"); System.exit(EXIT_USAGE); return
                 }
                 val f = File(p)
                 if (!f.isFile) { System.err.println("No such file: $p"); System.exit(1); return }
-                handleStatusResponse(try { control.ExtInstall(f.absolutePath) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                handleStatusResponse(control.ExtInstall(f.absolutePath))
             }
             "uninstall", "remove" -> {
                 val name = rest.getOrNull(1)?.takeIf { !it.startsWith("-") }
                 if (name.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl ext uninstall <name> [--keep-config|--delete-config]"); System.exit(1); return
+                    System.err.println("Usage: stoandl ext uninstall <name> [--keep-config|--delete-config]"); System.exit(EXIT_USAGE); return
                 }
                 val keepConfig = resolveKeepConfig(name, rest)
-                val resp = try { control.ExtUninstall(name, keepConfig) }
-                    catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+                val resp = control.ExtUninstall(name, keepConfig)
                 handleStatusResponse(resp)
             }
             "enable", "disable", "restart" -> {
                 val name = rest.getOrNull(1)
                 if (name.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl ext $sub <name>"); System.exit(1); return
+                    System.err.println("Usage: stoandl ext $sub <name>"); System.exit(EXIT_USAGE); return
                 }
-                val resp = try {
-                    when (sub) {
-                        "enable" -> control.ExtEnable(name)
-                        "disable" -> control.ExtDisable(name)
-                        else -> control.ExtRestart(name)
-                    }
-                } catch (e: Exception) { System.err.println("Error: ${e.message}"); System.exit(1); return }
+                val resp = when (sub) {
+                    "enable" -> control.ExtEnable(name)
+                    "disable" -> control.ExtDisable(name)
+                    else -> control.ExtRestart(name)
+                }
                 handleStatusResponse(resp)
             }
             else -> {
                 System.err.println("Usage: stoandl ext <list|install <archive>|uninstall <name> [--keep-config|--delete-config]|enable <name>|disable <name>|restart <name>>")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -2040,18 +1910,16 @@ private fun ctlLanguage(rest: List<String>) {
     // `list` is resilient: it shows the watch's packs when the daemon+watch are there, and otherwise
     // falls back to the full bundled catalog (offline), so it works before pairing / with no daemon.
     if (sub == "list") { ctlLanguageList(); return }
-    withControl { control ->
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
         when (sub) {
             "status" -> {
-                val resp = try { control.LanguageStatus() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.LanguageStatus()
                 printLanguageStatusOnce(resp)
             }
             "sideload", "add" -> {
                 val path = rest.getOrNull(1)
                 if (path == null) {
-                    System.err.println("Usage: stoandl language sideload <file.pbl>"); System.exit(1); return
+                    System.err.println("Usage: stoandl language sideload <file.pbl>"); System.exit(EXIT_USAGE); return
                 }
                 val file = File(path)
                 if (!file.isFile) { System.err.println("No such file: $path"); System.exit(1); return }
@@ -2059,25 +1927,21 @@ private fun ctlLanguage(rest: List<String>) {
                     System.err.println("Not a language pack (expected a .pbl): $path"); System.exit(1); return
                 }
                 // Absolute path: the daemon's cwd differs from the caller's.
-                val resp = try { control.SideloadLanguage(file.absolutePath) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.SideloadLanguage(file.absolutePath)
                 if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
                 println("Installing ${file.name} onto the watch — keep it close.")
                 pollLanguageStatus(control)
             }
             "install" -> {
                 val query = rest.drop(1).joinToString(" ")
-                val resp = try { control.InstallLanguage(query) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.InstallLanguage(query)
                 if (!resp.startsWith("ok:")) { handleStatusResponse(resp); return }
                 println("Installing ${resp.removePrefix("ok:")} — downloading then transferring to the watch.")
                 pollLanguageStatus(control)
             }
             else -> {
                 System.err.println("Usage: stoandl language [list | sideload <file.pbl> | install <locale|name|id> | status]")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -2178,10 +2042,8 @@ private fun pollLanguageStatus(control: StoandlControl) {
     var firstPoll = true
     while (true) {
         Thread.sleep(600)
-        val st = try { control.LanguageStatus() } catch (e: Exception) {
-            if (barShown) System.err.println()
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        // End the progress bar's line before withControl reports the error.
+        val st = try { control.LanguageStatus() } catch (e: DBusExecutionException) { if (barShown) println(); throw e }
         val (kind, body) = splitStatus(st)
         // A successful install leaves a *sticky* `done:`/`idle:` on the watch's snapshot. On the very
         // first poll that terminal value may be the PREVIOUS install's, before our kickoff has
@@ -2437,11 +2299,9 @@ private fun ctlLogs(rest: List<String>) {
     val arg = rest.firstOrNull { !it.startsWith("-") }
     val target = resolveOutPath(arg, "pebble-logs-${timestamp()}.txt", listOf(".txt", ".log"))
     val path = target.absolutePath
-    withControl { control ->
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
         println("Gathering watch logs… (this can take a few seconds)")
-        val resp = try { control.GatherLogs(path) } catch (e: Exception) {
-            System.err.println("Error: ${e.message}"); System.exit(1); return
-        }
+        val resp = control.GatherLogs(path)
         val (kind, body) = splitStatus(resp)
         if (kind == "ok") println("Saved $body") else handleStatusResponse(resp)
     }
@@ -2467,6 +2327,7 @@ private fun ctlSupport(rest: List<String>) {
     println("Building support bundle…")
 
     // --- Watch-side pieces (need the daemon + a connected watch) ---
+    MethodCall.setDefaultTimeout(CTL_SLOW_REPLY_TIMEOUT_MS) // the watch logs and a coredump take a while
     val conn = softOpenSessionBus()
     var daemonVersion: String? = null
     if (conn != null) {
@@ -2598,16 +2459,14 @@ private fun ctlReset(rest: List<String>) {
         "coredump", "core-dump" -> sendReset { it.ForceCoreDump() }
         else -> {
             System.err.println("Usage: stoandl reset <factory|recovery|coredump> [--yes]")
-            System.exit(1)
+            System.exit(EXIT_USAGE)
         }
     }
 }
 
 /** Run a reset RPC and print its status-prefixed result. */
 private fun sendReset(call: (StoandlControl) -> String) = withControl { control ->
-    val resp = try { call(control) } catch (e: Exception) {
-        System.err.println("Error: ${e.message}"); System.exit(1); return@withControl
-    }
+    val resp = call(control)
     handleStatusResponse(resp)
 }
 
@@ -2618,9 +2477,7 @@ private fun ctlDeveloper(rest: List<String>) {
     withControl { control ->
         when (rest.firstOrNull()) {
             "start" -> {
-                val resp = try { control.StartDevConnection() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.StartDevConnection()
                 val (kind, body) = splitStatus(resp)
                 if (kind != "ok") { handleStatusResponse(resp); return }
                 val port = body.ifEmpty { "9000" }
@@ -2636,23 +2493,19 @@ private fun ctlDeveloper(rest: List<String>) {
                 println("  Stop it with:  stoandl developer stop")
             }
             "stop" -> {
-                val resp = try { control.StopDevConnection() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.StopDevConnection()
                 val (kind, _) = splitStatus(resp)
                 if (kind == "ok") println("Developer connection stopped.") else handleStatusResponse(resp)
             }
             "status" -> {
-                val resp = try { control.DevConnectionStatus() } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                }
+                val resp = control.DevConnectionStatus()
                 val (kind, body) = splitStatus(resp)
                 if (kind == "ok") println("Developer connection is ${if (body == "active") "active (port 9000)" else "inactive"}.")
                 else handleStatusResponse(resp)
             }
             else -> {
                 System.err.println("Usage: stoandl developer <start | stop | status>")
-                System.exit(1)
+                System.exit(EXIT_USAGE)
             }
         }
     }
@@ -2703,29 +2556,50 @@ private fun sanitizeConfig(text: String): String {
     return "# Secrets redacted by `stoandl support`. Review before sharing.\n" + lines.joinToString("\n")
 }
 
-private fun connectDbusOrExit(): DBusConnection? = try {
+private fun connectDbusOrExit(): DBusConnection = try {
     openSessionBus()
 } catch (e: Exception) {
-    System.err.println("Cannot connect to D-Bus session bus: ${e.message}")
-    System.exit(1)
-    null
+    System.err.println("Cannot connect to the D-Bus session bus: ${e.message}")
+    exitProcess(EXIT_UNREACHABLE)
 }
 
 /**
  * Connect to the session bus, resolve the daemon's [StoandlControl] proxy, run [block], and always
  * disconnect afterwards. Centralises the connect → getRemoteObject → try/finally-disconnect scaffold
- * that nearly every CLI subcommand needs. Inline so a non-local `return` in [block] (the usual
- * bail-after-error idiom) still runs the `finally`. If the bus can't be reached, [connectDbusOrExit]
- * has already exited the process.
+ * that nearly every CLI subcommand needs, and the handling of a failed call: [block] calls the proxy
+ * directly, and a D-Bus error ends the process with [ctlError]'s message and exit code. Inline so a
+ * non-local `return` in [block] (the usual bail-after-error idiom) still runs the `finally`.
+ * [replyTimeoutMs]: how long each call may take; the slow verbs pass [CTL_SLOW_REPLY_TIMEOUT_MS].
  */
-private inline fun withControl(block: (StoandlControl) -> Unit) {
-    val conn = connectDbusOrExit() ?: return
+private inline fun withControl(replyTimeoutMs: Long = CTL_REPLY_TIMEOUT_MS, block: (StoandlControl) -> Unit) {
+    MethodCall.setDefaultTimeout(replyTimeoutMs)
+    val conn = connectDbusOrExit()
     try {
         block(conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java))
+    } catch (e: DBusExecutionException) {
+        val (message, code) = ctlError(e.javaClass.name, e.message)
+        System.err.println(message)
+        exitProcess(code)
     } finally {
         conn.disconnect()
     }
 }
+
+/**
+ * What the CLI says, and its exit code, when a call to the daemon failed with D-Bus error [errorName]
+ * (dbus-java turns the well-known errors into `org.freedesktop.dbus.errors.*` classes; anything else,
+ * such as an exception thrown in the daemon, arrives as a plain DBusExecutionException carrying its message).
+ */
+internal fun ctlError(errorName: String, message: String?): Pair<String, Int> =
+    when (errorName.substringAfterLast('.')) {
+        "ServiceUnknown", "NameHasNoOwner" ->
+            "stoandl isn't running — systemctl --user start stoandl (OpenRC: rc-service stoandl start)" to EXIT_UNREACHABLE
+        "UnknownMethod", "UnknownInterface" ->
+            "The CLI and daemon versions differ (the daemon doesn't know this call) — see: stoandl version" to EXIT_FAILURE
+        "UnknownObject" -> "stoandl is still starting — try again in a moment" to EXIT_FAILURE
+        "NoReply", "Timeout" -> "stoandl didn't answer in time (it may still be working)" to EXIT_FAILURE
+        else -> "Error: ${message?.takeIf { it.isNotBlank() } ?: errorName}" to EXIT_FAILURE
+    }
 
 // ---- voice group (speech to text) --------------------------------------------------------------------
 
@@ -2744,12 +2618,10 @@ private fun ctlVoice(rest: List<String>) {
         }
         "test" -> {
             val file = rest.getOrNull(1)?.let { File(it).absoluteFile }
-                ?: run { System.err.println("Usage: stoandl voice test <file.wav|file.ogg>"); System.exit(2); return }
-            withControl { control ->
+                ?: run { System.err.println("Usage: stoandl voice test <file.wav|file.ogg>"); System.exit(EXIT_USAGE); return }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
                 println("Transcribing ${file.name}…")
-                val (kind, body) = splitStatus(try { control.Transcribe(file.path) } catch (e: Exception) {
-                    System.err.println("Error: ${e.message}"); System.exit(1); return
-                })
+                val (kind, body) = splitStatus(control.Transcribe(file.path))
                 when (kind) {
                     "ok" -> { val (ms, text) = body.split('\t', limit = 2).let { it[0] to it.getOrElse(1) { "" } }; println(text.ifEmpty { "(no speech)" }); println("($ms ms)") }
                     "off" -> { System.err.println("Voice is off (voice.backend)"); System.exit(1) }
@@ -2773,7 +2645,7 @@ private fun ctlVoice(rest: List<String>) {
             }
         }
         "download" -> {
-            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice download <model> (see stoandl voice models)"); System.exit(2); return }
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice download <model> (see stoandl voice models)"); System.exit(EXIT_USAGE); return }
             withControl { control ->
                 val (kind, body) = splitStatus(control.VoiceDownloadModel(id))
                 if (kind != "ok") { println(body); if (kind != "installed") System.exit(1); return@withControl }
@@ -2792,18 +2664,18 @@ private fun ctlVoice(rest: List<String>) {
             }
         }
         "use" -> {
-            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice use <model>"); System.exit(2); return }
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice use <model>"); System.exit(EXIT_USAGE); return }
             withControl { control ->
                 printStatusOrExit(control.SetConfig("voice.local_model", id))
                 printStatusOrExit(control.SetConfig("voice.backend", "local"))
             }
         }
         "remove" -> {
-            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice remove <model>"); System.exit(2); return }
+            val id = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl voice remove <model>"); System.exit(EXIT_USAGE); return }
             withControl { control -> printStatusOrExit(control.VoiceRemoveModel(id)) }
         }
         "cancel" -> withControl { control -> println(splitStatus(control.VoiceCancelDownload()).second) }
-        else -> { System.err.println("Usage: stoandl voice [status | models | download <model> | use <model> | remove <model> | cancel | test <file>]"); System.exit(2) }
+        else -> { System.err.println("Usage: stoandl voice [status | models | download <model> | use <model> | remove <model> | cancel | test <file>]"); System.exit(EXIT_USAGE) }
     }
 }
 
@@ -2830,16 +2702,16 @@ private fun ctlPlugins(rest: List<String>) {
         }
         "read" -> {
             val what = rest.getOrNull(1)?.takeIf { '/' in it }
-                ?: run { System.err.println("Usage: stoandl plugins read <category>/<item> [plugin-uuid]"); System.exit(2); return }
-            withControl { control ->
+                ?: run { System.err.println("Usage: stoandl plugins read <category>/<item> [plugin-uuid]"); System.exit(EXIT_USAGE); return }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
                 printStatusOrExit(control.PluginRead(what.substringBefore('/'), what.substringAfter('/'), rest.getOrElse(2) { "" }))
             }
         }
         "invoke" -> {
-            if (rest.size < 3) { System.err.println("Usage: stoandl plugins invoke <plugin> <action> [json-args]"); System.exit(2); return }
-            withControl { control -> printStatusOrExit(control.PluginInvoke(rest[1], rest[2], rest.getOrElse(3) { "" })) }
+            if (rest.size < 3) { System.err.println("Usage: stoandl plugins invoke <plugin> <action> [json-args]"); System.exit(EXIT_USAGE); return }
+            withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control -> printStatusOrExit(control.PluginInvoke(rest[1], rest[2], rest.getOrElse(3) { "" })) }
         }
-        else -> { System.err.println("Usage: stoandl plugins [list | read <category>/<item> [plugin] | invoke <plugin> <action> [json]]"); System.exit(2) }
+        else -> { System.err.println("Usage: stoandl plugins [list | read <category>/<item> [plugin] | invoke <plugin> <action> [json]]"); System.exit(EXIT_USAGE) }
     }
 }
 
@@ -2859,7 +2731,7 @@ private fun ctlPerms(rest: List<String>) {
             }
         }
         "list" -> {
-            val app = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl perms list <app>"); System.exit(2); return }
+            val app = rest.getOrNull(1) ?: run { System.err.println("Usage: stoandl perms list <app>"); System.exit(EXIT_USAGE); return }
             withControl { control ->
                 val rows = control.PermList(app).map { it.split('\t') }
                 if (rows.isEmpty()) println("No permissions recorded for '$app' (or no such app)")
@@ -2867,13 +2739,13 @@ private fun ctlPerms(rest: List<String>) {
             }
         }
         "allow", "deny", "reset" -> {
-            if (rest.size < 3) { System.err.println("Usage: stoandl perms $sub <app> <permission>"); System.exit(2); return }
+            if (rest.size < 3) { System.err.println("Usage: stoandl perms $sub <app> <permission>"); System.exit(EXIT_USAGE); return }
             withControl { control -> printStatusOrExit(control.PermSet(rest[1], rest[2], sub)) }
         }
         "later" -> {
-            if (rest.size < 2) { System.err.println("Usage: stoandl perms later <app> [permission]"); System.exit(2); return }
+            if (rest.size < 2) { System.err.println("Usage: stoandl perms later <app> [permission]"); System.exit(EXIT_USAGE); return }
             withControl { control -> printStatusOrExit(control.PermSet(rest[1], rest.getOrElse(2) { "" }, sub)) }
         }
-        else -> { System.err.println(usage); System.exit(2) }
+        else -> { System.err.println(usage); System.exit(EXIT_USAGE) }
     }
 }
