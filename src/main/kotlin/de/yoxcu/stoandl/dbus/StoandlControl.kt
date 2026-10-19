@@ -130,8 +130,11 @@ interface StoandlControl : DBusInterface {
 
     /** List the editable calendar *sources* (the things you add/edit/remove, vs the discovered
      *  calendars from [ListCalendars]). Each entry is tab-separated
-     *  `id \t type \t url \t username \t label`, where `type` ∈ {caldav, ical, ics} and `id` is
-     *  self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). The password is NEVER included
+     *  `id \t type \t url \t username \t label \t lastError \t lastSync`, where `type` ∈ {caldav, ical, ics}
+     *  and `id` is self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). lastError is why the
+     *  source's last read failed, for the user ("Sign-in failed (401)", "Unreachable: …", "No such file or
+     *  folder"), empty while it reads fine; lastSync is the epoch seconds of its last good read, empty if
+     *  none since the daemon started. The password is NEVER included
      *  (write-only). A CalDAV account fans out to many calendars (grouped via the `accountId` column of
      *  [ListCalendars]); an iCal feed / .ics path is a single calendar. Auto-discovery
      *  (`calendar.discover`) is a toggle, not listed here. */

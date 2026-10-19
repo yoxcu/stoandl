@@ -205,6 +205,7 @@ import de.yoxcu.stoandl.calendar.IcalUrlSource
 import de.yoxcu.stoandl.calendar.IcsPathSource
 import de.yoxcu.stoandl.calendar.LinuxSystemCalendar
 import de.yoxcu.stoandl.calendar.calendarDiscoveryDirs
+import de.yoxcu.stoandl.calendar.SourceHealth
 import de.yoxcu.stoandl.secret.FileSecretStore
 import de.yoxcu.stoandl.secret.LayeredSecretStore
 import de.yoxcu.stoandl.secret.SecretServiceStore
@@ -414,6 +415,8 @@ class PebbleIntegration(
     // One HTTP client for the network calendar sources (iCal feeds + CalDAV), built lazily the first
     // time a network source exists and reused across live source rebuilds.
     private val calendarHttpClient by lazy { stoandlHttpClient() }
+    /** Each calendar source's last problem and last good read, for ListCalendarSources. */
+    private val calendarHealth = SourceHealth()
     // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
     private var mprisMusicControl: MprisMusicControl? = null
     // The shared notification send choke point (assigned in init()); passed to StoandlControlImpl so
@@ -1652,13 +1655,13 @@ class PebbleIntegration(
     private fun currentCalendarSources(): List<CalendarSource> {
         val cfg = configStore.current()
         val sources = mutableListOf<CalendarSource>()
-        if (cfg.calendarIcsPaths.isNotEmpty()) sources += IcsPathSource(cfg.calendarIcsPaths)
+        if (cfg.calendarIcsPaths.isNotEmpty()) sources += IcsPathSource(cfg.calendarIcsPaths, calendarHealth)
         if (cfg.calendarDiscover) sources += DiscoverySource()
-        if (cfg.calendarIcalUrls.isNotEmpty()) sources += IcalUrlSource(cfg.calendarIcalUrls, calendarHttpClient)
+        if (cfg.calendarIcalUrls.isNotEmpty()) sources += IcalUrlSource(cfg.calendarIcalUrls, calendarHttpClient, calendarHealth)
         if (cfg.calendarCalDav.isNotEmpty()) {
             sources += CalDavSource(
                 cfg.calendarCalDav.map { CalDavSource.Entry(it.id, it.url, it.username) },
-                calendarHttpClient, secretStore,
+                calendarHttpClient, secretStore, calendarHealth,
             )
         }
         return sources
@@ -2209,7 +2212,7 @@ class PebbleIntegration(
         override fun searchWeatherPlace(query: String): String = runBlocking { weatherPlaces.search(query) }
         override fun addWeatherLocation(name: String, latitude: Double, longitude: Double): String =
             weatherPlaces.add(name, latitude, longitude)
-        override fun listCalendarSources(): List<String> = CalendarSources.list(configStore.current())
+        override fun listCalendarSources(): List<String> = CalendarSources.list(configStore.current(), calendarHealth)
         override fun addCalendarSource(type: String, url: String, username: String, password: String): String =
             crudCalendarSource { CalendarSources.add(type, url, username, password, configStore, StoandlConfig.configFile(), secretStore) }
         override fun updateCalendarSource(id: String, url: String, username: String, password: String): String =

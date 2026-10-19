@@ -62,8 +62,9 @@ interface CalendarSource {
     suspend fun calendars(): List<RawCalendar>
 }
 
-/** Build a [RawCalendar] backed by a local .ics file, read fresh on each sync, attributed to [accountId]. */
-private fun icsFileCalendar(file: File, accountId: String): RawCalendar {
+/** Build a [RawCalendar] backed by a local .ics file, read fresh on each sync, attributed to [accountId].
+ *  Each read is reported to [health] (null: the discovery bucket, which isn't a listed source). */
+private fun icsFileCalendar(file: File, accountId: String, health: SourceHealth?): RawCalendar {
     val path = file.absoluteFile.normalize().path
     return RawCalendar(
         platformId = path,
@@ -73,8 +74,10 @@ private fun icsFileCalendar(file: File, accountId: String): RawCalendar {
             try {
                 val text = withContext(Dispatchers.IO) { file.readText() }
                 ICalParser.parse(text, calendarId = path, start = start, end = end)
+                    .also { health?.ok(accountId, path) }
             } catch (e: Exception) {
                 log.warn { "Failed to read calendar file ${file.path}: ${e.message}" }
+                health?.failed(accountId, path, "Can't read ${file.name}: ${e.message ?: e::class.simpleName}")
                 emptyList()
             }
         },
@@ -83,21 +86,27 @@ private fun icsFileCalendar(file: File, accountId: String): RawCalendar {
 
 /** Expand one configured path (a file, or a directory scanned for `*.ics`) into calendars, all
  *  attributed to [accountId] — so every .ics under a configured dir groups under that dir's source. */
-private fun icsPathToCalendars(path: File, accountId: String): List<RawCalendar> = when {
-    path.isDirectory -> path.listFiles { file -> file.isFile && file.extension.equals("ics", true) }
-        ?.sortedBy { it.name }?.map { icsFileCalendar(it, accountId) } ?: emptyList()
-    path.isFile -> listOf(icsFileCalendar(path, accountId))
-    else -> {
-        log.warn { "Calendar path does not exist: ${path.path}" }
-        emptyList()
+private fun icsPathToCalendars(path: File, accountId: String, health: SourceHealth?): List<RawCalendar> {
+    val cals = when {
+        path.isDirectory -> path.listFiles { file -> file.isFile && file.extension.equals("ics", true) }
+            ?.sortedBy { it.name }?.map { icsFileCalendar(it, accountId, health) } ?: emptyList()
+        path.isFile -> listOf(icsFileCalendar(path, accountId, health))
+        else -> {
+            log.warn { "Calendar path does not exist: ${path.path}" }
+            health?.retain(accountId, emptySet())
+            health?.failed(accountId, path.path, "No such file or folder")
+            return emptyList()
+        }
     }
+    health?.retain(accountId, cals.map { it.platformId }.toSet())
+    return cals
 }
 
 /** Local .ics files or directories explicitly listed in config (`calendar.ics_paths`). No egress.
  *  Each configured path is its own source (`ics:<path>`); a directory fans out to one calendar per file. */
-class IcsPathSource(private val paths: List<String>) : CalendarSource {
+class IcsPathSource(private val paths: List<String>, private val health: SourceHealth) : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> =
-        paths.flatMap { p -> icsPathToCalendars(File(p), SourceId.ics(p)) }
+        paths.flatMap { p -> icsPathToCalendars(File(p), SourceId.ics(p), health) }
 }
 
 /**
@@ -108,7 +117,7 @@ class IcsPathSource(private val paths: List<String>) : CalendarSource {
 class DiscoverySource : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> {
         val candidates = calendarDiscoveryDirs().filter { it.isDirectory }
-        val cals = candidates.flatMap { icsPathToCalendars(it, SourceId.DISCOVER) }
+        val cals = candidates.flatMap { icsPathToCalendars(it, SourceId.DISCOVER, health = null) }
         log.info { "Calendar discovery scanned ${candidates.size} known dir(s), found ${cals.size} calendar(s)" }
         return cals
     }
@@ -129,7 +138,11 @@ fun calendarDiscoveryDirs(): List<File> {
 
 /** A published iCalendar feed fetched over HTTP(S) (e.g. Google/Nextcloud/Outlook "iCal URL").
  *  Opt-in egress (`calendar.ical_urls`). */
-class IcalUrlSource(private val urls: List<String>, private val client: HttpClient) : CalendarSource {
+class IcalUrlSource(
+    private val urls: List<String>,
+    private val client: HttpClient,
+    private val health: SourceHealth,
+) : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> = urls.map { url ->
         RawCalendar(
             platformId = url,
@@ -140,12 +153,15 @@ class IcalUrlSource(private val urls: List<String>, private val client: HttpClie
                     val resp = client.request(url) { header(HttpHeaders.Accept, "text/calendar") }
                     if (!resp.status.isSuccess()) {
                         log.warn { "iCal feed $url returned HTTP ${resp.status}" }
+                        health.failed(SourceId.ical(url), url, httpProblem(resp.status.value))
                         emptyList()
                     } else {
                         ICalParser.parse(resp.bodyAsText(), calendarId = url, start = start, end = end)
+                            .also { health.ok(SourceId.ical(url), url) }
                     }
                 } catch (e: Exception) {
                     log.warn { "Failed to fetch iCal feed $url: ${e.message}" }
+                    health.failed(SourceId.ical(url), url, unreachable(e))
                     emptyList()
                 }
             },
@@ -165,6 +181,7 @@ class CalDavSource(
     private val entries: List<Entry>,
     private val client: HttpClient,
     private val secretStore: SecretStore,
+    private val health: SourceHealth,
 ) : CalendarSource {
     /** A configured account: an opaque [id] (the source/secret key), its [url] and [username]. The
      *  password is NOT held here — it's resolved per sync from [secretStore] under `caldav:<id>`. */
@@ -181,6 +198,7 @@ class CalDavSource(
             listOf(Collection(e.url, urlLabel(e.url)))
         }
         log.info { "CalDAV ${e.url}: ${collections.size} calendar(s) [${collections.joinToString { it.name }}]" }
+        health.retain(accountId, collections.map { it.url }.toSet())
         collections.map { col -> calendarFor(col, auth, accountId) }
     }
 
@@ -199,14 +217,16 @@ class CalDavSource(
                 }
                 if (!resp.status.isSuccess()) {
                     log.warn { "CalDAV ${col.url} returned HTTP ${resp.status}" }
+                    health.failed(accountId, col.url, httpProblem(resp.status.value))
                     emptyList()
                 } else {
                     extractCalendarData(resp.bodyAsText()).flatMap { ical ->
                         ICalParser.parse(ical, calendarId = col.url, start = start, end = end)
-                    }
+                    }.also { health.ok(accountId, col.url) }
                 }
             } catch (ex: Exception) {
                 log.warn { "Failed CalDAV query ${col.url}: ${ex.message}" }
+                health.failed(accountId, col.url, unreachable(ex))
                 emptyList()
             }
         },
@@ -217,18 +237,19 @@ class CalDavSource(
      * current-user-principal + calendar-home-set, then branch — the URL is itself a calendar (use it
      * alone); it advertises a calendar-home-set (it's the principal → list that home); or it gives a
      * current-user-principal (PROPFIND that for the home, then list). Best-effort: returns empty on any
-     * failure so the caller falls back to the raw URL.
+     * failure so the caller falls back to the raw URL, whose event read then reports the problem (a
+     * sign-in failure fails both alike).
      */
     private suspend fun discover(baseUrl: String, auth: String?): List<Collection> {
         return try {
-            val xml = propfind(baseUrl, auth, "0", PROPFIND_DISCOVER) ?: return emptyList()
+            val xml = propfind(baseUrl, auth, "0", PROPFIND_DISCOVER)
             val info = withContext(Dispatchers.IO) { parseDiscover(xml) }
             when {
                 info.selfIsCalendar -> listOf(Collection(baseUrl, info.selfName ?: urlLabel(baseUrl)))
                 info.homeHref != null -> listCalendars(resolveHref(baseUrl, info.homeHref), auth)
                 info.principalHref != null -> {
                     val principalUrl = resolveHref(baseUrl, info.principalHref)
-                    val homeXml = propfind(principalUrl, auth, "0", PROPFIND_HOME_SET) ?: return emptyList()
+                    val homeXml = propfind(principalUrl, auth, "0", PROPFIND_HOME_SET)
                     val home = withContext(Dispatchers.IO) { firstHomeHref(parseXml(homeXml)) } ?: return emptyList()
                     listCalendars(resolveHref(principalUrl, home), auth)
                 }
@@ -242,7 +263,7 @@ class CalDavSource(
 
     /** PROPFIND Depth:1 on the calendar-home-set → every child that is a calendar collection. */
     private suspend fun listCalendars(homeUrl: String, auth: String?): List<Collection> {
-        val xml = propfind(homeUrl, auth, "1", PROPFIND_LIST) ?: return emptyList()
+        val xml = propfind(homeUrl, auth, "1", PROPFIND_LIST)
         return withContext(Dispatchers.IO) {
             val responses = parseXml(xml).getElementsByTagNameNS(DAV_NS, "response")
             (0 until responses.length).mapNotNull { i ->
@@ -254,7 +275,8 @@ class CalDavSource(
         }
     }
 
-    private suspend fun propfind(url: String, auth: String?, depth: String, body: String): String? {
+    /** A PROPFIND's multistatus body; a failed status throws [DavStatus]. */
+    private suspend fun propfind(url: String, auth: String?, depth: String, body: String): String {
         val resp = client.request(url) {
             method = HttpMethod("PROPFIND")
             header("Depth", depth)
@@ -262,12 +284,11 @@ class CalDavSource(
             header(HttpHeaders.ContentType, "application/xml; charset=utf-8")
             setBody(body)
         }
-        if (!resp.status.isSuccess()) {
-            log.warn { "CalDAV PROPFIND $url returned HTTP ${resp.status}" }
-            return null
-        }
+        if (!resp.status.isSuccess()) throw DavStatus(resp.status.value)
         return resp.bodyAsText()
     }
+
+    private class DavStatus(val status: Int) : Exception("PROPFIND returned HTTP $status")
 
     private fun calendarQuery(start: Instant, end: Instant): String {
         val s = caldavStamp(start)

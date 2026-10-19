@@ -489,6 +489,9 @@ private fun printCalendarSources(control: StoandlControl) {
         val user = p.getOrElse(3) { "" }; val label = p.getOrElse(4) { "" }
         println("  %-7s %-24s %s".format(type, label, url) + if (user.isNotEmpty()) "  (user: $user)" else "")
         println("          id: $id")
+        // Columns 5 and 6: why the last read failed, and when the last good one was (epoch seconds).
+        p.getOrNull(5)?.takeIf { it.isNotBlank() }?.let { println("          problem: $it") }
+        p.getOrNull(6)?.toLongOrNull()?.let { println("          last sync: ${de.yoxcu.stoandl.pebble.relAge(it)}") }
     }
     println("\nEdit credentials:  stoandl calendar passwd <id>   ·   remove:  stoandl calendar remove <id>")
 }

@@ -32,12 +32,15 @@ object CalendarSources {
         return id.substring(0, i) to id.substring(i + 1)
     }
 
-    /** The editable sources as tab records `id \t type \t url \t username \t label`, CalDAV first, then
-     *  iCal feeds, then local .ics paths. The password is NEVER included. */
-    fun list(cfg: StoandlConfig): List<String> = buildList {
-        cfg.calendarCalDav.forEach { add(rec(SourceId.caldav(it.id), "caldav", it.url, it.username, hostLabel(it.url))) }
-        cfg.calendarIcalUrls.forEach { add(rec(SourceId.ical(it), "ical", it, "", hostLabel(it))) }
-        cfg.calendarIcsPaths.forEach { add(rec(SourceId.ics(it), "ics", it, "", File(it).name.ifEmpty { it })) }
+    /** The editable sources as tab records `id \t type \t url \t username \t label \t lastError \t lastSync`,
+     *  CalDAV first, then iCal feeds, then local .ics paths. lastError and lastSync (epoch seconds) come
+     *  from [health], empty while the source hasn't failed / read yet. The password is NEVER included. */
+    fun list(cfg: StoandlConfig, health: SourceHealth): List<String> = buildList {
+        fun source(id: String, type: String, url: String, username: String, label: String) =
+            add(rec(id, type, url, username, label, health.lastError(id), health.lastSync(id)?.toString().orEmpty()))
+        cfg.calendarCalDav.forEach { source(SourceId.caldav(it.id), "caldav", it.url, it.username, hostLabel(it.url)) }
+        cfg.calendarIcalUrls.forEach { source(SourceId.ical(it), "ical", it, "", hostLabel(it)) }
+        cfg.calendarIcsPaths.forEach { source(SourceId.ics(it), "ics", it, "", File(it).name.ifEmpty { it }) }
     }
 
     /** Add a source. [type] ∈ {caldav, ical, ics}; username/password apply to CalDAV only. Returns
@@ -163,8 +166,8 @@ object CalendarSources {
         return UUID.randomUUID().toString().replace("-", "")  // astronomically unlikely fallback
     }
 
-    private fun rec(id: String, type: String, url: String, username: String, label: String) =
-        "$id\t$type\t$url\t$username\t$label"
+    private fun rec(vararg fields: String) =
+        fields.joinToString("\t") { it.replace('\t', ' ').replace('\n', ' ') }
 
     private fun isHttp(u: String) = u.startsWith("http://", true) || u.startsWith("https://", true)
     private fun hasComma(s: String) = s.contains(',')
