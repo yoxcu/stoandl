@@ -3,11 +3,11 @@ package de.yoxcu.stoandl.power
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.shareIn
 import java.io.File
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -53,12 +53,17 @@ object ScreenState {
  * The display's state ([ScreenState.isOn]) as one shared flow for everything that follows it (the datalog
  * pause, the Quiet Time link pause): sampled every [period] while at least one of them collects it, and not
  * at all otherwise, so a feature that is off costs no wakeups and two that are on cost one poll.
+ *
+ * Every sample is emitted, repeats included, and none is replayed: a follower that starts gets the next
+ * fresh sample, never one left from before nobody was sampling, and a follower whose state was changed
+ * from a fresh read in between (the datalog pause settled before a suspend) is corrected by the next
+ * sample even when the display reads the same as the last one.
  */
 class DisplayState(scope: CoroutineScope, period: Duration = 5.seconds) {
-    val on: StateFlow<Boolean?> = flow {
+    val on: SharedFlow<Boolean?> = flow {
         while (true) {
             emit(ScreenState.isOn())
             delay(period)
         }
-    }.flowOn(Dispatchers.IO).stateIn(scope, SharingStarted.WhileSubscribed(), ScreenState.isOn())
+    }.flowOn(Dispatchers.IO).shareIn(scope, SharingStarted.WhileSubscribed(), replay = 0)
 }

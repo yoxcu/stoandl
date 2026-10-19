@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,8 +66,8 @@ class QuietTimeLink(
     private val watchConnector: WatchConnector,
     /** `power.quiet_time_link_off`, live. */
     private val enabled: StateFlow<Boolean>,
-    /** The shared display state ([DisplayState.on]); followed only while [enabled]. */
-    private val display: StateFlow<Boolean?>,
+    /** The shared display state ([DisplayState.on], fresh samples only); followed only while [enabled]. */
+    private val display: Flow<Boolean?>,
     /** Why the link must stay up right now regardless of Quiet Time, or null. */
     private val mustStayOn: () -> String?,
     /** Watch traffic still owed (not counting this class's own); the hold waits until it is null. */
@@ -92,7 +93,7 @@ class QuietTimeLink(
     @OptIn(ExperimentalCoroutinesApi::class)
     fun start() {
         prefs = runBlocking { libPebble.watchPrefs.first() }
-        noteDisplay(display.value, offLongEnough = true)
+        noteDisplay(ScreenState.isOn(), offLongEnough = true)
         evaluate()
         scope.launch { libPebble.watchPrefs.collect { prefs = it } }
         scope.launch {
@@ -103,7 +104,7 @@ class QuietTimeLink(
                 if (!on) { evaluate(); return@collectLatest } // releases a hold; then nothing to follow
                 if (switchedOn) noteDisplay(ScreenState.isOn(), offLongEnough = true)
                 coroutineScope {
-                    launch { display.collect { noteDisplay(it); evaluate() } }
+                    launch { display.distinctUntilChanged().collect { noteDisplay(it); evaluate() } }
                     while (true) {
                         withTimeoutOrNull(TICK) { wakeups.first() }
                         evaluate()
