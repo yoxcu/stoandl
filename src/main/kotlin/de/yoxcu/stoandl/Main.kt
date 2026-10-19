@@ -5,6 +5,7 @@ import de.yoxcu.stoandl.battery.HeartbeatLayouts
 import de.yoxcu.stoandl.imaging.ImageDecoder
 import de.yoxcu.stoandl.dbus.NotificationEvent
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
+import de.yoxcu.stoandl.dbus.STOANDL_INSTANCE_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.monitorNotifications
@@ -102,11 +103,12 @@ fun main(args: Array<String>) {
     val notificationBus = MutableSharedFlow<NotificationEvent>(extraBufferCapacity = 64)
 
     val serviceConn = openServiceBus()
-    serviceConn.requestBusName(STOANDL_BUS_NAME)
-    log.info { "D-Bus bus name acquired: $STOANDL_BUS_NAME" }
+    // The private guard name first: a second daemon on this bus fails here, before it touches anything
+    // shared. The public name comes last (end of pebble.init()), once Control answers.
+    serviceConn.requestBusName(STOANDL_INSTANCE_NAME)
 
     // Before anything opens libpebble3.db (pebble.init() → Koin): musl __isnan shim + a stable copy of
-    // the SQLite JNI library. After the bus name, so only one daemon at a time manages that cache.
+    // the SQLite JNI library. After the guard name, so only one daemon at a time manages that cache.
     SqliteNative.prepare()
 
     val pebble = PebbleIntegration(notificationBus, scope, serviceConn)
@@ -127,7 +129,8 @@ fun main(args: Array<String>) {
         Runtime.getRuntime().addShutdownHook(Thread {
             log.info { "stoandl shutting down" }
             pebble.gracefulShutdown()
-            serviceConn.releaseBusName(STOANDL_BUS_NAME)
+            runCatching { serviceConn.releaseBusName(STOANDL_BUS_NAME) }
+            serviceConn.releaseBusName(STOANDL_INSTANCE_NAME)
             serviceConn.disconnect()
             latch.countDown()
         })
@@ -2256,8 +2259,9 @@ private fun resolveOutPath(arg: String?, defaultName: String, exts: List<String>
     return target
 }
 
-/** True if the stoandl daemon currently owns its D-Bus name. Returns false (with a warning) if
- *  the bus can't be reached, so a detection glitch doesn't block a restore. */
+/** True if a stoandl daemon is running: it holds its instance guard from the first moment of its startup
+ *  (the public name only once it is up). Returns false (with a warning) if the bus can't be reached, so a
+ *  detection glitch doesn't block a restore. */
 private fun daemonRunning(): Boolean = try {
     val conn = openSessionBus()
     try {
@@ -2265,7 +2269,7 @@ private fun daemonRunning(): Boolean = try {
             "org.freedesktop.DBus", "/org/freedesktop/DBus",
             org.freedesktop.dbus.interfaces.DBus::class.java,
         )
-        bus.NameHasOwner(STOANDL_BUS_NAME)
+        bus.NameHasOwner(STOANDL_INSTANCE_NAME)
     } finally {
         conn.disconnect()
     }

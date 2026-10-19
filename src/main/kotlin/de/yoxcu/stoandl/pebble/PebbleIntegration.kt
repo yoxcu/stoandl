@@ -82,6 +82,7 @@ import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
 import io.rebble.libpebblecommon.calls.SystemCallLog
 import de.yoxcu.stoandl.dbus.STOANDL_DESKTOP_ONLY_APP
+import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
 import de.yoxcu.stoandl.dbus.StoandlControl
 import de.yoxcu.stoandl.dbus.sendDesktopNotification
@@ -806,6 +807,10 @@ class PebbleIntegration(
         }
 
         log.info { "libpebble3 initialized" }
+        // Last: the public name. Clients wait for it to appear (they aren't D-Bus-activated), so taking it
+        // only now means their first calls find Control exported and everything it reports started.
+        serviceConn.requestBusName(STOANDL_BUS_NAME)
+        log.info { "D-Bus bus name acquired: $STOANDL_BUS_NAME" }
     }
 
     fun gracefulShutdown() {
@@ -2259,7 +2264,7 @@ class PebbleIntegration(
      * TOP of the poll methods — clients still re-fetch via the matching method (the source of truth) and
      * keep a slow fallback poll, since the daemon isn't D-Bus-activated and a late client can miss a
      * signal. Collectors run on the daemon [scope]; started after [registerControlService] so the object
-     * is exported. Emits are best-effort. WatchesChanged `drop(1)`s the initial state (the client fetches
+     * is exported (signals go out on the connection's unique name until the public name is taken). Emits are best-effort. WatchesChanged `drop(1)`s the initial state (the client fetches
      * once on connect, and a missed watch poke is caught by the GUI's 20s watch poll); LockerChanged does
      * NOT drop, because nothing re-polls the locker, so the initial emission is a client's only recovery
      * from having fetched before the locker flow produced anything. FirmwareProgress doesn't drop either —
@@ -2303,12 +2308,12 @@ class PebbleIntegration(
             .launchIn(scope)
 
         // LockerChanged: poke when apps/faces are added/removed or the active watchface changes.
-        // NO drop(1) here (unlike WatchesChanged): the bus name is taken by registerControlService()
-        // one step before this, so a client that re-fetches the instant it sees us appear can read the
-        // locker before the backing flow has produced anything. Dropping the first emission then
-        // discards the ONLY poke that would correct that client's empty snapshot, and — unlike the
-        // watch list, which the GUI backs with a 20s safety poll — nothing re-fetches the locker on a
-        // timer, so an Apps & Faces screen that loaded empty stayed empty until the GUI restarted.
+        // NO drop(1) here (unlike WatchesChanged): the public bus name appears at the end of init(), but the
+        // locker flow is a Room query that may not have produced anything by then, so a client that
+        // re-fetches the instant it sees us appear can still read an empty locker. Dropping the first
+        // emission then discards the ONLY poke that would correct that client's empty snapshot, and —
+        // unlike the watch list, which the GUI backs with a 20s safety poll — nothing re-fetches the locker
+        // on a timer, so an Apps & Faces screen that loaded empty stayed empty until the GUI restarted.
         // distinctUntilChanged() still collapses repeats, so the cost is one extra poke per daemon
         // lifetime and clients treat their own re-fetch as authoritative anyway.
         combine(libPebble.getAllLockerUuids(), libPebble.activeWatchface) { uuids, active ->

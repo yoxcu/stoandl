@@ -4,7 +4,12 @@ import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.messages.DBusSignal
 
+/** The public name clients call. The daemon takes it last in its startup, once Control is exported and
+ *  everything it answers about is up, so a client that sees it appear can call at once. */
 const val STOANDL_BUS_NAME = "de.yoxcu.stoandl"
+/** The single-instance guard, taken first thing at startup and held for the daemon's life: a second
+ *  daemon on the same bus can't get it and exits before it touches any shared file. Not for clients. */
+const val STOANDL_INSTANCE_NAME = "de.yoxcu.stoandl.Instance"
 const val STOANDL_OBJECT_PATH = "/de/yoxcu/stoandl"
 
 @DBusInterfaceName("de.yoxcu.stoandl.Control")
