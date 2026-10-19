@@ -162,7 +162,7 @@ class ExtensionManager(
         // An extension that can't run until the user supplies settings: don't spawn a doomed child;
         // notify + bail gracefully so it's clear what to do.
         if (!configSatisfied(def, flags.requiredKeys)) {
-            notifyNeedsConfig(name, File(def.workingDir, "config"))
+            notifyNeedsConfig(name)
             return StartResult.NEEDS_CONFIG
         }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
@@ -177,16 +177,29 @@ class ExtensionManager(
     /** Required-but-unconfigured extension: log it, and post a *desktop* notification (on the phone/
      *  laptop). stoandl's passive monitor bridges that to the watch automatically — so we don't push a
      *  direct watch notification, which would show up twice. */
-    private fun notifyNeedsConfig(name: String, configFile: File) {
-        log.warn { "[$name] requires configuration but none found — not starting. Edit ${configFile.path} (copy config.example), then: stoandl ext restart $name" }
+    private fun notifyNeedsConfig(name: String) {
+        val hint = settingsHint(name)
+        log.warn { "[$name] requires configuration but none found — not starting. $hint" }
         if (!alertsAllowed()) return
         scope.launch(Dispatchers.IO) {
-            sendDesktopNotification(
-                "$name needs setup",
-                "Configure it on the host (${configFile.path}), then: stoandl ext restart $name",
-            )
+            sendDesktopNotification("$name needs setup", "$name can't start until it's set up. $hint")
         }
     }
+
+    /** Where [name] is configured, as one sentence for the needs-setup alert, the log and the `stoandl ext`
+     *  replies: the GUI's settings form and `stoandl ext config` when its manifest declares a schema, else
+     *  its `config` file (whose changes need a restart). */
+    private fun settingsHint(name: String): String {
+        if (hasConfigSchema(name)) {
+            return "Settings: in the stoandl app (Apps → Extensions → $name → Settings) or stoandl ext config $name"
+        }
+        val config = File(File(extDir, name), "config")
+        val start = if (!config.isFile && File(config.parentFile, "config.example").isFile) " (start from config.example)" else ""
+        return "Settings: ${config.path}$start, then stoandl ext restart $name"
+    }
+
+    private fun hasConfigSchema(name: String): Boolean =
+        configKindOf(readExtManifestMeta(File(extDir, name)).configSchemaJson) == "schema"
 
     private fun stopProcess(name: String): Boolean = running.remove(name)?.let { it.shutdown(); true } ?: false
 
@@ -244,62 +257,88 @@ class ExtensionManager(
         return if (configKindOf(json) == "schema") "error:'$n' uses a native config form" else "none:"
     }
 
-    /** Extract an archive (.tar.gz/.tgz/.tar/.zip) into `<extDir>/<name>/`, sideload a bundled `.pbw`,
-     *  enable it, and hotplug-start it. */
-    fun install(archivePath: String): String {
-        val archive = File(archivePath)
-        if (!archive.isFile) return "error:No such file: $archivePath"
+    /** Install from an archive (.tar.gz/.tgz/.tar/.zip) or an unpacked directory (an extension being
+     *  written, a git checkout) into `<extDir>/<name>/`, sideload a bundled `.pbw`, enable it, and
+     *  hotplug-start it. A directory is copied, so later edits need another install. */
+    fun install(path: String): String {
+        val src = File(path)
+        if (src.isDirectory) {
+            val from = src.canonicalFile
+            // The install replaces <extDir>/<name>: a source inside it would be deleted first, and one
+            // containing it (a parent of extDir) would be copied into itself.
+            val target = File(extDir, nameFor(from, from.name)).canonicalFile
+            if (from.startsWith(target) || target.startsWith(from)) {
+                return "error:${src.path} overlaps the install location ${target.path}"
+            }
+            return installFrom(from, from.name)
+        }
+        if (!src.isFile) return "error:No such file or directory: $path"
         val tmp = File(extDir, ".install-tmp-${System.nanoTime()}")
         extDir.mkdirs(); tmp.deleteRecursively(); tmp.mkdirs()
         try {
-            if (!extract(archive, tmp)) {
-                return "error:Could not extract ${archive.name} (need tar/unzip; supported: .tar.gz/.tgz/.tar/.zip)"
+            if (!extract(src, tmp)) {
+                return "error:Could not extract ${src.name} (need tar/unzip; supported: .tar.gz/.tgz/.tar/.zip, or a directory)"
             }
             // A single top-level dir is the extension root; otherwise the archive's files are the root.
             val entries = tmp.listFiles()?.filter { it.name != "__MACOSX" } ?: emptyList()
             val root = entries.singleOrNull { it.isDirectory } ?: tmp
-            val rawName = manifestName(root) ?: archive.name
-                .removeSuffix(".tar.gz").removeSuffix(".tgz").removeSuffix(".tar").removeSuffix(".zip")
-            val name = rawName.substringAfterLast('/').filter { it.isLetterOrDigit() || it == '-' || it == '_' }
-            if (name.isEmpty()) return "error:Could not determine an extension name from ${archive.name}"
-
-            stopProcess(name)
-            val dest = File(extDir, name)
-            // Preserve the user's per-extension `config` across a reinstall (the archive shouldn't carry
-            // one; if it does, the archive's wins).
-            val savedConfig = File(dest, "config").takeIf { it.isFile }?.readText()
-            dest.deleteRecursively()
-            dest.parentFile?.mkdirs()
-            if (!root.copyRecursively(dest, overwrite = true)) return "error:Failed to install files for '$name'"
-            if (savedConfig != null && !File(dest, "config").isFile) File(dest, "config").writeText(savedConfig)
-            // Kotlin's copyRecursively drops the executable bit, so a native entry point (e.g. a Go binary
-            // launched via `cmd: ./stoandl-matrix`) would land non-executable → exec fails with errno 13.
-            // Re-apply +x for anything that was executable in the extracted archive.
-            root.walkTopDown().forEach { src ->
-                if (src.isFile && src.canExecute()) File(dest, src.relativeTo(root).path).setExecutable(true)
-            }
-
-            val pbwMsg = sideloadBundledPbw(dest)
-            setEnabled(name, true)
-            val result = startProcess(name)
-            // Point the user at where this extension is configured (its own dir, not stoandl.conf).
-            val configFile = File(dest, "config")
-            val exampleFile = File(dest, "config.example")
-            val configMsg = when {
-                configFile.isFile -> "; settings: ${configFile.path}"
-                exampleFile.isFile ->
-                    "; settings: cp ${exampleFile.path} ${configFile.path}, edit it, then: stoandl ext restart $name"
-                else -> ""
-            }
-            notifyChanged()
-            return when (result) {
-                StartResult.STARTED -> "ok:Installed '$name'$pbwMsg$configMsg"
-                StartResult.NEEDS_CONFIG -> "ok:Installed '$name' (not started — needs configuration)$pbwMsg$configMsg"
-                StartResult.NO_ENTRYPOINT -> "error:Installed '$name' but couldn't start it (no entry point?)$pbwMsg$configMsg"
-            }
+            val stem = src.name.removeSuffix(".tar.gz").removeSuffix(".tgz").removeSuffix(".tar").removeSuffix(".zip")
+            return installFrom(root, stem)
         } finally {
             tmp.deleteRecursively()
         }
+    }
+
+    /** Install the extension rooted at [root] (named by its manifest, else [fallbackName]). */
+    private fun installFrom(root: File, fallbackName: String): String {
+        val name = nameFor(root, fallbackName)
+        if (name.isEmpty()) return "error:Could not determine an extension name from $fallbackName"
+
+        stopProcess(name)
+        val dest = File(extDir, name)
+        // Preserve the user's per-extension `config` across a reinstall (the archive shouldn't carry
+        // one; if it does, the archive's wins).
+        val savedConfig = File(dest, "config").takeIf { it.isFile }?.readText()
+        dest.deleteRecursively()
+        dest.parentFile?.mkdirs()
+        if (!copyTree(root, dest)) return "error:Failed to install files for '$name'"
+        if (savedConfig != null && !File(dest, "config").isFile) File(dest, "config").writeText(savedConfig)
+
+        val pbwMsg = sideloadBundledPbw(dest)
+        setEnabled(name, true)
+        val result = startProcess(name)
+        // Point the user at where this extension is configured (its own dir or form, not stoandl.conf).
+        val configMsg = if (File(dest, "config").isFile || File(dest, "config.example").isFile || hasConfigSchema(name)) {
+            ". ${settingsHint(name)}"
+        } else ""
+        notifyChanged()
+        return when (result) {
+            StartResult.STARTED -> "ok:Installed '$name'$pbwMsg$configMsg"
+            StartResult.NEEDS_CONFIG -> "ok:Installed '$name' (not started — needs configuration)$pbwMsg$configMsg"
+            StartResult.NO_ENTRYPOINT -> "error:Installed '$name' but couldn't start it (no entry point?)$pbwMsg$configMsg"
+        }
+    }
+
+    /** The install name: the manifest's `name`, else [fallbackName], cut to letters, digits, `-` and `_`. */
+    private fun nameFor(root: File, fallbackName: String): String =
+        (manifestName(root) ?: fallbackName).substringAfterLast('/').filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+
+    /** Copy [root] to [dest], skipping version-control metadata. Kotlin's copyRecursively drops the
+     *  executable bit, so a native entry point (e.g. a Go binary launched via `cmd: ./stoandl-matrix`) would
+     *  land non-executable and exec would fail with errno 13: anything executable at the source stays so. */
+    private fun copyTree(root: File, dest: File): Boolean = try {
+        root.walkTopDown().onEnter { it == root || it.name !in VCS_DIRS }.forEach { src ->
+            val target = File(dest, src.relativeTo(root).path)
+            if (src.isDirectory) target.mkdirs()
+            else {
+                src.copyTo(target, overwrite = true)
+                if (src.canExecute()) target.setExecutable(true)
+            }
+        }
+        true
+    } catch (e: Exception) {
+        log.warn { "Copying ${root.path} to ${dest.path} failed: ${e.message}" }
+        false
     }
 
     fun uninstall(name: String, keepConfig: Boolean): String {
@@ -350,7 +389,7 @@ class ExtensionManager(
         val pbwMsg = sideloadBundledPbw(File(extDir, n))
         val result = when (startProcess(n)) {
             StartResult.STARTED -> "ok:Enabled '$n'$pbwMsg"
-            StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration; edit ${File(File(extDir, n), "config").path}, then: stoandl ext restart $n)$pbwMsg"
+            StartResult.NEEDS_CONFIG -> "ok:Enabled '$n' (not started — needs configuration)$pbwMsg. ${settingsHint(n)}"
             StartResult.NO_ENTRYPOINT -> "error:Enabled '$n' but couldn't start it (no entry point?)$pbwMsg"
         }
         notifyChanged()
@@ -373,7 +412,7 @@ class ExtensionManager(
         stopProcess(n)
         val result = when (startProcess(n)) {
             StartResult.STARTED -> "ok:Restarted '$n'"
-            StartResult.NEEDS_CONFIG -> "ok:'$n' not started — needs configuration (edit ${File(File(extDir, n), "config").path}, then re-run this)"
+            StartResult.NEEDS_CONFIG -> "ok:'$n' not started — needs configuration. ${settingsHint(n)}"
             StartResult.NO_ENTRYPOINT -> "error:Couldn't start '$n'"
         }
         notifyChanged()
@@ -537,6 +576,7 @@ class ExtensionManager(
 
     companion object {
         private const val ENABLED_KEY = "extensions.enabled"
+        private val VCS_DIRS = setOf(".git", ".hg", ".svn")
     }
 }
 

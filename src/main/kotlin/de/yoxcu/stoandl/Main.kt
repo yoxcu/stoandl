@@ -23,8 +23,13 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
+import de.yoxcu.stoandl.ext.configFields
+import de.yoxcu.stoandl.ext.extConfigPayload
+import de.yoxcu.stoandl.ext.extConfigTable
+import de.yoxcu.stoandl.ext.extConfigValue
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
 import de.yoxcu.stoandl.notification.AppNamePlacement
@@ -146,7 +151,7 @@ private fun printUsage() {
     row("settings", "list · set <id> <value>")
     row("notif", "list mute unmute style vibe-test filter")
     row("ext", "list install enable disable")
-    row("", "restart uninstall")
+    row("", "restart uninstall config")
     row("config", "[app]   PKJS config page")
     row("daemon", "list · get/set <key> [value]")
     println("Sync")
@@ -1738,11 +1743,19 @@ private fun ctlExt(rest: List<String>) {
             "install" -> {
                 val p = rest.getOrNull(1)
                 if (p.isNullOrBlank()) {
-                    System.err.println("Usage: stoandl ext install <archive.tar.gz|.tgz|.tar|.zip>"); System.exit(EXIT_USAGE); return
+                    System.err.println("Usage: stoandl ext install <archive.tar.gz|.tgz|.tar|.zip|directory>"); System.exit(EXIT_USAGE); return
                 }
                 val f = File(p)
-                if (!f.isFile) { System.err.println("No such file: $p"); System.exit(1); return }
+                if (!f.exists()) { System.err.println("No such file or directory: $p"); System.exit(1); return }
                 handleStatusResponse(control.ExtInstall(f.absolutePath))
+            }
+            "config", "settings" -> {
+                val name = rest.getOrNull(1)
+                if (name.isNullOrBlank()) {
+                    System.err.println("Usage: stoandl ext config <name> [<key> [<value> | --unset]]"); System.exit(EXIT_USAGE); return
+                }
+                val args = rest.drop(2).filter { it != "--unset" }
+                extConfig(control, name, args.firstOrNull(), args.drop(1).takeIf { it.isNotEmpty() }?.joinToString(" "), "--unset" in rest)
             }
             "uninstall", "remove" -> {
                 val name = rest.getOrNull(1)?.takeIf { !it.startsWith("-") }
@@ -1766,11 +1779,51 @@ private fun ctlExt(rest: List<String>) {
                 handleStatusResponse(resp)
             }
             else -> {
-                System.err.println("Usage: stoandl ext <list|install <archive>|uninstall <name> [--keep-config|--delete-config]|enable <name>|disable <name>|restart <name>>")
+                System.err.println("Usage: stoandl ext <list|install <archive|dir>|uninstall <name> [--keep-config|--delete-config]|enable <name>|disable <name>|restart <name>|config <name> [<key> [<value>]]>")
                 System.exit(EXIT_USAGE)
             }
         }
     }
+}
+
+/**
+ * `stoandl ext config <name>` lists the extension's settings; `<key>` prints one, or for a secret prompts
+ * for its new value without echo (a secret is never taken from the command line, where shell history and
+ * `ps` would keep it); `<key> <value>` sets one and `<key> --unset` clears it. The daemon restarts the
+ * extension when it runs, or starts it once its required settings are there.
+ */
+private fun extConfig(control: StoandlControl, name: String, key: String?, value: String?, unset: Boolean) {
+    val (schemaKind, schema) = splitStatus(control.ExtConfigSchema(name))
+    if (schemaKind != "ok" && schemaKind != "none") { System.err.println(schema.ifEmpty { schemaKind }); exitProcess(EXIT_FAILURE) }
+    val fields = configFields(schema.takeIf { schemaKind == "ok" })
+    val (valuesKind, valuesJson) = splitStatus(control.ExtGetConfig(name))
+    if (valuesKind != "ok") { System.err.println(valuesJson.ifEmpty { valuesKind }); exitProcess(EXIT_FAILURE) }
+    val values = Json.parseToJsonElement(valuesJson).jsonObject
+    if (key == null) {
+        val table = extConfigTable(fields, values)
+        if (table.isEmpty()) { println("$name has no settings."); return }
+        println("$name settings:")
+        table.forEach(::println)
+        println("\nSet one with:  stoandl ext config $name <key> <value>")
+        if (fields.any { it.secret }) println("A secret is asked for:  stoandl ext config $name <key>")
+        return
+    }
+    val field = fields.firstOrNull { it.key == key }
+    if (fields.isNotEmpty() && field == null) {
+        System.err.println("$name has no setting '$key' (list them: stoandl ext config $name)"); exitProcess(EXIT_USAGE)
+    }
+    val secret = field?.secret == true
+    val newValue = when {
+        unset -> null
+        value != null && secret -> {
+            System.err.println("Type a secret at the prompt, not on the command line: stoandl ext config $name $key")
+            exitProcess(EXIT_USAGE)
+        }
+        value != null -> extConfigValue(field, value).getOrElse { System.err.println(it.message); exitProcess(EXIT_USAGE) }
+        secret -> promptPassword("${field?.label ?: key}: ").ifEmpty { println("Nothing entered; $key is unchanged."); return }
+        else -> { println(values[key]?.jsonPrimitive?.contentOrNull ?: ""); return }
+    }
+    handleStatusResponse(control.ExtSetConfig(name, extConfigPayload(key, newValue, secret)))
 }
 
 /**

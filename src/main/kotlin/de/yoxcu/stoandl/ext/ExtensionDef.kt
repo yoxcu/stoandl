@@ -192,23 +192,47 @@ fun readExtManifestMeta(dir: File): ExtManifestMeta {
     return ExtManifestMeta(m?.description ?: "", m?.configSchemaJson, m?.author ?: "", m?.version ?: "", m?.config ?: emptyMap())
 }
 
+/** One field of an extension's manifest `configSchema`: [type] is `string` (the default), `bool`, `int` or
+ *  `enum` (with [options]); [secret] counts for string fields only. */
+data class ExtConfigField(
+    val key: String,
+    val type: String,
+    val label: String,
+    val secret: Boolean,
+    val required: Boolean,
+    val options: List<String>,
+)
+
+/** The fields of a `configSchema` JSON array; rows without a key are skipped, bad JSON gives none. */
+fun configFields(configSchemaJson: String?): List<ExtConfigField> {
+    if (configSchemaJson.isNullOrBlank()) return emptyList()
+    val rows = runCatching { LenientJson.parseToJsonElement(configSchemaJson) as? JsonArray }.getOrNull()
+        ?: return emptyList()
+    return rows.mapNotNull { row ->
+        val o = row as? JsonObject ?: return@mapNotNull null
+        val key = (o["key"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        fun flag(name: String) = (o[name] as? JsonPrimitive)?.booleanOrNull == true
+        val type = (o["type"] as? JsonPrimitive)?.contentOrNull ?: "string"
+        ExtConfigField(
+            key = key,
+            type = type,
+            label = (o["label"] as? JsonPrimitive)?.contentOrNull ?: key,
+            secret = flag("secret") && type == "string",
+            required = flag("required"),
+            options = (o["options"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+        )
+    }
+}
+
 /** The keys a `configSchema` marks `"secret": true` (string fields only) and `"required": true`. */
 data class SchemaFlags(val secretKeys: Set<String>, val requiredKeys: Set<String>) {
     companion object { val NONE = SchemaFlags(emptySet(), emptySet()) }
 }
 
-fun schemaFlags(configSchemaJson: String?): SchemaFlags {
-    if (configSchemaJson.isNullOrBlank()) return SchemaFlags.NONE
-    val rows = runCatching { LenientJson.parseToJsonElement(configSchemaJson) as? JsonArray }.getOrNull()
-        ?: return SchemaFlags.NONE
-    val secret = LinkedHashSet<String>(); val required = LinkedHashSet<String>()
-    rows.forEach { row ->
-        val o = row as? JsonObject ?: return@forEach
-        val key = (o["key"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEach
-        fun flag(name: String) = (o[name] as? JsonPrimitive)?.booleanOrNull == true
-        val type = (o["type"] as? JsonPrimitive)?.contentOrNull ?: "string"
-        if (flag("secret") && type == "string") secret += key
-        if (flag("required")) required += key
-    }
-    return SchemaFlags(secret, required)
+fun schemaFlags(configSchemaJson: String?): SchemaFlags = configFields(configSchemaJson).let { fields ->
+    if (fields.isEmpty()) SchemaFlags.NONE
+    else SchemaFlags(
+        fields.filter { it.secret }.mapTo(LinkedHashSet()) { it.key },
+        fields.filter { it.required }.mapTo(LinkedHashSet()) { it.key },
+    )
 }
