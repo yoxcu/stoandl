@@ -4262,17 +4262,18 @@ private class StoandlControlImpl(
      *  the notification path opened detaches it, so a monitor never closes (or declines a pairing in) a
      *  window it didn't open. Its timeout is wall-clock time, like the gate's and the CLI's: a phone that
      *  sleeps through the window (monotonic time stops) must not keep the monitor alive past it. */
-    private fun openPairingWindowAndMonitor(lp: LibPebble) {
+    private fun openPairingWindowAndMonitor(lp: LibPebble, repairing: String? = null) {
         // A pairing window asks for a watch link: a manual disconnect would keep it from ever coming up.
         manualDisconnect.resume()
         // Snapshot which devices are already bonded so the bond-poll job only fires on NEW bonds, and which
-        // are connected so only a watch that wasn't counts as the window's success.
+        // are connected so only a watch that wasn't counts as the window's success ([repairing], the watch a
+        // Repair just forgot, counts when it comes back).
         val alreadyBonded = lp.watches.value
             .mapNotNull { it.identifier as? PebbleBleIdentifier }
             .filter { isBonded(it) }
             .map { it.asString }
             .toSet()
-        val connectedAtOpen = connectedIds(lp.watches.value).toSet()
+        val connectedAtOpen = connectedIds(lp.watches.value).toSet() - setOfNotNull(repairing)
         val result = CompletableDeferred<String>()
         synchronized(pairingGate) {
             pairingMonitor?.cancel()
@@ -4459,7 +4460,7 @@ private class StoandlControlImpl(
         }
         match.forget()
         log.info { "Re-pairing ${match.displayName()}: forgot the stale bond, opening pairing window (${PAIRING_WINDOW_MS / 1000}s)" }
-        openPairingWindowAndMonitor(lp)
+        openPairingWindowAndMonitor(lp, repairing = match.identifier.asString)
         return "ok:Re-pairing ${match.displayName()} — put the watch in pairing mode"
     }
 
