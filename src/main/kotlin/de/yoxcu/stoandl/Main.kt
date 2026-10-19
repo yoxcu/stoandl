@@ -152,12 +152,13 @@ private fun printUsage() {
     row("", "battery [history|insights|activity|")
     row("", "         power|heartbeat] · find")
     row("apps", "list launch install remove order")
-    row("settings", "list · set <id> <value>")
+    row("settings", "list · set <id> <value> · reset")
     row("notif", "list mute unmute style vibe-test filter")
     row("ext", "list install enable disable")
     row("", "restart uninstall config")
     row("config", "[app]   PKJS config page")
     row("daemon", "list · get/set <key> [value]")
+    row("", "restart")
     println("Sync")
     row("sync", "list · enable/disable <service>")
     row("weather", "[sync] · search <city> [--add [n]]")
@@ -1262,8 +1263,10 @@ private fun ctlSync(rest: List<String>) {
  * config` is the PKJS/Clay *watchapp* settings page, which takes an app name), so a headless host
  * could only hand-edit stoandl.conf and restart.
  *
- * `list` renders the schema grouped by section, with the current value, the allowed values and a
- * `(restart)` marker on keys the daemon only reads at startup.
+ * `list` renders the schema grouped as the GUI shows it ("Page › Section"), with the current value and a
+ * `(restart)` marker on keys the daemon only reads at startup; `get` adds the key's help, default,
+ * when it matters and what it contacts on stderr; `restart` restarts the daemon through its service
+ * manager (Control.Restart).
  */
 private fun ctlDaemon(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
@@ -1279,7 +1282,8 @@ private fun ctlDaemon(rest: List<String>) {
                 if (fields.isEmpty()) { println("The daemon exposes no editable configuration keys."); return@withControl }
                 var group = ""
                 fields.forEach { f ->
-                    val g = col(f, 5).ifBlank { "Settings" }
+                    // Columns 11 (page) and 5 (section), as the GUI's settings pages group them.
+                    val g = listOf(col(f, 11), col(f, 5)).filter { it.isNotBlank() }.joinToString(" › ").ifBlank { "Settings" }
                     if (g != group) { group = g; println("\n$group") }
                     val unit = col(f, 9).let { if (it.isBlank()) "" else " $it" }
                     val restart = if (col(f, 6) == "restart") "  (restart)" else ""
@@ -1305,9 +1309,16 @@ private fun ctlDaemon(rest: List<String>) {
                     "list" -> "comma-separated" + col(f, 10).let { if (it.isBlank()) "" else " (e.g. $it)" }
                     else -> "text" + col(f, 10).let { if (it.isBlank()) "" else " (e.g. $it)" }
                 }
+                // Columns 12–15: help, requires, default, egress.
+                val labels = fields.associate { it[0] to col(it, 2) }
                 System.err.println("# ${col(f, 2)} — ${col(f, 4)}")
+                col(f, 12).takeIf { it.isNotBlank() }?.let { System.err.println("# $it") }
+                col(f, 14).takeIf { it.isNotBlank() }?.let { System.err.println("# default: $it") }
+                col(f, 13).takeIf { it.isNotBlank() }?.let { System.err.println("# used when: ${usedWhen(it, labels::get)}") }
+                col(f, 15).takeIf { it.isNotBlank() }?.let { System.err.println("# contacts: $it") }
                 System.err.println("# accepts: $allowed" + if (col(f, 6) == "restart") "  (needs a daemon restart)" else "")
             }
+            "restart" -> handleStatusResponse(control.Restart())
             "set" -> {
                 val key = rest.getOrNull(1)
                 // Join the remainder so a value with spaces (a volume command, a location list) works
@@ -1320,12 +1331,29 @@ private fun ctlDaemon(rest: List<String>) {
                 handleStatusResponse(control.SetConfig(key, value))
             }
             else -> {
-                System.err.println("Usage: stoandl daemon <list | get <key> | set <key> <value>>")
+                System.err.println("Usage: stoandl daemon <list | get <key> | set <key> <value> | restart>")
                 System.exit(EXIT_USAGE)
             }
         }
     }
 }
+
+/**
+ * A schema row's `requires` (`alt('|'alt)*`, alt = `key=value` or `key!=value`) as a sentence: "Forward
+ * notifications is on or Text to speech isn't Off". [labelOf] names a key (the key itself when unknown);
+ * a toggle's true/false read as on/off.
+ */
+internal fun usedWhen(requires: String, labelOf: (String) -> String?): String =
+    requires.split('|').filter { it.isNotBlank() }.joinToString(" or ") { alt ->
+        val negated = "!=" in alt
+        val key = alt.substringBefore(if (negated) "!=" else "=")
+        val value = when (val v = alt.substringAfter(if (negated) "!=" else "=")) {
+            "true" -> "on"
+            "false" -> "off"
+            else -> v
+        }
+        "${labelOf(key) ?: key} ${if (negated) "isn't" else "is"} $value"
+    }
 
 // ---- watch group (list/connect/pair/unpair/repair/battery/find) --------------------------------
 
@@ -1662,6 +1690,7 @@ private fun ctlSettings(rest: List<String>) {
         null -> settingsList(null)
         "list" -> settingsList(rest.getOrNull(1))
         "set" -> settingsSet(rest.getOrNull(1), rest.drop(2).joinToString(" ").takeIf { it.isNotBlank() })
+        "reset" -> withControl { control -> handleStatusResponse(control.ResetWatchPrefs()) }
         else -> settingsList(sub)  // back-compat: `settings <filter>`
     }
 }
@@ -2200,12 +2229,13 @@ private fun printWatchPrefs(records: List<String>, filter: String?) {
     }
     data class Row(
         val id: String, val name: String, val current: String,
-        val default: String, val allowed: String, val description: String, val debug: Boolean,
+        val default: String, val allowed: String, val description: String, val debug: Boolean, val help: String = "",
     )
     val rows = records.mapNotNull { rec ->
         val f = rec.split('\t')
         if (f.size < 8) null
-        else Row(id = f[0], name = f[6], current = f[2], default = f[3], allowed = f[4], description = f[7], debug = f[5] == "debug")
+        else Row(id = f[0], name = f[6], current = f[2], default = f[3], allowed = f[4], description = f[7], debug = f[5] == "debug",
+            help = f.getOrElse(9) { "" })
     }.let { all ->
         if (filter.isNullOrBlank()) all
         else all.filter { it.id.contains(filter, true) || it.name.contains(filter, true) }
@@ -2220,6 +2250,7 @@ private fun printWatchPrefs(records: List<String>, filter: String?) {
         rows.forEach { r ->
             println(idCol(r))
             println("    ${r.name}" + if (r.description.isNotEmpty()) " — ${r.description}" else "")
+            if (r.help.isNotEmpty()) println("    ${r.help}")
             println("    current: ${r.current}    default: ${r.default}    allowed: ${r.allowed}")
         }
     } else {
