@@ -38,12 +38,15 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-private val log = KotlinLogging.logger {}
+// Lazy: initialising it would configure logback, and main() first picks the CLI's configuration.
+private val log by lazy { KotlinLogging.logger("de.yoxcu.stoandl.Main") }
 
 /** How long the CLI waits for the daemon's answer (the daemon bounds each long call itself). */
 private const val CTL_REPLY_TIMEOUT_MS = 120_000L
 
 private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
+
+private const val LOGBACK_CONFIG_PROPERTY = "logback.configurationFile"
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -51,6 +54,11 @@ private val VERSION_FLAGS = setOf("version", "--version", "-v")
 fun main(args: Array<String>) {
     // Image decoding (javax.imageio) must never reach for a display, even in a desktop session.
     System.setProperty("java.awt.headless", "true")
+    // Any argument means a CLI call: log to stderr only (logback-cli.xml), never to the daemon's log file.
+    // Before the first logger; an explicit -Dlogback.configurationFile still wins.
+    if (args.isNotEmpty() && System.getProperty(LOGBACK_CONFIG_PROPERTY) == null) {
+        System.setProperty(LOGBACK_CONFIG_PROPERTY, "logback-cli.xml")
+    }
     if (args.isNotEmpty() && args[0] in HELP_FLAGS) {
         printUsage()
         return

@@ -2,7 +2,30 @@
 # `stoandl` CLI: the stoandl fat JAR in ctl mode. The one launcher: install.sh copies it, the APKBUILD
 # installs it with its JDK 25 path and JAR location.
 #
+# A CLI call is short-lived, so the JVM is set up to start fast (about 470 → 270 ms for `watch list` on
+# x86):
+# - C1 only, Serial GC, and no hsperfdata file in /tmp.
+# - a CDS archive of the classes the CLI loads (-XX:+AutoCreateSharedArchive, JDK 19+, on top of the
+#   JDK's own classes.jsa). It holds what the run that wrote it loaded, so a `stoandl version` (D-Bus
+#   connect and call, the start every command shares) writes it before the first command. The JVM does
+#   not rewrite it when the JAR changes, it just stops using it, so the file name carries the JAR's size
+#   and mtime: an upgrade writes a new archive and drops the old one. A failed write makes the JVM exit 1
+#   after the command ran, so the archive is only used when its directory is writable.
+#   -Xlog:cds/aot=off: the JVM prints CDS warnings on stdout.
 # No --enable-native-access (the JAR's manifest grants it) and no --add-opens (only the daemon's
 # BecomeMonitor reflection needed those, and on the classpath dbus-java is in the unnamed module anyway).
 java=java
-exec "$java" -jar /usr/lib/stoandl/stoandl.jar ctl "$@"
+jar=/usr/lib/stoandl/stoandl.jar
+set -- -jar "$jar" ctl "$@"
+cds=${XDG_CACHE_HOME:-$HOME/.cache}/stoandl
+if id=$(stat -c %s-%Y "$jar" 2>/dev/null) && mkdir -p "$cds" 2>/dev/null && [ -w "$cds" ]; then
+    jsa="$cds/cli-$id.jsa"
+    set -- -XX:+AutoCreateSharedArchive "-XX:SharedArchiveFile=$jsa" -Xlog:cds=off -Xlog:aot=off "$@"
+    if [ ! -f "$jsa" ]; then
+        rm -f "$cds"/cli-*.jsa
+        "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData \
+            -XX:+AutoCreateSharedArchive "-XX:SharedArchiveFile=$jsa" -Xlog:cds=off -Xlog:aot=off \
+            -jar "$jar" ctl version > /dev/null 2>&1 < /dev/null
+    fi
+fi
+exec "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData "$@"

@@ -1,0 +1,21 @@
+<configuration>
+    <!--
+        The `stoandl` CLI's logging (Main.kt selects this file for any command line; the daemon, started
+        without arguments, keeps logback.xml). Warnings and errors go to stderr, so command output stays
+        pipeable and the CLI never creates or rolls the daemon's /tmp/stoandl.log. STOANDL_LOG=DEBUG
+        shows more of what a command does.
+    -->
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="org.freedesktop.dbus" level="WARN"/>
+    <logger name="net.fortuna.ical4j" level="WARN"/>
+
+    <root level="${STOANDL_LOG:-WARN}">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>
