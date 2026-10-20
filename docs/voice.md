@@ -3,11 +3,13 @@
 stoandl turns the watch's dictation (Voice in a notification's Reply menu, watchapps' dictation API) and
 extensions' voice notes into text with the backend in `voice.backend`:
 
-- `local` (recommended): a downloaded model run by whisper.cpp on this machine. Nothing leaves it. Set up
-  below; the GUI's Settings → Voice does the same with buttons.
+- `local` (recommended): a downloaded model run by whisper.cpp (Parakeet, Whisper) or transcribe.cpp
+  ([Canary](#canary-transcribecpp)) on this machine. Nothing leaves it. Set up below; the GUI's Settings →
+  Voice does the same with buttons.
 - `command`: your own engine run per dictation. It gets a 16 kHz mono 16-bit WAV as `{wav}` and the language
-  as `{lang}` (`voice.language`: a code such as `de`, or `auto`) and prints the transcript on stdout. The
-  command line runs through `sh`, so `~` and pipes work. Nothing leaves the machine.
+  as `{lang}` (`voice.language`: a code such as `de`, or `auto`) and prints the transcript on stdout, or
+  writes it to the file `{txt}` when the command line names that (stdout is then ignored). The command line
+  runs through `sh`, so `~` and pipes work. Nothing leaves the machine.
 - `http`: an OpenAI-compatible endpoint (`voice.url`, `…/v1/audio/transcriptions`), optionally with
   `voice.http_model` and an API key (`stoandl daemon set voice.api_key …`, kept in the keyring). The audio
   leaves the machine.
@@ -43,13 +45,13 @@ in the repo checkout). Latencies are estimates for a 10 s German utterance until
 
 | Use | Engine and model | Size | German WER (FLEURS) | ~10 s utterance |
 |---|---|---|---|---|
-| **Phone (postmarketOS, e.g. OnePlus 6) and old desktops** | NVIDIA Parakeet TDT 0.6B v3 (25 European languages, detects the language itself), `parakeet-cli` from whisper.cpp ≥ 1.9 | 669 MB (q8_0) | 5.0 % | phone 2–5 s, 2015 quad-core 1–2 s |
+| **Phone (postmarketOS, e.g. OnePlus 6) and old desktops** | NVIDIA Parakeet TDT 0.6B v3 (25 European languages, detects the language itself), `parakeet-cli` from whisper.cpp ≥ 1.9 | 669 MB (q8_0) | 5.0 % | phone 2–5 s (measured: 7.2 s), 2015 quad-core 1–2 s |
+| **Phone, if you speak English, German, Spanish or French** | NVIDIA Canary 180M flash (`canary-180m`, you set the language), `transcribe-cli` from transcribe.cpp ([below](#canary-transcribecpp)) | 218 MB (Q8_0) | | phone 2.5 s (measured) |
 | Lighter fallback | Whisper small (q8_0), `whisper-cli` | 264 MB | 10.2 % | phone 5–8 s |
 | Best accuracy on a fast box | Whisper large-v3-turbo (q8_0), `whisper-cli`, or as a `whisper-server` reached over `http` | 874 MB | ~4.5 % | fast 8-core 2–5 s |
 
 Not recommended: Whisper tiny/base for German (28 % / 18 % WER), Vosk small (fast but weak), anything
-needing a GPU. Moonshine (German model since 2026) and Canary-180M are promising but have no runtime
-on musl/postmarketOS yet.
+needing a GPU. Moonshine (German model since 2026) is promising but has no runtime on musl/postmarketOS yet.
 
 ### Set up (local model)
 
@@ -77,6 +79,57 @@ run the engine yourself with the custom command backend.
 Measured on the OnePlus 6 (postmarketOS, whisper.cpp 1.9.4, Parakeet v3 q8_0): a 4 s English clip in 4.5 s,
 model load included.
 
+### Canary (transcribe.cpp)
+
+`canary-180m` is NVIDIA's Canary 180M flash (CC-BY-4.0, NVIDIA), converted to GGUF by handy-computer and run
+by transcribe.cpp's `transcribe-cli` (MIT). It knows English, German, Spanish and French, and is the
+recommended model if you speak one of them: on the OnePlus 6 it is 3–4x faster than Parakeet at about half
+the memory, and the language is the one you set, not a guess (Parakeet v3 heard three of four short English
+watch dictations as Russian; Canary with `en` kept them English, in about a second each).
+
+**It needs `voice.language`** set to `en`, `de`, `es` or `fr`. Canary can't detect the language, and told
+the wrong one it doesn't fail: it *translates* into it (German speech with `en` comes back as an English
+sentence). So stoandl never guesses for it: with `auto` or another language the model isn't used, and
+`stoandl voice` says why (`Canary 180M flash needs voice.language (en, de, es or fr)`), or the second
+engine answers. Speak two of these languages? Use Parakeet v3, which detects it, or switch
+`voice.language`. (A language-ID model in front was tried: it labelled three of four accented English
+dictations as German.)
+
+```sh
+# 1. transcribe.cpp isn't in Alpine yet: build packaging/transcribe-cpp/APKBUILD (abuild, like any aport)
+#    and install the package (one binary, /usr/bin/transcribe-cli; depends on openblas)
+sudo apk add --allow-untrusted transcribe-cpp-0.4.0-r1.apk
+# 2. The model, the language, and check
+stoandl voice download canary-180m
+stoandl daemon set voice.language en          # or de, es, fr
+stoandl voice                                  # Voice: ready — local Canary 180M flash (en)
+```
+
+The aport builds for the OnePlus 6's SDM845 (`-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+rcpc`, `GGML_NATIVE` off
+because the build chroot can't see the target CPU). Its Kryo 385 has **no dotprod**: a `+dotprod` build dies
+with SIGILL on the first matrix multiply. On another aarch64 device, set the arch to what its
+`/proc/cpuinfo` features allow (`asimddp` = dotprod, `i8mm`); elsewhere build upstream's CMake as is. CPU
+only (`--backend cpu`): the Adreno 630 aborts in ggml's Vulkan backend.
+
+stoandl runs `transcribe-cli -q -m <gguf> -l <voice.language> --threads 4 --backend cpu -o <txt> <wav>` on
+the big cores (stdout is a metadata block; the transcript comes from `-o`), then removes the space the flash
+models leave before punctuation (`später , fand` → `später, fand`) and a doubled `? ?`.
+
+Measured on the OnePlus 6 (2026-10-20, transcribe.cpp 0.4.0, Q8_0, `taskset -c 4-7`, 4 threads, model load
+included, warm page cache; synthetic speech):
+
+| Clip | Parakeet v3 (whisper.cpp) | Canary 180M flash |
+|---|---|---|
+| ≈1 s | 1.2–1.3 s | 0.5 s |
+| ≈3 s | 3.7–4.3 s | 0.8–1.0 s |
+| ≈10 s | 7.2 s | 2.5 s |
+| 3 s, cold cache | 6.2 s | 1.5 s |
+| peak memory | 700–770 MB | 310–430 MB |
+
+Accuracy on these clips was on par with Parakeet v3 (a slip every few sentences, e.g. "fand" for "fangt");
+on robotic espeak speech Parakeet was more robust. The Canary 1B models were no more accurate and about 4x
+slower (≈10 s for a 10 s clip, over a dictation's budget once a fallback shares it).
+
 ### `voice.command` lines (custom command)
 
 The local backend runs these for you; write your own only for another engine or other flags.
@@ -87,6 +140,9 @@ voice.command = taskset -c 4-7 parakeet-cli -m ~/.local/share/stoandl/stt/ggml-p
 
 # Whisper small, audio context cut to the watch's 15 s, greedy decoding:
 voice.command = whisper-cli -m ~/.local/share/stoandl/stt/ggml-small-q8_0.bin -l {lang} -t 4 -ng -ac 768 -bs 1 -bo 1 -nf -mc 0 -nt -np -f {wav}
+
+# Canary 180M flash; {lang} must be one it knows (en, de, es, fr), and the transcript goes to {txt}:
+voice.command = taskset -c 4-7 transcribe-cli -q -m ~/.local/share/stoandl/stt/canary-180m-flash-Q8_0.gguf -l {lang} --threads 4 --backend cpu -o {txt} {wav}
 
 # Whisper large-v3-turbo on a fast machine:
 voice.command = whisper-cli -m ~/.local/share/stoandl/stt/ggml-large-v3-turbo-q8_0.bin -l {lang} -t 8 -mc 0 -nt -np -f {wav}
@@ -104,7 +160,7 @@ ARM. `taskset` is in `util-linux-misc` on Alpine.
 - Whisper invents "Untertitel der Amara.org-Community"-style lines on silence; stoandl drops the known ones.
 - The first dictation after a while reloads the model from disk (1–2 s more). For whisper models a resident
   `whisper-server` on loopback with `voice.backend = http` avoids it.
-- Licences: Parakeet weights CC-BY-4.0 (NVIDIA), Whisper MIT.
+- Licences: Parakeet and Canary weights CC-BY-4.0 (NVIDIA), Whisper MIT, transcribe.cpp MIT.
 
 ## Text to speech
 

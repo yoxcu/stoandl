@@ -991,6 +991,11 @@ none by default) answers when the first one isn't ready, fails, hears nothing or
 official app, the first engine then gets 7 of the 14 seconds the watch waits and the fallback the rest; file
 transcriptions (`stoandl voice test`, voice notes) fall back too.
 
+_Implemented — to be tested ([TESTING §5.46m–o](../TESTING.md)):_ NVIDIA Canary 180M flash
+(`canary-180m`, run by transcribe.cpp's `transcribe-cli`) as a local model for English, German, Spanish and
+French: 3–4x faster than Parakeet on a phone, in the language set in `voice.language`, which it requires
+(with `auto` it isn't used: told a wrong language, Canary translates). [voice.md](voice.md#canary-transcribecpp).
+
 ### Weather for classic watchfaces
 
 Hundreds of 2014–2016 watchfaces fetch weather from their PebbleKit JS: Yahoo's YQL weather API, shut

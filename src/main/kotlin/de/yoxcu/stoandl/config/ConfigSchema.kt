@@ -633,12 +633,14 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     dynamicCombo("voice.local_model", S_STT, "Model",
         "The downloaded model Local model runs",
         help = "Download one below; bigger models are more accurate but slower. Parakeet v3 understands many " +
-            "languages.", requires = "voice.backend=Local model|voice.fallback_backend=Local model",
+            "languages; Canary is fastest for English, German, Spanish and French once Language is set.",
+        requires = "voice.backend=Local model|voice.fallback_backend=Local model",
         choices = { installedModelChoices(ModelKind.STT) }),
     text("voice.language", S_STT, "Language",
         "The language you speak, or auto",
-        help = "A code such as en or de helps engines that guess badly: Whisper, a custom command ({lang}) and the " +
-            "HTTP service. Parakeet v3 always guesses by itself; for English only, use Parakeet v2 instead.",
+        help = "A code such as en or de. Canary needs it (en, de, es or fr; with auto it isn't used) and would " +
+            "translate into a wrong one. Whisper, a custom command ({lang}) and the HTTP service take it; " +
+            "Parakeet v3 ignores it and guesses.",
         requires = "voice.backend!=Off", placeholder = "auto",
         validate = { v -> if (v == "auto" || v.matches(Regex("[a-z]{2,3}"))) null else "expected a language code (de, en, …) or auto" }) {
         it.voiceLanguage
@@ -666,8 +668,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         requires = "tts.backend!=Off", min = 50, max = 200, unit = "%") { it.ttsSpeed },
     text("voice.command", advanced(P_VOICE), "Custom command",
         "Prints the text spoken in {wav}",
-        help = "Runs for each dictation with {wav} (16 kHz mono WAV) and {lang}; whatever it prints is the text. " +
-            "See docs/voice.md.",
+        help = "Runs for each dictation with {wav} (16 kHz mono WAV) and {lang}; whatever it prints is the text, " +
+            "or what it writes to {txt} when the command names that. See docs/voice.md.",
         requires = "voice.backend=Custom command|voice.fallback_backend=Custom command",
         placeholder = "parakeet-cli -m ~/.local/share/stoandl/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin -t 4 -ng --no-prints -f {wav}") {
         it.voiceCommand

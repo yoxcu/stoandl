@@ -1,0 +1,54 @@
+# Contributor: yoxcu <mick@yoxcu.de>
+# Maintainer: yoxcu <mick@yoxcu.de>
+#
+# Experiment (stoandl, 2026-10-20): transcribe.cpp's transcribe-cli for the
+# OnePlus 6 (SDM845, Kryo 385 = Cortex-A75/A55: ARMv8.2-A + fp16 + rcpc; no
+# dotprod: /proc/cpuinfo has no asimddp and a +dotprod build dies with SIGILL;
+# no i8mm), to run NVIDIA Canary (forced source language) for watch dictation.
+# CPU only: no Vulkan (the Adreno 630 aborts on ggml's Vulkan backend). The
+# vendored ggml keeps tinyBLAS (GGML_LLAMAFILE) on; OpenBLAS backs the host-side
+# decoder's cblas_sgemv. GGML_NATIVE is off because the chroot has no /proc, so
+# -mcpu=native can't see the target; the arch is spelled out instead.
+pkgname=transcribe-cpp
+pkgver=0.4.0
+pkgrel=1
+pkgdesc="ggml speech-to-text inference for Canary, Parakeet, Whisper and more (transcribe-cli)"
+url="https://github.com/handy-computer/transcribe.cpp"
+arch="aarch64"
+license="MIT"
+depends=""
+makedepends="
+	cmake
+	samurai
+	linux-headers
+	openblas-dev
+	"
+options="!check" # the unit tests want model files
+source="transcribe.cpp-$pkgver.tar.gz::https://github.com/handy-computer/transcribe.cpp/archive/refs/tags/v$pkgver.tar.gz"
+builddir="$srcdir/transcribe.cpp-$pkgver"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DTRANSCRIBE_BUILD_TESTS=OFF \
+		-DTRANSCRIBE_BUILD_EXAMPLES=ON \
+		-DTRANSCRIBE_BUILD_TOOLS=OFF \
+		-DTRANSCRIBE_INSTALL=OFF \
+		-DTRANSCRIBE_VULKAN=OFF \
+		-DTRANSCRIBE_USE_SYSTEM_BLAS=ON \
+		-DBLA_VENDOR=OpenBLAS \
+		-DGGML_NATIVE=OFF \
+		-DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+rcpc
+	cmake --build build --target transcribe-cli
+}
+
+package() {
+	install -Dm755 build/bin/transcribe-cli "$pkgdir"/usr/bin/transcribe-cli
+	install -Dm644 LICENSE -t "$pkgdir"/usr/share/licenses/$pkgname/
+	install -Dm644 THIRD-PARTY-LICENSES.md -t "$pkgdir"/usr/share/licenses/$pkgname/
+}
+
+sha512sums="
+7b7291b8b27121263e335127b4aa644724d25babac16e13689c6bbf4a0f50d3e64628abbfcdd6e592af07042a4914516dbda939f954c467b7f7218eebfd0dfa5  transcribe.cpp-0.4.0.tar.gz
+"

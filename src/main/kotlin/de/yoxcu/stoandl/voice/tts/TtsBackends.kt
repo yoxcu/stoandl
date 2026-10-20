@@ -19,8 +19,8 @@ const val TTS_API_KEY_REF = "config:tts.api_key"
  */
 internal fun pickVoice(localVoice: String, lang: String?, installed: List<SpeechModel>): String {
     val want = primaryLanguage(lang) ?: return localVoice
-    if (localVoice == ESPEAK_VOICE || installed.any { it.id == localVoice && it.lang == want }) return localVoice
-    return installed.firstOrNull { it.lang == want }?.id ?: localVoice
+    if (localVoice == ESPEAK_VOICE || installed.any { it.id == localVoice && want in it.languages }) return localVoice
+    return installed.firstOrNull { want in it.languages }?.id ?: localVoice
 }
 
 /**
@@ -41,7 +41,7 @@ class TtsBackends(
     fun current(lang: String? = null): TextToSpeech? {
         val c = configStore.current()
         val installed = if (c.ttsBackend == VoiceBackend.LOCAL) models.installed(ModelKind.TTS) else emptyList()
-        resident?.retain((installed.map { it.lang } + null).map { pickVoice(c.ttsLocalVoice, it, installed) }.toSet())
+        resident?.retain((installed.flatMap { it.languages } + null).map { pickVoice(c.ttsLocalVoice, it, installed) }.toSet())
         return when (c.ttsBackend) {
             VoiceBackend.OFF -> null
             VoiceBackend.LOCAL -> when (val voice = pickVoice(c.ttsLocalVoice, lang, installed)) {

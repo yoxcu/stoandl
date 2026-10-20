@@ -233,7 +233,7 @@ class VoiceTest {
     @Test
     fun `a local model runs through its whisper-cpp program, pinned to the big cores`() {
         val dir = Files.createTempDirectory("stt").toFile()
-        val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir)
+        val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir) { null }
         val parakeet = assertNotNull(models.model("parakeet-v3"))
         assertTrue(models.command(parakeet).contains("parakeet-cli -m '${dir.absolutePath}/stt/ggml-parakeet-tdt-0.6b-v3-q8_0.bin'"))
         assertTrue(models.command(assertNotNull(models.model("whisper-small"))).contains("-l {lang}"))
@@ -242,6 +242,117 @@ class VoiceTest {
         assertEquals(listOf("parakeet-v3"), models.installed(ModelKind.STT).map { it.id })
         assertTrue(models.records().first().split('\t')[4] == "installed")
         assertEquals("'it'\\''s'", VoiceModels.shellQuote("it's"))
+    }
+
+    @Test
+    fun `a command that names {txt} is read from that file, not its stdout`() = runBlocking {
+        val stt = CommandStt("""sh -c 'echo "model: x"; printf "Hallo %s" "$2" > "$1"' x {txt} {lang}""")
+        assertEquals(SttOutcome.Text("Hallo de"), stt.transcribe(SttAudio.Pcm16(ShortArray(160), 16000), "de", 5000))
+        assertEquals(SttOutcome.Text(""), CommandStt("true {txt}").transcribe(SttAudio.Pcm16(ShortArray(160), 16000), "de", 5000))
+        assertTrue(de.yoxcu.stoandl.util.CacheDirs.dir("voice").listFiles { f -> f.name.endsWith(".txt") }.isNullOrEmpty(),
+            "transcript file left behind")
+    }
+
+    /** A stand-in `transcribe-cli` that checks its argv and writes [transcript] where `-o` says (stdout gets the
+     *  metadata block the real one prints). */
+    private fun fakeTranscribeCli(dir: File, transcript: String): File = File(dir, "transcribe-cli").apply {
+        writeText("""#!/bin/sh
+            |echo "audio: ${'$'}*"; echo "text: not this"
+            |while [ ${'$'}# -gt 1 ]; do
+            |  case "${'$'}1" in -l) lang=${'$'}2; shift ;; -o) out=${'$'}2; shift ;; esac; shift
+            |done
+            |test -s "${'$'}1" || exit 4
+            |printf '%s' "${'$'}lang: $transcript" > "${'$'}out"
+            |""".trimMargin())
+        setExecutable(true)
+    }
+
+    @Test
+    fun `Canary runs transcribe-cli with the language, on the big cores, its transcript in a file`() {
+        val dir = Files.createTempDirectory("stt").toFile()
+        try {
+            val exe = File(dir, "bin/transcribe-cli")
+            val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir) { if (it == SpeechEngine.CANARY) exe else null }
+            val canary = assertNotNull(models.model("canary-180m"))
+            val threads = minOf(4, Runtime.getRuntime().availableProcessors()).coerceAtLeast(1)
+            val cmd = models.command(canary)
+            val expected = "'${exe.absolutePath}' -q -m '${dir.absolutePath}/stt/canary-180m-flash-Q8_0.gguf' -l {lang} --threads $threads --backend cpu -o {txt} {wav}"
+            assertEquals((VoiceModels.bigCoresPrefix() + expected).joinToString(" "), cmd)
+            // Without the program the command names it, for sh's PATH lookup.
+            val bare = VoiceModels(kotlinx.coroutines.GlobalScope, dir) { null }.command(canary)
+            assertTrue(bare.contains(" transcribe-cli -q -m ") || bare.startsWith("transcribe-cli -q -m "), bare)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /** Canary has no detection, and told the wrong language it translates: it runs only with one of its own. */
+    @Test
+    fun `Canary is ready only with a language it knows`() = runBlocking {
+        val dir = Files.createTempDirectory("stt").toFile()
+        try {
+            val exe = fakeTranscribeCli(File(dir, "bin").apply { mkdirs() }, "Für was steht U S B ? ?")
+            var installed = false
+            val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir) { if (installed) exe else null }
+            val canary = assertNotNull(models.model("canary-180m"))
+            assertEquals("Canary 180M flash needs voice.language (en, de, es or fr)", languageProblem(canary, "auto"))
+            assertEquals("Canary 180M flash needs voice.language (en, de, es or fr), not it", languageProblem(canary, "it"))
+            assertNull(languageProblem(canary, "de"))
+            assertNull(languageProblem(assertNotNull(models.model("parakeet-v3")), "auto"), "Parakeet takes any")
+
+            assertEquals("Canary 180M flash isn't downloaded yet", LocalModelStt(models, "canary-180m", "de").readiness())
+            File(dir, "stt/${canary.file}").apply { parentFile.mkdirs() }.writeText("x")
+            assertEquals("transcribe-cli not found (install transcribe-cpp, see docs/voice.md)",
+                LocalModelStt(models, "canary-180m", "de").readiness())
+            installed = true
+            assertEquals(languageProblem(canary, "auto"), LocalModelStt(models, "canary-180m", "auto").readiness())
+            assertEquals(languageProblem(canary, "it"), LocalModelStt(models, "canary-180m", "it").readiness())
+            assertNull(LocalModelStt(models, "canary-180m", "en").readiness())
+            assertNull(LocalModelStt(models, "canary-180m", "de").readiness())
+
+            // The transcript comes from -o, tidied; given a language it doesn't know it runs nothing.
+            val stt = LocalModelStt(models, "canary-180m", "de")
+            assertEquals(SttOutcome.Text("de: Für was steht U S B?"), stt.transcribe(SttAudio.Pcm16(ShortArray(1600), 16000), "de", 5000))
+            assertEquals(SttOutcome.Failed("Canary 180M flash needs voice.language (en, de, es or fr)"),
+                stt.transcribe(SttAudio.Pcm16(ShortArray(1600), 16000), "auto", 5000))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the voice status names Canary's language, or why it can't run`() {
+        val dir = Files.createTempDirectory("stt").toFile()
+        try {
+            val exe = fakeTranscribeCli(File(dir, "bin").apply { mkdirs() }, "x")
+            val models = VoiceModels(kotlinx.coroutines.GlobalScope, dir) { exe }
+            File(dir, "stt/canary-180m-flash-Q8_0.gguf").apply { parentFile.mkdirs() }.writeText("x")
+            fun status(lang: String) = VoiceBackends(ConfigStore(
+                StoandlConfig.load(File("/nonexistent/stoandl.conf"), logResult = false)
+                    .copy(voiceBackend = StoandlConfig.VoiceBackend.LOCAL, voiceLocalModel = "canary-180m", voiceLanguage = lang),
+            ), secrets(), models).status()
+            assertEquals("unavailable:Canary 180M flash needs voice.language (en, de, es or fr)", status("auto"))
+            assumeTrue(SpeexDecoder.available, "libspeex not installed")
+            assertEquals("ready:local\tCanary 180M flash (en)", status("en"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Canary's spaces before punctuation and doubled question marks are tidied`() {
+        assertEquals("Für was steht U S B?", tidyCanaryTranscript("Für was steht U S B ? ?"))
+        assertEquals("Kannst du auf dem Heimweg noch Milch und Brot mitbringen?",
+            tidyCanaryTranscript("Kannst du auf dem Heimweg noch Milch und Brot mitbringen ? ?"))
+        assertEquals("Ich komme zehn Minuten später, fand schon ohne mich an.",
+            tidyCanaryTranscript("Ich komme zehn Minuten später , fand schon ohne mich an ."))
+        assertEquals("Das Treffen wird auf Donnerstag um halb vier verschoben.",
+            tidyCanaryTranscript("Das Treffen wird auf Donnerstag um halb vier verschoben ."))
+        assertEquals("Ja passt.", tidyCanaryTranscript("Ja passt . "))
+        assertEquals("Ja, Passt!", tidyCanaryTranscript("Ja , Passt !"))
+        assertEquals("Running ten minutes late. Start without me.", tidyCanaryTranscript("Running ten minutes late. Start without me."))
+        assertEquals("at 3.30 in the afternoon: fine; ok", tidyCanaryTranscript("at 3.30 in the afternoon : fine ; ok"))
+        assertEquals("", tidyCanaryTranscript(""))
     }
 
     @Test

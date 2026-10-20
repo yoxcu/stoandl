@@ -29,12 +29,18 @@ enum class ModelKind {
 }
 
 /** Which program runs a model: whisper.cpp's two CLIs (Alpine/postmarketOS `whisper.cpp`, Arch `whisper-cpp`),
- *  or Piper (`piper_exe` from libpiper, `piper-tts`, else the Python `piper`; see [programPath]). [install]
- *  names the package to install. */
+ *  transcribe.cpp's `transcribe-cli` (not in a distro yet: our aport, packaging/transcribe-cpp), or Piper
+ *  (`piper_exe` from libpiper, `piper-tts`, else the Python `piper`; see [programPath]). [install] names the
+ *  package to install. */
 enum class SpeechEngine(val program: String, val kind: ModelKind, val install: String) {
     PARAKEET("parakeet-cli", ModelKind.STT, "whisper.cpp"),
     WHISPER("whisper-cli", ModelKind.STT, "whisper.cpp"),
+    CANARY("transcribe-cli", ModelKind.STT, "transcribe-cpp, see docs/voice.md"),
     PIPER("piper", ModelKind.TTS, "piper-tts");
+
+    /** The engine must be told the spoken language, one of the model's [SpeechModel.languages]: Canary has
+     *  no detection, and a wrong one makes it translate into that language instead of transcribing. */
+    val needsLanguage: Boolean get() = this == CANARY
 
     /** The installed program that runs this engine, or null. Piper prefers libpiper's `piper_exe`: native, it
      *  starts faster than the Python `piper` (same flags, text on stdin). `piper-tts` is the name some distro
@@ -61,7 +67,8 @@ internal fun isPiperTts(program: File): Boolean = piperChecks.getOrPut("${progra
 /**
  * A model stoandl knows how to fetch and run: a speech-to-text model (one file) or a Piper voice (the `.onnx`
  * and its `.onnx.json`). [urls]' last path segments are the file names; the first is the one the engine
- * loads. [lang] is the language a voice speaks (`de`, `en`), empty for a multilingual STT model. Sizes and
+ * loads. [languages]: the one a voice speaks (`de`, `en`), the ones a speech model is limited to (one of them
+ * must be set when its engine [SpeechEngine.needsLanguage]), empty for a model that takes many. Sizes and
  * quality from the October 2026 survey (docs/voice.md).
  */
 data class SpeechModel(
@@ -72,7 +79,7 @@ data class SpeechModel(
     val sizeMb: Int,
     val note: String,
     val recommended: Boolean = false,
-    val lang: String = "",
+    val languages: List<String> = emptyList(),
 ) {
     val kind: ModelKind get() = engine.kind
     val files: List<String> get() = urls.map { it.substringAfterLast('/') }
@@ -85,13 +92,14 @@ private const val PIPER_VOICES = "https://huggingface.co/rhasspy/piper-voices/re
 /** A Piper voice from rhasspy/piper-voices: [path] is `<lang>/<locale>/<speaker>/<quality>/<voice>`. */
 private fun piper(id: String, name: String, path: String, sizeMb: Int, lang: String, note: String, recommended: Boolean = false) =
     SpeechModel(id, name, SpeechEngine.PIPER, listOf("$PIPER_VOICES/$path.onnx", "$PIPER_VOICES/$path.onnx.json"),
-        sizeMb, note, recommended, lang)
+        sizeMb, note, recommended, listOf(lang))
 
 /**
  * The catalog, best choice first within each kind. Parakeet v3 detects the language itself (it has no
- * language option, so `voice.language` can't steer it); v2 knows only English; Whisper takes
- * `voice.language`. Voices: a "low" one per language, fast and plenty for the watch speaker's 8 kHz;
- * "medium" ones sound better on this device's speakers but take longer to make, and like any voice a
+ * language option, so `voice.language` can't steer it) and stays the recommendation for any language; Canary
+ * is the pick for its four languages but must be told which one (`voice.language`, see [languageProblem]);
+ * v2 knows only English; Whisper takes `voice.language`. Voices: a "low" one per language, fast and plenty
+ * for the watch speaker's 8 kHz; "medium" ones sound better on this device's speakers but take longer to make, and like any voice a
  * downloaded one becomes `tts.local_voice`, the watch's voice for its language too. Only voices whose
  * training data may be used freely (the dataset licence is in each note; lessac's Blizzard licence is
  * unclear and ryan's is non-commercial).
@@ -101,6 +109,16 @@ val SPEECH_MODELS: List<SpeechModel> = listOf(
         "parakeet-v3", "Parakeet v3", SpeechEngine.PARAKEET,
         listOf("https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"), 669,
         "25 European languages, detects the language; best accuracy for its speed (phones, older PCs)", recommended = true,
+    ),
+    // transcribe.cpp's conversion of NVIDIA's canary-180m-flash, pinned to the revision measured on the op6
+    // (2026-10-20, next-work/qol-2026-10-19/field/CANARY.md: 0.8 s for a 3 s clip, 2.5 s for 10 s, against
+    // Parakeet's 4 and 7.2; about half its memory). Not `recommended`: that is the pick for any language.
+    SpeechModel(
+        "canary-180m", "Canary 180M flash", SpeechEngine.CANARY,
+        listOf("https://huggingface.co/handy-computer/canary-180m-flash-gguf/resolve/8b01fc77ac169a0a05c5c0332bbfe54acf65c26f/canary-180m-flash-Q8_0.gguf"), 218,
+        "English, German, Spanish, French: recommended for these, 3-4x faster than Parakeet on a phone; set " +
+            "voice.language, it doesn't detect it. NVIDIA, CC-BY-4.0",
+        languages = listOf("en", "de", "es", "fr"),
     ),
     SpeechModel(
         "parakeet-v3-small", "Parakeet v3 (smaller)", SpeechEngine.PARAKEET,
@@ -160,6 +178,8 @@ class VoiceModels(
     private val scope: CoroutineScope,
     val root: File = defaultRoot(),
     private val catalog: List<SpeechModel> = SPEECH_MODELS,
+    /** The installed program that runs an engine, or null (tests give a stand-in). */
+    private val programOf: (SpeechEngine) -> File? = SpeechEngine::programPath,
 ) {
     private val http: HttpClient by lazy {
         HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(20)).build()
@@ -189,7 +209,7 @@ class VoiceModels(
     fun installed(kind: ModelKind): List<SpeechModel> = catalog.filter { it.kind == kind && isInstalled(it) }
 
     /** Whether [engine]'s program is installed. */
-    fun engineAvailable(engine: SpeechEngine): Boolean = engine.programPath() != null
+    fun engineAvailable(engine: SpeechEngine): Boolean = programOf(engine) != null
 
     /**
      * `id\tname\tengine\tsizeMb\tstate\trecommended\tengineOk\tnote\tkind` per catalog model; state ∈
@@ -286,16 +306,19 @@ class VoiceModels(
         check(got >= expected * 9 / 10) { "incomplete download (${got / 1_000_000} of ${expected / 1_000_000} MB)" }
     }
 
-    /** The shell command line that runs speech-to-text model [m] on `{wav}` (`{lang}` for Whisper). CPU only (`-ng`): distro builds
-     *  enable Vulkan, which aborts loading the model on GPUs without 16-bit storage (the OnePlus 6's Adreno 630),
-     *  and a short dictation gains little from a GPU (custom command backend to use one). Pinned to the fast
-     *  cores on a big.LITTLE CPU (a phone), where the slow cores would otherwise set the pace. */
+    /** The shell command line that runs speech-to-text model [m] on `{wav}` (`{lang}` for Whisper and Canary;
+     *  Canary writes the transcript to `{txt}`, its stdout is a metadata block). CPU only (`-ng`, `--backend cpu`):
+     *  distro builds enable Vulkan, which aborts loading the model on GPUs without 16-bit storage (the OnePlus 6's
+     *  Adreno 630), and a short dictation gains little from a GPU (custom command backend to use one). Pinned to
+     *  the fast cores on a big.LITTLE CPU (a phone), where the slow cores would otherwise set the pace. */
     fun command(m: SpeechModel): String {
         val threads = minOf(4, Runtime.getRuntime().availableProcessors()).coerceAtLeast(1)
         val path = shellQuote(path(m).absolutePath)
+        val exe = programOf(m.engine)?.let { shellQuote(it.absolutePath) } ?: m.engine.program
         val run = when (m.engine) {
-            SpeechEngine.PARAKEET -> "parakeet-cli -m $path -t $threads -ng --no-prints -f {wav}"
-            SpeechEngine.WHISPER -> "whisper-cli -m $path -l {lang} -t $threads -ng -ac 768 -bs 1 -bo 1 -nf -mc 0 -nt -np -f {wav}"
+            SpeechEngine.PARAKEET -> "$exe -m $path -t $threads -ng --no-prints -f {wav}"
+            SpeechEngine.WHISPER -> "$exe -m $path -l {lang} -t $threads -ng -ac 768 -bs 1 -bo 1 -nf -mc 0 -nt -np -f {wav}"
+            SpeechEngine.CANARY -> "$exe -q -m $path -l {lang} --threads $threads --backend cpu -o {txt} {wav}"
             SpeechEngine.PIPER -> error("${m.id} is a text-to-speech voice")
         }
         return (bigCoresPrefix() + run).joinToString(" ")

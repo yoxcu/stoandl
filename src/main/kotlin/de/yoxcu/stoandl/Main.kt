@@ -15,6 +15,7 @@ import de.yoxcu.stoandl.util.openServiceBus
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.softOpenSessionBus
 import de.yoxcu.stoandl.voice.ESPEAK_VOICE
+import de.yoxcu.stoandl.voice.SpeechEngine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -2885,7 +2886,8 @@ private fun ctlVoice(rest: List<String>) {
                     println("  %-26s %-28s %s%s".format(r.getOrElse(0) { "" }, r.getOrElse(1) { "" }, mark, rec))
                     println("  %-26s %s".format("", r.getOrElse(7) { "" }))
                     if (r.getOrElse(6) { "true" } != "true") {
-                        val pkg = if (kind == "tts") "piper-tts" else "whisper.cpp"
+                        val pkg = SpeechEngine.entries.firstOrNull { it.program == r.getOrElse(2) { "" } }?.install
+                            ?: if (kind == "tts") "piper-tts" else "whisper.cpp"
                         println("  %-26s needs ${r.getOrElse(2) { "" }} (install $pkg)".format(""))
                     }
                 }

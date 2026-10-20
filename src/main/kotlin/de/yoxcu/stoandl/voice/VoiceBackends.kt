@@ -56,19 +56,29 @@ class VoiceBackends(
     private fun backend(kind: VoiceBackend, c: StoandlConfig): SpeechToText? = when (kind) {
         VoiceBackend.OFF -> null
         VoiceBackend.COMMAND -> CommandStt(c.voiceCommand)
-        VoiceBackend.LOCAL -> LocalModelStt(models, c.voiceLocalModel)
+        VoiceBackend.LOCAL -> LocalModelStt(models, c.voiceLocalModel, c.voiceLanguage)
         VoiceBackend.HTTP -> HttpStt(http, c.voiceUrl, c.voiceHttpModel, secrets.get(VOICE_API_KEY_REF))
     }
 
     private fun detail(kind: VoiceBackend, c: StoandlConfig): String = when (kind) {
-        VoiceBackend.LOCAL -> models.model(c.voiceLocalModel)?.name.orEmpty()
+        VoiceBackend.LOCAL -> models.model(c.voiceLocalModel)?.let { m ->
+            if (m.engine.needsLanguage) "${m.name} (${safeLanguage(c.voiceLanguage)})" else m.name
+        }.orEmpty()
         VoiceBackend.COMMAND -> c.voiceCommand.trim().substringBefore(' ')
         else -> c.voiceUrl.substringBefore('?')
     }
 }
 
-/** `voice.backend = local`: an installed catalog model run by its whisper.cpp program. */
-class LocalModelStt(private val models: VoiceModels, private val modelId: String) : SpeechToText {
+/**
+ * `voice.backend = local`: an installed catalog model run by its program (whisper.cpp, transcribe.cpp).
+ * [language] is `voice.language`, which readiness checks for an engine that needs one; a transcription
+ * checks the language it is given.
+ */
+class LocalModelStt(
+    private val models: VoiceModels,
+    private val modelId: String,
+    private val language: String = "auto",
+) : SpeechToText {
     override val id = "local"
     private val model = models.model(modelId)?.takeIf { it.kind == ModelKind.STT }
 
@@ -76,11 +86,32 @@ class LocalModelStt(private val models: VoiceModels, private val modelId: String
         model == null -> if (modelId.isEmpty()) "no model chosen (voice.local_model)" else "unknown model '$modelId'"
         !models.isInstalled(model) -> "${model.name} isn't downloaded yet"
         !models.engineAvailable(model.engine) -> "${model.engine.program} not found (install ${model.engine.install})"
-        else -> null
+        else -> languageProblem(model, language)
     }
 
     override suspend fun transcribe(audio: SttAudio, language: String, timeoutMs: Long): SttOutcome {
         val m = model ?: return SttOutcome.Failed(readiness() ?: "no model")
-        return CommandStt(models.command(m)).transcribe(audio, language, timeoutMs)
+        languageProblem(m, language)?.let { return SttOutcome.Failed(it) }
+        val outcome = CommandStt(models.command(m)).transcribe(audio, language, timeoutMs)
+        return if (m.engine == SpeechEngine.CANARY && outcome is SttOutcome.Text) SttOutcome.Text(tidyCanaryTranscript(outcome.text))
+        else outcome
     }
 }
+
+/**
+ * Why [m] can't transcribe [language], or null. An engine that [SpeechEngine.needsLanguage] runs only with one
+ * of the model's languages: `auto` must not quietly become English, since Canary told the wrong language
+ * translates into it (a German dictation would come back as an English reply). No language detection in
+ * front of it either: VoxLingua107 heard three of four accented English dictations as German.
+ */
+internal fun languageProblem(m: SpeechModel, language: String): String? {
+    if (!m.engine.needsLanguage || safeLanguage(language) in m.languages) return null
+    val choices = m.languages.dropLast(1).joinToString(", ") + (if (m.languages.size > 1) " or " else "") + m.languages.last()
+    val now = safeLanguage(language).let { if (it == "auto") "" else ", not $it" }
+    return "${m.name} needs voice.language ($choices)$now"
+}
+
+/** The flash Canary models' detokenizer leaves a space before punctuation (`später , fand`, `verschoben .`)
+ *  and sometimes doubles a question mark (`mitbringen ? ?`). */
+internal fun tidyCanaryTranscript(text: String): String =
+    text.replace(Regex("""\s+([,.?!:;])"""), "$1").replace(Regex("""\?(\s*\?)+"""), "?").trim()
