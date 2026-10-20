@@ -2,6 +2,10 @@ package de.yoxcu.stoandl.config
 
 import de.yoxcu.stoandl.assertGuiFixture
 import de.yoxcu.stoandl.notification.AppNamePlacement
+import de.yoxcu.stoandl.voice.ESPEAK_VOICE
+import de.yoxcu.stoandl.voice.ESPEAK_VOICE_NAME
+import de.yoxcu.stoandl.voice.ModelKind
+import de.yoxcu.stoandl.voice.SPEECH_MODELS
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -228,7 +232,7 @@ class ConfigSchemaTest {
             when (f.type) {
                 "toggle" -> assertTrue(v == "true" || v == "false", "${f.key}: toggle value '$v'")
                 "combo" -> assertTrue(
-                    f.choices.any { it.label == v },
+                    f.choices.any { it.label == v } || (v.isEmpty() && f.choicesOf != null),
                     "${f.key}: default '$v' is not one of ${f.options} — no choice matches the default config",
                 )
                 "int" -> {
@@ -420,6 +424,41 @@ class ConfigSchemaTest {
             assertEquals("Pulses", ok(f, "pulses"))
             assertTrue(f.options.split(",").containsAll(listOf("Work", "ab")))
             assertEquals("Work", f.value(defaults().copy(calendarReminderVibe = "work")))
+        } finally {
+            configEnvironment = saved
+        }
+    }
+
+    @Test
+    fun `speech model and voice names reach the options column without commas`() {
+        val saved = configEnvironment
+        configEnvironment = saved.copy(installedModels = { kind ->
+            SPEECH_MODELS.filter { it.kind == kind }.map { it.id to it.name } +
+                if (kind == ModelKind.TTS) listOf(ESPEAK_VOICE to ESPEAK_VOICE_NAME) else emptyList()
+        })
+        try {
+            listOf("voice.local_model", "tts.local_voice").forEach { key ->
+                val f = field(key)
+                f.choices.forEach { assertTrue(',' !in it.label, "$key: option '${it.label}' splits the CSV") }
+                assertEquals(f.choices.size, f.options.split(",").size, key)
+                // Every option is selectable by the label the GUI sends back.
+                f.choices.forEach { assertEquals(it.token, ok(f, it.label)) }
+            }
+        } finally {
+            configEnvironment = saved
+        }
+    }
+
+    @Test
+    fun `a speech model combo reports none chosen rather than its first option`() {
+        val saved = configEnvironment
+        configEnvironment = saved.copy(installedModels = { kind ->
+            if (kind == ModelKind.STT) listOf("parakeet-v3" to "Parakeet v3") else listOf("piper-x" to "X")
+        })
+        try {
+            assertEquals("", field("voice.local_model").value(defaults().copy(voiceLocalModel = "")))
+            assertEquals("", field("tts.local_voice").value(defaults().copy(ttsLocalVoice = "removed-voice")))
+            assertEquals("Parakeet v3", field("voice.local_model").value(defaults().copy(voiceLocalModel = "parakeet-v3")))
         } finally {
             configEnvironment = saved
         }

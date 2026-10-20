@@ -44,12 +44,15 @@ import java.io.File
 /** One combo option: the [label] shown in the GUI and emitted by `GetConfig`, the raw [token] written to
  *  `stoandl.conf` (what `parseXxx()` reads back), and whether it's the [selected] current value. Holding
  *  all three together keeps the read (current→label), the option list, and the write (label→token) from
- *  drifting apart. */
-data class ConfigChoice(
-    val label: String,
+ *  drifting apart. The label loses its commas, because `GetConfigSchema` joins the labels into a CSV
+ *  column: a vibration or voice name with one would split into two options, neither of them selectable. */
+class ConfigChoice(
+    label: String,
     val token: String,
     val selected: (StoandlConfig) -> Boolean,
-)
+) {
+    val label: String = label.replace(",", "")
+}
 
 /**
  * Whether a key takes effect the moment it is written, or only after a daemon restart.
@@ -121,9 +124,12 @@ data class ConfigField(
     /** CSV of option labels for `GetConfigSchema` (empty for every non-combo kind). */
     val options: String get() = choices.joinToString(",") { it.label }
 
-    /** Current value for `GetConfig`: a combo's selected label, else whatever [read] renders. */
+    /** Current value for `GetConfig`: a combo's selected label, else whatever [read] renders. A combo
+     *  whose options change at runtime reports "" while none of them is the stored one (no model chosen
+     *  yet, or the chosen one was removed): its first option would claim a model the daemon won't use. */
     fun value(c: StoandlConfig): String = when (type) {
-        "combo" -> (choices.firstOrNull { it.selected(c) } ?: choices.firstOrNull())?.label ?: ""
+        "combo" -> (choices.firstOrNull { it.selected(c) } ?: choices.takeIf { choicesOf == null }?.firstOrNull())
+            ?.label.orEmpty()
         else -> read?.invoke(c).orEmpty()
     }
 
@@ -299,15 +305,14 @@ private fun installedModelChoices(kind: ModelKind): List<ConfigChoice> {
 
 private fun reminderVibeChoices(): List<ConfigChoice> =
     listOf(ConfigChoice("Watch default", "") { it.calendarReminderVibe == null }) +
-        // Value = the enum name (comma-free for the CSV options column); the config also takes the
-        // display name.
+        // Value = the enum name; the config also takes the display name.
         DefaultVibePattern.entries.map { p ->
-            ConfigChoice(p.displayName.replace(",", ""), p.name) { c ->
+            ConfigChoice(p.displayName, p.name) { c ->
                 c.calendarReminderVibe.let { v -> v.equals(p.name, ignoreCase = true) || v.equals(p.displayName, ignoreCase = true) }
             }
         } +
         (runCatching { configEnvironment.customVibeNames() }.getOrNull() ?: emptyList()).map { n ->
-            ConfigChoice(n.replace(",", ""), n) { it.calendarReminderVibe.equals(n, ignoreCase = true) }
+            ConfigChoice(n, n) { it.calendarReminderVibe.equals(n, ignoreCase = true) }
         }
 
 /** The engine choices of `voice.backend`, `voice.fallback_backend` and `tts.backend`, one list so they
@@ -628,7 +633,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     dynamicCombo("voice.local_model", S_STT, "Model",
         "The downloaded model Local model runs",
         help = "Download one below; bigger models are more accurate but slower. Parakeet v3 understands many " +
-            "languages.", choices = { installedModelChoices(ModelKind.STT) }),
+            "languages.", requires = "voice.backend=Local model|voice.fallback_backend=Local model",
+        choices = { installedModelChoices(ModelKind.STT) }),
     text("voice.language", S_STT, "Language",
         "The language you speak, or auto",
         help = "A code such as en or de helps engines that guess badly. Passed to a custom command as {lang} and " +
@@ -677,9 +683,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         help = "Sent as the model field, for example whisper-1.",
         requires = STT_HTTP, placeholder = "whisper-1") { it.voiceHttpModel },
     secret("voice.api_key", advanced(P_VOICE), "Server API key",
-        "Kept in the keyring, never in stoandl.conf",
-        help = "Sent as a Bearer token. Stored in the system keyring, or a private file next to stoandl.conf when " +
-            "there is none; left out of backups.", requires = STT_HTTP),
+        "Kept out of stoandl.conf (keyring, else a private file)",
+        help = "Sent as a Bearer token. Left out of backups.", requires = STT_HTTP),
     toggle("voice.save_audio", advanced(P_VOICE), "Keep recordings",
         "Save each dictation as a WAV file, for troubleshooting",
         help = "Recordings go to ~/.cache/stoandl/voice. They contain your voice: turn this off and delete the " +
@@ -704,7 +709,7 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         help = "Leave empty for the server's default.",
         requires = "tts.backend=HTTP service", placeholder = "alloy") { it.ttsHttpVoice },
     secret("tts.api_key", advanced(P_VOICE), "Speech server API key",
-        "Kept in the keyring, never in stoandl.conf",
+        "Kept out of stoandl.conf (keyring, else a private file)",
         help = "Separate from the speech-to-text key so a key is never sent to a server it wasn't meant for. " +
             "Empty sends no key.", requires = "tts.backend=HTTP service"),
 

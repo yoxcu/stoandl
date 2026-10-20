@@ -137,6 +137,9 @@ val SPEECH_MODELS: List<SpeechModel> = listOf(
  *  `espeak-ng` is on PATH; not a catalog row. */
 const val ESPEAK_VOICE = "espeak-ng"
 
+/** [ESPEAK_VOICE]'s display name in the voice picker. */
+const val ESPEAK_VOICE_NAME = "espeak-ng (robotic, every language)"
+
 /**
  * The speech models and voices on this machine, under `$XDG_DATA_HOME/stoandl/<kind>`
  * (`~/.local/share/stoandl/stt` and `…/tts`): which of the catalog's are installed, downloading one on
@@ -304,7 +307,7 @@ class VoiceModels(
          */
         fun choices(kind: ModelKind, root: File = defaultRoot()): List<Pair<String, String>> =
             SPEECH_MODELS.filter { it.kind == kind && isInstalled(it, root) }.map { it.id to it.name } +
-                if (kind == ModelKind.TTS && onPath(ESPEAK_VOICE) != null) listOf(ESPEAK_VOICE to "espeak-ng (robotic, every language)") else emptyList()
+                if (kind == ModelKind.TTS && onPath(ESPEAK_VOICE) != null) listOf(ESPEAK_VOICE to ESPEAK_VOICE_NAME) else emptyList()
 
         /** `taskset -c <big cores>` for a command that should run on the fast cores of a big.LITTLE CPU (a
          *  phone), where the slow ones would otherwise set the pace; empty elsewhere or without taskset. */
