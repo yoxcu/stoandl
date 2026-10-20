@@ -2,6 +2,7 @@ package de.yoxcu.stoandl.config
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -9,6 +10,7 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
 /** QOL-D8: a hand edit of stoandl.conf is seen and applied key by key, like a SetConfig. */
@@ -41,6 +43,29 @@ class ConfigReloadTest {
             withTimeout(10_000) { seen.await() }
         } finally {
             dir.deleteRecursively()
+        }
+    }
+
+    /** `stoandl restore --force` moves the config directory aside and extracts a new one. */
+    @Test
+    fun `a config directory replaced under the same name is still watched`() = runBlocking {
+        val root = Files.createTempDirectory("confwatch").toFile()
+        try {
+            val dir = File(root, "stoandl").apply { mkdirs() }
+            val conf = File(dir, "stoandl.conf").apply { writeText("weather.enabled = false\n") }
+            val edits = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+            val watch = launch { fileEdits(conf, settle = 100.milliseconds).collect { edits.send(Unit) } }
+            delay(300)
+            assertTrue(dir.renameTo(File(root, "stoandl.old-1")))
+            File(dir, "stoandl.conf").apply { parentFile.mkdirs(); writeText("weather.enabled = true\n") }
+            withTimeout(10_000) { edits.receive() } // the restored file
+            delay(300)
+            while (edits.tryReceive().isSuccess) {}
+            conf.writeText("weather.enabled = false\n")
+            withTimeout(10_000) { edits.receive() } // and a later edit of it
+            watch.cancel()
+        } finally {
+            root.deleteRecursively()
         }
     }
 }

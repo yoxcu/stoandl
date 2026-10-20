@@ -12,8 +12,10 @@ import java.io.File
 import java.nio.file.ClosedWatchServiceException
 import java.nio.file.FileSystems
 import java.nio.file.Path
+import java.nio.file.WatchKey
 import java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
 import java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY
+import java.nio.file.StandardWatchEventKinds.OVERFLOW
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -27,9 +29,11 @@ fun changedConfigFields(before: StoandlConfig, after: StoandlConfig): List<Confi
 /**
  * Emits once a burst of writes to [file] has settled for [settle]: an editor's save, `stoandl daemon set`,
  * or the daemon's own atomic rewrite (a temp file moved over it). The directory is watched, not the file,
- * so a save that replaces the file by rename is seen too. It blocks in [java.nio.file.WatchService.take]
- * rather than polling, so it costs no wakeups while nothing changes. Best effort: if the directory can't
- * be watched, it logs and emits nothing.
+ * so a save that replaces the file by rename is seen too; and so is its parent, for the directory itself
+ * being replaced (`stoandl restore` moves it aside and extracts a new one; the old watch would follow the
+ * moved one and never fire again). It blocks in [java.nio.file.WatchService.take] rather than polling, so
+ * it costs no wakeups while nothing changes. Best effort: if the directory can't be watched, it logs and
+ * emits nothing.
  */
 @OptIn(FlowPreview::class)
 fun fileEdits(file: File, settle: Duration = 500.milliseconds): Flow<Unit> = flow {
@@ -37,19 +41,31 @@ fun fileEdits(file: File, settle: Duration = 500.milliseconds): Flow<Unit> = flo
     dir.mkdirs()
     val ws = FileSystems.getDefault().newWatchService()
     try {
-        try {
+        fun watchDir(): WatchKey? = try {
             dir.toPath().register(ws, ENTRY_CREATE, ENTRY_MODIFY)
         } catch (e: Exception) {
             log.warn { "Can't watch ${dir.path} for edits of ${file.name}: ${e.message}" }
-            return@flow
+            null
         }
+        var dirKey = watchDir() ?: return@flow
+        val parentKey = dir.parentFile?.let { p -> runCatching { p.toPath().register(ws, ENTRY_CREATE) }.getOrNull() }
         while (true) {
             val key = try {
                 runInterruptible { ws.take() }
             } catch (e: ClosedWatchServiceException) {
                 return@flow
             }
-            val touched = key.pollEvents().any { (it.context() as? Path)?.toString() == file.name }
+            val events = key.pollEvents()
+            fun named(name: String) = events.any { it.kind() == OVERFLOW || (it.context() as? Path)?.toString() == name }
+            val touched = when (key) {
+                dirKey -> named(file.name)
+                // A new directory under the old name: watch it instead, and read the file it brought.
+                parentKey -> named(dir.name) && dir.isDirectory && watchDir()?.also { k ->
+                    if (k != dirKey) dirKey.cancel()
+                    dirKey = k
+                } != null
+                else -> false
+            }
             key.reset()
             if (touched) emit(Unit)
         }
