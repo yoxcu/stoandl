@@ -617,6 +617,7 @@ class PebbleIntegration(
             notificationImagesOn = { configStore.current().notificationImages },
             transcribe = { path, language -> voiceControl.transcribe(path, language) },
             synthesize = ttsService::synthesize,
+            prepareSynthesize = ttsService::prepare,
             pluginHost = object : ExtensionPluginHost {
                 override fun register(plugin: io.rebble.libpebblecommon.plugin.Plugin) {
                     koinRef.get()?.get<io.rebble.libpebblecommon.plugin.PluginRegistry>()?.registerPlugin(plugin)

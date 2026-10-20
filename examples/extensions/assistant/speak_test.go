@@ -412,3 +412,32 @@ func TestVendoredCopies(t *testing.T) {
 		}
 	}
 }
+
+// HELLO, ASK and PRESET have the daemon load the voice ahead of the answer, but only when `always` would
+// read it.
+func TestPrepareSynthesize(t *testing.T) {
+	isPrepare := func(l map[string]any) bool { return l["method"] == "prepareSynthesize" }
+	f := newFakeAPI(t)
+	a, out := newTestAssistant(t, f, map[string]string{"language": "Deutsch"})
+	a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello), "7": float64(helloSpeaker)})
+	if p := params(waitFor(t, out, "prepare", isPrepare)); p["language"] != "de" {
+		t.Fatalf("prepare %v", p)
+	}
+
+	for _, c := range []struct {
+		name string
+		cfg  map[string]string
+		caps int
+	}{
+		{"on_request", map[string]string{"speak": speakOnRequest}, helloSpeaker},
+		{"muted", nil, helloSpeaker | capMuted},
+		{"no speaker", nil, 0},
+	} {
+		a, out := newTestAssistant(t, newFakeAPI(t), c.cfg)
+		a.onAppMessage(appUUID, map[string]any{"0": float64(cmdHello), "7": float64(c.caps)})
+		waitFor(t, out, "HELLO handled", func(l map[string]any) bool { return l["method"] == "sendAppMessage" })
+		if count(out, isPrepare) != 0 {
+			t.Fatalf("%s: prepared a voice nothing will read with", c.name)
+		}
+	}
+}

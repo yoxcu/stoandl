@@ -132,6 +132,15 @@ func (a *assistant) autoSpeakLocked() bool {
 		a.tts != ttsSilent
 }
 
+// prepareSpeechLocked: the app opened or a question is on its way, so an answer may be read aloud soon.
+// The daemon loads the voice now, while the user dictates and Claude answers, not on the first sentence
+// (seconds on a phone). Only when `always` would read it.
+func (a *assistant) prepareSpeechLocked() {
+	if a.cfg.Speak == speakAlways && a.caps&capSpeaker != 0 && a.caps&capMuted == 0 && a.tts != ttsSilent {
+		a.ext.PrepareSynthesize(ttsLanguage(a.cfg.Language))
+	}
+}
+
 func (a *assistant) stopSpeechLocked() {
 	if a.speech != nil {
 		a.speech.cancel()

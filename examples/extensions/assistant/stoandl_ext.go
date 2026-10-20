@@ -288,6 +288,17 @@ func (e *Ext) CancelSynthesize() {
 	e.send(map[string]any{"jsonrpc": "2.0", "method": "cancelSynthesize"})
 }
 
+// PrepareSynthesize tells the host a Synthesize in language is likely soon (the app opened, a question
+// is on its way), so it loads the voice now and the first sentence doesn't wait for it. No answer; a host
+// without it ignores it.
+func (e *Ext) PrepareSynthesize(language string) {
+	msg := map[string]any{"jsonrpc": "2.0", "method": "prepareSynthesize"}
+	if language != "" {
+		msg["params"] = map[string]any{"language": language}
+	}
+	e.send(msg)
+}
+
 // RegisterApp arms inbound AppMessages from a watchapp UUID — they arrive via OnAppMessage.
 func (e *Ext) RegisterApp(uuid string) {
 	e.request("registerApp", map[string]any{"uuid": uuid}, nil)

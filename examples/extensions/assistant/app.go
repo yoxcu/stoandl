@@ -208,6 +208,7 @@ func (a *assistant) handleApp(m map[string]any) {
 		}
 		// The app is open even if an earlier send to it failed (e.g. while it was dictating).
 		a.appOpen = true
+		a.prepareSpeechLocked()
 		a.mu.Unlock()
 	}
 	switch cmd {

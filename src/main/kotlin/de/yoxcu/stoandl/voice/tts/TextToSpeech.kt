@@ -51,6 +51,9 @@ interface TextToSpeech {
     fun readiness(): String?
     /** [lang] is a language code (`de`, `en`) or null for the engine's default; [speedPct] 100 is normal. */
     suspend fun synthesize(text: String, lang: String?, speedPct: Int, timeoutMs: Long): TtsOutcome
+    /** Loads what a [synthesize] in [lang] needs (a voice model) so the first sentence doesn't wait for it.
+     *  Nothing for an engine without such a load. */
+    suspend fun prepare(lang: String?, speedPct: Int) {}
 }
 
 /** `de-DE`, `en_US` or `EN` as the primary language subtag (`de`, `en`), or null when it isn't one. */
@@ -107,13 +110,24 @@ class PiperTts(
     override suspend fun synthesize(text: String, lang: String?, speedPct: Int, timeoutMs: Long): TtsOutcome {
         val v = voice ?: return TtsOutcome.Failed(readiness() ?: "no voice")
         val program = v.engine.programPath() ?: return TtsOutcome.Failed("piper not found")
-        if (resident != null && runInterruptible(Dispatchers.IO) { ResidentPiper.canServe(program) }) {
-            val argv = ResidentPiper.argv(VoiceModels.bigCoresPrefix(), program.path, models.path(v), CacheDirs.runtime("tts"), speedPct)
-            resident.synthesize(v.id, argv, text, ttsScratchWav(), timeoutMs)?.let { return it }
+        residentArgv(v, program, speedPct)?.let { argv ->
+            resident?.synthesize(v.id, argv, text, ttsScratchWav(), timeoutMs)?.let { return it }
         }
         val out = ttsScratchWav()
         return runEngine("piper", piperArgv(VoiceModels.bigCoresPrefix(), program.path, models.path(v), out, speedPct), text, out, timeoutMs)
     }
+
+    /** Starts the resident Piper (a one-shot Piper loads its model per sentence anyway). */
+    override suspend fun prepare(lang: String?, speedPct: Int) {
+        val v = voice?.takeIf { readiness() == null } ?: return
+        val program = v.engine.programPath() ?: return
+        residentArgv(v, program, speedPct)?.let { resident?.warm(v.id, it) }
+    }
+
+    /** The resident Piper's command line, or null when this Piper can't stay loaded. */
+    private suspend fun residentArgv(v: SpeechModel, program: File, speedPct: Int): List<String>? =
+        if (resident == null || !runInterruptible(Dispatchers.IO) { ResidentPiper.canServe(program) }) null
+        else ResidentPiper.argv(VoiceModels.bigCoresPrefix(), program.path, models.path(v), CacheDirs.runtime("tts"), speedPct)
 
     companion object {
         /** Piper reads the text on stdin; the speed is its length scale, 100/speedPct (longer = slower). */

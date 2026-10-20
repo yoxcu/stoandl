@@ -133,14 +133,38 @@ class ResidentPiperTest {
     }
 
     @Test
-    fun `a cancelled sentence kills the process`() = runBlocking {
+    fun `a cancelled sentence finishes unheard and the voice stays loaded`() = runBlocking {
         val procs = CopyOnWriteArrayList<FakePiper>()
-        val piper = ResidentPiper(scope, { FakePiper(workMs = 5_000).also(procs::add) })
-        val job = launch(Dispatchers.Default) { piper.synthesize("v", argv, "long", out(), 10_000) }
-        delay(200)
+        val piper = ResidentPiper(scope, { FakePiper(workMs = 400).also(procs::add) })
+        val dropped = out()
+        val job = launch(Dispatchers.Default) { piper.synthesize("v", argv, "long", dropped, 10_000) }
+        delay(100)
         job.cancelAndJoin()
-        assertTrue(procs.single().dead)
-        assertFalse(piper.isRunning("v"))
+        assertTrue(piper.isRunning("v"), "not killed")
+        // The next line waits for the dropped one: its file is never taken for the new sentence's.
+        val next = out()
+        assertContentEquals(pcm, assertIs<TtsOutcome.Audio>(piper.synthesize("v", argv, "next", next, 5_000)).samples)
+        assertEquals(1, procs.size)
+        assertEquals(2, procs[0].lines.size)
+        assertFalse(dropped.exists() || next.exists(), "both files deleted")
+    }
+
+    @Test
+    fun `warm starts the voice ahead of its first sentence`() = runBlocking {
+        val procs = CopyOnWriteArrayList<FakePiper>()
+        val piper = ResidentPiper(scope, { FakePiper().also(procs::add) }, idleMs = 300)
+        assertTrue(piper.warm("v", argv))
+        assertTrue(piper.isRunning("v"))
+        assertTrue(procs.single().lines.isEmpty(), "no sentence yet")
+        assertIs<TtsOutcome.Audio>(piper.synthesize("v", argv, "a", out(), 5_000))
+        assertEquals(1, procs.size, "the warmed process reads it")
+        delay(200)
+        assertTrue(piper.warm("v", argv), "warming a running voice restarts its idle time")
+        delay(200)
+        assertTrue(piper.isRunning("v"))
+        delay(300)
+        assertFalse(piper.isRunning("v"), "unused after warming: stopped after the idle time")
+        assertFalse(ResidentPiper(scope, { null }).warm("v", argv), "can't start")
     }
 
     @Test

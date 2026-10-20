@@ -341,8 +341,9 @@ client like the assistant waits):
 
 - `busy` means **another** consumer (another extension, or D-Bus `Speak`) is synthesising; the request is
   not queued, so a client pacing a reading knows at once.
-- A new `synthesize` from the **same** extension cancels its own one still in flight (the engine is
-  killed) and that one is answered `cancelled`. A client that pipelines sentences, or a user who asks to
+- A new `synthesize` from the **same** extension cancels its own one still in flight and that one is
+  answered `cancelled` (a resident Piper finishes that sentence unheard and keeps its voice loaded).
+  `cancelSynthesize` (a notification) cancels it without a replacement. A client that pipelines sentences, or a user who asks to
   replay, therefore always gets its latest request served.
 - The system is kept awake while it synthesises.
 
@@ -353,6 +354,17 @@ message and paced, with START/END/ABORT and a sender-chosen start (HOLD/PLAY), t
 most 30 s between two speaker messages of a stream; the watch drops a stream after 35 s without one. The
 speaker keys `0x7FFF0000`–`0x7FFF0003` are reserved in every watchapp that vendors the receiver; app-defined
 AppMessage keys must stay below them. The [assistant](assistant.md) reads its answers this way.
+
+```jsonc
+// ext -> host (notification): a reading is likely soon, load the voice now
+{"jsonrpc":"2.0","method":"prepareSynthesize","params":{"language":"en"}}
+```
+
+`prepareSynthesize` loads the voice a `synthesize` in `language` would use (a resident Piper starts and
+reads its model, about 3 s on a phone) and restarts its 60 s idle time, so the first sentence doesn't wait
+for it. Send it when a reading becomes likely (the assistant does when its app opens and when a question is
+asked), so the load overlaps the answer's round trip. It does nothing for other engines or when text to
+speech is off, and has no answer. Go helper: `Ext.PrepareSynthesize(language)`.
 
 A daemon older than `synthesize` never answers it (newer daemons answer any unknown method at once, below),
 so a client should time out the first call (the assistant treats 30 s without an answer as "text to speech

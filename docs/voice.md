@@ -185,8 +185,10 @@ of the box):
   so install `piper-tts`. Piper runs on the big cores of a big.LITTLE phone (`taskset`), and `tts.speed`
   maps to its length scale (100/speed). `piper_exe` stays loaded between sentences: one process per voice
   reads a JSON line per sentence (`--json-input`), so the model loads once instead of every time (about
-  3 s on a phone). It is stopped after 60 s without a sentence, when the voice or speed changes, and
-  killed when a synthesis is cancelled; other Pipers start once per sentence. Pick `espeak-ng` as
+  3 s on a phone). An extension can have it loaded ahead of a reading (`prepareSynthesize`: the assistant
+  does when its app opens and when a question is asked). It is stopped after 60 s without a sentence and
+  when the voice or speed changes; a cancelled sentence finishes unheard rather than killing it. Other
+  Pipers start once per sentence. Pick `espeak-ng` as
   `tts.local_voice` for no download and every language, at the cost of a robotic voice (`-s 175 ×
   speed/100`). Nothing leaves the machine.
 - `command` (`tts.command`): your own engine (Kokoro, sherpa-onnx, RHVoice, …). It gets the text on stdin

@@ -3,7 +3,6 @@ package de.yoxcu.stoandl.voice.tts
 import de.yoxcu.stoandl.util.runProcess
 import de.yoxcu.stoandl.voice.Wav
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,9 +53,11 @@ internal interface EngineProcess {
  * the file before synthesizing and closes it when done).
  *
  * One process per voice ([synthesize]'s `voice`); a different command line for that voice (another speed, the
- * program moved) replaces it. A process is stopped after [idleMs] without a sentence and when [retain] no
- * longer lists its voice (the config changed), and killed when a synthesis is cancelled, times out or fails;
- * the next sentence starts it again. The text is never logged.
+ * program moved) replaces it. [warm] starts one ahead of its first sentence. A process is stopped after
+ * [idleMs] without a sentence and when [retain] no longer lists its voice (the config changed), and killed
+ * when a sentence times out or fails; the next sentence starts it again. A cancelled sentence is left to
+ * finish (a second at most once loaded) and its audio dropped: killing it would cost the next reading the
+ * model load. The text is never logged.
  */
 class ResidentPiper internal constructor(
     private val scope: CoroutineScope,
@@ -71,6 +72,9 @@ class ResidentPiper internal constructor(
     private class Running(val argv: List<String>, val proc: EngineProcess) {
         var warm = false
         var idle: Job? = null
+        /** The file of the sentence it is writing; still set after that sentence was cancelled, so the next
+         *  line waits for it (Piper reads its lines one after another). */
+        var writing: File? = null
     }
 
     private val lock = Mutex()
@@ -83,32 +87,70 @@ class ResidentPiper internal constructor(
      */
     internal suspend fun synthesize(voice: String, argv: List<String>, text: String, out: File, timeoutMs: Long): TtsOutcome? =
         lock.withLock {
-            var r = running[voice]
-            r?.idle?.cancel()
-            if (r != null && (r.argv != argv || !r.proc.alive)) {
-                stopLocked(voice, if (r.proc.alive) "its settings changed" else null)
-                r = null
-            }
-            if (r == null) {
-                r = Running(argv, start(argv) ?: return@withLock null)
-                running[voice] = r
-                log.info { "Text to speech: Piper keeps $voice loaded (until ${idleMs / 1000} s without a sentence)" }
-            }
+            var r = runningLocked(voice, argv) ?: return@withLock null
             try {
-                withContext(Dispatchers.IO) { sentence(voice, r, text, out, timeoutMs) }
-            } catch (e: CancellationException) {
-                stopLocked(voice, null)   // mid-sentence: nobody wants the rest
-                throw e
-            } finally {
-                out.delete()
-                if (running[voice] === r) r.idle = scope.launch {
-                    delay(idleMs)
-                    lock.withLock { if (running[voice] === r) stopLocked(voice, "${idleMs / 1000} s without a sentence") }
+                withContext(Dispatchers.IO) {
+                    if (!finishedLocked(r, timeoutMs)) {
+                        stopLocked(voice, "a cancelled sentence didn't finish")
+                        r = runningLocked(voice, argv) ?: return@withContext null
+                    }
+                    sentence(voice, r, text, out, timeoutMs)
                 }
+            } finally {
+                if (r.writing != out) out.delete()   // else Piper still writes it: deleted once it is done
+                idleLocked(voice, r)
             }
         }
 
+    /**
+     * Starts the resident Piper for [voice] with [argv] if it isn't running, so the model is loaded by the time
+     * the first sentence comes, and restarts its idle time. False when it can't be started.
+     */
+    internal suspend fun warm(voice: String, argv: List<String>): Boolean = lock.withLock {
+        val r = runningLocked(voice, argv) ?: return@withLock false
+        idleLocked(voice, r)
+        true
+    }
+
+    /** The running process for [voice], replaced when [argv] changed or it died, started when there is none;
+     *  null when it can't start. Its idle timer is stopped: the caller arms it again ([idleLocked]). */
+    private fun runningLocked(voice: String, argv: List<String>): Running? {
+        running[voice]?.let { r ->
+            r.idle?.cancel()
+            if (r.argv == argv && r.proc.alive) return r
+            stopLocked(voice, if (r.proc.alive) "its settings changed" else null)
+        }
+        val r = Running(argv, start(argv) ?: return null)
+        running[voice] = r
+        log.info { "Text to speech: Piper keeps $voice loaded (until ${idleMs / 1000} s without a sentence)" }
+        return r
+    }
+
+    private fun idleLocked(voice: String, r: Running) {
+        if (running[voice] !== r) return
+        r.idle?.cancel()
+        r.idle = scope.launch {
+            delay(idleMs)
+            lock.withLock { if (running[voice] === r) stopLocked(voice, "${idleMs / 1000} s without a sentence") }
+        }
+    }
+
+    /** Waits up to [timeoutMs] for the sentence a cancelled synthesis left [r] writing, and deletes its file.
+     *  False when it didn't finish or the process died. */
+    private suspend fun finishedLocked(r: Running, timeoutMs: Long): Boolean {
+        val f = r.writing ?: return true
+        val began = System.nanoTime()
+        while (r.proc.alive && !(f.exists() && !r.proc.holds(f))) {
+            if ((System.nanoTime() - began) / 1_000_000 >= timeoutMs) return false
+            delay(pollMs)
+        }
+        f.delete()
+        r.writing = null
+        return r.proc.alive
+    }
+
     private suspend fun sentence(voice: String, r: Running, text: String, out: File, timeoutMs: Long): TtsOutcome? {
+        r.writing = out
         if (!r.proc.write(jsonLine(text, out))) {
             val why = r.proc.stderrTail().trim().takeLast(300)
             stopLocked(voice, null)
@@ -137,6 +179,7 @@ class ResidentPiper internal constructor(
             }
             delay(pollMs)
         }
+        r.writing = null
         r.warm = true
         return Wav.decode(out.readBytes())?.let { (pcm, rate) -> TtsOutcome.Audio(pcm, rate) }
             ?: TtsOutcome.Failed("piper gave back no WAV")
@@ -160,6 +203,7 @@ class ResidentPiper internal constructor(
         val r = running.remove(voice) ?: return
         r.idle?.cancel()
         r.proc.kill()
+        r.writing?.delete()
         if (why != null) log.info { "Text to speech: Piper unloaded $voice ($why)" }
     }
 

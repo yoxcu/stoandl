@@ -97,6 +97,8 @@ class ExtensionManager(
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
     /** Text to speech for `synthesize` (TtsService.synthesize): text, language, format. */
     private val synthesize: suspend (text: String, language: String?, format: String) -> Synthesis = { _, _, _ -> Synthesis.Error("off") },
+    /** `prepareSynthesize` (TtsService.prepare): load the voice for a reading in this language. */
+    private val prepareSynthesize: (language: String?) -> Unit = {},
     /** Where an extension's plugin (declared in its `initialize` result) is registered and removed. */
     private val pluginHost: ExtensionPluginHost? = null,
     /** Where `"secret": true` config fields live (ref [extSecretRef]); never the `config` file. */
@@ -182,7 +184,7 @@ class ExtensionManager(
                 if (state == "quarantined") notifyQuarantined(name, running[name]?.lastStderrLine)
                 onExtensionState?.invoke(name, state)
             },
-            notificationImagesOn = notificationImagesOn, transcribe = transcribe, synthesize = synthesize, pluginHost = pluginHost,
+            notificationImagesOn = notificationImagesOn, transcribe = transcribe, synthesize = synthesize, prepareSynthesize = prepareSynthesize, pluginHost = pluginHost,
             holdAwake = holdAwake)
         running[name] = proc
         proc.launch()
@@ -630,6 +632,7 @@ private class ExtensionProcess(
     private val notificationImagesOn: () -> Boolean = { false },
     private val transcribe: suspend (path: String, language: String?) -> String = { _, _ -> "off:" },
     private val synthesize: suspend (text: String, language: String?, format: String) -> Synthesis = { _, _, _ -> Synthesis.Error("off") },
+    private val prepareSynthesize: (language: String?) -> Unit = {},
     private val pluginHost: ExtensionPluginHost? = null,
     holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
 ) {
@@ -824,9 +827,12 @@ private class ExtensionProcess(
                     }
                 }
             }
-            // The extension stopped the reading it asked for: free the engine now, not after the sentence
-            // nobody will hear (it would compete with a dictation for the same cores). Answered "cancelled".
+            // The extension stopped the reading it asked for: free the engine for the next request now. The
+            // sentence in progress finishes unheard (a resident Piper keeps its voice loaded for the next
+            // reading; ResidentPiper). Answered "cancelled".
             method == "cancelSynthesize" -> { synthesizing?.cancel(); reply(id) {} }
+            // A reading is likely soon (its app opened, a question is on its way): load the voice now.
+            method == "prepareSynthesize" -> { prepareSynthesize(params?.str("language")); reply(id) {} }
             method == "keepAwake" -> {
                 val maxMs = params?.get("maxMs")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.longOrNull }
                 awake.acquire(params?.str("why"), maxMs).fold(

@@ -102,7 +102,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -270,6 +270,7 @@ the daemon (the daemon starts the binary with no arguments).
 | `Ext.Release(token string)` | fire and forget |
 | error replies | a pending callback that registered for errors receives them (needed for `KeepAwake`); the others are still only logged |
 | `Ext.Synthesize(text, language string, cb func(blocks [][]byte, ms int, err string))` | ext `synthesize{text, language?, format:"pebble-adpcm"}`; `err` is the error message (`off`, `unavailable: …`, `busy`). A daemon without it never answers, so callers time out (the assistant after 30 s). |
+| `Ext.PrepareSynthesize(language string)` | ext notification `prepareSynthesize{language?}`: load the voice now. Fire and forget; a daemon without it ignores it. |
 | `SpeakerPump` (`NewSpeakerPump(send)`, `SetWatch`, `SetRateHint`, `Expect`, `Write`, `End`, `Abort`, `Sent`, `LinkRate`, `Report`), `SpeakerWatch` and the `Spk*` keys | one speaker stream, packed and paced to the watch's ring, its start decided by the sender, sent through the caller's one-in-flight path ([docs/speaker-stream.md](../../../docs/speaker-stream.md)) |
 
 The assistant keeps an identical copy next to its `main.go`.
@@ -402,6 +403,7 @@ is the shared format, sender and receiver contract.
 | Quiet Time | The watch sets CAPS `0x10` while `quiet_time_is_active()`, even though the firmware mutes the speaker in Quiet Time only when the user's "mute speaker" preference is on. So `always` stays silent at night; Hold Down still plays. A really muted speaker: Hold Down shows `Speaker muted` and sends nothing. |
 | Text | The answer as shown (cleaned, B4), bullets without their `- `, split into sentences: one shorter than 40 B joins the next, one longer than 300 B is cut at a space. A first sentence longer than 100 B is cut at its last clause boundary (`, `, `; `, `: `, a dash) from 30 B on, so the first sound comes sooner. |
 | Synthesis | `synthesize{text, language, format:"pebble-adpcm"}` per sentence, one call at a time; sentence N+1 is asked for while N is sent. `language` is `de` or `en` from `language` (German, Deutsch, de, de-AT … / English, en, en-GB …), else omitted. No answer in 30 s counts as `unavailable`, and `always` then reads nothing unasked until a later `synthesize` is answered (a stoandl without text to speech never answers). |
+| Warm-up | `speak=always`, the latest CAPS has speaker and not muted, and the daemon hasn't gone silent: HELLO, ASK and PRESET send `prepareSynthesize{language}`, so the daemon loads the voice while the user dictates and the answer is on its way, not on the first sentence. |
 | Stream | One `SpeakerPump` per reading, set to the SPK_DATA and SPK_RING of the latest HELLO: several blocks per message, paced to the watch's ring, END after the last sentence (a 1.1.0 app: one block per message, a 6 KB ring). The pump is told the reading's expected length (the audio of the sentences synthesised so far, plus the characters still to come at their measured ms per character, 65 before the first) and sets PLAY once the watch holds enough for the rest to arrive in time; the previous reading's link rate is its first guess. A synthesis error mid-way ends the stream with what was sent. One log line per reading: `speak: <Report>`. |
 | Errors | On SPEAK with nothing sent yet: `off` → card `Text to speech is off` / `Turn it on in stoandl: Settings → Voice.`; `busy` → `Text to speech is busy`; `unavailable: <why>` → `Text to speech unavailable` / `<why>`; then an ABORT, which clears the watch's `Speaking...`. Card itemId `assistant:speech` (`ReplaceID`), urgent. An unasked (`always`) reading fails silently, since text to speech is off by default. |
 | Stop | ASK, PRESET, CANCEL, NEW_CONV, STOP_SPEAK, HELLO (a new app instance), BYE and a failed send stop the pump. If the app is still open, an ABORT follows when blocks went out, or when the reading was asked for (SPEAK) and no other reading replaced it, so the watch's `Speaking...` clears. |

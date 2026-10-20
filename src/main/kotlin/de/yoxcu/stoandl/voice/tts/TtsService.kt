@@ -124,6 +124,17 @@ class TtsService(
     }
 
     /**
+     * An extension's `prepareSynthesize`: a reading in [language] is likely soon (its app opened, a question
+     * is on its way), so the engine loads its voice now instead of on the first sentence (seconds on a phone,
+     * which the answer's network round trip then hides). Returns at once; does nothing when text to speech is
+     * off or not ready.
+     */
+    fun prepare(language: String?) {
+        val tts = backends.current(language)?.takeIf { it.readiness() == null } ?: return
+        scope.launch(Dispatchers.IO) { tts.prepare(language, backends.speedPct()) }
+    }
+
+    /**
      * D-Bus `Speak`: read [text] aloud on this device through the first of [players] installed; a new call
      * stops the one before. Answers at once, without waiting for the audio (seconds, or longer behind an
      * extension's synthesis): `ok:speaking <n> characters` once the engine and a player are there, else `off:`,
