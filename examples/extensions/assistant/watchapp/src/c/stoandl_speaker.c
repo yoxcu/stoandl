@@ -54,6 +54,7 @@ static uint16_t s_next_seq;
 static bool s_ended;
 static bool s_hold;  // the sender starts playback (PLAY); buffer until then
 static bool s_dry;   // playing and the ring ran out before END
+static SniffInterval s_prev_sniff;  // the app's own sniff interval before this stream, restored at idle
 // A stream stopped on the watch (or refused) whose late messages are ignored until a new id arrives.
 static uint32_t s_dead_id;
 static bool s_has_dead;
@@ -210,7 +211,7 @@ static void go_idle(void) {
     s_hold_timer = NULL;
   }
   if (s_state != SPK_IDLE) {
-    app_comm_set_sniff_interval(SNIFF_INTERVAL_NORMAL);
+    app_comm_set_sniff_interval(s_prev_sniff);
   }
   s_state = SPK_IDLE;
   ring_clear();
@@ -389,6 +390,7 @@ bool stoandl_speaker_handle(DictionaryIterator *iter) {
     s_dry = false;
     s_hold = (flags & STOANDL_SPK_FLAG_HOLD) != 0;
     s_state = SPK_BUFFERING;
+    s_prev_sniff = app_comm_get_sniff_interval();  // an app may hold REDUCED itself (the assistant does)
     app_comm_set_sniff_interval(SNIFF_INTERVAL_REDUCED);
     if (s_hold) {
       s_hold_timer = app_timer_register(HOLD_MAX_MS, hold_expired, NULL);

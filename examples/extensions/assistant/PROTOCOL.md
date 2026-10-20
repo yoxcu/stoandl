@@ -102,7 +102,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -284,7 +284,7 @@ The assistant keeps an identical copy next to its `main.go`.
 |---|---|
 | UUID | **`5b24fc80-114d-4c28-b007-53e241b95856`** (Go constant `APP_UUID`; `package.json` `pebble.uuid`) |
 | displayName | `Assistant` |
-| package `name` / version | `assistant` / `1.1.1` (bump on every change, or the locker won't re-push it) |
+| package `name` / version | `assistant` / `1.1.2` (bump on every change, or the locker won't re-push it) |
 | sdkVersion | `3`, `enableMultiJS: false`, **no `src/pkjs`** |
 | targetPlatforms | `basalt`, `chalk`, `diorite`, `emery`, `flint`, `gabbro` (no aplite) |
 | messageKeys | `[]`: the C code uses the raw numeric keys below via `#define`, like findphone and matrix-preview |

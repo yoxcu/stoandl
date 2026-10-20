@@ -149,7 +149,8 @@ spent most of their time waiting: on a OnePlus 6 and a Time 2 the link carried a
 - **Drain.** A 40 ms timer decodes 256-sample frames and writes them until `speaker_stream_write`
   takes only part of one; the rest of that frame goes first on the next tick. On underrun the firmware
   plays silence and keeps the stream open.
-- **Link.** `SNIFF_INTERVAL_REDUCED` from the first block until the stream is idle again.
+- **Link.** `SNIFF_INTERVAL_REDUCED` from the first block until the stream is idle again; then the
+  interval the app had before the stream (an app that holds REDUCED itself keeps it).
 - **Stall.** A buffering or playing stream with no message for 35 s is dropped like an ABORT
   (`speaker: stream stalled` in the watch log): the sender vanished without END or ABORT (its app link
   failed, it restarted, the phone left range or slept), and an open stream would play silence, keep the

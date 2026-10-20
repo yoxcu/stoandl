@@ -1056,6 +1056,13 @@ static void win_unload(Window *w) {
 static void launch_ask(void *ctx) { start_ask(0, 0); }
 
 static void init(void) {
+  // Ask for the faster link for as long as the app is open. Idle, the watch lets its link skip 30 of every
+  // 31 connection events (fw 4.41: 45 ms interval, latency 30, so it listens every ~1.4 s), and the switch
+  // to the fast link a dictation asks for only lands ~4.5 s later. Until then the firmware's 4-packet PPoG
+  // window fills, the watch sleeps through the phone's acks and drops dictation audio (up to 2.5 s of
+  // it, op6 + Time 2, 2026-10-20). Held from launch, the link is already faster when a later question
+  // starts; the first dictation, 100 ms after launch, mostly still meets the slow one.
+  app_comm_set_sniff_interval(SNIFF_INTERVAL_REDUCED);
   stoandl_speaker_init(speaker_changed, NULL);
   app_message_register_inbox_received(inbox_received);
   app_message_register_inbox_dropped(inbox_dropped);
