@@ -485,7 +485,7 @@ class PebbleIntegration(
     private var routeStore: NotifRouteStore? = null
     // Built before the sleep guard (libpebble3's graph needs it first); it reaches the guard when a session starts.
     private val voiceProvider by lazy {
-        StoandlTranscriptionProvider(voiceBackends, configStore) { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} }
+        StoandlTranscriptionProvider(voiceBackends, configStore, scope) { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} }
     }
     // power.quiet_time_link_off: no watch link during the watch's scheduled Quiet Time; started before
     // libpebble3 connects anything, so a restart inside the window stays paused.

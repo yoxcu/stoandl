@@ -10,6 +10,7 @@ import io.rebble.libpebblecommon.voice.TranscriptionResult
 import io.rebble.libpebblecommon.voice.TranscriptionWord
 import io.rebble.libpebblecommon.voice.VoiceEncoderInfo
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,11 @@ private const val MAX_RECORDING_MS = 20_000L
 private const val RESULT_BUDGET_MS = 14_000L
 /** The transcript's UTF-8 budget: well inside the watch's 2044-byte inbound message. */
 private const val MAX_TRANSCRIPT_BYTES = 1_500
+/** How long a transcript keeps the system awake after [StoandlTranscriptionProvider.transcribe] returns.
+ *  libpebble3 sends it to the watch only then, and what it was for comes back ~0.8 s later (a watchapp's
+ *  question, a reply). Released at once, the phone suspended within 0.3–0.7 s in 12 of 21 assistant
+ *  questions, and the watch's message then waited 0.4–9 s for it to wake (op6, 2026-10-20). */
+internal const val AFTER_RESULT_MS = 5_000L
 
 private class NoAudio : Exception("no audio")
 
@@ -38,12 +44,15 @@ private class NoAudio : Exception("no audio")
  * protocol; the transcript reaches the reply path as the Response action's text, like a canned reply.
  *
  * A phone suspends a second or two after each wake, also while the watch streams its audio, so a session
- * holds the system awake ([keepAwake]) until the result is handed back, and reports itself as pending
- * work ([pendingDescription]) to a suspend already under way.
+ * holds the system awake ([keepAwake]) until the result is handed back, and [afterResultMs] longer after a
+ * transcript for the watch's answer to it, and reports itself as pending work ([pendingDescription]) to a
+ * suspend already under way.
  */
 class StoandlTranscriptionProvider(
     private val backends: VoiceBackends,
     private val configStore: ConfigStore,
+    private val scope: CoroutineScope,
+    private val afterResultMs: Long = AFTER_RESULT_MS,
     private val keepAwake: (why: String) -> AutoCloseable = { AutoCloseable {} },
 ) : TranscriptionProvider {
     @Volatile private var sessions = 0
@@ -65,10 +74,13 @@ class StoandlTranscriptionProvider(
         isNotificationReply: Boolean,
     ): TranscriptionResult {
         synchronized(this) { sessions++ }
-        return try {
-            keepAwake("Voice dictation from the watch").use { session(encoderInfo, audioFrames) }
+        val awake = keepAwake("Voice dictation from the watch")
+        var result: TranscriptionResult? = null
+        try {
+            return session(encoderInfo, audioFrames).also { result = it }
         } finally {
             synchronized(this) { sessions-- }
+            if (result is TranscriptionResult.Success) scope.launch { delay(afterResultMs); awake.close() } else awake.close()
         }
     }
 
