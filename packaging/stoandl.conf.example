@@ -1,7 +1,8 @@
 # stoandl configuration
 #
-# Copy to ~/.config/stoandl/stoandl.conf (or $XDG_CONFIG_HOME/stoandl/stoandl.conf)
-# and restart the service:  systemctl --user restart stoandl
+# Copy to ~/.config/stoandl/stoandl.conf (or $XDG_CONFIG_HOME/stoandl/stoandl.conf). A running daemon
+# applies an edit of that file within a second; the few keys `stoandl daemon list` marks (restart) need
+#   stoandl daemon restart   (or: systemctl --user restart stoandl)
 # The service allows 5 starts in 5 minutes (manual restarts count). A 6th restart leaves it stopped
 # until:  systemctl --user reset-failed stoandl && systemctl --user start stoandl
 #
@@ -26,7 +27,7 @@ notification.app_name = small
 # enforced host-side regardless. Opt-in for firmware that does surface it. BLE-only, no web egress.
 notification.sync_to_watch = false
 # Master switch for forwarding desktop/extension notifications to the watch. On by default; the GUI's
-# "pause forwarding" toggle (and `stoandl sync disable notifications`) flips this live. When off, every
+# Settings → Notifications (and `stoandl sync disable notifications`) flips this live. When off, every
 # notification is dropped host-side (calls and firmware prompts use their own paths and still get through).
 # `stoandl notif filter add <regex> allow` whitelists exceptions that ride through even while paused.
 notification.forward = true
@@ -113,8 +114,8 @@ contacts.vcard_paths = ~/.local/share/kpeoplevcard
 # Leave empty to disable. The first location is shown most prominently on the watch.
 # Example: weather.locations = Berlin:52.52:13.405, London:51.5074:-0.1278
 weather.locations =
-# Master switch for weather sync. On by default; the Sync screen (`stoandl sync enable/disable weather`)
-# flips it live. Weather only runs when this is on AND a source is configured below — turning it off
+# Master switch for weather sync. On by default; the GUI's Settings → Weather (or `stoandl sync
+# enable/disable weather`) flips it live. Weather only runs when this is on AND a source is configured below — turning it off
 # stops the sync but keeps your locations.
 weather.enabled = true
 
@@ -125,11 +126,13 @@ weather.enabled = true
 #   command - run weather.location_command, which must print Name:lat:lon lines (DE-agnostic)
 # Imported locations are merged with weather.locations and re-read on every refresh.
 weather.location_source = manual
-# weather.location_command = echo "Munich:48.137:11.575"
+# Example:
+#   weather.location_command = echo "Munich:48.137:11.575"
 #
 # KDE/Plasma has no coordinate store, so resolve a city name to coordinates via Open-Meteo's free
 # geocoder (needs curl + jq); swap Munich for your city (or splice it from KWeather's config):
-# weather.location_command = curl -s "https://geocoding-api.open-meteo.com/v1/search?name=Munich&count=1" | jq -r '.results[0] | "\(.name):\(.latitude):\(.longitude)"'
+#   weather.location_command = curl -s "https://geocoding-api.open-meteo.com/v1/search?name=Munich&count=1" | jq -r '.results[0] | "\(.name):\(.latitude):\(.longitude)"'
+weather.location_command =
 
 # The temperature unit is the watch's own metric/imperial units (it also sets the Health app's
 # distances and the Weather app's warning thresholds): `stoandl health profile set units imperial`.
@@ -190,8 +193,8 @@ weather.place_search = false
 # Disabled until you set at least one source below. Local .ics and discovery make no web requests;
 # ical_urls and caldav are opt-in egress.
 #
-# Master switch for calendar sync. On by default; the Sync screen (`stoandl sync enable/disable
-# calendar`) flips it live. Calendar only syncs when this is on AND a source is configured below —
+# Master switch for calendar sync. On by default; the GUI's Settings → Calendar (or `stoandl sync
+# enable/disable calendar`) flips it live. Calendar only syncs when this is on AND a source is configured below —
 # turning it off removes the watch's calendar pins until re-enabled.
 calendar.enabled = true
 #
@@ -245,8 +248,11 @@ music.enabled = true
 music.volume = system
 # Override the system-volume commands (only used when music.volume = system). Both must be set;
 # otherwise stoandl auto-detects wpctl / pactl / amixer on PATH. Each runs once per button press.
-# music.volume_up_command = wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
-# music.volume_down_command = wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+# Example:
+#   music.volume_up_command = wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
+#   music.volume_down_command = wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+music.volume_up_command =
+music.volume_down_command =
 # In a player that can seek but can't change track (podcasts, audiobooks), the watch's next/previous
 # jump 15 s forward/back and the watch shows fast-forward/rewind. false = they always skip.
 music.seek_when_available = true
@@ -499,7 +505,7 @@ tts.backend = off
 tts.local_voice =
 # Speaking rate in percent of normal, 50-200.
 tts.speed = 100
-# Example: {lang} is replaced by the language of the text (the system language when the text has none).
+# Example: {lang} is replaced by the language of the text (de, en; the system language when the text has none).
 #   tts.command = my-tts --lang {lang}
 tts.command =
 # Example: speaches, LocalAI or openedai-speech on the LAN.
