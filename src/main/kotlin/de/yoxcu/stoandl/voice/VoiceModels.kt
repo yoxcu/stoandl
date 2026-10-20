@@ -88,7 +88,8 @@ private fun piper(id: String, name: String, path: String, sizeMb: Int, lang: Str
         sizeMb, note, recommended, lang)
 
 /**
- * The catalog, best choice first within each kind. Parakeet detects the language itself; Whisper takes
+ * The catalog, best choice first within each kind. Parakeet v3 detects the language itself (it has no
+ * language option, so `voice.language` can't steer it); v2 knows only English; Whisper takes
  * `voice.language`. Voices: a "low" one per language, fast and plenty for the watch speaker's 8 kHz;
  * "medium" ones sound better on this device's speakers but take longer to make, and like any voice a
  * downloaded one becomes `tts.local_voice`, the watch's voice for its language too. Only voices whose
@@ -105,6 +106,14 @@ val SPEECH_MODELS: List<SpeechModel> = listOf(
         "parakeet-v3-small", "Parakeet v3 (smaller)", SpeechEngine.PARAKEET,
         listOf("https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q4_0.bin"), 356,
         "the same model compressed further: less memory, slightly less accurate",
+    ),
+    // NVIDIA publishes v2 only as a .nemo checkpoint; this is a third party's conversion with whisper.cpp's
+    // own converter, pinned to the revision checked on the op6 (2026-10-20: same speed as v3 on Alpine's
+    // parakeet-cli, correct on English test clips where v3 had heard short watch dictations as Russian).
+    SpeechModel(
+        "parakeet-v2-en", "Parakeet v2 (English only)", SpeechEngine.PARAKEET,
+        listOf("https://huggingface.co/JoaoZaokk/parakeet-tdt-0.6b-v2-ggml/resolve/873e1ee9a7e4871e407c77b2f413d8a5e8c0af17/ggml-parakeet-tdt-0.6b-v2-q8_0.bin"), 659,
+        "English only, so it never mistakes a short clip for another language; community conversion of NVIDIA's model",
     ),
     SpeechModel(
         "whisper-small", "Whisper small", SpeechEngine.WHISPER,

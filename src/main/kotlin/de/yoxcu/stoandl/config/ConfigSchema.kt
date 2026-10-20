@@ -637,8 +637,8 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         choices = { installedModelChoices(ModelKind.STT) }),
     text("voice.language", S_STT, "Language",
         "The language you speak, or auto",
-        help = "A code such as en or de helps engines that guess badly. Passed to a custom command as {lang} and " +
-            "to the HTTP service.",
+        help = "A code such as en or de helps engines that guess badly: Whisper, a custom command ({lang}) and the " +
+            "HTTP service. Parakeet v3 always guesses by itself; for English only, use Parakeet v2 instead.",
         requires = "voice.backend!=Off", placeholder = "auto",
         validate = { v -> if (v == "auto" || v.matches(Regex("[a-z]{2,3}"))) null else "expected a language code (de, en, …) or auto" }) {
         it.voiceLanguage
