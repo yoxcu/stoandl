@@ -2424,9 +2424,9 @@ private fun ctlLogs(rest: List<String>) {
     }
 }
 
-/** How long [awaitTask] follows a watch task before giving up on it (each transfer bounds itself well
- *  inside this; a stuck one keeps running in the daemon). */
-private const val TASK_WAIT_MS = 300_000L
+/** How long [awaitTask] follows a watch task before giving up on it: a little past the daemon's own
+ *  limit, which ends a stuck one as an error. */
+private const val TASK_WAIT_MS = WatchTasks.MAX_RUN_MS + 15_000L
 
 /** Start a daemon watch task ([kind]: sideload, screenshot, logs, coredump) with [start] and follow it
  *  through TaskStatus to its end: the start's own reply when it didn't start, else the task's result. */

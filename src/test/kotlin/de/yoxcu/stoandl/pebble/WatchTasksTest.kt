@@ -1,6 +1,7 @@
 package de.yoxcu.stoandl.pebble
 
 import de.yoxcu.stoandl.pebble.WatchTasks.Kind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,24 @@ class WatchTasksTest {
         tasks.start(Kind.SIDELOAD, "Installing a.pbw") { error("bad pbw") }
         awaitEnd(Kind.SIDELOAD)
         assertEquals("error:bad pbw", tasks.status(Kind.SIDELOAD))
+    }
+
+    /** A watch dropping mid-transfer cancels the work from libpebble3's connection scope: the task fails
+     *  and the kind is free again, rather than `running:` until a restart. */
+    @Test
+    fun `work cancelled from outside ends as an error and frees the kind`() {
+        tasks.start(Kind.SCREENSHOT, "Capturing") { throw CancellationException("connection scope cancelled") }
+        awaitEnd(Kind.SCREENSHOT)
+        assertEquals("error:the watch disconnected", tasks.status(Kind.SCREENSHOT))
+        assertEquals("ok:started", tasks.start(Kind.SCREENSHOT, "Capturing") { "ok:/p.png\t144\t168" })
+    }
+
+    @Test
+    fun `a task the watch never answers ends at the time limit`() {
+        val short = WatchTasks(scope, maxRunMs = 100) { kind, status -> changes += kind.token to status }
+        short.start(Kind.COREDUMP, "Reading") { CompletableDeferred<String>().await() }
+        runBlocking { withTimeout(5_000) { while (short.status(Kind.COREDUMP).startsWith("running:")) kotlinx.coroutines.delay(10) } }
+        assertEquals("error:the watch stopped answering", short.status(Kind.COREDUMP))
     }
 
     @Test

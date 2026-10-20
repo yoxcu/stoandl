@@ -4,7 +4,11 @@ import de.yoxcu.stoandl.util.UserDirs
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -23,6 +27,7 @@ private val log = KotlinLogging.logger {}
  */
 class WatchTasks(
     private val scope: CoroutineScope,
+    private val maxRunMs: Long = MAX_RUN_MS,
     private val onChange: (kind: Kind, status: String) -> Unit,
 ) {
     enum class Kind(val token: String) {
@@ -49,9 +54,17 @@ class WatchTasks(
         onChange(kind, runningStatus)
         scope.launch {
             val result = try {
-                work()
+                withTimeout(maxRunMs) { work() }
+            } catch (e: TimeoutCancellationException) {
+                log.warn { "${kind.token} gave up after ${maxRunMs / 1000} s" }
+                "error:the watch stopped answering"
             } catch (e: CancellationException) {
-                throw e
+                // Only the daemon stopping cancels the task itself. The work's own cancellation (the watch's
+                // connection scope, cancelled when it drops mid-transfer) is the task failing: rethrown, it
+                // would leave the kind `running:`, and every later start `busy:`, until a restart.
+                currentCoroutineContext().ensureActive()
+                log.warn { "${kind.token} cut off: ${e.message}" }
+                "error:the watch disconnected"
             } catch (e: Exception) {
                 log.warn(e) { "${kind.token} failed" }
                 "error:${e.message ?: "${kind.token} failed"}"
@@ -71,6 +84,10 @@ class WatchTasks(
 
     companion object {
         const val IDLE = "idle:"
+
+        /** The longest a task may run: a transfer the watch stops answering (some wait on it without a
+         *  timeout of their own) must not hold its kind forever. */
+        const val MAX_RUN_MS = 300_000L
 
         /** Where a [kind]'s output goes: [requested] when given (it must be absolute: the daemon's working
          *  directory isn't the caller's), else a new timestamped file in the user's Pictures/Screenshots
