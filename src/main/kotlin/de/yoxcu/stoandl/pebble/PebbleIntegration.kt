@@ -58,6 +58,7 @@ import de.yoxcu.stoandl.voice.StoandlTranscriptionProvider
 import de.yoxcu.stoandl.voice.VoiceBackends
 import de.yoxcu.stoandl.voice.VoiceControl
 import de.yoxcu.stoandl.voice.VoiceModels
+import de.yoxcu.stoandl.voice.tts.ResidentPiper
 import de.yoxcu.stoandl.voice.tts.TtsBackends
 import de.yoxcu.stoandl.voice.tts.TtsService
 import de.yoxcu.stoandl.debug.DebugControl
@@ -407,7 +408,7 @@ class PebbleIntegration(
     private val voiceBackends = VoiceBackends(configStore, secretStore, voiceModels)
     /** Text to speech (`tts.*`): extensions' synthesize for the watch speaker, D-Bus Speak on this device. The
      *  sleep guard is built later; a synthesis or a reading keeps the system awake once it is. */
-    private val ttsService = TtsService(TtsBackends(configStore, secretStore, voiceModels), scope,
+    private val ttsService = TtsService(TtsBackends(configStore, secretStore, voiceModels, ResidentPiper(scope)), scope,
         keepAwake = { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} })
     private val voiceControl = VoiceControl(voiceBackends, configStore) { model ->
         // A model downloaded from the GUI/CLI becomes the one in use. Speech to text comes on with it unless

@@ -85,10 +85,15 @@ internal suspend fun runEngine(name: String, argv: List<String>, text: String, o
 
 /**
  * `tts.backend = local` with a downloaded Piper voice: `piper_exe` (libpiper) or the Python `piper`, which take
- * the same flags, on the fast cores of a big.LITTLE CPU. One process per sentence: the model loads each time
- * (a resident Piper is deferred).
+ * the same flags, on the fast cores of a big.LITTLE CPU. `piper_exe` stays loaded between sentences
+ * ([ResidentPiper], when [resident] is given); any other Piper runs one process per sentence, loading the
+ * model each time.
  */
-class PiperTts(private val models: VoiceModels, private val voiceId: String) : TextToSpeech {
+class PiperTts(
+    private val models: VoiceModels,
+    private val voiceId: String,
+    private val resident: ResidentPiper? = null,
+) : TextToSpeech {
     override val id = "local"
     val voice: SpeechModel? = models.model(voiceId)?.takeIf { it.kind == ModelKind.TTS }
 
@@ -102,6 +107,10 @@ class PiperTts(private val models: VoiceModels, private val voiceId: String) : T
     override suspend fun synthesize(text: String, lang: String?, speedPct: Int, timeoutMs: Long): TtsOutcome {
         val v = voice ?: return TtsOutcome.Failed(readiness() ?: "no voice")
         val program = v.engine.programPath() ?: return TtsOutcome.Failed("piper not found")
+        if (resident != null && runInterruptible(Dispatchers.IO) { ResidentPiper.canServe(program) }) {
+            val argv = ResidentPiper.argv(VoiceModels.bigCoresPrefix(), program.path, models.path(v), CacheDirs.runtime("tts"), speedPct)
+            resident.synthesize(v.id, argv, text, ttsScratchWav(), timeoutMs)?.let { return it }
+        }
         val out = ttsScratchWav()
         return runEngine("piper", piperArgv(VoiceModels.bigCoresPrefix(), program.path, models.path(v), out, speedPct), text, out, timeoutMs)
     }

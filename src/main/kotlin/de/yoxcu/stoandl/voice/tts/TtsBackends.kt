@@ -31,17 +31,22 @@ class TtsBackends(
     private val configStore: ConfigStore,
     private val secrets: SecretStore,
     val models: VoiceModels,
+    /** Keeps `piper_exe` loaded between sentences; null: one process per sentence. */
+    private val resident: ResidentPiper? = null,
 ) {
     private val http by lazy { stoandlHttpClient() }
 
-    /** The configured engine for [lang] (see [pickVoice]), or null when text to speech is off. */
+    /** The configured engine for [lang] (see [pickVoice]), or null when text to speech is off. A resident Piper
+     *  whose voice the config no longer picks for any language is stopped here. */
     fun current(lang: String? = null): TextToSpeech? {
         val c = configStore.current()
+        val installed = if (c.ttsBackend == VoiceBackend.LOCAL) models.installed(ModelKind.TTS) else emptyList()
+        resident?.retain((installed.map { it.lang } + null).map { pickVoice(c.ttsLocalVoice, it, installed) }.toSet())
         return when (c.ttsBackend) {
             VoiceBackend.OFF -> null
-            VoiceBackend.LOCAL -> when (val voice = pickVoice(c.ttsLocalVoice, lang, models.installed(ModelKind.TTS))) {
+            VoiceBackend.LOCAL -> when (val voice = pickVoice(c.ttsLocalVoice, lang, installed)) {
                 ESPEAK_VOICE -> EspeakTts()
-                else -> PiperTts(models, voice)
+                else -> PiperTts(models, voice, resident)
             }
             VoiceBackend.COMMAND -> CommandTts(c.ttsCommand)
             VoiceBackend.HTTP -> HttpTts(http, c.ttsUrl, c.ttsHttpModel, c.ttsHttpVoice, secrets.get(TTS_API_KEY_REF))

@@ -127,8 +127,12 @@ of the box):
   (libpiper's native binary, preferred: it starts faster), then `piper-tts`, then a bare `piper` only if
   its `--help` names the length scale — on Arch and Alpine `piper` is also libratbag's mouse configurator,
   so install `piper-tts`. Piper runs on the big cores of a big.LITTLE phone (`taskset`), and `tts.speed`
-  maps to its length scale (100/speed). Pick `espeak-ng` as `tts.local_voice` for no download and every
-  language, at the cost of a robotic voice (`-s 175 × speed/100`). Nothing leaves the machine.
+  maps to its length scale (100/speed). `piper_exe` stays loaded between sentences: one process per voice
+  reads a JSON line per sentence (`--json-input`), so the model loads once instead of every time (about
+  3 s on a phone). It is stopped after 60 s without a sentence, when the voice or speed changes, and
+  killed when a synthesis is cancelled; other Pipers start once per sentence. Pick `espeak-ng` as
+  `tts.local_voice` for no download and every language, at the cost of a robotic voice (`-s 175 ×
+  speed/100`). Nothing leaves the machine.
 - `command` (`tts.command`): your own engine (Kokoro, sherpa-onnx, RHVoice, …). It gets the text on stdin
   and writes a WAV to stdout; `{lang}` is replaced by the text's language (`de`, `en`; the primary subtag of
   `de-DE`), or for `voice say`, which has none, the system locale's language, else `en`. Runs through `sh`.

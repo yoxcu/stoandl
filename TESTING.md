@@ -2381,7 +2381,9 @@ The GUI half of 5.66 (gui `e4762ce`…`e6fa2de`). Offscreen smoke against `gui/t
 `tts.*` ([docs/voice.md → Text to speech](docs/voice.md#text-to-speech)): Piper or espeak-ng on this device,
 a custom command or an OpenAI-compatible server; D-Bus `TtsStatus`/`Speak`/`StopSpeaking`, the voices in
 `VoiceModels` (`kind` = tts), and the extension request `synthesize`. Off-device: `TtsTest` (engine argv and
-speed, voice by language, Speak/synthesize busy and cancel), `WatchSpeakerEncodingTest` (low-pass, ADPCM
+speed, voice by language, Speak/synthesize busy and cancel), `ResidentPiperTest` (the JSON line, one process
+per voice, speed change, idle stop, cancel, exit, timeout, the one-shot fallback, a real process's open file
+through `/proc`), `WatchSpeakerEncodingTest` (low-pass, ADPCM
 blocks, the known vector), `SynthesisResultTest`, `VoiceModelsTest` (the two-file store), `VoiceTest` (WAV
 with unfilled sizes). Log: `grep -E 'Text to speech|tts' /tmp/stoandl.log`.
 
@@ -2399,6 +2401,10 @@ with unfilled sizes). Log: `grep -E 'Text to speech|tts' /tmp/stoandl.log`.
 | 5.68j | Watch speaker end to end | Time 2: an assistant answer read with thorsten-low, then kathleen-low; heartbeat `speaker_stream_underrun_count` @170, `speaker_on_time_ms` @154 | The 8 kHz ADPCM with the light compression has no clipping and acceptable volume; `language=German` speaks German, `English` English; the log shows `Text to speech (local): N characters` and never the text; suspend is refused while `synthesize` runs. |
 | 5.68k | Unknown method | an extension calling a method the daemon doesn't know (or assistant 1.1.0 on this daemon with `tts.backend` off) | `-32601 method not found: …` at once, no 30 s wait. |
 | 5.68l | Replay mid-reading | the assistant reading an answer with Python Piper; Hold Down to read again | The new reading starts, no "Text to speech is busy" card; no warning in the daemon log for the replaced sentence (the extension may log `speak: cancelled`). |
+| 5.68m | Resident Piper ⚠️ UNVERIFIED | OnePlus 6, Alpine `piper_exe` (piper-tts 1.7.0): two assistant readings a few seconds apart | The log shows `Piper keeps <voice> loaded` once; the first sentence costs the model load, later ones `N characters → X ms of audio in Y ms` with Y well under the earlier ~3 s overhead (25 chars took 3975 ms one-shot); `ps` shows one `piper_exe` while reading. |
+| 5.68n | Resident idle and changes ⚠️ UNVERIFIED | then wait 60 s; change `tts.speed`; switch `tts.local_voice`; turn `tts.backend` off | `Piper unloaded <voice> (60 s without a sentence)` and no `piper_exe` left; a speed change starts a new process at the next sentence; a voice no longer picked, or the backend off, unloads it (at the next status or synthesis). |
+| 5.68o | Resident cancel ⚠️ UNVERIFIED | Hold Down twice quickly during a long sentence | The running `piper_exe` is killed (no orphan in `ps`), the next reading starts a new one, no warning beyond the cancel. |
+| 5.68p | Not piper_exe ⚠️ UNVERIFIED | Python `piper` (or `piper-tts`) only | One process per sentence as before; no `keeps … loaded` line. |
 
 ## 5.69 Assistant reads answers aloud  ⚠️ UNVERIFIED (needs a Time 2 or Pebble 2 Duo, assistant 1.1.0 and `tts.backend` set)
 
