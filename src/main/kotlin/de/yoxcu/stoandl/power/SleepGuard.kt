@@ -10,7 +10,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -19,6 +22,8 @@ import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -161,15 +166,57 @@ class SleepGuard(
      * phone's fast-resuspend waits for sleep blocks and asks again), so always close it. Independent of
      * [start] and `power.sleep_guard`; a no-op handle when no inhibit tool is installed. If the JVM dies,
      * `cat` sees EOF and the block goes with it.
+     *
+     * logind refuses a new inhibitor while a suspend or resume is under way ("The operation inhibition has
+     * been requested for is already running"), and a dictation often starts exactly then: the watch's
+     * audio is what woke the phone. So the block is kept, not just asked for once: refused, it is asked
+     * again every [ACQUIRE_BACKOFF] (after [ACQUIRE_ATTEMPTS] refusals, again on the next resume), and
+     * taken again if its inhibitor exits while the hold is open. Asked for once, a refused block left a
+     * dictation unprotected while `sleep block taken` was logged, and the phone suspended in the middle
+     * of it (op6, 2026-10-20).
      */
     fun holdAwake(why: String): AutoCloseable {
-        val p = spawn("block", why) ?: return AutoCloseable {}
-        log.debug { "sleep block taken: $why" }
+        val current = AtomicReference<Process?>()
+        val closed = AtomicBoolean(false)
+        val keeper = scope.launch(Dispatchers.IO) {
+            var refused = 0
+            while (isActive) {
+                val p = spawn("block", why) ?: return@launch
+                current.set(p)
+                if (closed.get()) { drop(p); return@launch }
+                if (!p.waitFor(ACQUIRE_SETTLE.inWholeMilliseconds, TimeUnit.MILLISECONDS)) {
+                    log.debug { if (refused == 0) "sleep block taken: $why" else "sleep block taken after ${refused + 1} attempts: $why" }
+                    refused = 0
+                    runInterruptible { p.waitFor() }
+                    if (closed.get()) return@launch
+                    log.debug { "sleep block lost (inhibitor exited ${p.exitValue()}), taking it again: $why" }
+                    continue
+                }
+                refused++
+                if (refused == 1) {
+                    val err = runCatching { p.errorStream.bufferedReader().readText().trim() }.getOrDefault("")
+                    log.debug { "sleep block refused (${err.ifEmpty { "exit ${p.exitValue()}" }}), asking again: $why" }
+                }
+                if (refused >= ACQUIRE_ATTEMPTS) {
+                    log.warn { "Could not take a logind sleep block for '$why' — trying again after the next resume" }
+                    resumed.first()
+                    refused = 0
+                } else {
+                    delay(ACQUIRE_BACKOFF)
+                }
+            }
+        }
         return AutoCloseable {
-            runCatching { p.outputStream.close() }
-            p.destroy()
+            if (!closed.compareAndSet(false, true)) return@AutoCloseable
+            keeper.cancel()
+            current.get()?.let(::drop)
             log.debug { "sleep block released: $why" }
         }
+    }
+
+    private fun drop(p: Process) {
+        runCatching { p.outputStream.close() } // cat sees EOF…
+        p.destroy()                             // …and systemd-inhibit drops the lock right away
     }
 
     private suspend fun onPrepareForSleep() {
@@ -265,8 +312,7 @@ class SleepGuard(
     private fun release() {
         val p = lock ?: return
         lock = null
-        runCatching { p.outputStream.close() } // cat sees EOF…
-        p.destroy()                             // …and systemd-inhibit drops the lock right away
+        drop(p)
     }
 
     private companion object {
