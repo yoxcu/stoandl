@@ -12,7 +12,8 @@
 #   file is moved into place only when the dump worked, because a failed dump (a full disk) makes the JVM
 #   exit 1 after its command ran. Commands only read the archive (-XX:SharedArchiveFile, -Xshare:auto),
 #   and the JVM skips an unusable one silently. The JVM does not rewrite the archive when the JAR changes,
-#   it just stops using it, so the file name carries the JAR's size and mtime: an upgrade seeds a new
+#   it just stops using it, so the file name carries the JAR's size and mtime, and those of the JDK's
+#   lib/modules (an archive from another JVM build is refused too): an upgrade of either seeds a new
 #   archive and drops the old one. A seed that wrote nothing (no base CDS archive in this JDK, CDS off,
 #   a full disk) leaves a `.nocds` marker, so commands don't run a seed each time; the next JAR retries.
 #   -Xlog:cds/aot=off: the JVM prints CDS warnings on stdout.
@@ -23,6 +24,8 @@ jar=/usr/lib/stoandl/stoandl.jar
 set -- -jar "$jar" ctl "$@"
 cds=${XDG_CACHE_HOME:-$HOME/.cache}/stoandl
 if id=$(stat -c %s-%Y "$jar" 2>/dev/null) && mkdir -p "$cds" 2>/dev/null && [ -w "$cds" ]; then
+    jdk=$(readlink -f "$(command -v "$java")" 2>/dev/null)
+    id=$id-$(stat -c %s-%Y "${jdk%/bin/*}/lib/modules" 2>/dev/null || echo 0)
     jsa="$cds/cli-$id.jsa"
     if [ ! -f "$jsa" ] && [ ! -f "$cds/cli-$id.nocds" ]; then
         # Another JAR's files go; a parallel first run's seed (cli-$id.jsa.<pid>) stays.
