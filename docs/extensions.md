@@ -61,8 +61,10 @@ self-contained archive: `{ "name":…, "cmd":…, "config":{…}, "requiresConfi
 leftover `extension.<name>.<key>` in `stoandl.conf` (back-compat) **<** the `config` file (the user's
 place, which the GUI and CLI write, so it wins). The launch command (`cmd`, for non-Python extensions)
 may come from any of those layers too, with `stoandl.conf` first so a broken `config` can be overridden.
-On install, the status line points at where to configure it (the path of the extension's `config`, and
-the `config.example` to copy).
+On install, enable and restart, the status line ends with where to configure it: for an extension with a
+`configSchema`, "Settings: in the stoandl app (Apps → Extensions → <name> → Settings) or stoandl ext config
+<name>"; otherwise "Settings: <configDir>/ext/<name>/config (start from config.example), then stoandl ext
+restart <name>".
 
 **GUI-facing manifest fields (optional).** A `"description"` (a one-line summary) shows in a front-end's
 plugin list, and a `"configSchema"` lets a GUI render a **native settings form** for the extension
@@ -70,17 +72,36 @@ instead of pointing the user at the `config` file. It's a JSON array of typed fi
 
 ```jsonc
 "configSchema": [
-  {"key":"homeserver", "type":"string", "label":"Homeserver URL"},
+  {"key":"homeserver", "type":"string", "label":"Homeserver URL",
+   "description":"Your Matrix server, e.g. https://matrix.org",
+   "help":"The address you sign in to in Element or NeoChat. Ask your server admin if unsure."},
   {"key":"password",   "type":"string", "label":"Password",  "secret":true, "required":true},
   {"key":"notify",     "type":"enum",   "label":"Notify on",  "options":["pushrules","mentions","all"]}
 ]
 ```
 
-Field `type` is `string`, `bool`, `int`, or `enum` (+`options`). A GUI reads the effective values
-(manifest `config` defaults overlaid by the `config` file), shows the form, and writes changes back —
-**merged** into the `config` file — then the daemon restarts the extension if it is running. Without a
-`configSchema` a front-end just reports "no settings" (there is no `url` backend, a hosted config page,
-for extensions; the daemon's config-page server serves PKJS settings pages only).
+Field `type` is `string`, `bool`, `int`, or `enum` (+`options`). Optional `description` is one line shown
+under the field, `help` the longer text behind its help button (the GUI renders both). A GUI reads the
+effective values (manifest `config` defaults overlaid by the `config` file), shows the form, and writes
+changes back — **merged** into the `config` file, booleans and ints with their JSON types — then the daemon
+restarts the extension if it is running. In the GUI an `int` field steps by 1 and an `enum` opens a picker;
+an enum whose stored value isn't one of its options is saved as the first option. Without a `configSchema`
+a front-end just reports "no settings" (there is no hosted config page for extensions — the never-built
+`url` backend and its `ExtOpenConfig` were removed; the daemon's config-page server serves PKJS settings
+pages only).
+
+**`stoandl ext config`** is the CLI form of the same three methods:
+
+```
+stoandl ext config matrix                       # list the settings (secrets show only whether they're set)
+stoandl ext config matrix homeserver            # print one
+stoandl ext config matrix homeserver https://…  # set one (checked against its type and options)
+stoandl ext config matrix password              # a secret: prompted without echo, never taken from argv
+stoandl ext config matrix password --unset      # clear (a secret is removed from the store)
+```
+
+The daemon restarts the extension when it runs, or starts it once its required settings are there.
+Without a `configSchema` it lists and sets the plain keys of the extension's `config`.
 
 **Secrets.** A `string` field with `"secret": true` is kept in the daemon's secret store (the system
 keyring, else the 0600 `<configDir>/secrets` file) under `ext:<name>:<key>`, never in the `config` file:
@@ -104,9 +125,11 @@ applies.
 **`requiresConfig`** (manifest): an extension that can't run until configured (e.g. Matrix needs a
 homeserver) declares `"requiresConfig": true`. If it's started without any user settings (no `config`
 file, no stored secret and no `extension.<name>.*`), the daemon **does not spawn it** — it logs a warning and posts a
-"needs setup" *desktop* notification (which stoandl's passive monitor bridges to the watch — so it's not
-pushed directly to the watch), and `install`/`enable`/`restart`
-return a clear "not started — needs configuration" status instead of a fake failure. Configure it, then
+"<name> needs setup" *desktop* notification, "<name> can't start until it's set up. Settings: …" with the
+same pointer as above (stoandl's passive monitor bridges it to the watch, so it's not pushed directly to
+the watch; `alerts.extensions` silences it), and `install`/`enable`/`restart`
+return a clear "not started — needs configuration" status instead of a fake failure. Configure it (the
+GUI form or `stoandl ext config` start it by themselves), or edit its `config` and run
 `stoandl ext restart <name>`. (Extensions whose settings are all optional, like find-my-phone's `sound`,
 omit the flag and start normally.)
 
@@ -120,11 +143,20 @@ at install, removed at uninstall, but not re-synced on connect or removed on dis
 ```
 stoandl ext install findphone.tar.gz   # extract to ext/findphone/, sideload a bundled .pbw,
                                         # enable (append to extensions.enabled) + hotplug-start
-stoandl ext list | enable <n> | disable <n> | restart <n> | uninstall <n>
+stoandl ext install ./examples/extensions/findphone   # or straight from an unpacked directory
+stoandl ext list | enable <n> | disable <n> | restart <n> | uninstall <n> | config <n> [<key> [<value>]]
 # uninstall also removes a bundled watchapp from the watch (reads the .pbw's UUID → removeApp), and if
 # the extension has a `config`, prompts to keep it (default yes; reinstall restores it) — or pass
 # --keep-config / --delete-config to skip the prompt.
 ```
+
+`ext install` takes an archive (`.tar.gz`/`.tgz`/`.tar`/`.zip`) or a directory. A directory is copied with
+symlinks kept as symlinks (never followed, so an uninstall never touches what a link points at),
+`.git`/`.hg`/`.svn` skipped and the entry point's exec bit kept, up to 512 MB of files (anything bigger is
+refused with a hint to install an archive of just the extension). A path inside, or containing, the
+install location `<configDir>/ext/<name>` is refused (`… overlaps the install location …`). Either way the
+new copy is staged and swapped in only once complete, so a failed install leaves the previous version
+installed and running; the extension's `config` is carried over.
 
 `ExtensionManager` spawns each enabled child and does the **`initialize` handshake first** (host→ext
 events are dropped until it lands — the Android `onListenerConnected` analog):
@@ -285,6 +317,52 @@ The daemon's own speech-to-text (`voice.*`), so an extension needs no engine, co
 its own. `language` defaults to `voice.language`. Up to a minute; answered asynchronously. The Matrix
 extension uses it for voice notes.
 
+### synthesize (text to speech for the extension's watchapp)
+
+```jsonc
+// ext -> host (request); format is "pebble-adpcm" (default) or "wav", language is optional (de, en, de-DE…)
+{"jsonrpc":"2.0","id":41,"method":"synthesize","params":{"text":"Berlin is the capital.","language":"en","format":"pebble-adpcm"}}
+// host -> ext
+{"jsonrpc":"2.0","id":41,"result":{"blocks":["AAA/ABfJm0EUyYuB…", "…"],"ms":1840}}   // pebble-adpcm: base64 blocks
+{"jsonrpc":"2.0","id":41,"result":{"path":"/run/user/1000/stoandl/tts/synth-….wav","ms":1840}}  // wav
+{"jsonrpc":"2.0","id":41,"error":{"message":"off"}}                    // tts.backend = off
+{"jsonrpc":"2.0","id":41,"error":{"message":"unavailable: no voice chosen (tts.local_voice)"}}
+{"jsonrpc":"2.0","id":41,"error":{"message":"busy"}}                   // another consumer holds the engine
+{"jsonrpc":"2.0","id":41,"error":{"message":"cancelled"}}              // this extension's newer synthesize replaced it
+```
+
+The daemon's own text to speech (`tts.*`, [voice.md](voice.md#text-to-speech)), so an extension needs no
+engine of its own. `pebble-adpcm` returns the speech as watch-speaker blocks (IMA ADPCM, 8 kHz, at most
+2000 bytes each, base64), ready to stream one per AppMessage; `wav` returns a 16-bit WAV at the engine's
+rate, kept for 10 minutes. The text is cut to 2000 characters. `language` picks the voice
+([voice.md → Languages](voice.md#voices)): `tts.local_voice` when it speaks the language, else the first
+installed voice that does. One synthesis runs at a time, with a 25 s engine deadline (inside the 30 s a
+client like the assistant waits):
+
+- `busy` means **another** consumer (another extension, or D-Bus `Speak`) is synthesising; the request is
+  not queued, so a client pacing a reading knows at once.
+- A new `synthesize` from the **same** extension cancels its own one still in flight (the engine is
+  killed) and that one is answered `cancelled`. A client that pipelines sentences, or a user who asks to
+  replay, therefore always gets its latest request served.
+- The system is kept awake while it synthesises.
+
+Streaming the blocks to a watchapp follows [speaker-stream.md](speaker-stream.md): the Go helper wraps the
+call as `Ext.Synthesize(text, language, cb)`, and `SpeakerPump` streams the blocks, paced, with START/END/
+ABORT, to a watchapp that vendors `examples/extensions/watchlib/stoandl_speaker.{c,h}`. A sender may go at
+most 30 s between two speaker messages of a stream; the watch drops a stream after 35 s without one. The
+speaker keys `0x7FFF0000`–`0x7FFF0003` are reserved in every watchapp that vendors the receiver; app-defined
+AppMessage keys must stay below them. The [assistant](assistant.md) reads its answers this way.
+
+A daemon older than `synthesize` never answers it (newer daemons answer any unknown method at once, below),
+so a client should time out the first call (the assistant treats 30 s without an answer as "text to speech
+unavailable" and stops reading unasked).
+
+### Unknown methods
+
+A request whose method the daemon doesn't know is answered at once with the JSON-RPC error `-32601`
+`method not found: <method>`, so an extension written for a newer daemon can tell and fall back instead of
+waiting.
+
 ### keepAwake / release (hold off a suspend)
 
 ```jsonc
@@ -388,7 +466,11 @@ find-my-phone before is exactly what the extension system provides.
 - **No third-party code on the protocol thread** — every watch→ext callback returns an immediate
   result/ACK and dispatches the real work async to the child (enqueued).
 - **Restart / quarantine** — per-child supervisor: restart with exponential backoff; after 5 rapid
-  failures it quarantines (until `stoandl ext restart <name>`).
+  failures it quarantines (until `stoandl ext restart <name>`). The quarantine raises an
+  `alerts.extensions` desktop alert, "<name> stopped", with the child's last stderr line ("Last error: …")
+  and a **Restart** button. `ExtList` carries that last stderr line too (its 9th column, kept across
+  restarts and the quarantine), so `stoandl ext list` and the GUI show why a crashed extension failed, with
+  a Restart button in the GUI.
 - **No sandbox** — the child runs as your UID with full FS/network, like any script you run; trust comes
   from you installing it. (A future opt-in `systemd-run --scope` wrap could be added per extension if a
   use case appears, but it's deliberately not a default knob.)
@@ -447,7 +529,11 @@ without re-push (only if the §"deferred" re-push proves lossy on hardware). (Th
     megolm backup), surfaces messages (filtered by the account's **push rules**) as notifications, and
     sends canned replies back through the account. Receive is a long-poll `/sync` behind a pluggable
     `WakeSource` so a UnifiedPush wake can drop in later. _TBT on hardware — see TESTING.md §5.27._
-  - ✅ **Go helper** — `examples/extensions/stoandl_ext.go` (the Go counterpart of `stoandl_ext.py`).
+  - ✅ **Go helper** — `examples/extensions/stoandl_ext.go` (the Go counterpart of `stoandl_ext.py`), with
+    `Synthesize` and `SpeakerPump` for the watch speaker.
+  - ✅ **Watch speaker receiver** — `examples/extensions/watchlib/stoandl_speaker.{c,h}`: the C half a
+    watchapp vendors to play `synthesize` audio ([speaker-stream.md](speaker-stream.md)); used by the
+    assistant's watchapp. _TBT on hardware._
   - **TODO:** per-extension rate limit; JSON-Schema + a Rust helper; cross-extension UUID arbitration.
     (Wrist dictation works through the daemon's `voice.*` backend, see "Reply UX" above.)
 

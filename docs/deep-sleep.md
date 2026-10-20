@@ -55,10 +55,16 @@ watch.
 | Datalog pause | `power.pause_datalog_screen_off` | off | While the display is off, the watch holds back its datalog (health data every 15 min); it arrives when the phone is used again. Saves ~4 wakes/h in Mode B. |
 | Quiet Time pause | `power.quiet_time_link_off` | off | No watch link during the watch's **scheduled** Quiet Time once the display has been off for 10 min; back on when the window ends or the display comes on. Saves the idle link's cost at night (see [What an idle link costs](#what-an-idle-link-costs) and [Quiet Time pause](#quiet-time-pause)). |
 
-Every key in this table is also in the GUI (Settings → Daemon configuration → Deep sleep, and
-Notifications for the catch-up) and in `stoandl daemon set <key> <value>`, which validates the value
-first. All of them except `power.pause_datalog_screen_off` and `power.quiet_time_link_off` take effect
-only after a daemon restart; those two apply at once.
+Every key in this table is also in the GUI (Settings → Connection & power: *Phone battery* and, for the
+sleep guard, its Advanced section; Settings → Notifications for the catch-up) and in `stoandl daemon set
+<key> <value>`, which validates the value first. `power.sleep_guard` and `power.sleep_guard_max_ms` take
+effect only after a daemon restart (*Restart now* in the GUI, `stoandl daemon restart`); the others apply at
+once (the catch-up window from the next connection).
+
+While the phone is awake and nothing changes, stoandl doesn't poll: the display state (DRM DPMS) is one
+shared flow, sampled only while the datalog pause or the Quiet Time pause follows it, and it emits every
+sample without replay, so a follower re-syncs on the first sample after a resume. The D-Bus listeners wait
+for their connection to end instead of polling it.
 
 Log lines to look for (`/tmp/stoandl.log`): `Sleep guard on`, `PrepareForSleep: held the suspend …`,
 `Notification catch-up: sending N unsent notification(s) created after …` (only when a reconnect has
@@ -124,7 +130,7 @@ kernel since r9, `r9-0018`).
 
 ### Quiet Time pause
 
-`power.quiet_time_link_off = true` (GUI: Deep sleep → *Pause watch connection during Quiet Time*) keeps
+`power.quiet_time_link_off = true` (GUI: Connection & power → *Disconnect during Quiet Time*) keeps
 the watch disconnected during the watch's own **scheduled** Quiet Time: the weekday and weekend windows
 you set on the watch or with `stoandl settings`. stoandl reads them from the synced watch settings and
 applies the watch's rule: the day's own schedule decides (Saturday and Sunday the weekend one), a window
@@ -133,7 +139,7 @@ whose end is before its start runs overnight. Manual and calendar Quiet Time don
 The link is paused while all of these hold, and comes back as soon as one doesn't:
 
 - the window is active and the display has been off for 10 minutes (a display that is off when stoandl
-  starts counts, so a restart inside the window stays paused);
+  starts, or when the option is switched on, counts, so a restart inside the window stays paused);
 - calls can't interrupt Quiet Time. With *Quiet Time interruptions* set to phone calls the watch would
   buzz for a call, so the link stays on (logged once per window);
 - no pairing window, firmware or language update or call is running.

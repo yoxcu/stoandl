@@ -1,10 +1,10 @@
-# Voice dictation: speech-to-text engines
+# Voice: speech to text and text to speech
 
 stoandl turns the watch's dictation (Voice in a notification's Reply menu, watchapps' dictation API) and
 extensions' voice notes into text with the backend in `voice.backend`:
 
 - `local` (recommended): a downloaded model run by whisper.cpp on this machine. Nothing leaves it. Set up
-  below; the GUI's Settings → Daemon configuration → Voice does the same with buttons.
+  below; the GUI's Settings → Voice does the same with buttons.
 - `command`: your own engine run per dictation. It gets a 16 kHz mono 16-bit WAV as `{wav}` and the language
   as `{lang}` (`voice.language`: a code such as `de`, or `auto`) and prints the transcript on stdout. The
   command line runs through `sh`, so `~` and pipes work. Nothing leaves the machine.
@@ -13,7 +13,11 @@ extensions' voice notes into text with the backend in `voice.backend`:
   leaves the machine.
 
 The watch waits 15 s for the result after you stop speaking; stoandl gives the engine 14. Check a setup
-without a watch: `stoandl voice` (status) and `stoandl voice test clip.wav`.
+without a watch: `stoandl voice` (status) and `stoandl voice test clip.wav`, or in the GUI Settings → Voice
+→ Speech to text → *Try a recording…*, which transcribes a WAV or Ogg file you pick with the configured
+backend (with the HTTP service the file leaves the machine).
+
+The other direction, reading text aloud, is [Text to speech](#text-to-speech) below.
 
 ## Fallback
 
@@ -59,8 +63,9 @@ stoandl voice                        # Voice: ready — local Parakeet v3
 stoandl voice test clip.wav          # optional: any WAV or Ogg/Opus file
 ```
 
-In the GUI, the Voice section offers the recommended model while none is installed, shows the download's
-progress, and its Model dropdown lists the downloaded models. The download from huggingface.co is the only
+In the GUI, Settings → Voice has two cards: speech models under *Speech to text*, voices under *Text to
+speech*. The models card offers the recommended model while none is installed, shows the download's
+progress, and the Model dropdown lists the downloaded models. The download from huggingface.co is the only
 network access; it happens only when you start it. `stoandl voice use <id>` switches between downloaded
 models, `stoandl voice remove <id>` deletes one.
 
@@ -100,3 +105,87 @@ ARM. `taskset` is in `util-linux-misc` on Alpine.
 - The first dictation after a while reloads the model from disk (1–2 s more). For whisper models a resident
   `whisper-server` on loopback with `voice.backend = http` avoids it.
 - Licences: Parakeet weights CC-BY-4.0 (NVIDIA), Whisper MIT.
+
+## Text to speech
+
+stoandl can also read text aloud, with the engine in `tts.backend` (off by default, so nothing speaks out
+of the box):
+
+- The [assistant extension](assistant.md) reads its answers on the **watch speaker** (Pebble Time 2,
+  Pebble 2 Duo): its `speak` setting is `always` (default), `on_request` (Hold Down) or `off`, inert until
+  `tts.backend` is set. Any extension can do the same through `synthesize`
+  ([extensions.md](extensions.md#synthesize-text-to-speech-for-the-extensions-watchapp)); the audio goes to the watch
+  as described in [speaker-stream.md](speaker-stream.md).
+- `stoandl voice say <text>` and the GUI's *Test voice* play on **this device**, through the first of
+  `pw-play` (PipeWire, `pipewire-tools`), `paplay` (`pulseaudio-utils`) or `aplay` (`alsa-utils`) installed.
+  A new `say` stops the one before; `stoandl voice stop` stops it. The command returns at once ("Reading
+  aloud — stoandl voice stop to stop"); a failure after that is in the daemon log.
+
+### Engines (`tts.backend`)
+
+- `local` (recommended): **Piper** with a downloaded voice, or **espeak-ng**. Piper is found as `piper_exe`
+  (libpiper's native binary, preferred: it starts faster), then `piper-tts`, then a bare `piper` only if
+  its `--help` names the length scale — on Arch and Alpine `piper` is also libratbag's mouse configurator,
+  so install `piper-tts`. Piper runs on the big cores of a big.LITTLE phone (`taskset`), and `tts.speed`
+  maps to its length scale (100/speed). Pick `espeak-ng` as `tts.local_voice` for no download and every
+  language, at the cost of a robotic voice (`-s 175 × speed/100`). Nothing leaves the machine.
+- `command` (`tts.command`): your own engine (Kokoro, sherpa-onnx, RHVoice, …). It gets the text on stdin
+  and writes a WAV to stdout; `{lang}` is replaced by the text's language (`de`, `en`; the primary subtag of
+  `de-DE`), or for `voice say`, which has none, the system locale's language, else `en`. Runs through `sh`.
+- `http` (`tts.url`): an OpenAI-compatible `/v1/audio/speech` endpoint (speaches, LocalAI, openedai-speech,
+  or a hosted service). stoandl sends `{model, voice, input, speed, response_format: "wav"}` with
+  `tts.http_model`/`tts.http_voice` and `tts.api_key` as a Bearer token. That key is separate from
+  `voice.api_key` and never inherited from it, so a key only reaches the server it was meant for. **The
+  text leaves the machine.** A WAV streamed with unfilled sizes (`0xFFFFFFFF`) is read fine.
+
+`stoandl voice` (and `stoandl status`) shows both directions: `Text to speech: ready — local Thorsten
+(German)`, or why it isn't ready. The text is never logged, only its length (`Text to speech (local): 42
+characters → 2900 ms of audio in 1800 ms`). Engine WAVs live in `$XDG_RUNTIME_DIR/stoandl/tts` and are
+deleted after use (an extension's `wav` result after 10 minutes). The system is kept awake (a logind
+block) while a synthesis runs and while `voice say` plays; one synthesis runs at a time.
+
+### Voices
+
+`stoandl voice models` lists them under *Text to speech (tts.local_voice)*; `stoandl voice download
+<id>` fetches one from huggingface.co/rhasspy/piper-voices (the `.onnx` and its `.onnx.json`, into
+`~/.local/share/stoandl/tts/`; speech models stay in `…/stt/`). A finished download becomes
+`tts.local_voice` and turns `tts.backend` to `local` if it was `off`. `stoandl voice use <id>` switches,
+`stoandl voice remove <id>` deletes both files.
+
+| Id | Voice | Size | Rate | Licence | Use |
+|---|---|---|---|---|---|
+| `piper-de-thorsten-low` | German, male (Thorsten-Voice) | 63 MB | 16 kHz | CC0 | **recommended for the watch** |
+| `piper-en-kathleen-low` | US English, female (Kathleen dataset) | 63 MB | 16 kHz | CC0 | **recommended for the watch** |
+| `piper-de-eva_k-x_low` | German, female (M-AILABS) | 21 MB | 16 kHz | M-AILABS licence (BSD-style) | smallest and fastest, rougher |
+| `piper-de-thorsten-medium` | German, male (Thorsten-Voice) | 63 MB | 22 kHz | CC0 | host playback |
+| `piper-en-ljspeech-medium` | US English, female (LJ Speech) | 64 MB | 22 kHz | public domain | host playback |
+
+The watch speaker plays 8 kHz audio, so a "low" voice is enough there and the fastest to make. A medium
+voice sounds better on this device's speakers but is slower to make, and like any downloaded voice it
+becomes `tts.local_voice`, so it is also the watch's voice for its language: a phone's reading on the watch
+then waits longer. lessac is not offered (its Blizzard licence is unclear), nor ryan (CC BY-NC-SA).
+
+**Languages.** The assistant passes `de` or `en` (its `language` setting, German or English). stoandl then
+speaks with `tts.local_voice` when that voice speaks the language (espeak-ng speaks all), else with the
+first installed voice in that language, else `tts.local_voice` anyway. So installing one German and one
+English voice makes a bilingual assistant work with no further setting.
+
+In the GUI, the voices card under Settings → Voice → *Text to speech* shows the status (`TtsStatus`), a
+download list like the models card, an install hint for Piper or espeak-ng (quiet while text to speech is
+already ready, e.g. with espeak-ng), and *Test voice* / *Stop*, which play "This is stoandl speaking." on
+this computer.
+
+### Set up (local)
+
+```sh
+# 1. An engine. postmarketOS / Alpine: espeak-ng is in community, Piper is piper-tts in edge's testing
+#    repository. Elsewhere: the distro's espeak-ng, and Piper TTS (piper-tts) from the distro or upstream.
+sudo apk add espeak-ng          # and/or: sudo apk add piper-tts  (edge testing)
+# 2. A voice (or use espeak-ng: stoandl voice use espeak-ng)
+stoandl voice download piper-de-thorsten-low
+stoandl voice download piper-en-kathleen-low   # optional: English too
+stoandl voice                                  # Text to speech: ready — local Thorsten (German)
+stoandl voice say "Guten Tag"                   # plays on this device
+```
+
+Voice licences: Thorsten-Voice and Kathleen CC0, LJ Speech public domain, M-AILABS BSD-style (see the table).

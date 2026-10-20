@@ -43,8 +43,8 @@ systemctl --user enable --now stoandl                   # as your user, not root
 
 1. **Pair.** On the watch open **Settings → Bluetooth**, then run `stoandl watch pair` and answer `y`
    when the code matches the one on the watch.
-2. **Check.** `stoandl notif test` puts a notification on the wrist; `stoandl watch list` shows the
-   watch, its battery and transport.
+2. **Check.** `stoandl notif test` puts a notification on the wrist; `stoandl status` shows the
+   watch, its battery and transport, and every service at a glance.
 3. **GUI (optional).** Install the [GUI](#desktop--mobile-gui-optional) for pairing, settings and
    health charts on the phone's screen.
 4. **Stuck?** `stoandl support` builds a bundle for a bug report — see

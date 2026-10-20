@@ -87,6 +87,11 @@ _Implemented — to be tested ([TESTING.md §5.33f](../TESTING.md)):_ with the l
 reaches only an allow-list of host methods (before, any Java method), intercepted XHRs (timeline-pin
 apps) fire `onload`, and a reused `XMLHttpRequest` sends again.
 
+_Implemented — to be tested ([TESTING.md §5.72](../TESTING.md)):_ PKJS sessions start on one shared GraalJS
+engine (one per host-access policy, so PKJS and plugins get one each) with the shims parsed once, so an app's
+JS starts 2–3× faster (warm JVM on x86: ~45–57 ms → 13–25 ms per session), and Truffle's per-launch
+"fallback runtime" warning is gone from the journal.
+
 ### App configuration pages (Clay)
 
 Serve a PKJS app's config page via a local proxy, so you can change its settings from a browser.
@@ -193,6 +198,16 @@ until you open the next pairing window. A pairing window also discovers with the
 suspends with the display off awake while pairing. If the window can't discover, `watch pair` prints
 why (Bluetooth off, another watch connecting, the phone slept, the scan failing to start) instead of
 timing out silently.
+
+_Implemented — to be tested ([TESTING.md §5.74](../TESTING.md)):_ a **second watch** can be paired while
+the first is connected (BLE or Bluetooth Classic), and a Classic one also while the first is away: the window waits for a watch that wasn't known
+when it opened, the new watch takes the link over once it bonds, and a declined or timed-out pairing hands
+the connection back to the watch that had it. Known watches reconnect only through libpebble3's connect
+goal and the wrist follower (the Classic pairing step no longer re-requests a known classic watch, which
+fought the follower every ~21 s), and the follower gives a watch that dropped right after a resume 90 s
+instead of 20 s to re-link before it switches. The GUI offers *Re-pair* on a disconnected or endlessly
+connecting watch, and the pair dialog offers to turn on Bluetooth Classic for a Pebble Time / Time Steel /
+Round.
 
 If you forget the host **on the watch** (one-sided bond), stoandl notices the watch endlessly
 re-connecting and dropping, and sends a notification with a one-tap **Re-pair** button — or run
@@ -322,13 +337,17 @@ Reminders, declined events and the reminder vibration are configurable (`calenda
 `calendar.show_declined`, `calendar.reminder_vibe`), live without a restart (_to be tested_,
 [TESTING §5.43](../TESTING.md)).
 
+_Implemented — to be tested ([TESTING.md §5.73](../TESTING.md)):_ each source says why its last read
+failed and when it last read fine (`stoandl calendar sources`: `problem: Sign-in failed (401)`, `last sync:
+just now`; the GUI shows the same per source and can browse for a local `.ics` file or folder).
+
 ### Watch screenshot
 
 Capture the watch's current screen to a PNG on the host — handy for sharing watchfaces and filing bug
 reports (the official app has it).
 
 ```sh
-stoandl screenshot                 # → ./pebble-screenshot-<time>.png
+stoandl screenshot                 # → ~/Pictures/Screenshots/pebble-screenshot-<time>.png (prints the path)
 stoandl screenshot watchface.png   # → a name you choose
 stoandl screenshot ~/Pictures/     # → a timestamped PNG in that directory
 ```
@@ -339,7 +358,11 @@ libpebble3's `ScreenshotService` does the protocol work over the SCREENSHOT endp
 `ImageBitmap` that is a null stub on the JVM/desktop build. stoandl encodes the pixels to PNG with a
 tiny `Deflater`-based encoder (no `java.awt`/`ImageIO`, so it stays portable on musl/postmarketOS).
 Works on colour (Basalt/Chalk/Emery) and 1-bit classic Pebbles alike. Purely local — no egress.
-_Hardware-verified. [TESTING.md §5.15](../TESTING.md)._
+_Hardware-verified. [TESTING.md §5.15](../TESTING.md)._ _Implemented — to be tested
+([TESTING.md §5.73](../TESTING.md)):_ the capture runs as a daemon watch task (D-Bus `TakeScreenshot` answers
+at once, `TaskStatus` follows it), so a slow transfer never freezes the GUI; with no path it lands in the
+XDG Pictures/Screenshots folder (localized names included), and the GUI shows a preview with *Open* and
+*Open folder*.
 
 ### Find my watch
 
@@ -485,7 +508,7 @@ enforced **host-side** before sending, the same place Android's `decideNotificat
 stoandl notif list                 # tracked apps + mute state
 stoandl notif mute <app> [1h|2d]   # mute an app (optionally temporarily, auto-expiring)
 stoandl notif unmute <app>
-stoandl notif mute-all
+stoandl notif mute-all 1h          # mute every app for a while (30m/1h/2d/today); notif unmute-all ends it
 stoandl notif style <app> --color/--icon/--vibe   # per-app colour / icon / vibration
 stoandl notif styles               # list every accepted colour / icon / vibe (generated from the enums)
 stoandl notif vibe-test <vibe>     # buzz the watch with a vibration (to be tested, below)
@@ -503,12 +526,17 @@ so the opt-in `notification.sync_to_watch` defaults off. _**Hardware-verified** 
 weekday/weekend schedules, temporary mutes, persistence, the wrist "Mute" action and per-app styling
 all confirmed. [TESTING.md §5.18](../TESTING.md)._ See [configuration.md](configuration.md#per-app-notification-settings).
 
+_Implemented — to be tested ([TESTING.md §5.73](../TESTING.md)):_ `notif mute-all` is now one temporary
+state apart from the per-app mutes (a duration or `today`, kept across a restart): it no longer overwrites
+each app's own mute, so `unmute-all` gives back a `weekdays` app its schedule, and it also holds back apps
+not seen before. `stoandl notif list`, `stoandl status` and the GUI's Watch tab show it while it lasts.
+
 ### Watch logs / support bundle
 
 Pull the watch's own firmware logs, or package a full diagnostic bundle for a bug report.
 
 ```sh
-stoandl logs                    # → ./pebble-logs-<time>.txt  (the watch's firmware log)
+stoandl logs                    # → ~/Documents/stoandl/pebble-logs-<time>.txt  (the watch's firmware log)
 stoandl logs /tmp/watch.txt     # a name you choose
 
 stoandl support                 # → ./stoandl-support-<time>.tar.gz
@@ -526,7 +554,8 @@ your `stoandl.conf` **with secrets redacted** (CalDAV passwords and any credenti
 `bundle-notes.txt` which pieces were omitted rather than failing. Wiring-only: libpebble3 already had
 `gatherLogs` / `getCoreDump` / `WatchInfo`. No egress — nothing is uploaded (unlike the official app's
 Core backend). An output argument may be a filename, an existing directory, or a not-yet-existing
-`dir/` (created for you); omit it for a timestamped name in the cwd. Review the archive before
+`dir/` (created for you); omit it for a timestamped name (`logs` in Documents/stoandl, `support` in the
+cwd; _to be tested, [TESTING.md §5.73](../TESTING.md)_). Review the archive before
 sharing: the watch logs can still contain personal data. _**Hardware-verified** — watch-log capture,
 watch info, coredump and the full bundle. [TESTING.md §5.16](../TESTING.md)._
 
@@ -877,6 +906,17 @@ in the GUI form as a password field with *Clear*, and handed only to that extens
 its `config` file is moved out. A `required` field keeps the extension stopped until it is set. Extensions
 can also hold off a suspend for up to a minute (`keepAwake`). _To be tested ([TESTING.md §5.49](../TESTING.md))._
 
+_Implemented — to be tested ([TESTING.md §5.71](../TESTING.md)):_ `stoandl ext config <name> [<key>
+[<value>|--unset]]` lists and sets an extension's settings from the CLI (a secret is prompted without
+echo, never taken from the command line); `stoandl ext install <dir>` installs straight from an unpacked
+directory (staged, so a failed install keeps the old version running); the "needs setup" alert says where to
+set it up (the GUI's extension settings, or `stoandl ext config`), and an extension quarantined after 5
+rapid failures raises a "<name> stopped" alert with its last stderr line and a *Restart* button. `stoandl
+ext list` and the GUI show that last error line; a schema field can carry a `description` and `help`.
+Extensions get `synthesize` (text to speech, below) and an immediate `-32601` for a method the daemon
+doesn't know. A reusable watch speaker receiver ships in
+[`examples/extensions/watchlib/`](../examples/extensions/watchlib/) ([speaker-stream.md](speaker-stream.md)).
+
 ### Phones that deep-sleep (suspend-aware daemon)
 
 For a phone that suspends whenever the screen is off: a logind delay lock makes a suspend wait until
@@ -896,6 +936,12 @@ _Implemented — to be tested ([TESTING.md §5.37](../TESTING.md)):_ the Quiet T
 watch's scheduled Quiet Time, with the display off for 10 min, the watch link is paused, so the phone's
 radio doesn't serve an idle link all night. It comes back when the window ends or the display comes on,
 and the watch then gets the notifications from the pause. It stays on if calls may interrupt Quiet Time.
+
+No idle polling: while the phone is awake and nothing changes, stoandl no longer wakes up every few
+seconds. The display state is sampled only while the datalog pause or the Quiet Time link pause follows it,
+and the D-Bus listeners (notification monitor, ModemManager, MPRIS) wait for their connection to end
+instead of polling it, so an idle daemon on the OnePlus 6 should drop from about 5 wakeups/s to near 0.
+_To be tested ([TESTING.md §5.73](../TESTING.md))._
 
 Faster BLE reconnect: the BlueZ connector now notices a link that comes up while it waits to retry,
 instead of only when its 5 s wait ends. Before, a reconnect was usually noticed only at the end of that
@@ -965,7 +1011,7 @@ Add a weather location by name instead of looking up its coordinates: `stoandl w
 the matches from Open-Meteo's geocoder (most populous first, with region, country and coordinates), and
 `--add [n]` stores match *n* (default 1) in `weather.locations`, applied live; `--as <label>` names it on the
 watch. A location of the same name is replaced, so re-adding moves it. The GUI has the same search under
-Settings → Daemon configuration → Weather (*Find a location*; Enter or **Search** looks up, **Add** stores).
+Settings → Weather (*Find a location*; Enter or **Search** looks up, **Add** stores).
 It is a web request, so it is off by default (`weather.place_search`) and refused while weather sync is
 off; only the typed name is sent, and only when you search. D-Bus `SearchWeatherPlace` /
 `AddWeatherLocation`. Off-device: `WeatherPlacesTest`, `WeatherSearchArgsTest`.
@@ -1010,11 +1056,20 @@ change. Guide: [assistant.md](assistant.md). _Built and tested offline (a fake s
 the request, notification and watchapp paths); not yet run against the real API or on a watch
 ([TESTING.md §5.50](../TESTING.md))._
 
+_Implemented — to be tested ([TESTING.md §5.69](../TESTING.md)):_ the Assistant app **reads answers aloud**
+on the watch speaker (Pebble Time 2 / 2 Duo) through stoandl's text to speech: `speak = always` by default,
+inert until `tts.backend` is set; Hold Down replays or stops an answer; Select, Back, an incoming call or
+notification stop it; quiet in Quiet Time (Hold Down still plays). Speech never plays during dictation
+(the receiver is held off, so the microphone doesn't hear the speaker), and the watch drops a stream that
+stalls for 35 s. The sleep hold ("reading an answer aloud") lasts only while it reads. German and English
+answers pick a voice of that language. [assistant.md → Reading answers aloud](assistant.md#reading-answers-aloud).
+
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
 push wakes on a phone that drops the link on suspend, and a watch that was out of range. It is bounded
-by `notification.catch_up_minutes` (default 60; 0 = upstream behaviour), and never reaches back past the
+by `notification.catch_up_minutes` (default 60; 0 = upstream behaviour; a change applies from the next
+connection, no restart), and never reaches back past the
 daemon's start or the watch's pairing. Nothing the watch already has is re-sent, and stoandl's own
 alerts about a watch that can't connect stay on the desktop. Implemented in the libpebble3 fork
 (`NotificationCatchUp`, `NotificationConfig.missedNotificationCatchUpMs`, default 0 there); the fork's
@@ -1064,13 +1119,105 @@ Pebbles to verify. _To be tested._ Known gaps before multi-watch is fully usable
   the same application is untested._
 - _CLI commands (`launch`, `sideload`, `remove`, `settings`) target the single connected watch with no
   disambiguation flag (`--watch <name|address>`). With two watches the behaviour is unspecified._
-- _`stoandl watch pair` for a second BLE watch while the paired one is armed but absent doesn't work.
-  The armed watch counts as connecting (`ConnectingKnownPebbleDevice`), so the BLE pairing scan stays
-  paused, and `watch pair` says `BLE scan paused — <watch> is connecting`. Unpair that watch first; a
-  classic watch still pairs via the BR/EDR inquiry._
-- _`stoandl watch pair` with a watch already **connected** is broken: the early-return guard exits
-  immediately with "Watch already connected". Fixing it requires removing that guard and scoping the
-  `connectedJob` to newly connected devices only._
+- _Pairing a second watch while one is connected (or, for a Classic watch, away) is implemented, to be
+  tested ([TESTING.md §5.74](../TESTING.md)); see [BLE pairing / bonding](#ble-pairing--bonding)._
+- _A second **BLE** watch still can't be paired while the first is armed but away: the armed watch counts
+  as connecting, and an LE scan would disturb its connect (they share BlueZ's discovery slot), so the scan
+  stays paused and `watch pair` says `BLE scan paused — <watch> is connecting`. Bring the first watch in
+  range first; a classic watch pairs via the BR/EDR inquiry, which no
+  longer waits for an arming BLE watch._
+
+### Settings: one page per topic, help on every row
+
+The GUI's settings are rebuilt around the daemon's schema: a landing list with *Watch preferences*, ten
+topic pages (Notifications, Weather, Calendar, Music, Voice, Health & battery, Apps & plugins, Connection &
+power, Firmware & language, Developer), *Backup & restore*, *Diagnostics & developer* and *About* (both
+versions and a copyable support line). One control per key: the separate Sync screen, the second calendar
+*discover* switch and the Alerts app-name combo are gone; each service master is the first row of its page,
+and forwarding off shows as a "Forwarding is off [Turn on]" banner on the Alerts and Watch tabs. Every row
+has a help button (?) with what the one-line description leaves out — also on long-press, right-click and
+F1 — and says what it contacts when it makes stoandl reach a server. A row that only matters while another
+setting has a value is locked (its control, not its help) and says "· Used when …"; `Advanced` sections
+are collapsed. A search covers labels, descriptions, help, keys and watch preferences. The daemon side is
+`GetConfigSchema`'s columns 12–16 (`page`, `help`, `requires`, `default`, `egress`) and the `ListWatchPrefs`
+columns 9–11; the CLI's `stoandl daemon list` groups by page › section and `daemon get <key>` prints the
+help, default, "used when" and "contacts" lines. Combo labels were reworded (tokens unchanged, see
+[configuration.md](configuration.md)). _Implemented — to be tested ([TESTING.md §5.66, §5.67](../TESTING.md))._
+
+### Settings apply live: hand edits, ConfigChanged, Restart from the GUI
+
+Every setting applies the same way whichever way it is changed: the GUI, `stoandl daemon set`,
+`stoandl sync enable|disable` (now an alias of the key), the daemon itself (a finished voice download), or
+**a hand edit of `stoandl.conf`**, which the daemon picks up half a second after the file settles (an
+editor's save, `sed -i`, a restore). Each changed key is logged and announced with the D-Bus signal
+`ConfigChanged`, so an open GUI page updates at once. `notification.catch_up_minutes` is live now too
+(from the next connection), which leaves five keys that need a restart; for those the GUI says "(after
+restart)" and offers *Restart now*, which restarts stoandl through systemd's user manager (D-Bus `Restart`,
+also `stoandl daemon restart`; it works from the Flatpak, and refuses during a pairing window or an
+update). _Implemented — to be tested ([TESTING.md §5.66, §5.73](../TESTING.md))._
+
+### Watch preferences: sections, help, reset
+
+Watch preferences come grouped the way the GUI shows them (Quick launch, Backlight & display, Notifications
+& timeline, Quiet Time, Vibration, Music, Time, units & language, Motion & menus, Advanced), with help text
+and "only matters when" rules from the daemon (the backlight timeout and intensity rows need the Advanced
+backlight preset, except on firmware too old to have the preset). *Reset to defaults* (`stoandl settings
+reset`, D-Bus `ResetWatchPrefs`) puts every changed preference back, pinned `watch.*` lines included. The
+GUI shows the notification timeout in seconds. _Implemented — to be tested ([TESTING.md §5.66,
+§5.67](../TESTING.md))._
+
+### Text to speech
+
+stoandl can read text aloud (`tts.backend`, off by default): **Piper** with a downloaded voice or
+**espeak-ng** on this machine, a custom command, or an OpenAI-compatible speech server (opt-in egress, its
+own API key). The assistant uses it to read answers on the watch speaker (above); any extension can, through
+`synthesize`, which returns the audio already encoded for the watch speaker. `stoandl voice say <text>` and
+the GUI's *Test voice* play on this device (`pw-play`, `paplay` or `aplay`); `stoandl voice stop` stops it.
+`stoandl voice download piper-de-thorsten-low` (or `piper-en-kathleen-low`) fetches a voice and turns text
+to speech on; with one German and one English voice installed, German and English text each get their own
+voice. The text is never logged and the system stays awake while it speaks. Setup, voices and licences:
+[voice.md → Text to speech](voice.md#text-to-speech). _Implemented — to be tested ([TESTING.md
+§5.68](../TESTING.md))._
+
+### CLI: `stoandl status`, exit codes, faster start
+
+`stoandl status` shows the daemon, the watch (state, transport, battery), forwarding and the global mute,
+the sync services, a firmware update a recent check found (no new request), running or finished watch
+tasks, extensions, waiting permission requests, speech to text and text to speech, at a glance; it exits 0
+with a watch connected, 1 without. Every command exits 0 done, 1 failed, 2 usage error, 3 daemon not
+running, with one wording for D-Bus errors ("stoandl isn't running — systemctl --user start stoandl",
+"stoandl is still starting", "versions differ", "didn't answer in time"); commands that wait on the watch
+get 120 s instead of 15. The CLI logs to stderr only (never into the daemon's `/tmp/stoandl.log`), and its
+JVM starts from a class-data archive it writes on the first run after an install (about 470 → 270 ms on
+x86). `STOANDL_LOG=DEBUG` covers all of stoandl's own code. Packaging: one launcher (the JAR's manifest
+grants native access, so no restricted-method warnings), a slimmer reproducible JAR without foreign
+natives, an APK post-install message with the `systemctl --user enable --now stoandl` step, and
+`install.sh --remote` copies an rsync delta. _Implemented — to be tested ([TESTING.md §5.70](../TESTING.md))._
+
+### Daemon startup and watch tasks
+
+The daemon takes its public D-Bus name only once it is ready (behind a private
+`de.yoxcu.stoandl.Instance` guard that keeps a second daemon out), so a GUI that sees it appear can call
+at once; the CLI and the GUI say "stoandl is starting" meanwhile. Sideload, screenshot, watch logs and core
+dump run as daemon watch tasks (`TaskStatus`/`TaskChanged`), and the daemon serves D-Bus calls on 12 threads
+instead of 4, so a slow transfer or firmware check no longer freezes the GUI's other calls. _Implemented —
+to be tested ([TESTING.md §5.73](../TESTING.md))._
+
+### GUI quality of life
+
+On top of the settings pages: worded errors ("Your stoandl daemon is older than this app", "didn't answer
+in time") and a daemon-down screen that tells not running from starting from crash-looping (with *Start
+daemon* outside the Flatpak); long actions run without blocking the UI, with a thin progress bar;
+pairing a second watch, *Re-pair* on a stuck watch, a Bluetooth Classic offer and a retry hint in the pair
+dialog; a screenshot preview with *Open* / *Open folder*, and *Open folder* for watch logs and core dumps
+(also from the Flatpak); per-app mute kinds and schedules in Alerts (temporary mutes only for an app that
+forwards), the global mute as its own state with a Watch-tab chip; a custom vibration editor with *Test*;
+Ping and a speech-to-text recording test; an extension's last error with a *Restart* button; installing a
+`.pbl` language pack or an extension folder from a file picker; pull to refresh; *Sync now* (only services
+with a source) apart from *Check for updates*; confirmations for what can't be undone and *Undo* for a
+deleted filter; empty states that offer the one setting that fills them and say what it contacts; and a
+layout that fits a 360 px phone. _Implemented — to be tested on hardware; smoke-tested against the mock
+daemon ([TESTING.md §5.67, §5.75](../TESTING.md))._
 
 ## Not yet implemented
 

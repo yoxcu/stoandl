@@ -34,6 +34,13 @@ block costs half a second of audio, never the rest of the stream.
   by the low three bits). Per code: `diff = step>>3`, plus `step>>2` for bit 0, `step>>1` for bit 1 and
   `step` for bit 2; bit 3 subtracts. The predictor is clamped to s16 and the index to 0–88.
 - 4 bits per sample at 8 kHz is about 4 KB/s, half of 8-bit PCM.
+- The daemon's encoder (`voice/tts/WatchSpeakerEncoding.kt`) never emits a header-only block: the
+  shortest is 5 bytes (3 samples). Known vector: 16 samples of an 8000-amplitude sine at 1 kHz
+  (`8000·sin(2π·i/8)`) encode to the single block `00003f0017c99b4114c98b81`, which both
+  `stoandl_speaker.c`'s decoder and a separate Python IMA encoder reproduce (`WatchSpeakerEncodingTest`).
+- Before encoding, the daemon resamples the engine's audio to 8 kHz through a Blackman-windowed sinc
+  low-pass at 3.6 kHz, then peak-normalises to 95 % of full scale with a 2:1 compressor above half the peak
+  and at most 16× gain, which keeps quiet voices audible on the small speaker.
 
 ## AppMessage keys
 

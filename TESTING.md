@@ -2324,6 +2324,218 @@ dbus-daemon), `AppIconExtractorCacheTest`.
 | 5.65b | No noise below 500 ms | open every GUI tab and page, toggle some settings | No `D-Bus StoandlControl.… took` lines for the quick methods (ListWatches, GetConfig, ListApps …). |
 | 5.65c | App icons after an install | open Apps & Faces, then `stoandl apps install some.pbw`, look again; remove it and look again | Icon-less rows stay generic; the new app shows its icon right after the install (the listing follows the `pbw-cache` directory's mtime, not a signal); after removal its row is gone. |
 
+## 5.66 Settings, daemon side: schema columns, ConfigChanged, live hand edits, Restart, watch-pref reset  ⚠️ UNVERIFIED (needs the systemd service; 5.66g–i a watch)
+
+The settings contract of the 2026-10 QoL wave ([docs/settings-parity.md](docs/settings-parity.md),
+[docs/dbus-interface.md](docs/dbus-interface.md#daemon-config-stoandlconf-over-d-bus)): `GetConfigSchema` has 16
+columns, `ConfigChanged(key)` follows every change (hand edits of `stoandl.conf` included, applied ~0.5 s after
+the file settles), `SetSyncEnabled` is an alias of `SetConfig`, `notification.catch_up_minutes` is live,
+`Restart()` restarts the daemon through systemd, and `ListWatchPrefs` has sections, help and requires, with
+`ResetWatchPrefs`. Off-device: `ConfigSchemaTest` (layout, help, requires, egress defaults, conf.example, the
+GUI fixture), `ConfigReloadTest`, `UsedWhenTest`, `WatchPrefTextTest`, `WatchPrefsControlTest`. Watch signals
+with `dbus-monitor --session "type='signal',interface='de.yoxcu.stoandl.Control'"`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.66a | Restart under systemd | on the OnePlus 6 with the systemd service: `busctl --user call de.yoxcu.stoandl /de/yoxcu/stoandl de.yoxcu.stoandl.Control Restart`; repeat 6 times within 5 min | `ok:restarting stoandl.service`; the log shows `Restarting stoandl.service as requested over D-Bus` and `stoandl status` works again within ~15 s. Every one of the 6 comes back (ResetFailedUnit clears `StartLimitBurst`). Also `stoandl daemon restart`. |
+| 5.66b | Restart refused | `Restart` with a pairing window open (`stoandl watch pair`), then during a firmware sideload | `busy:a pairing window is open`, then `busy:a firmware or language update is running`; the daemon keeps running. |
+| 5.66c | Restart elsewhere | `Restart` under the OpenRC service; then run the daemon by hand from a terminal that systemd runs as a service (a gnome-terminal or Plasma `app-*.service` shell, so `INVOCATION_ID` is inherited) | OpenRC: `error:restart with rc-service stoandl restart`. Terminal: `error:stoandl isn't running as its own service (it is in <scope/unit>); stop it and start it again`, and the terminal is not restarted. |
+| 5.66d | ConfigChanged | `stoandl daemon set weather.pins false`; `stoandl daemon set voice.api_key x`; set `weather.pins false` again | One `ConfigChanged` `"weather.pins"`, one `"voice.api_key"` (stored in the keyring, not stoandl.conf); the repeated write emits none. |
+| 5.66e | Hand edit applies live | with the daemon running, set `weather.enabled = false` in stoandl.conf with vim (rename-on-save), then back with `sed -i`; then edit `classic.discover` | Within ~1 s each: `Config weather.enabled: 'true' → 'false'`, `Weather sync off` and a `ConfigChanged`; an open GUI page updates. `classic.discover` logs `Config classic.discover applies after stoandl restarts`. A GUI `SetConfig` still applies exactly once (one log line, one reconcile). |
+| 5.66f | Hand edit racing a GUI write | edit `weather.enabled` in stoandl.conf and add a calendar source in the GUI within 0.5 s | The log shows `Config weather.enabled: …` and weather turns on or off; the calendar source is added too. |
+| 5.66g | Catch-up is live | `stoandl daemon set notification.catch_up_minutes 0` (no restart hint; log `Catch-up window 0 min`); `stoandl watch disconnect`, `notify-send test`, `stoandl watch connect`; then set 60 and repeat | With 0 the notification does NOT arrive on reconnect; with 60 it does, with no daemon restart in between. |
+| 5.66h | SetSyncEnabled alias | `stoandl sync disable weather`; `busctl … SetSyncEnabled sb dnd true`; `stoandl sync list`; `stoandl sync dnd` | `weather.enabled = false` in stoandl.conf, `GetSyncStatus` row `weather\tdisabled\t…\toff\tweather.enabled`. The dnd call returns `error:use dnd.sync (off\|to_watch\|to_host\|both)` and leaves `dnd.sync` unchanged; `sync list` has a KEY column; `sync dnd` prints the `stoandl daemon set dnd.sync <mode>` hint. |
+| 5.66i | Watch-pref columns | Time 2 on fw 4.41.x: `busctl … ListWatchPrefs`; `stoandl settings systemTextSize` | 11-column records grouped Quick launch → … → Advanced; `systemTextSize`/`notifTextSize` read "Menu Text Size"/"Notification Text Size"; `lightTimeoutMs` has requires `lightPreset=Advanced`. A classic watch on fw < 4.22 (if available): requires empty. |
+| 5.66j | Requires while the watch is away | a classic Time Steel (fw 4.4.x) out of range or paused by Quiet Time, then a Core watch on 4.41 out of range | Steel: Backlight Timeout/Intensity/Dynamic/Ambient stay editable in Watch settings (no `lightPreset=Advanced`). Core watch: greyed out under Standard. |
+| 5.66k | Reset watch prefs | `stoandl settings set clock24h true`, `… lightTimeoutMs 5000`, with `watch.clock24h = true` pinned in stoandl.conf; then `stoandl settings reset` (or `busctl … ResetWatchPrefs`) | `ok:Reset 2 watch settings to their defaults …`; after the sync the watch shows a 12 h clock and the default backlight timeout; the conf line reads `watch.clock24h = false`, and a reconnect doesn't re-apply true. |
+| 5.66l | tts keys | `stoandl daemon set tts.backend http`, `tts.url http://127.0.0.1:8000/v1/audio/speech`, `tts.speed 150`, `tts.speed 20`, `tts.api_key k` | The first three are accepted live and shown by `stoandl daemon get`; `tts.speed 20` is refused (50–200); `tts.api_key` goes to the keyring, not stoandl.conf. |
+| 5.66m | Forwarding at WARN | daemon with `STOANDL_LOG=WARN`: `stoandl daemon set notification.forward false` | Takes effect at once: notifications stop reaching the watch; `GetConfig` and the GUI show false. |
+| 5.66n | daemon get / list | `stoandl daemon list`; `stoandl daemon get weather.place_search` | `list` groups by "Page › Section" with `(restart)` markers on the five restart keys. `get` prints the value on stdout and on stderr `# <label> — <desc>`, the help, `# default: false`, `# used when: Weather is on` and `# contacts: geocoding-api.open-meteo.com`. |
+
+## 5.67 Settings, GUI: topic pages, help, search, locked rows, Restart now  ⚠️ UNVERIFIED (needs the GUI on the phone and a desktop; 5.67m–o a watch)
+
+The GUI half of 5.66 (gui `e4762ce`…`e6fa2de`). Offscreen smoke against `gui/tools/mock_stoandl.py`
+(`STOANDL_SMOKE=1 /home/vscode/.cache/stoandl-gui-check.sh`), which serves the generated
+`config-schema.tsv`/`watch-pref-text.tsv`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.67a | Help, long-press (phone) | Settings → Notifications: long-press a switch row; long-press an option row (Mirror Do Not Disturb); long-press the label of a text or number row | The help tooltip opens when the finger lifts; the switch doesn't flip, the picker doesn't open; a tap elsewhere closes it. |
+| 5.67b | Help, desktop | right-click a row; focus a row and press F1; hover and click (?) | The same tooltip; hovering (?) shows it after the delay, clicking pins it. |
+| 5.67c | Locked rows | Settings → Voice with `tts.backend` Off: tap (?) on Speaking rate and on Voice; long-press a locked switch | The help opens; the switch, picker and spin box stay inert; the subtitle says "· Used when …". |
+| 5.67d | Requires, live | Settings → Weather → Advanced: set "Also import places from" to A command | "Place command" unlocks at once; otherwise it is locked with "· Used when “Also import places from” is A command". |
+| 5.67e | Search | Settings → type "quiet"; then focus the search before any watch connects, connect one and search "backlight"; search "speed" and open the `tts.speed` hit | Schema hits (Disconnect during Quiet Time …) and, once the watch prefs load (≤ 5 s), watch hits; a hit opens its page scrolled to the row with a brief highlight (an Advanced section opens), and stays on the row while the cards above it fill in; watch-pref hits appear without a daemon restart. |
+| 5.67f | Restart now | apk on a systemd host: toggle Bluetooth Classic, press Restart now; same in the Flatpak; on OpenRC; during pairing | "Restart stoandl to apply: Bluetooth Classic"; the daemon restarts (the name drops and returns) and the message clears — also from the Flatpak, without systemctl. OpenRC: toast "restart with rc-service stoandl restart". During a pairing window or a flash the button is disabled with "(after the pairing window)". |
+| 5.67g | Forwarding banner | `stoandl daemon set notification.forward false` | Within a second the Alerts and Watch tabs show "Forwarding is off…"; *Turn on* restores it and the banner goes. |
+| 5.67h | ConfigChanged | Settings → Weather open; `stoandl daemon set weather.pins false` | The row updates without reopening the page. |
+| 5.67i | Masters without a source | fresh config, `weather.enabled` on and no places, no calendar source | The Weather master's subtitle reads "No place yet", the Calendar one "No calendar source yet". |
+| 5.67j | Voices card | desktop with espeak-ng or Piper: `tts.backend` Local model, a voice installed, press Test voice; download a voice from the card; with `tts.local_voice = espeak-ng` and no Piper | "This is stoandl speaking." plays on the computer and Stop ends it; a downloaded voice is selected in "Voice"; with espeak-ng ready the card shows no "Piper isn't installed" and no "No voice yet". |
+| 5.67k | Extension form | an extension whose manifest has `description`/`help`: change an enum, an int and a text field, Save, reopen | Subtitles and (?) shown; the stored values come back (the enum is not reset to its first option); +/- step the int by 1; `ExtGetConfig` shows booleans and ints saved with their JSON types. |
+| 5.67l | About and dialogs | Settings → About → Copy; Backup & restore → Back up now…; Diagnostics & developer → Create support bundle… | Both versions, the installed apk showing the package version (0.3.x, not 0.1.0, not a `-dirty` describe); the clipboard holds "stoandl <ver> · stoandl-gui <ver>". Each dialog proposes `stoandl-backup.tar.gz` / `stoandl-support.tar.gz` in its folder, with no warning in the log. |
+| 5.67m | Watch prefs | Watch preferences: set Backlight Preset to Advanced; with it not Advanced tap (?) on a light row; Reset to defaults → OK; set Notification Timeout to 60 s | Intensity/Dynamic/Ambient/Timeout unlock; locked, their (?) still opens; toast "Reset N watch settings…" and the values revert on the watch; the watch shows notifications for 60 s (sent as 60000 ms). |
+| 5.67n | Health profile help | Health profile with the HR monitor off: tap "Measurement interval" (?), then the row | The help opens; no picker opens. |
+| 5.67o | Phone layout | the OnePlus 6 at 360 px portrait: every settings page and dialog | No horizontal overflow; every dialog fits the width. |
+
+## 5.68 Text to speech  ⚠️ UNVERIFIED (5.68a–h on the OnePlus 6; 5.68i–j need a Time 2)
+
+`tts.*` ([docs/voice.md → Text to speech](docs/voice.md#text-to-speech)): Piper or espeak-ng on this device,
+a custom command or an OpenAI-compatible server; D-Bus `TtsStatus`/`Speak`/`StopSpeaking`, the voices in
+`VoiceModels` (`kind` = tts), and the extension request `synthesize`. Off-device: `TtsTest` (engine argv and
+speed, voice by language, Speak/synthesize busy and cancel), `WatchSpeakerEncodingTest` (low-pass, ADPCM
+blocks, the known vector), `SynthesisResultTest`, `VoiceModelsTest` (the two-file store), `VoiceTest` (WAV
+with unfilled sizes). Log: `grep -E 'Text to speech|tts' /tmp/stoandl.log`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.68a | Piper start-up speed | `stoandl voice download piper-de-thorsten-low`, then `stoandl voice say "Guten Tag, wie geht es dir?"` with `piper_exe` (libpiper) and with the Python `piper`; then `stoandl voice use espeak-ng` and again | Record call → first sound and the `→ N ms of audio in M ms` line: about 2–3 s for Piper, under 1 s for espeak-ng. `piper_exe` finds its espeak-ng-data next to its binary (the daemon passes no `--espeak_data`). `stoandl voice` names the voice. |
+| 5.68b | Big cores | while Piper runs: `ps -o psr -p <pid>` | Pinned to the big cores (`taskset`). |
+| 5.68c | Host playback | `voice say` on Plasma Mobile; on a host without pw-play; a second `voice say` while one plays; `voice stop` | Plays through pw-play, else paplay or aplay; the second cuts off the first; stop ends it; no pw-play or piper process is left (`pgrep`). `voice say` returns at once with "Reading aloud — stoandl voice stop to stop". |
+| 5.68d | Suspend while speaking | `systemctl suspend` during a long `voice say` | Refused while it synthesises and plays (logind block "Reading text aloud"), allowed after. |
+| 5.68e | Voice download | `stoandl voice download piper-en-kathleen-low` with `tts.backend` off, then with it on `http`; `stoandl voice remove piper-en-kathleen-low` | Sets `tts.local_voice`; turns `tts.backend` to `local` only when it was off; the GUI gets `ConfigChanged` for both keys; remove deletes the `.onnx` and the `.onnx.json`. |
+| 5.68f | Command `{lang}` | `tts.backend = command`, `tts.command = espeak-ng -v {lang} --stdout`, on a German-locale system: `stoandl voice say hallo` | Speaks with `-v de`, not `-v auto`. |
+| 5.68g | libratbag's piper | a desktop with libratbag's `piper` and no Piper TTS, a Piper voice selected | `stoandl voice` reports text to speech unavailable ("piper not found (install piper-tts)"), and the log has one line "… isn't Piper text to speech". |
+| 5.68h | HTTP backend | `tts.backend = http` against speaches or LocalAI `/v1/audio/speech`; a wrong `tts.api_key`; StopSpeaking during a synthesis; an unresponsive server | The streamed WAV (0xFFFFFFFF sizes) plays; the wrong key logs `HTTP 401: …`; the stop leaves no "unreachable: … cancelled" warning; the dead server gives "no answer within 60 s". |
+| 5.68i | Busy, not hung | the assistant synthesising for the watch while `voice say` runs (or two extensions) | The second `synthesize` gets `busy` at once; a `voice say` waits its turn; nothing hangs. GUI *Test voice* during a watch reading answers "Speaking…" at once and plays when ready. |
+| 5.68j | Watch speaker end to end | Time 2: an assistant answer read with thorsten-low, then kathleen-low; heartbeat `speaker_stream_underrun_count` @170, `speaker_on_time_ms` @154 | The 8 kHz ADPCM with the light compression has no clipping and acceptable volume; `language=German` speaks German, `English` English; the log shows `Text to speech (local): N characters` and never the text; suspend is refused while `synthesize` runs. |
+| 5.68k | Unknown method | an extension calling a method the daemon doesn't know (or assistant 1.1.0 on this daemon with `tts.backend` off) | `-32601 method not found: …` at once, no 30 s wait. |
+| 5.68l | Replay mid-reading | the assistant reading an answer with Python Piper; Hold Down to read again | The new reading starts, no "Text to speech is busy" card; no warning in the daemon log for the replaced sentence (the extension may log `speak: cancelled`). |
+
+## 5.69 Assistant reads answers aloud  ⚠️ UNVERIFIED (needs a Time 2 or Pebble 2 Duo, assistant 1.1.0 and `tts.backend` set)
+
+[docs/assistant.md → Reading answers aloud](docs/assistant.md#reading-answers-aloud) and
+[docs/speaker-stream.md](docs/speaker-stream.md), on top of 5.50 and 5.68. Off-device: `go test -race ./...` in
+`examples/extensions/assistant` (speak gating, Ask stopping the pump, pacing, keepAwake renewal, the vendored
+receiver copy).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.69a | Speak after DONE | Time 2, `speak=always`: ask in the Assistant app | The answer is spoken after it completes; the header shows "Speaking...". Record DONE → first sound for `piper_exe`, `piper` and espeak-ng. |
+| 5.69b | Quality | a multi-sentence answer | No gaps between sentences beyond a breath; no `speaker: ring full` in the watch log; heartbeat `speaker_stream_underrun_count` @170 and `speaker_on_time_ms` @154 plausible. |
+| 5.69c | Replay / stop | Hold Down on an answer, then Hold Down again | Replays; the second Hold Down stops it at once. |
+| 5.69d | Select during speech | Select while it speaks; Hold Select; a preset | Speech stops before dictation; the transcript has no echo of the answer. |
+| 5.69e | Dictation guard | as soon as the answer shows and before any sound, press Select and speak a follow-up | Nothing plays during dictation; the transcript holds none of the previous answer; the extension log shows the reading stopped (STOP_SPEAK) before the ASK. |
+| 5.69f | Interruptions | an incoming call or notification during speech; Back during speech | It stops, and the rest of that stream is not resumed; Back exits and stops it. |
+| 5.69g | Overlay before the first block | Hold Down, and let a notification cover the app before the first block arrives | After the overlay closes the header shows the question, not "Speaking...", and one Hold Down reads the answer. |
+| 5.69h | Quiet Time and mute | in Quiet Time with `always`; Hold Down; the speaker muted in Settings | `always` stays silent, Hold Down plays; muted: Hold Down shows "Speaker muted". |
+| 5.69i | TTS off / modes | `tts.backend` off with `always`, then Hold Down; `speak=on_request`; `speak=off` + Hold Down | `always` posts nothing; Hold Down posts "Text to speech is off / Turn it on in stoandl: Settings -> Voice." and "Speaking..." clears; `on_request` speaks only on Hold Down; `off` posts "Reading aloud is off". |
+| 5.69j | Languages | `language=German`, then `English` | The installed de voice, then the en voice. |
+| 5.69k | Stall | start a long reading, then stop the daemon (or walk out of range) with the app open | Within ~35 s the watch log shows `speaker: stream stalled, dropped`, the header leaves "Speaking...", the speaker goes silent. |
+| 5.69l | Old daemon | assistant 1.1.0 on a daemon without `synthesize` | The first answer logs `speak: unavailable: no answer from stoandl` after 30 s with no "reading an answer aloud" hold (`systemd-inhibit --list`); later answers aren't tried; Hold Down shows the "Text to speech unavailable" card after 30 s. |
+| 5.69m | Sleep hold (phone) | a long answer on the OnePlus 6 | Suspend refused while speaking (keepAwake "assistant: reading an answer aloud", renewed past 60 s, at most 120 s), allowed afterwards. |
+| 5.69n | Throughput | a multi-sentence answer at REDUCED sniff over Linux PPoG | Keeps up with 4 KB/s: no audible underruns. |
+| 5.69o | Pebble 2 Duo | 5.69a–d on flint | Same; inbox 2304 B and about 41 KB heap free. |
+| 5.69p | No speaker | basalt, diorite, gabbro | Down still scrolls with repeat; nothing is ever sent as SPK; no regression against the 1.1.0 app. |
+| 5.69q | Locker | `stoandl ext install` of the new assistant archive | The locker re-pushes the 1.1.0 `.pbw`. |
+
+## 5.70 CLI: exit codes, `stoandl status`, faster start, logging, packaging  ⚠️ UNVERIFIED (5.70a–g on the OnePlus 6; 5.70n–o a watch)
+
+[docs/dbus-interface.md → CLI exit codes](docs/dbus-interface.md#cli-exit-codes). Off-device: `CtlErrorTest`,
+`UsedWhenTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.70a | Daemon down | `systemctl --user stop stoandl; stoandl watch list; echo $?` (also on the phone's dbus-broker) | "stoandl isn't running — systemctl --user start stoandl (OpenRC: rc-service stoandl start)", exit 3 — not "Error: …" with 1. |
+| 5.70b | Daemon starting | `systemctl --user restart stoandl; stoandl status; echo $?` | "stoandl is still starting — try again in a moment", exit 1. |
+| 5.70c | Usage | `stoandl watch bogus; echo $?` | Exit 2. |
+| 5.70d | Slow verbs | `stoandl screenshot`, `stoandl apps install x.pbw`, `stoandl apps launch "<face not on the watch>"` on a slow BLE link | None times out at 15 s; `apps launch` waits for the fetch, prints "Launched …", exit 0. |
+| 5.70e | status | `stoandl status` with a watch connected, with it off, with the daemon stopped; after `stoandl firmware check` found an update | Exit 0 with the watch, battery and services; 1 with the watch off; 3 with the daemon stopped. `status` and `firmware status` name the update with no new lookup in the log; a `Watch tasks:` line appears after a screenshot. |
+| 5.70f | CDS archive | after an install: `rm -rf ~/.cache/stoandl/cli-*.jsa; time stoandl watch list` twice, then `time java -jar /usr/share/java/stoandl/stoandl.jar ctl watch list`; reinstall the package and run again; `chmod 555 ~/.cache/stoandl` and run (restore afterwards) | The first run writes `cli-<size>-<mtime>.jsa` and is slower; later runs are clearly faster than plain java; no `[cds]` lines; a reinstall replaces the archive; a read-only cache still works (rc 0). |
+| 5.70g | CDS impossible | fill the home partition, remove `~/.cache/stoandl/cli-*`, run `stoandl watch list`; free space and reinstall | Output and exit code unchanged, no JVM error, a `cli-*.nocds` file appears; after the reinstall the archive is created again. |
+| 5.70h | CLI logs to stderr | run several CLI commands | `/tmp/stoandl.log`'s mtime and owner don't change from CLI calls; warnings go to stderr. |
+| 5.70i | DEBUG covers stoandl | `STOANDL_LOG=DEBUG` (`install.sh -d`): a sleep/resume, a GeoClue start, a firmware check, an extension start; a neighbour's unbonded Pebble in range | DEBUG lines from SleepGuard, GeoClue, the firmware check cache and the extension plumbing in `/tmp/stoandl.log`; "Skipping <id>: not bonded, pairing mode inactive" once per watch, not per scan result. |
+| 5.70j | Calendar log | a calendar sync at INFO, then DEBUG | INFO: one `Calendar: N calendar(s) […]` line per sync; DEBUG adds `Calendar '<name>': N event(s) in window …`. |
+| 5.70k | One launcher | `apk add` the built package | `/usr/bin/stoandl` is stoandl-ctl with `java=/usr/lib/jvm/java-25-openjdk/bin/java` and the `/usr/share/java/stoandl/stoandl.jar` path; the post-install message shows `systemctl --user enable --now stoandl`; daemon and CLI start without "restricted method" warnings (journal, stderr, OpenRC's `/var/log/stoandl.log`). |
+| 5.70l | install.sh --remote | `./install.sh --remote phone` twice with rsync on both ends | The second rsync sends far less than the JAR (`--progress` or wall time); the phone keeps `~/.cache/stoandl/install/stoandl.jar`. |
+| 5.70m | Slimmer JAR | the new JAR on the phone | BLE pair/connect/notifications, PKJS (`Pebble JS Bridge initialized.`), the Classic transport and SQLite all work: no NoClassDefFoundError for com.sun.jna, no missing-native error. |
+| 5.70n | Calls during a slow one | during `stoandl firmware check --refresh` (egress on) or a screenshot, open the GUI | Its quick reads (ListWatches, GetConfig) answer at once (12 method-call threads). |
+
+## 5.71 Extensions: `ext config`, directory install, quarantine alert, last error  ⚠️ UNVERIFIED (on a desktop; a watch for the needs-setup bridge)
+
+[docs/extensions.md](docs/extensions.md). Off-device: `ExtConfigCliTest`, `ExtensionFilesTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.71a | Needs setup | install Matrix (or the assistant), remove its config and secrets, `stoandl ext restart <name>` | Desktop (and bridged watch) alert "<name> needs setup", naming "Apps → Extensions → <name> → Settings" and `stoandl ext config <name>`; the restart reply ends with the same sentence. |
+| 5.71b | ext config | `stoandl ext config <name>`; `stoandl ext config <name> <secret key>`; `… <key> <value>` with a bad enum value; `… <key> --unset` | Lists the settings; the secret is prompted without echo, saved to the keyring, and the extension starts; the bad value is refused (exit 2); `--unset` clears it. A secret on argv is refused with a hint. |
+| 5.71c | Directory install | `stoandl ext install ./examples/extensions/<dir>`; a checkout with a `loop -> .` symlink; a checkout over 512 MB; `stoandl ext install ~/.config/stoandl/ext/<name>` | Installs from the directory: the entry point stays executable, no `.git` copied, the symlink kept as a link; >512 MB is refused and the previous install is still listed and running; the install location itself is refused with "overlaps the install location". |
+| 5.71d | Uninstall with an outside link | `stoandl ext uninstall <name>` on an extension with a symlink pointing outside its dir | The link's target is untouched. |
+| 5.71e | Quarantine | an extension whose cmd prints to stderr and exits 1; wait for 5 failures | One "<name> stopped" desktop alert with "Last error: <stderr line>" and a Restart button that restarts it (none with `alerts.extensions` off); `stoandl ext list` shows the last stderr line; the GUI shows it with a Restart button. |
+
+## 5.72 PKJS on a shared GraalJS engine  ⚠️ UNVERIFIED (needs a watch and PKJS apps)
+
+Fork `b0863aea` ([CLAUDE.md → PKJS](CLAUDE.md#pkjs-pebblekit-js)). Off-device: the fork's `GraalJsRunnerTest`
+(sessions sharing the engine).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.72a | Bridge and config | open a watchapp with a PKJS companion (a Clay app) on the phone | `Pebble JS Bridge initialized.`; its config page opens and saves. |
+| 5.72b | Two apps | switch to a second PKJS app and back | Each app's JS works; no state carries over between apps. |
+| 5.72c | Plugins alongside | a plugin session (weather/plugin source) running while a PKJS app starts | Neither fails with "different host access configuration". |
+| 5.72d | No fallback warning | several app launches | The journal no longer shows Truffle's "polyglot engine uses a fallback runtime" warning per launch. |
+| 5.72e | Start time (optional) | app launch → `Pebble JS Bridge initialized.` | Record against the previous build (expected 2–3× faster). |
+
+## 5.73 Watch tasks, global mute, startup name, calendar source health, idle wakeups  ⚠️ UNVERIFIED (needs a watch; 5.73g–h the OnePlus 6)
+
+Off-device: `WatchTasksTest`, `UserDirsTest`, `GlobalMuteTest`, `SourceHealthTest`, `ConfigReloadTest`.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.73a | Startup name | restart the daemon with the GUI open; `busctl --user list \| grep stoandl` during startup; start a second `java -jar stoandl.jar` | The GUI's first calls after the name appears succeed (no UnknownObject, no empty lists); `de.yoxcu.stoandl.Instance` is listed during startup and `de.yoxcu.stoandl` only once "D-Bus bus name acquired" is logged; the second daemon exits at once with a bus-name error and nothing under `~/.cache/stoandl/native` changes. |
+| 5.73b | Global mute | mute app A `always` and app B `weekdays`; `stoandl notif mute-all 30m`, a never-seen app notifies, restart the daemon inside the mute, then `stoandl notif unmute-all`; the GUI's Today button | The new app is dropped (`All notifications muted until …`); the mute survives the restart; afterwards A is still `always` and B `weekdays`; Today mutes until midnight. `stoandl notif mute-all always` is refused. |
+| 5.73c | Screenshot and logs paths | `stoandl screenshot` and `stoandl logs` with no argument; a second `stoandl screenshot` while one runs; `stoandl support --coredump` | Saved under `~/Pictures/Screenshots` (or the localized XDG dir) and `~/Documents/stoandl`, paths printed; the second says busy; the support bundle still holds the watch logs and the coredump. |
+| 5.73d | GUI stays responsive | a GUI sideload of a big `.pbw` | Other GUI calls answer meanwhile; "Installing x.pbw…", then "Sideloaded …". |
+| 5.73e | Calendar source health | a CalDAV source with a wrong password; fix it and `stoandl calendar sync` | `stoandl calendar sources` shows `problem: Sign-in failed (401)` (the GUI too); afterwards the problem clears and `last sync: just now` appears. |
+| 5.73g | Idle wakeups | OnePlus 6, display off, no pairing window: `strace -f -c -p <pid>` or powertop for a few minutes, with autoswitch on and one watch, then two watches with one connected | stoandl's idle wakeups drop from about 5/s to near 0. |
+| 5.73h | Listeners still reconnect | kill and restart dbus-broker or the session bus | The notification monitor, ModemManager and MPRIS log "connection lost, reconnecting" and work again. |
+| 5.73i | Datalog pause | `power.pause_datalog_screen_off = true`: display off, then on; display off, suspend, wake with the display on | Datalog pauses and resumes with the display; after the resume `Watch datalog sends resumed` within ~5 s. |
+| 5.73j | Quiet Time pause | in the scheduled window, display off for 10 min; then during Quiet Time with the display already off, `stoandl daemon set power.quiet_time_link_off true` | Pauses after 10 min; switched on with the display off it pauses at once (not after SCREEN_OFF_MIN). |
+| 5.73k | Live .ics | edit a watched `.ics` | Still syncs within seconds. |
+| 5.73l | GUI global-mute chip | `stoandl notif mute-all 1h` with the Watch tab open; `mute-all never`; Alerts → Mute all 30 min, then suspend the phone past the end and wake it | The "Muted until" chip appears within 20 s (at once on re-focus) and goes with `never`; after the suspend it is gone within a minute (at once when the app comes to the front). |
+
+## 5.74 Pairing a second watch, one owner of the connect goal  ⚠️ UNVERIFIED (needs a Time 2 and a Time Steel)
+
+Field findings of 2026-10-19 (`next-work/qol-2026-10-19/field/CLASSIC-PAIR.md`); fork `2679eb8b`, `3d39201d`.
+Off-device: `PairingWindowTest` (the Classic step, the discovery predicate, new-watch resolution, goal
+restore), `WristFollowTest` (relink grace), fork `WatchManagerTest` ("A never finishes connecting →
+requestConnection(B) still connects B").
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.74a | Pair while connected | Time 2 connected over BLE; `stoandl watch pair`, put the Time Steel in pairing mode, confirm | The window opens, the Classic bond completes, the Steel connects without a BT toggle, the Time 2's link ends cleanly, PairStatus `ok:Paired and connected`. |
+| 5.74b | BLE second watch | watch A connected, pair BLE watch B | The scan runs while A is connected; B pairs and takes the link. |
+| 5.74c | Pair while away | Time 2 in airplane mode (holds the goal), `stoandl watch pair` for the Steel | `BT Classic: discovering`; the Steel bonds and connects without a BT toggle; PairStatus `ok:`. |
+| 5.74d | Known watch returns | Time 2 away, open the window, bring the Time 2 back before the Steel is found | The window stays open (no `ok:Paired and connected` from the Time 2). |
+| 5.74e | Give back | Time 2 connected, `stoandl watch pair`, decline the code on the Steel (or let it time out) | `handing the connection back to Pebble B349`; the Time 2 reconnects. |
+| 5.74f | One owner | both watches known, autoswitch on, Steel in airplane mode | The follower arms the Time 2 and it stays connected: no `BT Classic: connecting`, no flip every ~21 s. |
+| 5.74g | Follower off an away BLE watch | Time 2 away, Steel worn, autoswitch on | After about 20 s the follower arms the Steel and it connects without a BT toggle; no "re-arming" loop for the Time 2. |
+| 5.74h | Relink grace | Time 2 connected, Steel in airplane mode; suspend and resume the phone so the Time 2's link drops (reason Local) | The follower waits up to 90 s and the Time 2 re-links; no rotation to the unreachable Steel at 18 s. |
+| 5.74i | Repair | `stoandl watch repair B349` with the Time 2 connected; a connected Classic watch | PairStatus stays pending until the watch re-pairs, not `ok:` at once; the Classic window ends `ok:` once it is back. |
+| 5.74j | GUI | Watch tab → Pair new watch with the Time 2 connected; `classic.discover=false` → Pair new watch; no watch in pairing mode; a disconnected or endlessly connecting known watch | The dialog ends "Paired and connected"; it offers "Pebble Time, Time Steel or Round? … Turn on Bluetooth Classic", which restarts stoandl and reopens the dialog searching; after a timeout the "Not found? …" hint and Retry (a new window); *Re-pair* on the row (and Watch details → Re-pair watch…) confirms, then pairs it again. |
+| 5.74k | After deploying | on the op6, set `classic.discover` back to `true` (it was off as a workaround) | Classic pairing and 5.74a–i behave as above. |
+
+## 5.75 GUI quality of life  ⚠️ UNVERIFIED (offscreen smoke against the mock only)
+
+The GUI-only items of the wave (gui `f4f0e79`…`3144dca`, [gui/CLAUDE.md](gui/CLAUDE.md)). Pairing rows are
+5.74j, settings rows 5.67.
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.75a | Daemon down | `systemctl --user stop stoandl`; crash it past StartLimitBurst; in the Flatpak; while it starts | "isn't running" + Start daemon; within ~10 s of systemd giving up, "stopped after crashing repeatedly" (start limit); Flatpak: the command, no button; starting: "stoandl is starting" (also from the Flatpak), and a call meanwhile says "still starting". |
+| 5.75b | Watch tasks | Watch details → Capture screenshot (also on a fresh install without `~/Pictures/Screenshots`, and from the Flatpak); Diagnostics → Pull watch logs / Core dump | A preview of the watch screen saved under `~/Pictures/Screenshots`, with working Open and Open folder (through the portal in the Flatpak); the logs and dump toast a path under `~/Documents/stoandl` with Open folder. |
+| 5.75c | No freezes | Weather → Sync now, a city search, launching an app, Update now | The UI stays responsive; a thin progress bar at the top while they run. |
+| 5.75d | Per-app mutes | an app "Muted on weekdays": its switch, its dialog; an unmuted app: 30 min, Today; Search, By name / Recent | "Muted on weekdays"; the switch opens the dialog rather than toggling; the dialog offers no 30 min / 1 hr / Today and says to set Mute to Unmuted first; on an unmuted app they work and toast ("Muted until HH:MM", Resume). |
+| 5.75e | Mute all | Alerts → 30 min | "Muted until HH:MM" on Alerts and as a Watch-tab chip; Resume unmutes; notifications arrive again; a per-app mute set before is unchanged. |
+| 5.75f | Custom vibration | per-app dialog → New vibration… → name + `200,100,200` → Test → Save; Edit → Remove | Test buzzes the watch; it is listed, selectable and in Settings → Calendar → Reminder vibration; Remove deletes it. |
+| 5.75g | Ping, speech test | Diagnostics → Testing → Ping; Settings → Voice → Try a recording… with a WAV | A latency toast; "Heard: “…”". |
+| 5.75h | Language pack file | Watch details → Language → Install from file… | Progress, then "Language pack installed". |
+| 5.75i | Empty states | `plugins.enabled=false` → Apps → Plugins; `health.sync=false` → Health; both battery captures off → Battery | "Turn on Plugins · Contacts only the hosts you allow apps to reach" (works); "Turn on Health data"; "Turn on Battery insights". |
+| 5.75j | Confirms and undo | Update now, a voice model's Remove, Restore default order, an API key's Remove; delete a filter | Each asks first; the filter's toast Undo restores it. |
+| 5.75k | Pull to refresh | Watch, Health, Apps, Alerts, Accounts and feeds on the OnePlus 6; also with the daemon down | Re-reads with no extra CheckFirmware in the log; with the daemon down the pull ends. |
+| 5.75l | Sync now | default install with no weather place and no calendar → Watch tab, Sync now | No "set weather.locations" error toast: it syncs health, or says to add a weather place or a calendar. |
+| 5.75m | Desktop start | start the GUI on a desktop | No "Could not create delegate for ToolBarLayout" lines. |
+| 5.75n | Calendars | a CalDAV source with a wrong password, a good one; Choose a file… / Choose a folder… | "Sign-in failed (401)"; "Last synced …"; the pickers fill the `.ics` path. |
+| 5.75o | Extension crash | a quarantined extension | "Last error: <stderr line>" and a Restart button that brings it back. |
+
 ## 7. Regression sanity  (run after any of the above)
 
 - Notifications still bridge to the watch (`Notification queued for watch`

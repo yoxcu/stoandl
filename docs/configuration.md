@@ -8,22 +8,34 @@ $XDG_CONFIG_HOME/stoandl/stoandl.conf      # default: ~/.config/stoandl/stoandl.
 
 A missing or unreadable file is fine — the daemon falls back to defaults.
 
-**Hand-edits require a restart** (`systemctl --user restart stoandl`) — nothing watches the file. But
-you rarely need to hand-edit: almost every key below is also settable at runtime, from the GUI
-(Settings → Daemon configuration) or the CLI:
+**Edits apply live.** The daemon watches the file: about half a second after it changes (an editor's save,
+`sed -i`, `stoandl restore`), it re-reads it and applies what changed, as if each key had been set with
+`stoandl daemon set`. The log names each change (`Config weather.enabled: 'true' → 'false'`) and the GUI
+follows. You rarely need to edit it by hand, though: almost every key below is also settable from the GUI
+(Settings, one page per topic) or the CLI:
 
 ```sh
-stoandl daemon list                    # every key, its current value, grouped
-stoandl daemon get weather.interval
+stoandl daemon list                    # every key and its current value, grouped by page › section
+stoandl daemon get weather.interval    # the value; its description, default, when it matters and what it contacts on stderr
 stoandl daemon set weather.interval 15
+stoandl daemon restart                 # restart through the service manager (systemd)
 ```
 
 Those go through the daemon, which validates the value, writes it, reloads, and re-applies the affected
-subsystem — no restart. Six keys are the exception because they decide startup wiring
-(`notification.sync_to_watch`, `notification.catch_up_minutes`, `classic.discover`, `datalog.enabled`,
-`power.sleep_guard`, `power.sleep_guard_max_ms`); they are marked **Needs a daemon restart** below, the
-GUI says so on the row, and `stoandl daemon` prints `(restart)` next to them.
+subsystem — no restart. Five keys are the exception because they decide startup wiring
+(`notification.sync_to_watch`, `classic.discover`, `datalog.enabled`, `power.sleep_guard`,
+`power.sleep_guard_max_ms`); they are marked **Needs a daemon restart** below, the GUI says "(after
+restart)" on the row and offers *Restart now*, `stoandl daemon` prints `(restart)` next to them, and a
+hand edit of one logs "applies after stoandl restarts". `watch.<id>` pins apply on the next connect.
 [docs/settings-parity.md](settings-parity.md) records why, per key.
+
+A combo setting (`notification.default_mute`, `music.volume`, `dnd.sync`, …) takes its `stoandl.conf`
+token (`never`, `system`, `to_watch`, …) or the label the GUI shows. The labels were reworded in 2026-10
+(`New apps start: Unmuted / Muted / Muted on weekdays / Muted at weekends`, `System volume` / `Player
+volume`, `None` / `GNOME Weather` / `A command` for the weather place source, `Desktop → watch` / `Watch →
+desktop` / `Both ways` for `dnd.sync`, `When data could leave` for the plugin policy); the tokens are
+unchanged, so a script that passes an old label (`To watch`, `System`, `Manual`, `Weekdays`, …) to
+`stoandl daemon set` must use the token or the new label.
 
 The service allows 5 starts within 5 minutes, and manual restarts count towards that. A 6th restart
 inside the window leaves the daemon stopped. `systemctl --user reset-failed stoandl` clears the limit
@@ -37,21 +49,21 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). |
+| `notification.per_app` | bool | `true` | Track every observed desktop app in a per-app store and enforce its mute state host-side before sending (dropped before it crosses BLE). Exact-match, stateful, schedulable — managed at runtime with `stoandl notif` (see [Per-app notification settings](#per-app-notification-settings)). It doesn't govern the global mute: `stoandl notif mute-all <30m\|1h\|2d\|today>` is a separate temporary mute over every app that works whatever this says. |
 | `notification.default_mute` | string | `never` | Mute state for a newly observed app: `never` (deliver), `always` (mute), or the day-of-week schedules `weekdays` / `weekends`. |
 | `notification.app_name` | string | `small` | Where a notification's app name goes on the watch: `small` (a small line under the title), `subtitle` (the large bold line under the title) or `off`. A source's own subtitle (an extension's) keeps the subtitle slot, and the app name is left out when it would repeat the title or that subtitle. An app can override it (`stoandl notif style <app> --app-name`, see [Per-app notification settings](#per-app-notification-settings)). Also used for stoandl's own firmware-update notification. |
 | `notification.sync_to_watch` | bool | `false` | Sync the per-app list + mute states to the watch (libpebble3 `NotificationAppItem` → BlobDB). **Off by default** — current Core/PebbleOS firmware has no per-app notification UI on the watch, so the records surface nowhere; mute is enforced host-side regardless. Opt-in for firmware that does surface it. Watch-link only, no web egress. **Needs a daemon restart.** |
-| `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch. Flipped live by the GUI's Alerts screen (`SetSyncEnabled("notifications", …)`) — when off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
+| `notification.forward` | bool | `true` | Master switch for forwarding desktop/extension notifications to the watch: the first row of the GUI's Settings → Notifications (the Alerts and Watch tabs show a "Forwarding is off" banner with *Turn on*); `stoandl sync disable notifications` is an alias. When off, every notification is dropped host-side at the send choke point. Calls and firmware prompts use their own paths and are unaffected. |
 | `notification.only_when_locked` | bool | `false` | Forward only while nobody is using the host: its display is off (DRM DPMS, see `power.pause_datalog_screen_off`) **or** the user's graphical session is locked (logind `LockedHint` on the user's display session, set by KScreenLocker / GNOME Shell). The official app's "Always send notifications" switched off. Still forwarded while in use: critical-urgency notifications (FDO `urgency` 2, portal/GTK priority `urgent`: alarms, a dialer's incoming-call notification), allow-filter matches and `stoandl notif test`; calls use the native call screen and are never gated. Unknown state (no graphical logind session, logind unreachable or slower than 1 s) forwards. A locker that doesn't set `LockedHint` (swaylock) is only seen through the display going off. Local only. Read live. |
 | `notification.images` | bool | `true` | Show pictures a notification carries on watches that can (Pebble Time 2 / Round 2, firmware 4.35+): a photo an extension attaches (Matrix), the first image file in a desktop notification's `x-kde-urls` (Spectacle screenshots), a web notification's image on Plasma (`<img>` in the body). Sender avatars (`image-data`, portal/GTK icons) are never sent. The pictures are kept, at most 32, in `~/.cache/stoandl/images/notifications`, deleted with their notification, and all deleted when this is switched off. An app can keep its own pictures off (`stoandl notif images <app> off`, see [Per-app notification settings](#per-app-notification-settings)). Local only. Read live. |
 | `notification.sync_dismissals` | bool | `true` | Clear a notification from the watch when it's dismissed on the desktop or phone: closed by the user or the app (`NotificationClosed` reason 2 or 3), withdrawn through the portal or `org.gtk.Notifications`, or closed by an extension. A popup that only times out (reason 1) stays. The watch marks the item dismissed. Read live. |
 | `notification.open_action` | bool | `true` | Offer **Open** on the watch for a desktop notification that has a click action (the FDO `default` action): it opens the app as a click on the popup would, through plasmashell's `org.kde.NotificationManager.InvokeAction(id, "default")` (every Plasma since 5.19, probed at start like the other wrist actions). Not on GNOME (GNOME Shell lets no other client invoke an action) nor for portal/GTK notifications. On Wayland the app gets no activation token, so KWin may only mark it as wanting attention instead of raising it. Local only. Read live. |
-| `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. **Needs a daemon restart.** See [Missed notifications](#missed-notifications-catch-up). |
+| `notification.catch_up_minutes` | number | `60` | How far back (minutes) a reconnecting watch catches up on notifications it hasn't received — those posted while it was disconnected. Never older than the daemon's start or the watch's pairing; `0` = only notifications posted after the connection came up (libpebble3's default). 0–1440. Applies from the next connection (no restart). See [Missed notifications](#missed-notifications-catch-up). |
 | `notification.canned_replies` | list | `Ok, Yes, No, Call me, Call you later` | The watch's Reply list for desktop notifications that take a reply (Plasma with the `InvokeReply` patch, see [features.md → Reply to desktop notifications](features.md#reply-to-desktop-notifications)) and for extensions that don't send their own. Whole items are kept while the NUL-joined list fits the firmware's 512 bytes; empty = the firmware's list. A reply with a comma escapes it: `Sure\, see you then`. |
 | `alerts.enabled` | bool | `true` | Master switch for the alerts stoandl raises **about itself** (pairing trouble, a Bluetooth scan blocking reconnects, an extension needing setup, permission requests, a fully charged watch, a pairing window that can't search) — as opposed to forwarded app notifications. Most show on the desktop only; permission prompts and the full-battery alert also show on the watch. Muting an alert silences the popup only; the condition is still logged at WARN, so it never hides a diagnosis. The firmware-update alert has its own key (`firmware.notify`) because it also drives a *watch* notification. |
 | `alerts.pairing` | bool | `true` | Alert when a watch keeps connecting-then-dropping (unpaired on the watch) or its pairing was removed on this host — each with the action that fixes it (Re-pair / Pair). Without it a watch can silently stop reconnecting forever. |
 | `alerts.bluetooth` | bool | `true` | Alert when another process' Bluetooth discovery is monopolising the adapter's scanner, which blocks the watch from reconnecting. |
-| `alerts.extensions` | bool | `true` | Alert when an installed extension requires configuration before it can start. |
+| `alerts.extensions` | bool | `true` | Alert when an installed extension requires configuration before it can start ("<name> needs setup", saying where to set it up), and when one kept crashing and was stopped ("<name> stopped", with its last error line and a *Restart* button). |
 | `alerts.permissions` | bool | `true` | When an app asks for a permission (`plugins.enabled`), prompt with Allow / Deny on the watch and the desktop. Off: answer with `stoandl perms` or in the GUI; until answered, the app is refused. |
 | `alerts.battery_full` | bool | `true` | A connected watch reached 100 % on the charger: alert on the watch and the desktop, once per charge (re-armed when it falls to 97 % or below; a watch already full when it connects doesn't alert). BLE watches use their GATT battery level; Classic-era watches have none, so theirs comes from the hourly analytics heartbeat and can be up to an hour late. On by default, as in the official app. |
 | `alerts.scan_failed` | bool | `true` | A pairing window's scan keeps failing because Bluetooth discovery won't start (adapter not ready, BlueZ refusing it): a desktop alert, once per window and only when the failure repeats. `stoandl watch pair` and the GUI's pairing status show the error either way (`Scan failed, retrying — …`, and a timed-out window names it), and it is logged at WARN. On by default, as in the official app, which shows the error. |
@@ -73,7 +85,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `weather.pins` | bool | `true` | Also emit weather **timeline pins** (a sunrise + sunset pin per day, today … +2 days) for the primary location. On by default whenever weather is enabled; set `false` to keep the Weather app but leave the timeline clear. |
 | `weather.intercept_pkjs` | bool | `false` | Answer the weather APIs classic watchfaces call from PKJS (Yahoo YQL, dead since 2019; OpenWeatherMap 2.5 when OWM rejects the app's own key) from Open-Meteo, in the shape each API returned. Place names are looked up with Open-Meteo geocoding (a `weather.locations` name answers without a lookup); coordinates are named via `weather.reverse_geocode` if on, else the nearest `weather.locations` entry within 10 km. Off by default — it sends the watchface's coordinates or place name to a web service. Location-based watchfaces also need `geolocation.enabled`. Read live. |
 | `weather.place_search` | bool | `false` | Let `stoandl weather search <city>` and the GUI's *Find a location* look a city up by name (Open-Meteo geocoding) to add it to `weather.locations`; the found coordinates are rounded to 4 decimals and a same-named entry is replaced. Off by default — it sends the typed name to a web service, and only when you search. Refused while `weather.enabled` is off. Read live. |
-| `weather.enabled` | bool | `true` | Master switch for weather sync, flipped live by the Sync screen (`SetSyncEnabled("weather", …)`). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
+| `weather.enabled` | bool | `true` | Master switch for weather sync, the first row of the GUI's Settings → Weather (`stoandl sync enable\|disable weather` is an alias). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
 | `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
 | `apps.order_faces_by_last_used` | bool | `false` | Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3 `orderWatchfacesByLastUsed`, which the official app turns on at first run). Off by default so the order you set (`stoandl apps order`, the GUI) stays as it was. Live. |
 | `plugins.enabled` | bool | `false` | Plugins: phone-side data sources and actions watchfaces and watchapps use (upstream's plugin system): the built-in ones (weather, music, calendar, phone state, watch settings, watch state), the plugin a `.pbw` ships, and extensions that serve sources. Also turns on app permissions for every watchapp's PKJS. Off by default: no plugin code runs and nothing is fetched. See [plugins.md](plugins.md). |
@@ -88,6 +100,14 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `voice.api_key` | secret | _(unset)_ | `voice.backend = http`: a Bearer token. Set with `stoandl daemon set voice.api_key <key>` or the GUI; kept in the keyring (else the 0600 `secrets` file), never in `stoandl.conf`, and out of backups. |
 | `voice.language` | text | `auto` | The language you speak: an ISO-639 code (`de`, `en`) or `auto`. |
 | `voice.save_audio` | bool | `false` | Keep each dictation as a WAV in `~/.cache/stoandl/voice` (debugging). |
+| `tts.backend` | string | `off` | Text to speech: reads the assistant's answers aloud on the watch speaker (Pebble Time 2, Pebble 2 Duo) and `stoandl voice say` on this device. `off`, `local` (Piper with a downloaded voice, or espeak-ng; no egress), `command` (your own engine, no egress) or `http` (an OpenAI-compatible `/v1/audio/speech` service; the text leaves the machine). Downloading a voice switches `off` to `local`. See [voice.md → Text to speech](voice.md#text-to-speech). |
+| `tts.local_voice` | string | _(empty)_ | `tts.backend = local`: the id of a downloaded voice (`stoandl voice models`: `piper-de-thorsten-low`, `piper-en-kathleen-low`, …) or `espeak-ng` (offered while it is installed). The GUI lists the installed ones. Also the voice for a language no downloaded voice speaks; for German or English text stoandl picks an installed voice of that language. |
+| `tts.speed` | int | `100` | Speaking rate in percent of normal, 50–200: Piper's length scale (100/speed), espeak-ng's words per minute (175 × speed/100), the HTTP `speed` field. |
+| `tts.command` | text | _(empty)_ | `tts.backend = command`: a shell command line that reads the text on stdin and writes a WAV to stdout. `{lang}` is replaced by the language of the text (`de`, `en`; the system language when the text has none, else `en`). |
+| `tts.url` | text | _(empty)_ | `tts.backend = http`: the speech endpoint (`…/v1/audio/speech`): speaches, LocalAI, openedai-speech, or a hosted service. |
+| `tts.http_model` | text | _(empty)_ | `tts.backend = http`: sent as `model` when set (e.g. `tts-1`). |
+| `tts.http_voice` | text | _(empty)_ | `tts.backend = http`: sent as `voice` when set (e.g. `alloy`); empty = the server's default. |
+| `tts.api_key` | secret | _(unset)_ | `tts.backend = http`: a Bearer token. Separate from `voice.api_key` and never inherited from it, so a key only goes to the server it was meant for. Set with `stoandl daemon set tts.api_key <key>` or the GUI; kept in the keyring (else the 0600 `secrets` file), never in `stoandl.conf`, and out of backups. |
 | `calendar.ics_paths` | list | _(empty)_ | Local `.ics` files or directories (scanned for `*.ics`) to sync to the watch timeline. `~` expands to `$HOME`. No egress. Setting any `calendar.*` source enables calendar sync. |
 | `calendar.discover` | bool | `false` | Auto-discover calendars the desktop keeps as local `.ics` (e.g. Calindori on Plasma Mobile, `~/.calendars`). No egress. |
 | `calendar.ical_urls` | list | _(empty)_ | Published iCal feed URLs — an HTTP(S) GET of an `.ics` (e.g. a Google/Nextcloud/Outlook "secret iCal address"). **Opt-in egress.** |
@@ -96,7 +116,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `calendar.reminders` | bool | `true` | The watch buzzes before each event (its reminders). `false` = pins only. Read live. |
 | `calendar.show_declined` | bool | `false` | Events you declined still become pins. Read live. |
 | `calendar.reminder_vibe` | combo | *(empty)* | Vibration for every calendar reminder, a name from libpebble3's pattern list: `Standard`, `Pulses`, `Double`, `Triple`, `Bloom`, `Pips`, `Ole`, `SOS`, `OhhhOh`, `Five`, `Two`, `None` (display names such as `Olé` or `Ohhh, Oh` work too), or a custom one (`stoandl notif vibe-add`, see [Per-app notification settings](#per-app-notification-settings)), which the GUI picker lists after the built-ins and `stoandl daemon set` takes in any case (hand-edited, use its exact spelling). Empty = the watch's default. Read live. |
-| `calendar.enabled` | bool | `true` | Master switch for calendar sync, flipped live by the Sync screen (`SetSyncEnabled("calendar", …)`). Turning it off stops syncing and removes the watch's calendar pins until re-enabled. |
+| `calendar.enabled` | bool | `true` | Master switch for calendar sync, the first row of the GUI's Settings → Calendar (`stoandl sync enable\|disable calendar` is an alias). Turning it off stops syncing and removes the watch's calendar pins until re-enabled. |
 | `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
 | `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). **Needs a daemon restart.** |
 | `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). `0` doesn't wait for watch traffic; stoandl still stops its own discovery before every suspend. **Needs a daemon restart.** |
@@ -108,7 +128,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `connection.autoswitch` | bool | `true` | "Follow the wrist": with two or more paired watches, connect whichever is actually in range rather than only the one that last held the connection goal. A live link is never dropped to chase another watch. Inert with a single paired watch. |
 | `connection.disconnect_persists` | bool | `true` | A manual disconnect (`stoandl watch disconnect`, the GUI's Disconnect) lasts across a daemon restart until `stoandl watch connect`, like the official app's Disconnect. `false`: a restart reconnects. See [features → Manual disconnect](features.md#manual-disconnect). |
 | `datalog.enabled` | bool | `false` | Capture datalog frames from custom watchapps (PebbleKit DataLogging) to NDJSON under `<configDir>/datalog/<uuid>/<tag>.ndjson`. Local-only, but it writes app-supplied data to disk, so it's off by default. **Needs a daemon restart.** |
-| `dnd.sync` | string | `off` | Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time: `off`, `to_watch`, `to_host` or `both`. Opt-in — it actively changes state on both sides (it never touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property) are auto-detected. |
+| `dnd.sync` | string | `off` | Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time: `off`, `to_watch`, `to_host` or `both`. Opt-in — it actively changes state on both sides (it never touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property) are auto-detected. Set it with `stoandl daemon set dnd.sync <mode>`; `stoandl sync enable\|disable dnd` no longer works (a switch can't say which direction it means). |
 | `extensions.enabled` | list | _(empty)_ | Enabled extensions ("companion apps"). Each resolves to a child process under `<configDir>/ext/<name>/`. Edited live by `stoandl ext` and the GUI's Apps → Extensions — see [extensions.md](extensions.md). |
 | `watch.<id>` | varies | _(unset)_ | An advanced watch setting (see [Watch settings](#watch-settings-advanced) below). |
 | `extension.<name>.<key>` | string | _(unset)_ | Optional per-extension settings, passed to the child in its `initialize` handshake (`cmd` overrides the default entry command). **Note:** the extension's own `config` file — which is what the GUI and `stoandl ext` edit — now wins over a value here; a shadowed key is logged once at startup so you can remove it. `cmd` is the exception and still takes precedence from here, so it can rescue an extension whose own config is broken. |
@@ -163,7 +183,8 @@ stoandl notif mute "Element"           # mute always (drops on the host)
 stoandl notif mute Slack weekdays      # mute on Mon–Fri only (weekdays / weekends schedules)
 stoandl notif mute Discord 1h          # temporary mute (also 30m / 2d …); auto-expires
 stoandl notif unmute Slack             # deliver again
-stoandl notif mute-all  / unmute-all   # apply to every tracked app
+stoandl notif mute-all 1h               # mute every app for a while (30m / 1h / 2d / today); per-app mutes untouched
+stoandl notif unmute-all               # end it now
 stoandl notif style Element --color Red --icon NotificationElement --vibe double   # per-app styling
 stoandl notif style NeoChat --app-name off   # where this app's name goes (small / subtitle / off / default)
 stoandl notif images Spectacle off     # no pictures from this app (on / default follow notification.images)
@@ -180,6 +201,12 @@ typing the full exact name targets just that one; a partial that still hits seve
 ambiguous. New apps default to `notification.default_mute` (`never` = deliver).
 Muting is enforced **host-side** (the notification is dropped before it crosses BLE), so per-app mute
 works fully without any watch-side support.
+
+`mute-all` is a separate, temporary state over every app (seen or not), kept across a daemon restart: it
+never changes an app's own mute, so `unmute-all` leaves a `weekdays` app on `weekdays`. It takes a duration
+or `today` (until midnight); an indefinite "mute everything" is `notification.forward = false`. It works
+whatever `notification.per_app` says, and allow filters still get through. `stoandl notif list` and
+`stoandl status` show it while it lasts.
 
 **Muting from the wrist.** Every forwarded notification carries a **"Mute *app*" action** in its
 on-watch action menu (the same mechanism the official Android app uses). Selecting it mutes that app
