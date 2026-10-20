@@ -663,7 +663,7 @@ what's still pending. Test plan: [TESTING.md](../TESTING.md).
 
 ### libpebble3 on current upstream
 
-The libpebble3 fork sits on upstream `coredevices/libpebble3` `ec2156cc` (fork branch `stoandl-bump`,
+The libpebble3 fork sits on upstream `coredevices/libpebble3` `ec2156cc` (fork branch `stoandl`,
 re-bumped 2026-10-15 from `e6b5138e`, which passed its hardware pass by daily use). The re-bump brings the
 plugin and app-permission machinery (off until stoandl's plugin support lands), the weather pin kind
 (Sunrise/Sunset pins titled in the watch's language on firmware ≥ 4.39) and drops the built-in watch

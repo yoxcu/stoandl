@@ -2011,7 +2011,8 @@ secure storage, the weather pin kind, the built-in languages removed). Room goes
 first start, one way: `stoandl backup` first. Offline: fork jvmTest 371 green, daemon tests green, a boot smoke
 migrated a v47 database to v49 with every CLI read command answering and a notification queued. Plugins stay
 off (`enablePlugins=false`), so the permission layer only gates PKJS geolocation, timeline tokens and pins.
-The previous tip is tagged `stoandl-bump-e6b5138e` for bisecting.
+The previous tip is tagged `stoandl-bump-e6b5138e` for bisecting. The branch `stoandl-bump` became the fork's
+`stoandl` on 2026-10-20, after daily use on the op6; the rows below were not run one by one.
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|

@@ -207,7 +207,7 @@ These are commonMain, self-contained, and a safer interim than the 517-commit bu
 
 ## 3. The libpebble3 bump to upstream `433fef18`: runbook
 
-**Status: done on fork branch `stoandl-bump`, pending the hardware pass (§3.6).**
+**Status: done. Built on fork branch `stoandl-bump`, re-bumped onto `ec2156cc` (TESTING §5.44), promoted to `stoandl` on 2026-10-20.**
 
 - **Target.** Upstream `e6b5138e`, which is `433fef18` plus one commit (the ar_SA language pack).
 - **Fork history.** The end state was resolved once as a merge, compile-fixed and tested, then rebuilt as a
