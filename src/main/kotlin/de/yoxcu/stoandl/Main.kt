@@ -202,7 +202,9 @@ private fun printVersion() {
         val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
         val daemon = try { control.Version() } catch (e: Exception) { null }
         when {
-            daemon == null -> println("stoandl $cliVersion (daemon not running)")
+            // Like every other verb: the instance guard without the public name is a daemon still starting.
+            daemon == null -> println("stoandl $cliVersion (daemon " +
+                (if (runCatching { instanceHeld(conn) }.getOrDefault(false)) "starting)" else "not running)"))
             daemon == cliVersion -> println("stoandl $daemon")
             else -> println("stoandl $cliVersion (this CLI) · service running $daemon — restart it to match")
         }
@@ -2316,15 +2318,15 @@ private fun daemonRunning(): Boolean = try {
 private fun instanceHeld(): Boolean {
     val conn = openSessionBus()
     try {
-        val bus = conn.getRemoteObject(
-            "org.freedesktop.DBus", "/org/freedesktop/DBus",
-            org.freedesktop.dbus.interfaces.DBus::class.java,
-        )
-        return bus.NameHasOwner(STOANDL_INSTANCE_NAME)
+        return instanceHeld(conn)
     } finally {
         conn.disconnect()
     }
 }
+
+private fun instanceHeld(conn: DBusConnection): Boolean =
+    conn.getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", org.freedesktop.dbus.interfaces.DBus::class.java)
+        .NameHasOwner(STOANDL_INSTANCE_NAME)
 
 /** Run a command, passing its stdout/stderr straight through to ours. Returns the exit code. */
 private fun runProcess(vararg cmd: String): Int =
