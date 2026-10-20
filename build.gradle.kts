@@ -71,7 +71,13 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
-tasks.test { useJUnitPlatform() }
+tasks.test {
+    useJUnitPlatform()
+    // Shipped files the tests compare against (conf.example, the GUI mock's goldens) live outside the test
+    // sources: without them as inputs an edit to one leaves `test` UP-TO-DATE and the mismatch unseen.
+    inputs.files("packaging/stoandl.conf.example", fileTree("gui/tools") { include("*.tsv") })
+        .withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("goldens")
+}
 
 // Bake the version into a classpath resource so the daemon/CLI can report it (`stoandl version`).
 val generateVersionFile by tasks.registering {
