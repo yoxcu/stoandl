@@ -11,9 +11,11 @@ import io.rebble.libpebblecommon.voice.TranscriptionWord
 import io.rebble.libpebblecommon.voice.VoiceEncoderInfo
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -34,6 +36,10 @@ private const val MAX_TRANSCRIPT_BYTES = 1_500
  *  question, a reply). Released at once, the phone suspended within 0.3–0.7 s in 12 of 21 assistant
  *  questions, and the watch's message then waited 0.4–9 s for it to wake (op6, 2026-10-20). */
 internal const val AFTER_RESULT_MS = 5_000L
+/** The same after an empty transcript or a failure: the watch says "Missed that. Try again." and a retry
+ *  starts ~5 s later. Released after 5 s, the phone began suspending 118 ms before the retry's session, which
+ *  then got no block ("already running") and the phone slept through its audio (op6, 2026-10-20). */
+internal const val AFTER_RETRY_MS = 15_000L
 
 private class NoAudio : Exception("no audio")
 
@@ -45,17 +51,22 @@ private class NoAudio : Exception("no audio")
  *
  * A phone suspends a second or two after each wake, also while the watch streams its audio, so a session
  * holds the system awake ([keepAwake]) until the result is handed back, and [afterResultMs] longer after a
- * transcript for the watch's answer to it, and reports itself as pending work ([pendingDescription]) to a
- * suspend already under way.
+ * transcript for the watch's answer to it ([afterRetryMs] after none, for the retry), and reports itself as
+ * pending work ([pendingDescription]) to a suspend already under way. The sessions share one block: a session
+ * that starts within the grace keeps it, because a block released and asked for again leaves a gap the
+ * phone's fast-resuspend falls into, and logind refuses a block while a suspend is under way.
  */
 class StoandlTranscriptionProvider(
     private val backends: VoiceBackends,
     private val configStore: ConfigStore,
     private val scope: CoroutineScope,
     private val afterResultMs: Long = AFTER_RESULT_MS,
+    private val afterRetryMs: Long = AFTER_RETRY_MS,
     private val keepAwake: (why: String) -> AutoCloseable = { AutoCloseable {} },
 ) : TranscriptionProvider {
     @Volatile private var sessions = 0
+    private var awake: AutoCloseable? = null
+    private var release: Job? = null
 
     /** "dictation" while a session runs, for the sleep guard's drain. */
     fun pendingDescription(): String? = if (sessions > 0) "dictation" else null
@@ -73,14 +84,31 @@ class StoandlTranscriptionProvider(
         audioFrames: Flow<UByteArray>,
         isNotificationReply: Boolean,
     ): TranscriptionResult {
-        synchronized(this) { sessions++ }
-        val awake = keepAwake("Voice dictation from the watch")
+        synchronized(this) {
+            sessions++
+            release?.cancel()
+            release = null
+            if (awake == null) awake = keepAwake("Voice dictation from the watch")
+        }
         var result: TranscriptionResult? = null
         try {
             return session(encoderInfo, audioFrames).also { result = it }
         } finally {
-            synchronized(this) { sessions-- }
-            if (result is TranscriptionResult.Success) scope.launch { delay(afterResultMs); awake.close() } else awake.close()
+            val heard = (result as? TranscriptionResult.Success)?.words?.isNotEmpty() == true
+            synchronized(this) {
+                if (--sessions == 0) release = releaseAfter(if (heard) afterResultMs else afterRetryMs)
+            }
+        }
+    }
+
+    /** Close the shared block after [ms] unless a session started meanwhile (and replaced this job). */
+    private fun releaseAfter(ms: Long): Job = scope.launch {
+        delay(ms)
+        synchronized(this@StoandlTranscriptionProvider) {
+            if (sessions > 0 || release !== coroutineContext.job) return@launch
+            awake?.close()
+            awake = null
+            release = null
         }
     }
 

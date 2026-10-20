@@ -171,7 +171,7 @@ class VoiceTest {
         assumeTrue(SpeexDecoder.available, "libspeex not installed")
         val frames = firmwareFrames(1)
         val cfg = config(StoandlConfig.VoiceBackend.COMMAND, """sh -c 'test -s "$1" && echo Bin gleich da' x {wav}""")
-        val provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets(), models()), cfg, this, 0)
+        val provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets(), models()), cfg, this, 0, 0)
         assertTrue(provider.canServeSession())
         val info = VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320)
         val r = provider.transcribe(info, flow { frames.forEach { emit(it.toUByteArray()) } }, isNotificationReply = true)
@@ -201,14 +201,36 @@ class VoiceTest {
     }
 
     @Test
+    fun `a retry after an empty transcript keeps the same sleep block`() = runBlocking {
+        assumeTrue(SpeexDecoder.available, "libspeex not installed")
+        val frames = firmwareFrames(1)
+        val cfg = config(StoandlConfig.VoiceBackend.COMMAND, "true")
+        val held = mutableListOf<String>()
+        val provider = StoandlTranscriptionProvider(VoiceBackends(cfg, secrets(), models()), cfg, this, afterResultMs = 50, afterRetryMs = 400) {
+            held += "take"
+            AutoCloseable { held += "release" }
+        }
+        val info = VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320)
+        val audio = flow { frames.forEach { emit(it.toUByteArray()) } }
+        assertEquals(0, assertIs<TranscriptionResult.Success>(provider.transcribe(info, audio, true)).words.size)
+        delay(200) // past the transcript's grace: still held for the retry
+        assertEquals(listOf("take"), held)
+        provider.transcribe(info, audio, true)
+        delay(250) // the first grace would have ended now; the retry's own one runs
+        assertEquals(listOf("take"), held, "handed over, never released between the sessions")
+        delay(400)
+        assertEquals(listOf("take", "release"), held)
+    }
+
+    @Test
     fun `voice off, or no audio from the watch`() = runBlocking<Unit> {
         val off = config(StoandlConfig.VoiceBackend.OFF)
-        val provider = StoandlTranscriptionProvider(VoiceBackends(off, secrets(), models()), off, this, 0)
+        val provider = StoandlTranscriptionProvider(VoiceBackends(off, secrets(), models()), off, this, 0, 0)
         assertEquals(false, provider.canServeSession())
         assertEquals("off:", VoiceBackends(off, secrets(), models()).status())
         assumeTrue(SpeexDecoder.available, "libspeex not installed")
         val on = config(StoandlConfig.VoiceBackend.COMMAND, "echo hi")
-        val silent = StoandlTranscriptionProvider(VoiceBackends(on, secrets(), models()), on, this, 0)
+        val silent = StoandlTranscriptionProvider(VoiceBackends(on, secrets(), models()), on, this, 0, 0)
         val r = silent.transcribe(VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320), flow { kotlinx.coroutines.awaitCancellation() }, true)
         assertIs<TranscriptionResult.Error>(r)
     }
