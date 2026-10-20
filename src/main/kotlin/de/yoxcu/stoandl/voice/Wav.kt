@@ -17,9 +17,10 @@ object Wav {
     }
 
     /**
-     * Mono samples and the rate of a 16-bit PCM WAV (stereo is averaged), or null for anything else. A `data`
-     * chunk that claims more than the file holds is read to the end: an engine writing to a pipe can't seek
-     * back to fill in the sizes, and leaves 0, -1 or espeak-ng's 0x7ffff000 there.
+     * Mono 16-bit samples and the rate of a 16-bit PCM or 32-bit float WAV (stereo is averaged), or null for
+     * anything else. Float is what Alpine's `piper_exe` (libpiper) writes. A `data` chunk that claims more
+     * than the file holds is read to the end: an engine writing to a pipe can't seek back to fill in the
+     * sizes, and leaves 0, -1 or espeak-ng's 0x7ffff000 there.
      */
     fun decode(bytes: ByteArray): Pair<ShortArray, Int>? {
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -33,12 +34,17 @@ object Wav {
             val available = bytes.size - body
             if (id == "data") {
                 // WAVE_FORMAT_EXTENSIBLE (0xFFFE) at 16 bits is PCM too (sox writes it).
-                if ((format != 1 && format != 0xFFFE) || bits != 16 || channels !in 1..2 || rate <= 0) return null
+                val pcm16 = (format == 1 || format == 0xFFFE) && bits == 16
+                val float32 = format == 3 && bits == 32
+                if ((!pcm16 && !float32) || channels !in 1..2 || rate <= 0) return null
+                val width = bits / 8
                 val len = if (declared <= 0 || declared > available) available else declared
-                val frames = len / (2 * channels)
+                val frames = len / (width * channels)
+                fun sample(at: Int): Int = if (pcm16) b.getShort(at).toInt()
+                    else (b.getFloat(at).coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt()
                 val out = ShortArray(frames) { i ->
                     var sum = 0
-                    for (c in 0 until channels) sum += b.getShort(body + (i * channels + c) * 2)
+                    for (c in 0 until channels) sum += sample(body + (i * channels + c) * width)
                     (sum / channels).toShort()
                 }
                 return out to rate

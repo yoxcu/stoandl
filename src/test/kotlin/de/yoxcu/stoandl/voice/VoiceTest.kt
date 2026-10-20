@@ -124,6 +124,20 @@ class VoiceTest {
         assertNull(Wav.decode(wav.copyOfRange(0, 30)))
     }
 
+    /** Alpine's piper_exe (libpiper) writes 32-bit IEEE float, with streaming sizes (field, op6 2026-10-20). */
+    @Test
+    fun `32-bit float WAV decodes to 16-bit samples`() {
+        val floats = floatArrayOf(0f, 0.5f, -0.5f, 1f, -1f, 1.5f)
+        val b = java.nio.ByteBuffer.allocate(44 + floats.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(0x7ffff024).put("WAVE".toByteArray())
+        b.put("fmt ".toByteArray()).putInt(16).putShort(3).putShort(1).putInt(16000).putInt(64000).putShort(4).putShort(32)
+        b.put("data".toByteArray()).putInt(0x7ffff000)
+        floats.forEach { b.putFloat(it) }
+        val (back, rate) = assertNotNull(Wav.decode(b.array()))
+        assertEquals(16000, rate)
+        assertContentEquals(shortArrayOf(0, 16383, -16383, 32767, -32767, 32767), back)
+    }
+
     @Test
     fun `transcripts are normalised and kept inside the watch's message`() {
         assertEquals("hallo Welt", normalizeTranscript(" [BLANK_AUDIO]\n hallo\n  Welt \n"))
