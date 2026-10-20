@@ -347,8 +347,9 @@ client like the assistant waits):
 - The system is kept awake while it synthesises.
 
 Streaming the blocks to a watchapp follows [speaker-stream.md](speaker-stream.md): the Go helper wraps the
-call as `Ext.Synthesize(text, language, cb)`, and `SpeakerPump` streams the blocks, paced, with START/END/
-ABORT, to a watchapp that vendors `examples/extensions/watchlib/stoandl_speaker.{c,h}`. A sender may go at
+call as `Ext.Synthesize(text, language, cb)`, and `SpeakerPump` streams the blocks, packed several to a
+message and paced, with START/END/ABORT and a sender-chosen start (HOLD/PLAY), to a watchapp that vendors
+`examples/extensions/watchlib/stoandl_speaker.{c,h}`. A sender may go at
 most 30 s between two speaker messages of a stream; the watch drops a stream after 35 s without one. The
 speaker keys `0x7FFF0000`–`0x7FFF0003` are reserved in every watchapp that vendors the receiver; app-defined
 AppMessage keys must stay below them. The [assistant](assistant.md) reads its answers this way.

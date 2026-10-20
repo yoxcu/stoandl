@@ -54,7 +54,9 @@ type assistant struct {
 	speech  *speech
 	tts     ttsState
 	appOpen bool
-	caps    int // the watchapp's CAPS, from its latest HELLO, ASK or PRESET
+	caps    int          // the watchapp's CAPS, from its latest HELLO, ASK or PRESET
+	spk     SpeakerWatch // the watchapp's speech receiver, from its latest HELLO
+	spkRate float64      // the watch link's rate in the last reading, bytes/s
 	state   appState
 	// The latest synthesize sent, and the latest one answered (under mu): a timeout counts only when
 	// no later call was answered, and a stop cancels a call still in flight.

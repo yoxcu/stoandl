@@ -21,6 +21,9 @@ const (
 	speechHold    = 120 * time.Second // keepAwake cap while speaking
 	sentenceMin   = 40                // a shorter sentence is joined to the next
 	sentenceMax   = 300               // a longer one is cut at a space
+	firstMax      = 100               // a longer first sentence is cut at a clause boundary…
+	firstMin      = 30                // …no earlier than this, so the first sound comes sooner
+	msPerChar     = 65                // speech per character until the daemon's first answer says better
 	speechCardID  = "assistant:speech"
 	speechOffHint = "Turn it on in stoandl: Settings → Voice."
 )
@@ -55,7 +58,8 @@ func ttsLanguage(name string) string {
 }
 
 // speechSentences splits an answer into the pieces synthesized one by one: sentences, a short one
-// joined to the next, a long one cut at a space. A short first piece makes the first sound come soon.
+// joined to the next, a long one cut at a space. A short first piece makes the first sound come soon, so
+// a long first sentence is cut at its last clause boundary (a comma, a colon, a dash) before firstMax.
 func speechSentences(text string) []string {
 	var lines []string
 	for _, ln := range strings.Split(text, "\n") {
@@ -67,6 +71,11 @@ func speechSentences(text string) []string {
 		cut := firstSentenceEnd(rest, sentenceMin)
 		if cut < 0 || cut > sentenceMax {
 			cut = breakPoint(rest, sentenceMax)
+		}
+		if len(out) == 0 && cut > firstMax {
+			if c := clauseEnd(rest, firstMin, firstMax); c > 0 {
+				cut = c
+			}
 		}
 		if p := strings.TrimSpace(rest[:cut]); p != "" {
 			out = append(out, p)
@@ -90,6 +99,31 @@ func firstSentenceEnd(s string, from int) int {
 		}
 	}
 	return best
+}
+
+// clauseEnd returns the index just after the last clause boundary (", ", "; ", ": ", " – ", " — ",
+// " - ") that ends between from and to, or -1.
+func clauseEnd(s string, from, to int) int {
+	if to > len(s) {
+		to = len(s)
+	}
+	best := -1
+	for _, m := range []string{", ", "; ", ": ", " – ", " — ", " - "} {
+		if i := strings.LastIndex(s[:to], m); i >= 0 && i+len(m) >= from && i+len(m) > best {
+			best = i + len(m)
+		}
+	}
+	return best
+}
+
+// speechLength estimates a whole answer's audio from what the daemon made of its first pieces (done of
+// audio for doneChars characters) and the characters still to synthesize.
+func speechLength(done time.Duration, doneChars, restChars int) time.Duration {
+	per := time.Duration(msPerChar) * time.Millisecond
+	if doneChars > 0 && done > 0 {
+		per = done / time.Duration(doneChars)
+	}
+	return done + per*time.Duration(restChars)
 }
 
 // autoSpeakLocked: an answer just shown in the app is read aloud unasked.
@@ -148,6 +182,7 @@ func (a *assistant) startSpeech(text string, explicit bool) {
 
 type synthResult struct {
 	blocks [][]byte
+	ms     int
 	err    string
 }
 
@@ -176,13 +211,13 @@ func (a *assistant) synthesize(text, lang string) <-chan synthResult {
 			a.mu.Unlock()
 		}
 	})
-	a.ext.Synthesize(text, lang, func(blocks [][]byte, _ int, err string) {
+	a.ext.Synthesize(text, lang, func(blocks [][]byte, ms int, err string) {
 		t.Stop()
 		a.mu.Lock()
 		a.tts = ttsAnswers
 		a.synthAnswered = max(a.synthAnswered, seq)
 		a.mu.Unlock()
-		deliver(synthResult{blocks: blocks, err: err})
+		deliver(synthResult{blocks: blocks, ms: ms, err: err})
 	})
 	return ch
 }
@@ -201,15 +236,23 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 			release()
 		}
 	}()
+	pump := NewSpeakerPump(a.appSend)
 	a.mu.Lock()
 	known := a.tts == ttsAnswers
+	pump.SetWatch(a.spk)
+	pump.SetRateHint(a.spkRate)
 	a.mu.Unlock()
 	if known {
 		hold()
 	}
-	pump := NewSpeakerPump(a.appSend)
 	lang := ttsLanguage(a.cfg.Language)
 	sentences := speechSentences(text)
+	restChars := 0
+	for _, p := range sentences {
+		restChars += len(p)
+	}
+	var doneAudio time.Duration
+	doneChars := 0
 	var next <-chan synthResult
 	if len(sentences) > 0 {
 		next = a.synthesize(sentences[0], lang)
@@ -234,6 +277,10 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 		if i+1 < len(sentences) {
 			next = a.synthesize(sentences[i+1], lang) // while this one plays
 		}
+		doneAudio += time.Duration(r.ms) * time.Millisecond
+		doneChars += len(sentences[i])
+		restChars -= len(sentences[i])
+		pump.Expect(speechLength(doneAudio, doneChars, restChars))
 		if !pump.Write(s.ctx, r.blocks) {
 			break
 		}
@@ -260,6 +307,14 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 		// reading's stream, an abort for this id can't).
 		if !pump.End(s.ctx) && s.ctx.Err() != nil {
 			pump.Abort(context.Background())
+		}
+	}
+	if pump.Sent() {
+		a.ext.Logf("speak: %s", pump.Report())
+		if r := pump.LinkRate(); r > 0 {
+			a.mu.Lock()
+			a.spkRate = r // the next reading's first guess
+			a.mu.Unlock()
 		}
 	}
 	s.cancel()

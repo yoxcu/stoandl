@@ -452,26 +452,67 @@ const (
 	SpkKeyData  = 0x7FFF0002
 	SpkKeyFlags = 0x7FFF0003
 
-	SpkFlagStart = 0x01
-	SpkFlagEnd   = 0x02
-	SpkFlagAbort = 0x04
+	SpkFlagStart  = 0x01
+	SpkFlagEnd    = 0x02
+	SpkFlagAbort  = 0x04
+	SpkFlagPacked = 0x08 // DATA is blocks, each behind its u16 little-endian length
+	SpkFlagHold   = 0x10 // with START: the receiver buffers until PLAY instead of starting at 0.4 s
+	SpkFlagPlay   = 0x20 // start playing now
 
-	spkRingBytes   = 6144 // the watch's ADPCM ring
-	spkLenBytes    = 2    // the ring stores each block behind its length
+	spkRingBytes   = 6144 // the ring of a receiver that reports none
+	spkLenBytes    = 2    // the ring stores each block behind its length; PACKED data has the same layout
 	spkBlockHeader = 4
+	spkBlockMax    = 2000
 	spkRate        = 8000
-	spkPrebuffer   = 400 * time.Millisecond // the watch opens its stream with this much buffered
+	spkBytesPerSec = spkRate / 2             // 4-bit ADPCM
+	spkPrebuffer   = 400 * time.Millisecond  // a stream without HOLD opens with this much buffered
+	spkHoldMax     = 3 * time.Second         // a HOLD stream opens this long after its first message at the latest
+	spkMargin      = 250 * time.Millisecond  // slack in the pacing estimates
+	spkUnknownXfer = 1500 * time.Millisecond // a message's transfer time before any was measured
+	spkNever       = time.Duration(1<<63 - 1)
 )
+
+// SpeakerWatch is what a receiver reports through the app's own protocol: stoandl_speaker_data_max() for
+// the app's inbox and stoandl_speaker_ring_bytes(). The zero value is a receiver that reported nothing:
+// one block per message, a 6144-byte ring, playback from 0.4 s buffered.
+type SpeakerWatch struct {
+	DataMax int // bytes of DATA one PACKED message may carry
+	Ring    int // the receiver's ring in bytes
+}
+
+// modern: the receiver knows PACKED, HOLD and PLAY (it reported its ring).
+func (w SpeakerWatch) modern() bool { return w.Ring > 0 }
+
+// packed: several blocks per message, and at least one full block fits.
+func (w SpeakerWatch) packed() bool { return w.modern() && w.DataMax >= spkLenBytes+spkBlockMax }
 
 // SpeakerPump streams speech blocks to a watchapp that vendors stoandl_speaker.c, one stream per pump.
 // send must be the extension's own one-in-flight path to that watchapp (it retries NACKs and reports
 // whether the watch ACKed), so speech never races the app's other messages.
+//
+// Told what the watch reported (SetWatch), it packs several blocks per message and decides when the watch
+// starts playing (PLAY): once it holds enough that the rest, at the measured rate, arrives before it is
+// needed. Expect gives it the whole stream's length as far as the caller knows it.
 type SpeakerPump struct {
 	send  func(ctx context.Context, data map[int]AppValue) bool
 	id    uint32
 	seq   int
+	watch SpeakerWatch
 	clock speakerClock
 	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) bool // false when ctx ended first
+
+	expect   time.Duration // the whole stream's audio, as estimated by the caller
+	rateHint float64       // bytes/s to assume before anything was measured
+	stats    speakerStats
+}
+
+// speakerStats measures one stream, for Report.
+type speakerStats struct {
+	messages, blocks, bytes int
+	audio                   time.Duration
+	first, last             time.Time // first send, last ACK
+	ackSum, ackMax          time.Duration
 }
 
 func NewSpeakerPump(send func(ctx context.Context, data map[int]AppValue) bool) *SpeakerPump {
@@ -479,46 +520,152 @@ func NewSpeakerPump(send func(ctx context.Context, data map[int]AppValue) bool) 
 	for id == 0 {
 		id = rand.Uint32()
 	}
-	return &SpeakerPump{send: send, id: id, now: time.Now}
+	return &SpeakerPump{send: send, id: id, now: time.Now, sleep: sleepCtx}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// SetWatch sets what the receiver reported; call it before the first Write.
+func (p *SpeakerPump) SetWatch(w SpeakerWatch) {
+	p.watch = w
+	p.clock.ring = w.Ring
+	p.clock.hold = w.modern()
+}
+
+// Expect sets the estimated length of the whole stream (sent and still to come). Call it again when the
+// estimate improves; 0 means unknown.
+func (p *SpeakerPump) Expect(total time.Duration) { p.expect = total }
+
+// SetRateHint sets the link rate, in bytes/s, to assume before this stream has measured its own (an
+// earlier stream's LinkRate).
+func (p *SpeakerPump) SetRateHint(bytesPerSec float64) { p.rateHint = bytesPerSec }
+
+// LinkRate is the measured rate of the watch link: data bytes per second of send→ACK time; 0 before the
+// first ACK.
+func (p *SpeakerPump) LinkRate() float64 {
+	if p.stats.ackSum <= 0 {
+		return 0
+	}
+	return float64(p.stats.bytes) / p.stats.ackSum.Seconds()
+}
+
+// rate is what arrives per second of wall time so far (the link and any wait for the next sentence), or
+// the hint before the first ACK.
+func (p *SpeakerPump) rate() float64 {
+	if el := p.stats.last.Sub(p.stats.first); p.stats.messages > 0 && el > 0 {
+		return float64(p.stats.bytes) / el.Seconds()
+	}
+	return p.rateHint
+}
+
+func (p *SpeakerPump) linkRate() float64 {
+	if r := p.LinkRate(); r > 0 {
+		return r
+	}
+	return p.rateHint
 }
 
 // Sent reports whether a block went out.
 func (p *SpeakerPump) Sent() bool { return p.seq > 0 }
 
-// Write sends blocks in order, each once the watch's ring has room for it. It returns false when ctx
-// ended or the watch didn't take a block.
+// Write sends blocks in order, as many per message as the watch takes, each message once the watch's ring
+// has room for it. It returns false when ctx ended or the watch didn't take a message.
 func (p *SpeakerPump) Write(ctx context.Context, blocks [][]byte) bool {
-	for _, b := range blocks {
-		if w := p.clock.wait(p.now(), len(b)); w > 0 {
-			t := time.NewTimer(w)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
+	maxData := spkLenBytes + spkBlockMax
+	if p.watch.packed() {
+		maxData = p.watch.DataMax
+	}
+	for len(blocks) > 0 {
+		sizes := make([]int, len(blocks))
+		for i, b := range blocks {
+			sizes[i] = len(b)
+		}
+		n, wait := p.clock.plan(p.now(), sizes, maxData, p.watch.packed(), p.linkRate())
+		if wait > 0 {
+			if !p.sleep(ctx, wait) {
 				return false
 			}
+			continue
 		}
 		if ctx.Err() != nil {
 			return false
 		}
-		m := p.msg(0)
-		m[SpkKeyData] = Blob(b)
-		if p.seq == 0 {
-			m[SpkKeyFlags] = U8(SpkFlagStart)
+		part := blocks[:n]
+		var audio time.Duration
+		for _, b := range part {
+			audio += blockDuration(len(b))
 		}
+		flags := 0
+		if p.seq == 0 {
+			flags |= SpkFlagStart
+			if p.watch.modern() {
+				flags |= SpkFlagHold
+			}
+		}
+		play := p.watch.modern() && p.clock.wantPlay(audio, p.expect-p.stats.audio-audio, p.rate())
+		if play {
+			flags |= SpkFlagPlay
+		}
+		m := p.msg(0)
+		if p.watch.packed() {
+			flags |= SpkFlagPacked
+			var data []byte
+			for _, b := range part {
+				data = append(data, byte(len(b)), byte(len(b)>>8))
+				data = append(data, b...)
+			}
+			m[SpkKeyData] = Blob(data)
+		} else {
+			m[SpkKeyData] = Blob(part[0])
+		}
+		if flags != 0 {
+			m[SpkKeyFlags] = U8(flags)
+		}
+		start := p.now()
 		if !p.send(ctx, m) {
 			return false
 		}
-		p.seq++
-		p.clock.sent(p.now(), len(b))
+		acked := p.now()
+		p.stats.add(start, acked, part, audio)
+		p.seq += n
+		p.clock.sent(acked, sizes[:n], play)
+		blocks = blocks[n:]
 	}
 	return true
+}
+
+func (s *speakerStats) add(start, acked time.Time, blocks [][]byte, audio time.Duration) {
+	if s.messages == 0 {
+		s.first = start
+	}
+	s.messages++
+	s.blocks += len(blocks)
+	for _, b := range blocks {
+		s.bytes += len(b)
+	}
+	s.audio += audio
+	s.last = acked
+	d := acked.Sub(start)
+	s.ackSum += d
+	s.ackMax = max(s.ackMax, d)
 }
 
 // End tells the watch the stream is complete; it plays out what it holds. With nothing sent it aborts.
 func (p *SpeakerPump) End(ctx context.Context) bool {
 	if p.seq == 0 {
 		return p.Abort(ctx)
+	}
+	if !p.clock.started {
+		p.clock.start(p.now(), "end")
 	}
 	return p.send(ctx, p.msg(SpkFlagEnd))
 }
@@ -534,14 +681,61 @@ func (p *SpeakerPump) msg(flags int) map[int]AppValue {
 	return m
 }
 
-// speakerClock estimates what the watch still holds of a stream, so a block is sent only when the
-// ring has room for it. A block counts as held until it has played, which errs on the safe side: the
-// watch frees it once decoded into the firmware's stream buffer.
+// Report is one line about the stream so far, for the extension's log: what went out, how fast the watch
+// took it, when playback began and how long the watch is estimated to have run dry. Never the text.
+func (p *SpeakerPump) Report() string {
+	s := p.stats
+	if s.messages == 0 {
+		return "nothing sent"
+	}
+	wall := s.last.Sub(s.first)
+	kbs := 0.0
+	if wall > 0 {
+		kbs = float64(s.bytes) / 1000 / wall.Seconds()
+	}
+	start := "not started"
+	if c := p.clock; c.started {
+		start = fmt.Sprintf("started after %d ms (%s)", max(0, c.startAt.Sub(c.first).Milliseconds()), c.startWhy)
+	}
+	return fmt.Sprintf("%d messages, %d blocks, %d B, %d ms of audio in %d ms (first send to last ack), "+
+		"ack avg %d max %d ms, %.1f KB/s (link %.1f), %s, underrun ~%d ms",
+		s.messages, s.blocks, s.bytes, s.audio.Milliseconds(), wall.Milliseconds(),
+		(s.ackSum / time.Duration(s.messages)).Milliseconds(), s.ackMax.Milliseconds(), kbs, p.LinkRate()/1000,
+		start, p.clock.underrun.Milliseconds())
+}
+
+// spkStartNeed is how much audio a watch must hold before it starts playing so that the rest of the stream
+// (rest of audio, arriving at rate bytes/s) comes before it is needed. Audio arriving at r seconds per
+// second, r < 1, falls behind by rest·(1/r − 1) by the end; at r ≥ 1 the prebuffer is enough. With a 10 %
+// margin on the rate. Unknown rate: never (the receiver starts by itself).
+func spkStartNeed(rest time.Duration, rate float64) time.Duration {
+	if rest <= 0 {
+		return spkPrebuffer
+	}
+	if rate <= 0 {
+		return spkNever
+	}
+	r := rate / spkBytesPerSec / 1.1
+	if r >= 1 {
+		return spkPrebuffer
+	}
+	return spkPrebuffer + time.Duration(float64(rest)*(1/r-1))
+}
+
+// speakerClock estimates what the watch still holds of a stream, so a message is sent only when the ring
+// has room for it, and when the watch starts playing. A block counts as held until it has played, which
+// errs on the safe side: the watch frees it once decoded into the firmware's stream buffer.
 type speakerClock struct {
-	started bool
-	end     time.Time // when everything sent so far will have played
-	pre     time.Duration
-	held    []heldBlock // oldest first
+	ring     int  // 0: spkRingBytes
+	hold     bool // a HOLD stream: the watch waits for PLAY (or a full ring, END, or spkHoldMax)
+	started  bool
+	first    time.Time // the first ACK; a HOLD receiver opens by first+spkHoldMax
+	startAt  time.Time
+	startWhy string
+	end      time.Time     // when everything sent so far will have played
+	pre      time.Duration // audio buffered before playback
+	held     []heldBlock   // oldest first
+	underrun time.Duration // estimated time the watch had nothing to play
 }
 
 type heldBlock struct {
@@ -554,7 +748,33 @@ func blockDuration(n int) time.Duration {
 	return time.Duration(1+2*(n-spkBlockHeader)) * time.Second / spkRate
 }
 
+func (c *speakerClock) ringBytes() int {
+	if c.ring > 0 {
+		return c.ring
+	}
+	return spkRingBytes
+}
+
+func (c *speakerClock) heldBytes() int {
+	n := 0
+	for _, b := range c.held {
+		n += b.bytes
+	}
+	return n
+}
+
+func (c *speakerClock) start(at time.Time, why string) {
+	c.started, c.startAt, c.startWhy, c.end = true, at, why, at
+	for i := range c.held {
+		c.end = c.end.Add(c.held[i].dur)
+		c.held[i].until = c.end
+	}
+}
+
 func (c *speakerClock) expire(now time.Time) {
+	if c.hold && !c.started && !c.first.IsZero() && !now.Before(c.first.Add(spkHoldMax)) {
+		c.start(c.first.Add(spkHoldMax), "hold timeout")
+	}
 	i := 0
 	for i < len(c.held) && c.started && !c.held[i].until.After(now) {
 		i++
@@ -562,44 +782,102 @@ func (c *speakerClock) expire(now time.Time) {
 	c.held = c.held[i:]
 }
 
-// wait is how long until a block of n bytes fits in the ring.
-func (c *speakerClock) wait(now time.Time, n int) time.Duration {
-	c.expire(now)
-	over := n + spkLenBytes - spkRingBytes
-	for _, b := range c.held {
-		over += b.bytes
+// until is how long until need bytes of the ring are free: 0 now (or never possible), -1 not before
+// playback starts.
+func (c *speakerClock) until(now time.Time, need int) time.Duration {
+	free := c.ringBytes() - c.heldBytes()
+	if need <= free || need > c.ringBytes() {
+		return 0
 	}
-	if over <= 0 || !c.started {
-		return 0 // before playback the ring holds less than a block's worth: it can't be full
+	if !c.started {
+		return -1
 	}
 	for _, b := range c.held {
-		if over -= b.bytes; over <= 0 {
+		if free += b.bytes; free >= need {
 			return b.until.Sub(now)
 		}
 	}
 	return 0
 }
 
-// sent records a block of n bytes the watch ACKed at now.
-func (c *speakerClock) sent(now time.Time, n int) {
+// plan decides the next message: its first n blocks of sizes, or wait first. One message carries up to
+// maxData bytes (each block behind its length) when packed, else one block. A message that doesn't fit
+// the ring yet waits for room while the watch has enough left to play through the wait and the transfer;
+// otherwise the blocks that fit go now.
+func (c *speakerClock) plan(now time.Time, sizes []int, maxData int, packed bool, linkRate float64) (n int, wait time.Duration) {
 	c.expire(now)
-	b := heldBlock{bytes: n + spkLenBytes, dur: blockDuration(n)}
-	if c.started {
-		if c.end.Before(now) {
-			c.end = now // the watch ran dry: this block plays at once
+	k, bytes := 1, sizes[0]+spkLenBytes
+	for packed && k < len(sizes) && bytes+sizes[k]+spkLenBytes <= maxData {
+		bytes += sizes[k] + spkLenBytes
+		k++
+	}
+	free := c.ringBytes() - c.heldBytes()
+	fit, fitBytes := 0, 0
+	for fit < k && fitBytes+sizes[fit]+spkLenBytes <= free {
+		fitBytes += sizes[fit] + spkLenBytes
+		fit++
+	}
+	if fit == k {
+		return k, 0
+	}
+	if !c.started {
+		if fit > 0 {
+			return fit, 0
 		}
-		c.end = c.end.Add(b.dur)
-		b.until = c.end
+		c.start(now, "full") // the watch starts by itself once its ring can't take a full block
+	}
+	all := c.until(now, bytes)
+	if all <= 0 {
+		return k, 0
+	}
+	xfer := spkUnknownXfer
+	if linkRate > 0 {
+		xfer = time.Duration(float64(bytes) / linkRate * float64(time.Second))
+	}
+	if !now.Add(all + xfer + spkMargin).After(c.end) {
+		return 0, all // the watch has enough to play while room for the whole message frees up
+	}
+	if fit > 0 {
+		return fit, 0
+	}
+	return 0, max(1, c.until(now, sizes[0]+spkLenBytes))
+}
+
+// wantPlay: a HOLD stream that hasn't started should start once a message with add of audio arrives,
+// because the watch then holds enough for the rest of the stream (rest of audio, at rate bytes/s).
+func (c *speakerClock) wantPlay(add, rest time.Duration, rate float64) bool {
+	return c.hold && !c.started && c.pre+add >= spkStartNeed(rest, rate)
+}
+
+// sent records a message with blocks of sizes the watch ACKed at now; play: it carried PLAY.
+func (c *speakerClock) sent(now time.Time, sizes []int, play bool) {
+	c.expire(now)
+	if c.first.IsZero() {
+		c.first = now
+	}
+	for _, n := range sizes {
+		b := heldBlock{bytes: n + spkLenBytes, dur: blockDuration(n)}
+		if c.started {
+			if c.end.Before(now) {
+				c.underrun += now.Sub(c.end) // the watch ran dry: this block plays at once
+				c.end = now
+			}
+			c.end = c.end.Add(b.dur)
+			b.until = c.end
+		} else {
+			c.pre += b.dur
+		}
 		c.held = append(c.held, b)
+	}
+	if c.started {
 		return
 	}
-	c.held = append(c.held, b)
-	c.pre += b.dur
-	if c.pre >= spkPrebuffer {
-		c.started, c.end = true, now
-		for i := range c.held {
-			c.end = c.end.Add(c.held[i].dur)
-			c.held[i].until = c.end
-		}
+	switch {
+	case play:
+		c.start(now, "play")
+	case !c.hold && c.pre >= spkPrebuffer:
+		c.start(now, "prebuffer")
+	case c.ringBytes()-c.heldBytes() < spkLenBytes+spkBlockMax:
+		c.start(now, "full")
 	}
 }

@@ -52,30 +52,30 @@ func TestSpeakerClockPacing(t *testing.T) {
 		t.Fatalf("block duration %v", d)
 	}
 	for i := 0; i < 3; i++ {
-		if w := c.wait(t0, 2000); w != 0 {
+		if n, w := c.plan(t0, []int{2000}, 2002, false, 0); n != 1 || w != 0 {
 			t.Fatalf("block %d waits %v", i, w)
 		}
-		c.sent(t0, 2000)
+		c.sent(t0, []int{2000}, false)
 	}
-	if w := c.wait(t0, 2000); w != d {
+	if n, w := c.plan(t0, []int{2000}, 2002, false, 0); n != 0 || w != d {
 		t.Fatalf("fourth block waits %v, want %v", w, d)
 	}
-	if w := c.wait(t0.Add(d), 2000); w != 0 {
+	if n, w := c.plan(t0.Add(d), []int{2000}, 2002, false, 0); n != 1 || w != 0 {
 		t.Fatalf("after one played, waits %v", w)
 	}
 	late := t0.Add(10 * time.Second)
-	c.sent(late, 2000)
+	c.sent(late, []int{2000}, false)
 	if c.end != late.Add(d) {
 		t.Fatalf("after a gap the block ends at %v", c.end.Sub(late))
 	}
 
 	// Before 0.4 s has arrived the watch isn't playing yet, and nothing has to wait.
 	var short speakerClock
-	short.sent(t0, 1000) // 249 ms
-	if short.started || short.wait(t0, 2000) != 0 {
+	short.sent(t0, []int{1000}, false) // 249 ms
+	if n, w := short.plan(t0, []int{2000}, 2002, false, 0); short.started || n != 1 || w != 0 {
 		t.Fatalf("prebuffer: %+v", short)
 	}
-	short.sent(t0.Add(time.Second), 1000)
+	short.sent(t0.Add(time.Second), []int{1000}, false)
 	if !short.started || short.end != t0.Add(time.Second).Add(2*blockDuration(1000)) {
 		t.Fatalf("start: %+v", short)
 	}

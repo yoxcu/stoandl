@@ -7,11 +7,21 @@
 
 #include <string.h>
 
-#define RING_BYTES 6144         // ADPCM ring; each block is stored behind a 2-byte length
+// ADPCM ring; each block is stored behind a 2-byte length (PACKED messages carry that same layout). About
+// 8 s of speech on emery, 3 s on flint, whose app has half the RAM (64 KB).
+#if defined(PBL_PLATFORM_FLINT)
+#define RING_BYTES 12288
+#else
+#define RING_BYTES 32768
+#endif
 #define LEN_BYTES 2
 #define BLOCK_HEADER 4          // s16 LE first sample, u8 step index, u8 reserved
 #define BLOCK_MAX 2000
-#define PREBUFFER_SAMPLES 3200  // 0.4 s at 8 kHz before the stream opens
+#define PREBUFFER_SAMPLES 3200  // 0.4 s at 8 kHz before the stream opens (a stream without HOLD)
+#define HOLD_MAX_MS 3000        // a HOLD stream opens at the latest this long after its first message
+// The dictionary of a PACKED message besides its data bytes: count, then ID (u32), SEQ (u16), FLAGS (u8)
+// and DATA, each tuple behind a 7-byte header.
+#define MSG_OVERHEAD (1 + (7 + 4) + (7 + 2) + (7 + 1) + 7)
 #define TICK_MS 40
 #define FRAME_SAMPLES 256
 #define VOLUME 100              // the watch scales it by the user's volume cap
@@ -19,7 +29,7 @@
 
 typedef enum {
   SPK_IDLE,
-  SPK_BUFFERING,  // receiving, not yet 0.4 s in the ring
+  SPK_BUFFERING,  // receiving, not yet started (0.4 s in the ring, or for a HOLD stream PLAY)
   SPK_PLAYING,    // stream open, the tick drains the ring into it
   SPK_CLOSING,    // closed after END; the finish callback marks it idle
 } SpkState;
@@ -42,6 +52,8 @@ static SpkState s_state;
 static uint32_t s_id;
 static uint16_t s_next_seq;
 static bool s_ended;
+static bool s_hold;  // the sender starts playback (PLAY); buffer until then
+static bool s_dry;   // playing and the ring ran out before END
 // A stream stopped on the watch (or refused) whose late messages are ignored until a new id arrives.
 static uint32_t s_dead_id;
 static bool s_has_dead;
@@ -68,6 +80,7 @@ static uint16_t s_frame_off;  // bytes already written to the stream
 
 static AppTimer *s_timer;
 static AppTimer *s_stall_timer;  // runs while a stream is buffering or playing; every message restarts it
+static AppTimer *s_hold_timer;   // a HOLD stream's latest start
 
 static void notify(bool active) {
   if (s_on_change) {
@@ -192,6 +205,10 @@ static void go_idle(void) {
     app_timer_cancel(s_stall_timer);
     s_stall_timer = NULL;
   }
+  if (s_hold_timer) {
+    app_timer_cancel(s_hold_timer);
+    s_hold_timer = NULL;
+  }
   if (s_state != SPK_IDLE) {
     app_comm_set_sniff_interval(SNIFF_INTERVAL_NORMAL);
   }
@@ -239,8 +256,13 @@ static void tick(void *ctx) {
   }
   for (;;) {
     if (s_frame_off >= s_frame_len && !fill_frame()) {
+      if (!s_ended && !s_dry) {
+        s_dry = true;  // the firmware plays silence until more arrives
+        APP_LOG(APP_LOG_LEVEL_INFO, "speaker: ring ran dry");
+      }
       break;
     }
+    s_dry = false;
     uint32_t want = s_frame_len - s_frame_off;
     uint32_t wrote = speaker_stream_write((const uint8_t *)s_frame + s_frame_off, want);
     s_frame_off += wrote;
@@ -257,6 +279,10 @@ static void tick(void *ctx) {
 }
 
 static void start_playing(void) {
+  if (s_hold_timer) {
+    app_timer_cancel(s_hold_timer);
+    s_hold_timer = NULL;
+  }
   if (!speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, VOLUME)) {
     APP_LOG(APP_LOG_LEVEL_WARNING, "speaker: stream refused");
     kill_stream();
@@ -280,6 +306,47 @@ static void finished(SpeakerFinishReason reason, void *ctx) {
   if (s_state == SPK_PLAYING || s_state == SPK_CLOSING) {
     kill_stream();  // preempted (a call, an alarm) or failed: drop the rest of this stream
   }
+}
+
+// A HOLD stream whose PLAY hasn't come (the sender still waits for speech, or misjudged): start anyway.
+static void hold_expired(void *ctx) {
+  s_hold_timer = NULL;
+  if (s_state == SPK_BUFFERING && s_ring_used > 0) {
+    start_playing();
+  }
+}
+
+// Pushes the blocks of a message: one block, or with PACKED blocks each behind its length. Returns how
+// many blocks the message carried (valid or not), for the next SEQ.
+static uint16_t push_data(const Tuple *data, bool packed, uint16_t seq) {
+  if (!data || data->type != TUPLE_BYTE_ARRAY) {
+    return 0;
+  }
+  const uint8_t *p = data->value->data;
+  uint16_t left = data->length;
+  uint16_t blocks = 0;
+  while (left > 0) {
+    uint16_t len = left;
+    if (packed) {
+      if (left < LEN_BYTES) {
+        break;
+      }
+      len = p[0] | (p[1] << 8);
+      p += LEN_BYTES;
+      left -= LEN_BYTES;
+      if (len > left) {
+        APP_LOG(APP_LOG_LEVEL_WARNING, "speaker: bad block length at %u", seq + blocks);
+        break;
+      }
+    }
+    if (len > BLOCK_HEADER && len <= BLOCK_MAX && !ring_push(p, len)) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "speaker: ring full, block %u dropped", seq + blocks);
+    }
+    p += len;
+    left -= len;
+    blocks++;
+  }
+  return blocks;
 }
 
 static void will_focus(bool in_focus) {
@@ -319,21 +386,22 @@ bool stoandl_speaker_handle(DictionaryIterator *iter) {
     s_id = id;
     s_next_seq = 0;
     s_ended = false;
+    s_dry = false;
+    s_hold = (flags & STOANDL_SPK_FLAG_HOLD) != 0;
     s_state = SPK_BUFFERING;
     app_comm_set_sniff_interval(SNIFF_INTERVAL_REDUCED);
+    if (s_hold) {
+      s_hold_timer = app_timer_register(HOLD_MAX_MS, hold_expired, NULL);
+    }
     notify(true);
   }
   if (seq < s_next_seq) {
     return true;  // a retry whose ACK was lost
   }
-  s_next_seq = seq + 1;
   restart_stall_timer();
 
-  Tuple *data = dict_find(iter, STOANDL_SPK_KEY_DATA);
-  if (data && data->type == TUPLE_BYTE_ARRAY && data->length > BLOCK_HEADER && data->length <= BLOCK_MAX &&
-      !ring_push(data->value->data, data->length)) {
-    APP_LOG(APP_LOG_LEVEL_WARNING, "speaker: ring full, block %u dropped", seq);
-  }
+  uint16_t blocks = push_data(dict_find(iter, STOANDL_SPK_KEY_DATA), flags & STOANDL_SPK_FLAG_PACKED, seq);
+  s_next_seq = seq + (blocks ? blocks : 1);
   if (flags & STOANDL_SPK_FLAG_END) {
     s_ended = true;
   }
@@ -341,7 +409,9 @@ bool stoandl_speaker_handle(DictionaryIterator *iter) {
     if (s_ended && s_ring_used == 0) {
       reset();
       notify(false);
-    } else if (s_ended || s_buffered_samples >= PREBUFFER_SAMPLES) {
+    } else if (s_ended || (flags & STOANDL_SPK_FLAG_PLAY) ||
+               (!s_hold && s_buffered_samples >= PREBUFFER_SAMPLES) ||
+               RING_BYTES - s_ring_used < LEN_BYTES + BLOCK_MAX) {  // nearly full: can't wait any longer
       start_playing();
     }
   }
@@ -364,6 +434,16 @@ void stoandl_speaker_suppress(bool on) {
 bool stoandl_speaker_active(void) { return s_state != SPK_IDLE; }
 
 bool stoandl_speaker_usable(void) { return !speaker_is_muted(); }
+
+uint16_t stoandl_speaker_data_max(uint32_t inbox_size) {
+  if (inbox_size <= MSG_OVERHEAD) {
+    return 0;
+  }
+  uint32_t max = inbox_size - MSG_OVERHEAD;
+  return max < RING_BYTES ? max : RING_BYTES;  // a message must fit in the ring as a whole
+}
+
+uint16_t stoandl_speaker_ring_bytes(void) { return RING_BYTES; }
 
 void stoandl_speaker_init(StoandlSpeakerChanged on_change, void *ctx) {
   s_on_change = on_change;
@@ -389,6 +469,10 @@ void stoandl_speaker_suppress(bool on) {}
 bool stoandl_speaker_active(void) { return false; }
 
 bool stoandl_speaker_usable(void) { return false; }
+
+uint16_t stoandl_speaker_data_max(uint32_t inbox_size) { return 0; }
+
+uint16_t stoandl_speaker_ring_bytes(void) { return 0; }
 
 void stoandl_speaker_init(StoandlSpeakerChanged on_change, void *ctx) {}
 

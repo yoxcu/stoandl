@@ -10,7 +10,7 @@ speaker can play it (`PBL_SPEAKER`: Pebble Time 2 = emery, Pebble 2 Duo = flint)
 |---|---|---|
 | Encoder | the daemon's text to speech (`tts.*`, [voice.md](voice.md)) | WAV → low-pass, 8 kHz → blocks below |
 | `synthesize` | ext JSON-RPC ([extensions.md](extensions.md)) | `{text, language?, format:"pebble-adpcm"}` → `{blocks:[base64…], ms}` |
-| `Ext.Synthesize`, `SpeakerPump` | [`examples/extensions/stoandl_ext.go`](../examples/extensions/stoandl_ext.go) | the RPC call; sends blocks through the extension's one-in-flight AppMessage path, paced to the watch |
+| `Ext.Synthesize`, `SpeakerPump` | [`examples/extensions/stoandl_ext.go`](../examples/extensions/stoandl_ext.go) | the RPC call; packs blocks into the extension's one-in-flight AppMessage path, paced to the watch, and tells it when to start |
 | `stoandl_speaker.{c,h}` | [`examples/extensions/watchlib/`](../examples/extensions/watchlib/) | the watch receiver, vendored into each watchapp |
 
 The [assistant](assistant.md) is the first user: it reads Claude's answers aloud.
@@ -51,24 +51,77 @@ speaker message carries only these keys; `stoandl_speaker_handle()` returns true
 | Key | Name | Type | Meaning |
 |---|---|---|---|
 | `0x7FFF0000` | SPK_ID | uint32 | stream id, new for every stream, never 0 |
-| `0x7FFF0001` | SPK_SEQ | uint16 | block number in the stream, from 0; END carries the next number |
-| `0x7FFF0002` | SPK_DATA | bytes | one block (absent on END-only and ABORT messages) |
-| `0x7FFF0003` | SPK_FLAGS | uint8 | `0x01` START (on block 0), `0x02` END, `0x04` ABORT |
+| `0x7FFF0001` | SPK_SEQ | uint16 | number of the message's (first) block in the stream, from 0; END carries the number after the last block |
+| `0x7FFF0002` | SPK_DATA | bytes | one block, or with PACKED one or more (absent on END-only and ABORT messages) |
+| `0x7FFF0003` | SPK_FLAGS | uint8 | bits below |
 
-One block per message, so a message is at most about 2040 bytes: the watchapp's inbox must be at least
-`STOANDL_SPEAKER_INBOX_MIN` (2048). The assistant opens 2304 on speaker watches.
+| Flag | Name | Meaning |
+|---|---|---|
+| `0x01` | START | the stream's first message |
+| `0x02` | END | no more blocks; play out what is held |
+| `0x04` | ABORT | stop now |
+| `0x08` | PACKED | SPK_DATA is a sequence of blocks, each behind its length as u16 little-endian: `len₀ block₀ len₁ block₁ …`, the receiver ring's own layout. The next message's SEQ is this SEQ plus the number of blocks. |
+| `0x10` | HOLD | with START: don't start playing at 0.4 s buffered, the sender sends PLAY (below) |
+| `0x20` | PLAY | start playing now; rides on a message with data |
+
+A message without PACKED carries one block, as before PACKED existed, so senders and receivers of either
+age work together: a sender uses PACKED, HOLD and PLAY only for a receiver that reported its capabilities.
+
+### Receiver capabilities
+
+The receiver can't announce itself in the speaker keys (they run sender → watch only), so the app reports
+two numbers in its own protocol, e.g. its hello message:
+
+| Value | From | Meaning |
+|---|---|---|
+| data max | `stoandl_speaker_data_max(inbox)` | bytes of SPK_DATA one PACKED message may carry: the app's inbox less the 36 bytes of the other keys, at most the ring |
+| ring | `stoandl_speaker_ring_bytes()` | the receiver's ring in bytes |
+
+Without them a sender sends one block per message and paces against a 6144-byte ring started at 0.4 s.
+
+The app opens the largest inbox it can afford: `MIN(STOANDL_SPEAKER_INBOX_MAX, app_message_inbox_size_maximum())`
+(the firmware caps a larger request silently, so take the MIN to know the real size). PebbleOS allows one
+8 KiB byte array per message (`APP_MSG_8K_DICT_SIZE`, 8200 bytes) when the phone advertises 8 KiB AppMessages
+(libpebble3 does) and the app is built with SDK ≥ 5.63; otherwise far less, which is why the inbox must be
+at least `STOANDL_SPEAKER_INBOX_MIN` (2048) for one block.
+
+| Platform | `STOANDL_SPEAKER_INBOX_MAX` | Blocks a message | Ring (`RING_BYTES`) | Assistant heap free (SDK report → after `app_message_open`, emulator) |
+|---|---|---|---|---|
+| emery (Time 2, 128 KB app RAM) | 8200 | 4 (8008 B) | 32768 (~8 s) | 79074 → 70108 |
+| flint (2 Duo, 64 KB app RAM) | 6200 | 3 (6006 B) | 12288 (~3 s) | 34046 → 26956 (21124 with the app's windows up) |
+
+Every AppMessage costs a full ACK round trip and the sender keeps one in flight, so 2000-byte messages
+spent most of their time waiting: on a OnePlus 6 and a Time 2 the link carried about 2.5 KB/s, below the
+4 KB/s the speaker plays. Four blocks a message pay one round trip for 2 s of speech.
 
 ## Sender rules (`SpeakerPump`)
 
 - **One message in flight.** Speech blocks go through the same single-sender path as the extension's
   other messages to that watchapp: the next leaves only after the ACK. A NACK is retried after 200, 400
   and 800 ms; a slow NACK, a timeout or a fourth failure means the app is gone, and the stream stops.
-- **Pacing.** The receiver keeps blocks in a 6144-byte ring, each behind a 2-byte length. Before each
-  block the pump waits until the bytes the watch still holds, plus this block and its length, fit in
-  6144. A block counts as held until its estimated play time has passed. Playback is estimated to begin
-  when 0.4 s of audio has been ACKed, and to resume at once after the watch ran dry. The estimate is
-  conservative: the watch frees a block when it has decoded it into the firmware's 8 KB stream buffer,
-  about half a second before it is heard.
+- **Packing.** For a receiver that reported its capabilities, a message carries as many of the blocks
+  at hand (one sentence's) as fit in data max, each behind its length.
+- **Pacing.** The receiver keeps blocks in its ring, each behind a 2-byte length. A message goes when
+  the bytes the watch still holds, plus the message's blocks and lengths, fit in the ring. A block counts
+  as held until its estimated play time has passed; playback resumes at once after the watch ran dry.
+  When a whole message doesn't fit yet, the pump waits for room as long as the watch has enough left to
+  play through the wait and the message's transfer (at the measured link rate, plus 250 ms); otherwise it
+  sends the blocks that fit now. The estimate is conservative: the watch frees a block when it has
+  decoded it into the firmware's 8 KB stream buffer, about half a second before it is heard.
+- **Start.** Without HOLD, playback is estimated to begin when 0.4 s of audio has been ACKed. With HOLD
+  (every stream to a receiver that reported its capabilities) the pump sets PLAY on the message after
+  which the watch holds enough for the rest to arrive in time. The caller tells the pump the whole
+  stream's expected length (`Expect`; the assistant estimates it from the sentences synthesised so far),
+  and the pump measures the rate the watch takes data at (bytes per second of wall time since the first
+  send, which includes waiting for the next sentence; before the first ACK, an earlier stream's link rate).
+  At `r` seconds of audio per second, `r < 1` after a 10 % margin, the rest falls behind by
+  `rest · (1/r − 1)`, so the watch must hold 0.4 s plus that; at `r ≥ 1`, 0.4 s. The receiver also
+  starts by itself when its ring can't take another full block (2002 bytes free), at END, and 3 s after
+  the stream's first message: the longest it waits for the first sound. The pump models all of these.
+- **Measure.** `Report()` is one line per stream for the extension's log: messages, blocks and bytes, the
+  audio's length, the wall time from the first send to the last ACK, the average and longest send→ACK,
+  the effective and link rate, when and why playback started, and the time the watch is estimated to
+  have run dry. Never the text.
 - **End.** After the last block, END (`SPK_FLAGS=0x02`, no data). The watch plays out what it holds.
 - **Abort.** ABORT stops the watch at once. It also clears a watch that showed "Speaking…" for a
   request that produced no audio; that abort may carry a fresh id.
@@ -87,7 +140,12 @@ One block per message, so a message is at most about 2040 bytes: the watchapp's 
   stream that begins while a modal window covers the app (a call, a notification) or while the app
   suppresses the receiver (dictation) is ignored the same way, and `on_change(false)` reports it.
 - **Start.** The stream opens (`SpeakerPcmFormat_8kHz_16bit`, volume 100, which the watch scales by the
-  user's cap) once 0.4 s is buffered, or at END for a shorter clip.
+  user's cap) once 0.4 s is buffered, or at END for a shorter clip. A HOLD stream instead opens on PLAY,
+  at END, when the ring can't take another full block, or 3 s after its first message, whichever comes
+  first. A packed message whose blocks don't all fit keeps those that do (`speaker: ring full, block N
+  dropped`); a bad length ends the message (`speaker: bad block length`).
+- **Dry.** When the ring runs empty before END the watch logs `speaker: ring ran dry` (once per dry
+  spell); the firmware plays out its own half second and then silence.
 - **Drain.** A 40 ms timer decodes 256-sample frames and writes them until `speaker_stream_write`
   takes only part of one; the rest of that frame goes first on the next tick. On underrun the firmware
   plays silence and keeps the stream open.
@@ -105,7 +163,7 @@ One block per message, so a message is at most about 2040 bytes: the watchapp's 
   `stoandl_speaker_suppress(true)` before `dictation_session_start()` and `(false)` in the dictation
   callback (or when the start fails).
 - **No speaker.** Without `PBL_SPEAKER` the file compiles to a stub that only consumes the keys
-  (no ring, no RAM cost on basalt, chalk, diorite or gabbro).
+  (no ring, no RAM cost on basalt, chalk, diorite or gabbro) and reports 0 for both capabilities.
 
 ### Watchapp API
 
@@ -117,6 +175,13 @@ void stoandl_speaker_stop(void);
 void stoandl_speaker_suppress(bool on);  // while on, nothing plays (dictation)
 bool stoandl_speaker_active(void);   // buffering or playing
 bool stoandl_speaker_usable(void);   // a speaker, and not muted (Settings, or Quiet Time with "mute speaker")
+uint16_t stoandl_speaker_data_max(uint32_t inbox);  // report these two to the sender
+uint16_t stoandl_speaker_ring_bytes(void);          // (0, 0 without a speaker)
+```
+
+```c
+uint32_t inbox = MIN(STOANDL_SPEAKER_INBOX_MAX, app_message_inbox_size_maximum());
+app_message_open(inbox, outbox);
 ```
 
 `on_change(true)` fires when a stream's first message arrives, and `on_change(false)` when it ends for any
@@ -131,6 +196,10 @@ app that speaks unasked should also stay quiet while `quiet_time_is_active()`.
 ```go
 ext.Synthesize(text, language, func(blocks [][]byte, ms int, err string) { … })  // err: "off", "unavailable: …", "busy", …
 pump := NewSpeakerPump(send)        // send: your one-in-flight AppMessage path to the watchapp
-pump.Write(ctx, blocks)             // paced; false when ctx ended or the watch didn't take a block
+pump.SetWatch(SpeakerWatch{DataMax: d, Ring: r})  // what the app reported; skip for an app that reports nothing
+pump.SetRateHint(lastLinkRate)      // optional: an earlier stream's pump.LinkRate()
+pump.Expect(total)                  // the whole stream's expected length; again as the estimate improves
+pump.Write(ctx, blocks)             // packed and paced; false when ctx ended or the watch didn't take a message
 pump.End(ctx)                       // or pump.Abort(ctx)
+ext.Logf("speak: %s", pump.Report())
 ```

@@ -24,6 +24,9 @@ const (
 	keyProto = 8
 	keyCode  = 9
 	keyIndex = 10
+	// HELLO from a watchapp that packs speech (1.1.1): stoandl_speaker_data_max and _ring_bytes.
+	keySpkData = 11
+	keySpkRing = 12
 )
 
 // Commands, watch to extension.
@@ -209,6 +212,9 @@ func (a *assistant) handleApp(m map[string]any) {
 	}
 	switch cmd {
 	case cmdHello:
+		a.mu.Lock()
+		a.spk = SpeakerWatch{DataMax: appInt(m, keySpkData), Ring: appInt(m, keySpkRing)} // zero: an older app
+		a.mu.Unlock()
 		a.hello()
 	case cmdAsk:
 		a.ask(originApp, convID(conv), turn, cutUTF8(appStr(m, keyText), 500))

@@ -2,7 +2,7 @@
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],

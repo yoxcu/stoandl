@@ -51,9 +51,16 @@ on the watch speaker. The format and the reusable receiver are described in
   off: Turn it on in stoandl: Settings → Voice.`). `speak = on_request` reads only on Hold Down;
   `speak = off` never. A stoandl too old to synthesise never answers: after one unanswered try (30 s)
   answers are no longer read unasked until a later Hold Down gets an answer.
-- Each sentence is synthesised while the previous one plays. The phone stays out of suspend while it
-  reads (`keepAwake`, at most 120 s), from the first sentence stoandl answers. If the stream stops
-  without an end (the phone left range or slept), the watch drops it after 35 s.
+- Each sentence is synthesised while the previous one plays; a long first sentence is split at a comma
+  (or colon, dash) so the first sound comes sooner. With Piper's `piper_exe` the daemon keeps the voice
+  loaded between sentences (and for 60 s after), which saves about 3 s per sentence on a phone.
+- The app (1.1.1) takes several half-second blocks per message (4 on a Time 2, 3 on a 2 Duo), since
+  every message costs a round trip. The watch waits with the first sound until it holds enough that the
+  rest of the answer, at the rate the link has shown, arrives before it is needed, but at most 3 s, so a
+  slow link means a later start instead of pauses.
+- The phone stays out of suspend while it reads (`keepAwake`, at most 120 s), from the first sentence
+  stoandl answers. If the stream stops without an end (the phone left range or slept), the watch drops it
+  after 35 s.
 
 ## Setup
 
@@ -101,6 +108,15 @@ The extension logs one line per question (no key, the question cut to 40 charact
 ```
 "how long to boil an egg" ask conv=1a2b3c4d turn=1 model=claude-haiku-4-5-20251001 ttft=612 total=1480 in=312 out=58 searches=0 cost=$0.00060 stop=end_turn sink=notif
 ```
+
+Each reading aloud logs one line too (never the text):
+
+```
+speak: 5 messages, 18 blocks, 36000 B, 8984 ms of audio in 6120 ms (first send to last ack), ack avg 1210 max 1530 ms, 5.9 KB/s (link 5.9), started after 1840 ms (play), underrun ~0 ms
+```
+
+The rate is what the watch link carried; below 4.0 KB/s speech can't keep up without a delayed start, and
+the underrun estimates how long the watch had nothing to play (the watch log says `speaker: ring ran dry`).
 
 To compare the models before choosing one, run the bench by hand (never under the daemon). It reads only
 `ANTHROPIC_API_KEY`, asks six fixed short questions per model, and prints TTFT and total time (p50/p90),

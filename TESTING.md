@@ -2406,12 +2406,13 @@ with unfilled sizes). Log: `grep -E 'Text to speech|tts' /tmp/stoandl.log`.
 | 5.68o | Resident cancel ⚠️ UNVERIFIED | Hold Down twice quickly during a long sentence | The running `piper_exe` is killed (no orphan in `ps`), the next reading starts a new one, no warning beyond the cancel. |
 | 5.68p | Not piper_exe ⚠️ UNVERIFIED | Python `piper` (or `piper-tts`) only | One process per sentence as before; no `keeps … loaded` line. |
 
-## 5.69 Assistant reads answers aloud  ⚠️ UNVERIFIED (needs a Time 2 or Pebble 2 Duo, assistant 1.1.0 and `tts.backend` set)
+## 5.69 Assistant reads answers aloud  ⚠️ UNVERIFIED (needs a Time 2 or Pebble 2 Duo, assistant 1.1.0, 1.1.1 for 5.69r–w, and `tts.backend` set)
 
 [docs/assistant.md → Reading answers aloud](docs/assistant.md#reading-answers-aloud) and
 [docs/speaker-stream.md](docs/speaker-stream.md), on top of 5.50 and 5.68. Off-device: `go test -race ./...` in
 `examples/extensions/assistant` (speak gating, Ask stopping the pump, pacing, keepAwake renewal, the vendored
-receiver copy).
+receiver copy; packed messages, PLAY timing, the hold and full-ring starts, the report, the shorter first
+piece, HELLO's speaker capabilities).
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
@@ -2429,9 +2430,15 @@ receiver copy).
 | 5.69l | Old daemon | assistant 1.1.0 on a daemon without `synthesize` | The first answer logs `speak: unavailable: no answer from stoandl` after 30 s with no "reading an answer aloud" hold (`systemd-inhibit --list`); later answers aren't tried; Hold Down shows the "Text to speech unavailable" card after 30 s. |
 | 5.69m | Sleep hold (phone) | a long answer on the OnePlus 6 | Suspend refused while speaking (keepAwake "assistant: reading an answer aloud", renewed past 60 s, at most 120 s), allowed afterwards. |
 | 5.69n | Throughput | a multi-sentence answer at REDUCED sniff over Linux PPoG | Keeps up with 4 KB/s: no audible underruns. |
-| 5.69o | Pebble 2 Duo | 5.69a–d on flint | Same; inbox 2304 B and about 41 KB heap free. |
+| 5.69o | Pebble 2 Duo | 5.69a–d on flint | Same; the app log shows `inbox 6200, heap free ~27000`, and dictation, the presets menu and a reading still work (no out-of-memory). |
 | 5.69p | No speaker | basalt, diorite, gabbro | Down still scrolls with repeat; nothing is ever sent as SPK; no regression against the 1.1.0 app. |
-| 5.69q | Locker | `stoandl ext install` of the new assistant archive | The locker re-pushes the 1.1.0 `.pbw`. |
+| 5.69q | Locker | `stoandl ext install` of the new assistant archive | The locker re-pushes the 1.1.1 `.pbw`. |
+| 5.69r | Packed messages ⚠️ UNVERIFIED | Time 2, app 1.1.1: a 140-character answer read aloud | The app log shows `inbox 8200`; the extension's `speak:` line shows 4 blocks a message (e.g. 5 messages for 18 blocks) and a link rate well above the 2.4–2.6 KB/s of 1.1.0 (18 blocks of 2000 B in 15 s); no `speaker: ring full` or `bad block length`. |
+| 5.69s | No pauses ⚠️ UNVERIFIED | 5.69r, then a multi-sentence answer | No pause inside or between sentences; no `speaker: ring ran dry` in the watch log (`pebble logs`); the `speak:` line's `underrun ~0 ms`, `started after … (play)` or `(full)`. |
+| 5.69t | Slow link ⚠️ UNVERIFIED | 5.69s at the edge of range, or with another BLE load | The first sound comes at most 3 s after the first block (`started after ≤ 3000 ms (hold timeout)`); any pauses come late in the answer, not from the start. |
+| 5.69u | First sound ⚠️ UNVERIFIED | the same 140-character answer as in the field data (DONE → first sound was ~7 s + transfer with 1.1.0 and one-shot Piper) | The first piece is cut at a comma; DONE → first sound clearly shorter with the resident Piper (5.68m). |
+| 5.69v | Old app, new extension ⚠️ UNVERIFIED | keep the 1.1.0 app on the watch (locker not yet updated) with the new extension | Speech still works, one block per message (`speak:` line: messages = blocks), started at 0.4 s (`prebuffer`). |
+| 5.69w | New app, old extension ⚠️ UNVERIFIED | the 1.1.1 app with the 1.1.0 extension | Speech still works: single blocks, the 0.4 s start (the extension ignores keys 11/12). |
 
 ## 5.70 CLI: exit codes, `stoandl status`, faster start, logging, packaging  ⚠️ UNVERIFIED (5.70a–g on the OnePlus 6; 5.70n–o a watch)
 

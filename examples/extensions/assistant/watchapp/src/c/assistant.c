@@ -18,6 +18,8 @@
 #define KEY_PROTO 8
 #define KEY_CODE 9
 #define KEY_INDEX 10
+#define KEY_SPK_DATA 11  // HELLO: bytes of speech one message may carry (stoandl_speaker_data_max)
+#define KEY_SPK_RING 12  // HELLO: the speech receiver's ring in bytes
 
 #define CMD_HELLO 1
 #define CMD_ASK 2
@@ -51,9 +53,9 @@
 #define ERR_BAD_REQUEST 8
 
 #if defined(PBL_SPEAKER)
-#define INBOX_SIZE 2304  // a speaker block message (STOANDL_SPEAKER_INBOX_MIN) with room to spare
+#define INBOX_WANT STOANDL_SPEAKER_INBOX_MAX  // several speech blocks per message
 #else
-#define INBOX_SIZE 768
+#define INBOX_WANT 768
 #endif
 #define OUTBOX_SIZE 640
 #define ANSWER_MAX 4096
@@ -101,6 +103,7 @@ static DictationSession *s_dictation;
 #endif
 
 static UiState s_state = ST_IDLE;
+static uint32_t s_inbox;  // the inbox the firmware gave us
 // Active request as the extension named it (STATUS/ERROR). Real conversation ids are never 0.
 static uint32_t s_conv;
 static uint8_t s_turn;
@@ -410,8 +413,12 @@ static void send_head(void) {
   switch (m->cmd) {
     case CMD_HELLO:
       dict_write_uint8(iter, KEY_PROTO, PROTO_VERSION);
-      dict_write_uint16(iter, KEY_INBOX, INBOX_SIZE);
+      dict_write_uint16(iter, KEY_INBOX, s_inbox);
       dict_write_uint8(iter, KEY_CAPS, caps());
+      if (stoandl_speaker_ring_bytes()) {
+        dict_write_uint16(iter, KEY_SPK_DATA, stoandl_speaker_data_max(s_inbox));
+        dict_write_uint16(iter, KEY_SPK_RING, stoandl_speaker_ring_bytes());
+      }
       break;
     case CMD_ASK:
       dict_write_cstring(iter, KEY_TEXT, m->text);
@@ -1054,7 +1061,12 @@ static void init(void) {
   app_message_register_inbox_dropped(inbox_dropped);
   app_message_register_outbox_sent(outbox_sent);
   app_message_register_outbox_failed(outbox_failed);
-  app_message_open(INBOX_SIZE, OUTBOX_SIZE);
+  // The firmware gives at most app_message_inbox_size_maximum() (8 KiB with stoandl, which advertises 8 KiB
+  // AppMessages); the extension learns the size in HELLO.
+  uint32_t inbox_max = app_message_inbox_size_maximum();
+  s_inbox = INBOX_WANT < inbox_max ? INBOX_WANT : inbox_max;
+  app_message_open(s_inbox, OUTBOX_SIZE);
+  APP_LOG(APP_LOG_LEVEL_INFO, "inbox %u, heap free %u", (unsigned)s_inbox, (unsigned)heap_bytes_free());
 
 #if defined(PBL_MICROPHONE)
   ensure_dictation();

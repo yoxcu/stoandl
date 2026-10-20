@@ -102,7 +102,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -270,7 +270,7 @@ the daemon (the daemon starts the binary with no arguments).
 | `Ext.Release(token string)` | fire and forget |
 | error replies | a pending callback that registered for errors receives them (needed for `KeepAwake`); the others are still only logged |
 | `Ext.Synthesize(text, language string, cb func(blocks [][]byte, ms int, err string))` | ext `synthesize{text, language?, format:"pebble-adpcm"}`; `err` is the error message (`off`, `unavailable: …`, `busy`). A daemon without it never answers, so callers time out (the assistant after 30 s). |
-| `SpeakerPump` (`NewSpeakerPump(send)`, `Write`, `End`, `Abort`, `Sent`) and the `Spk*` keys | one speaker stream, paced to the watch's ring, sent through the caller's one-in-flight path ([docs/speaker-stream.md](../../../docs/speaker-stream.md)) |
+| `SpeakerPump` (`NewSpeakerPump(send)`, `SetWatch`, `SetRateHint`, `Expect`, `Write`, `End`, `Abort`, `Sent`, `LinkRate`, `Report`), `SpeakerWatch` and the `Spk*` keys | one speaker stream, packed and paced to the watch's ring, its start decided by the sender, sent through the caller's one-in-flight path ([docs/speaker-stream.md](../../../docs/speaker-stream.md)) |
 
 The assistant keeps an identical copy next to its `main.go`.
 
@@ -284,7 +284,7 @@ The assistant keeps an identical copy next to its `main.go`.
 |---|---|
 | UUID | **`5b24fc80-114d-4c28-b007-53e241b95856`** (Go constant `APP_UUID`; `package.json` `pebble.uuid`) |
 | displayName | `Assistant` |
-| package `name` / version | `assistant` / `1.1.0` (bump on every change, or the locker won't re-push it) |
+| package `name` / version | `assistant` / `1.1.1` (bump on every change, or the locker won't re-push it) |
 | sdkVersion | `3`, `enableMultiJS: false`, **no `src/pkjs`** |
 | targetPlatforms | `basalt`, `chalk`, `diorite`, `emery`, `flint`, `gabbro` (no aplite) |
 | messageKeys | `[]`: the C code uses the raw numeric keys below via `#define`, like findphone and matrix-preview |
@@ -307,6 +307,8 @@ The assistant keeps an identical copy next to its `main.go`.
 | 8 | PROTO | uint8, = 1 | HELLO, PRESETS |
 | 9 | CODE | uint8 | STATUS (state), ERROR (B8 code) |
 | 10 | INDEX | uint8 | PRESET |
+| 11 | SPK_DATA | uint16 | HELLO on speaker watches (1.1.1): `stoandl_speaker_data_max(inbox)` |
+| 12 | SPK_RING | uint16 | HELLO on speaker watches (1.1.1): `stoandl_speaker_ring_bytes()` |
 
 C reads every integer through one helper that switches on `tuple->length` (1/2/4 bytes), so a width mismatch can't misread. Missing keys read as 0 / `""`.
 
@@ -318,7 +320,7 @@ CMD; `stoandl_speaker_handle()` takes it before the CMD switch.
 
 | CMD | Name | Keys | Extension reaction |
 |---|---|---|---|
-| 1 | HELLO | PROTO, INBOX, CAPS (`0x01` mic, `0x02` color, `0x04` round, `0x08` speaker, `0x10` muted: the speaker is muted or Quiet Time is on) | Mark app open. Send `PRESETS`, then `STATUS{CODE=0, CONV=current or 0, TURN=its last turn}`. If a request is running, send `STATUS{CODE=1\|2}` and re-stream from SEQ 0 (C5). Otherwise, if `current` is idle-valid (B7), replay its last turn (CHUNKs + `DONE` with REPLAY). |
+| 1 | HELLO | PROTO, INBOX (the inbox the firmware gave), CAPS (`0x01` mic, `0x02` color, `0x04` round, `0x08` speaker, `0x10` muted: the speaker is muted or Quiet Time is on), and on speaker watches SPK_DATA and SPK_RING (absent from a 1.1.0 app: one block per speech message) | Mark app open. Send `PRESETS`, then `STATUS{CODE=0, CONV=current or 0, TURN=its last turn}`. If a request is running, send `STATUS{CODE=1\|2}` and re-stream from SEQ 0 (C5). Otherwise, if `current` is idle-valid (B7), replay its last turn (CHUNKs + `DONE` with REPLAY). |
 | 2 | ASK | TEXT (question ≤ 500 B), CONV, TURN, CAPS | B7 with origin app. Stops reading aloud. Answer: `STATUS{CODE=1}`, `CHUNK`s, `DONE`, or `ERROR`. |
 | 3 | PRESET | INDEX, CONV, TURN, CAPS | As ASK with `presets[INDEX]`. Index out of range: `ERROR{CODE=8}`. |
 | 4 | NEW_CONV | none | `current = ""`. Stops reading aloud. No reply message. |
@@ -349,7 +351,7 @@ CMD; `stoandl_speaker_handle()` takes it before the CMD switch.
 | Watch dedupe | A CHUNK with SEQ below the expected one is ignored (a retry whose ACK was lost). A SEQ above the expected one appends `[…]` and resynchronises. Messages for another CONV/TURN are ignored, except STATUS, which sets them. |
 | Re-stream | After a HELLO during a running request, or a replay, the extension restarts from SEQ 0 with all text so far. The watch clears its buffer on STATUS. |
 | Watch send | Wait for `outbox_sent` before the next send. On `outbox_failed`, retry once after 500 ms, then show `Phone not reachable`. |
-| Buffers | `app_message_open(inbox 768, outbox 640)`; inbox 2304 on watches with a speaker (`PBL_SPEAKER`), for 2000-byte speech blocks. Answer buffer on the watch: 4096 B; overflow ends it with `…`. Question: dictation buffer 512 B, sent truncated to 500 B. |
+| Buffers | `app_message_open(inbox 768, outbox 640)`; on watches with a speaker (`PBL_SPEAKER`) the inbox is `MIN(STOANDL_SPEAKER_INBOX_MAX, app_message_inbox_size_maximum())`, 8200 on emery and 6200 on flint, for several 2000-byte speech blocks per message. Answer buffer on the watch: 4096 B; overflow ends it with `…`. Question: dictation buffer 512 B, sent truncated to 500 B. |
 | Ordering | Before streaming, the extension sends STATUS for every request, so the watch always knows the active CONV/TURN. |
 
 ### C6. App closed
@@ -398,9 +400,9 @@ is the shared format, sender and receiver contract.
 |---|---|
 | When | `speak=always`: after DONE of an answer the app showed (never for a replay or a notification answer), if the latest CAPS has speaker and not muted. `on_request` and `always`: on SPEAK (Hold Down), muted or not. `off`: SPEAK posts the card `Reading aloud is off` and an abort. |
 | Quiet Time | The watch sets CAPS `0x10` while `quiet_time_is_active()`, even though the firmware mutes the speaker in Quiet Time only when the user's "mute speaker" preference is on. So `always` stays silent at night; Hold Down still plays. A really muted speaker: Hold Down shows `Speaker muted` and sends nothing. |
-| Text | The answer as shown (cleaned, B4), bullets without their `- `, split into sentences: one shorter than 40 B joins the next, one longer than 300 B is cut at a space. |
+| Text | The answer as shown (cleaned, B4), bullets without their `- `, split into sentences: one shorter than 40 B joins the next, one longer than 300 B is cut at a space. A first sentence longer than 100 B is cut at its last clause boundary (`, `, `; `, `: `, a dash) from 30 B on, so the first sound comes sooner. |
 | Synthesis | `synthesize{text, language, format:"pebble-adpcm"}` per sentence, one call at a time; sentence N+1 is asked for while N is sent. `language` is `de` or `en` from `language` (German, Deutsch, de, de-AT … / English, en, en-GB …), else omitted. No answer in 30 s counts as `unavailable`, and `always` then reads nothing unasked until a later `synthesize` is answered (a stoandl without text to speech never answers). |
-| Stream | One `SpeakerPump` per reading: blocks paced to the watch's 6 KB ring, END after the last sentence. A synthesis error mid-way ends the stream with what was sent. |
+| Stream | One `SpeakerPump` per reading, set to the SPK_DATA and SPK_RING of the latest HELLO: several blocks per message, paced to the watch's ring, END after the last sentence (a 1.1.0 app: one block per message, a 6 KB ring). The pump is told the reading's expected length (the audio of the sentences synthesised so far, plus the characters still to come at their measured ms per character, 65 before the first) and sets PLAY once the watch holds enough for the rest to arrive in time; the previous reading's link rate is its first guess. A synthesis error mid-way ends the stream with what was sent. One log line per reading: `speak: <Report>`. |
 | Errors | On SPEAK with nothing sent yet: `off` → card `Text to speech is off` / `Turn it on in stoandl: Settings → Voice.`; `busy` → `Text to speech is busy`; `unavailable: <why>` → `Text to speech unavailable` / `<why>`; then an ABORT, which clears the watch's `Speaking...`. Card itemId `assistant:speech` (`ReplaceID`), urgent. An unasked (`always`) reading fails silently, since text to speech is off by default. |
 | Stop | ASK, PRESET, CANCEL, NEW_CONV, STOP_SPEAK, HELLO (a new app instance), BYE and a failed send stop the pump. If the app is still open, an ABORT follows when blocks went out, or when the reading was asked for (SPEAK) and no other reading replaced it, so the watch's `Speaking...` clears. |
 | Sleep | `keepAwake{why:"reading an answer aloud"}` to the end of the stream, renewed before each 60 s hold expires, 120 s at most. It starts with the first `synthesize` once the daemon has answered one before, otherwise with the first answered sentence, so a daemon that never answers holds off no suspend. |
@@ -419,3 +421,6 @@ is the shared format, sender and receiver contract.
   ring overflows (`speaker: ring full` in the watch log), focus loss (call, notification), a late
   reading during dictation, the 35 s stall drop (`speaker: stream stalled`),
   Quiet Time and a muted speaker, and throughput at the reduced sniff interval over Linux PPoG.
+- Packed speech (1.1.1): the inbox the firmware really gives (the app logs `inbox N, heap free M`), the
+  link rate with 4 blocks a message (the extension's `speak:` line), whether PLAY timing leaves no
+  `speaker: ring ran dry`, and the 2 Duo's heap with dictation open.
