@@ -4514,6 +4514,8 @@ private class StoandlControlImpl(
     }
 
     override fun Repair(watch: String): String {
+        // An empty name would substring-match every watch, and forget a lone one unasked.
+        if (watch.isBlank()) return "error:Name the watch to re-pair"
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
         val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
