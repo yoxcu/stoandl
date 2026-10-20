@@ -102,6 +102,9 @@ func (a *assistant) stopSpeechLocked() {
 	if a.speech != nil {
 		a.speech.cancel()
 		a.speech = nil
+		if a.synthAnswered < a.synthSent {
+			a.ext.CancelSynthesize() // the next sentence, which nobody will hear
+		}
 	}
 }
 
@@ -160,19 +163,25 @@ func (a *assistant) synthesize(text, lang string) <-chan synthResult {
 			return false
 		}
 	}
-	setTTS := func(st ttsState) {
-		a.mu.Lock()
-		a.tts = st
-		a.mu.Unlock()
-	}
+	a.mu.Lock()
+	a.synthSent++
+	seq := a.synthSent
+	a.mu.Unlock()
 	t := time.AfterFunc(synthTimeout, func() {
 		if deliver(synthResult{err: "unavailable: no answer from stoandl"}) {
-			setTTS(ttsSilent)
+			a.mu.Lock()
+			if a.synthAnswered < seq { // a later call's answer outranks this one's silence
+				a.tts = ttsSilent
+			}
+			a.mu.Unlock()
 		}
 	})
 	a.ext.Synthesize(text, lang, func(blocks [][]byte, _ int, err string) {
 		t.Stop()
-		setTTS(ttsAnswers)
+		a.mu.Lock()
+		a.tts = ttsAnswers
+		a.synthAnswered = max(a.synthAnswered, seq)
+		a.mu.Unlock()
 		deliver(synthResult{blocks: blocks, err: err})
 	})
 	return ch
@@ -246,7 +255,12 @@ func (a *assistant) speak(s *speech, text string, explicit bool) {
 			pump.Abort(context.Background())
 		}
 	case pump.Sent() || explicit:
-		pump.End(s.ctx) // with nothing sent: an abort, which clears the watch's "Speaking..."
+		// With nothing sent, End is an abort, which clears the watch's "Speaking...". A stop while it
+		// waits drops the END; an abort then still closes the stream (a late END would cut off a newer
+		// reading's stream, an abort for this id can't).
+		if !pump.End(s.ctx) && s.ctx.Err() != nil {
+			pump.Abort(context.Background())
+		}
 	}
 	s.cancel()
 }

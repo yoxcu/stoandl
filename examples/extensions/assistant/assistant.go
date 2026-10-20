@@ -56,6 +56,9 @@ type assistant struct {
 	appOpen bool
 	caps    int // the watchapp's CAPS, from its latest HELLO, ASK or PRESET
 	state   appState
+	// The latest synthesize sent, and the latest one answered (under mu): a timeout counts only when
+	// no later call was answered, and a stop cancels a call still in flight.
+	synthSent, synthAnswered uint64
 
 	appMu   sync.Mutex // one AppMessage in flight
 	inbound chan map[string]any

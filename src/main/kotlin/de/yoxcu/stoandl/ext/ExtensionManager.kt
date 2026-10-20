@@ -59,6 +59,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
@@ -654,7 +655,8 @@ private class ExtensionProcess(
     private val registeredApps = ConcurrentHashMap.newKeySet<Uuid>()
     private val awake = AwakeHolds(def.name, scope, holdAwake)
     /** The `synthesize` in flight. A new one replaces it: a reading that asks for its next sentence while one
-     *  plays only wants its latest request, and the engine is freed for it at once rather than answering `busy`. */
+     *  plays only wants its latest request, and the engine is freed for it at once rather than answering `busy`.
+     *  `cancelSynthesize` drops it without a replacement. */
     @Volatile private var synthesizing: Job? = null
 
     fun onWatchConnected() {
@@ -807,8 +809,24 @@ private class ExtensionProcess(
             method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
             method == "synthesize" -> {
                 val before = synthesizing
-                synthesizing = scope.launch { before?.cancelAndJoin(); handleSynthesize(id, params) }
+                val answered = AtomicBoolean(false)
+                synthesizing = scope.launch {
+                    before?.cancelAndJoin()
+                    handleSynthesize(id, params)
+                    answered.set(true)
+                }.apply {
+                    // Every id gets an answer: a newer request can cancel this one before it starts, or while
+                    // it waits for the one it replaced, and the extension's timeout must not stand in for it.
+                    invokeOnCompletion { e ->
+                        if (e == null || answered.get()) return@invokeOnCompletion
+                        val cancelled = e is kotlin.coroutines.cancellation.CancellationException
+                        replyError(id, if (cancelled) "cancelled" else "synthesize: ${e.message}")
+                    }
+                }
             }
+            // The extension stopped the reading it asked for: free the engine now, not after the sentence
+            // nobody will hear (it would compete with a dictation for the same cores). Answered "cancelled".
+            method == "cancelSynthesize" -> { synthesizing?.cancel(); reply(id) {} }
             method == "keepAwake" -> {
                 val maxMs = params?.get("maxMs")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.longOrNull }
                 awake.acquire(params?.str("why"), maxMs).fold(
@@ -916,12 +934,7 @@ private class ExtensionProcess(
      *  replaced it) / the failure. The daemon's text to speech (tts.*): the extension needs no engine of its own. */
     private suspend fun handleSynthesize(id: JsonElement?, params: JsonObject?) {
         val text = params?.str("text") ?: run { replyError(id, "synthesize: missing text"); return }
-        val result = try {
-            synthesize(text, params.str("language"), params.str("format") ?: "pebble-adpcm")
-        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-            replyError(id, "cancelled")
-            throw e
-        }
+        val result = synthesize(text, params.str("language"), params.str("format") ?: "pebble-adpcm")
         synthesisResult(result)?.let { r -> reply(id) { r.forEach { (k, v) -> put(k, v) } } }
             ?: replyError(id, (result as Synthesis.Error).message)
     }

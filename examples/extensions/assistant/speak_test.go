@@ -317,6 +317,35 @@ func TestStoppedRequestAborts(t *testing.T) {
 	waitFor(t, out, "synthesize", func(l map[string]any) bool { return l["method"] == "synthesize" })
 	a.stopSpeech()
 	waitFor(t, out, "abort", func(l map[string]any) bool { return spkFlags(l) == SpkFlagAbort })
+	// The sentence in flight is dropped on the host, not synthesized for nobody.
+	waitFor(t, out, "cancel", func(l map[string]any) bool { return l["method"] == "cancelSynthesize" })
+}
+
+// A call the host never answered (one a newer call replaced) doesn't silence unasked readings once
+// its timeout fires, when a later call was answered.
+func TestStaleSynthesizeTimeout(t *testing.T) {
+	defer func(d time.Duration) { synthTimeout = d }(synthTimeout)
+	synthTimeout = 100 * time.Millisecond
+	f := newFakeAPI(t)
+	a, out := newTestAssistant(t, f, nil)
+	defer speakHost(a, out, func(text string) map[string]any {
+		if text == "stale" {
+			return nil
+		}
+		return blocksOf(1, 60)
+	})()
+	stale := a.synthesize("stale", "")
+	if r := <-a.synthesize("answered", ""); r.err != "" {
+		t.Fatalf("answered: %v", r.err)
+	}
+	if r := <-stale; r.err == "" {
+		t.Fatal("the stale call got an answer")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tts != ttsAnswers {
+		t.Fatalf("tts %v after a stale timeout", a.tts)
+	}
 }
 
 // A hold longer than the host's 60 s cap is renewed before it expires; each replaced token is

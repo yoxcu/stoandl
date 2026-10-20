@@ -281,6 +281,13 @@ func (e *Ext) Synthesize(text, language string, cb func(blocks [][]byte, ms int,
 	}, true)
 }
 
+// CancelSynthesize drops this extension's Synthesize still in flight (its cb gets "cancelled"), so the
+// host's engine stops on a sentence nobody will hear. A host with none in flight, or one older than
+// it, ignores it.
+func (e *Ext) CancelSynthesize() {
+	e.send(map[string]any{"jsonrpc": "2.0", "method": "cancelSynthesize"})
+}
+
 // RegisterApp arms inbound AppMessages from a watchapp UUID — they arrive via OnAppMessage.
 func (e *Ext) RegisterApp(uuid string) {
 	e.request("registerApp", map[string]any{"uuid": uuid}, nil)
