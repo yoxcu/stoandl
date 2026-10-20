@@ -2535,7 +2535,12 @@ class PebbleIntegration(
         scope.launch {
             var armedId: String? = null      // identifier we last handed the goal to
             var armedAt = 0L                 // when we armed it (ms) — also the brief-drop grace anchor
+            // The same moment on the monotonic clock, which the grace is measured on: it stops while the
+            // phone is suspended, so a suspend right after arming doesn't use up the armed watch's grace
+            // (wall time did, and the follower rotated away the moment the phone woke — field, 2026-10-20).
+            var armedMono = 0L
             var droppedAt: Long? = null      // set when armedAt is the armed watch's drop from connected
+            var freshArm = false             // armed by a fresh start, not by a drop or a rotation
             // Only ticks while there is something to choose: autoswitch on and two or more known watches.
             val needed = combine(
                 configStore.updates.map { it.connectionAutoswitch },
@@ -2562,7 +2567,9 @@ class PebbleIntegration(
                     armedId = connected.identifier.asString
                     libPebble.watches.first { ws -> ws.none { it is ConnectedPebbleDevice } }
                     armedAt = System.currentTimeMillis()
+                    armedMono = System.nanoTime()
                     droppedAt = armedAt
+                    freshArm = false
                     continue
                 }
 
@@ -2577,31 +2584,36 @@ class PebbleIntegration(
                         armGoal(pick, "most recently connected")
                         armedId = pick.identifier.asString
                         armedAt = now
+                        armedMono = System.nanoTime()
                         droppedAt = null
+                        freshArm = true
                     }
-                    now - armedAt >= rotateGrace(current, droppedAt).inWholeMilliseconds -> {
+                    (System.nanoTime() - armedMono) / 1_000_000 >= rotateGrace(current, droppedAt, freshArm).inWholeMilliseconds -> {
                         // Armed watch hasn't come up in time → it's out of range; try the next candidate.
                         val idx = byRecency.indexOfFirst { it.identifier.asString == armedId }
                         val next = byRecency[(idx + 1) % byRecency.size]
                         if (next.identifier.asString != armedId) armGoal(next, "${current.displayName()} unreachable")
                         armedId = next.identifier.asString
                         armedAt = now   // restart the grace whether we rotated or (lone candidate) kept waiting
+                        armedMono = System.nanoTime()
                         droppedAt = null
+                        freshArm = false
                     }
                 }
             }
         }
     }
 
-    /** [wristRotateGrace] for the armed [watch]; [droppedAt] when it dropped from connected, if it did. */
-    private fun rotateGrace(watch: PebbleDevice, droppedAt: Long?): kotlin.time.Duration {
+    /** [wristRotateGrace] for the armed [watch]; [droppedAt] when it dropped from connected, if it did;
+     *  [freshArm] when the follower armed it on a fresh start (daemon start, autoswitch turned on). */
+    private fun rotateGrace(watch: PebbleDevice, droppedAt: Long?, freshArm: Boolean): kotlin.time.Duration {
         val key = when (val id = watch.identifier) {
             is PebbleBleIdentifier -> bluezObjectPath(id.asString)?.substringAfterLast('/')
             is PebbleBtClassicIdentifier -> "dev_" + id.macAddress.uppercase().replace(':', '_')
             else -> null
         }
         val reason = key?.let(linkDropReasons::get)
-        return wristRotateGrace(droppedAt, lastResumeMs, reason?.first, reason?.second ?: 0L)
+        return wristRotateGrace(droppedAt, lastResumeMs, reason?.first, reason?.second ?: 0L, freshArm)
     }
 
     /** Hand the single connection slot to [device]: sets its connectGoal (clearing the others in

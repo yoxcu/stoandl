@@ -9,7 +9,7 @@ class WristFollowTest {
     private val t = 1_000_000L
 
     @Test
-    fun `a watch armed fresh or by a rotation gets the normal grace`() {
+    fun `a watch armed by a rotation gets the normal grace`() {
         assertEquals(WRIST_ARM_GRACE, wristRotateGrace(dropAtMs = null, lastResumeMs = t, dropReason = "org.bluez.Reason.Local", reasonAtMs = t))
     }
 
@@ -29,5 +29,10 @@ class WristFollowTest {
     fun `an out-of-range drop, or a stale reason or resume, gets the normal grace`() {
         assertEquals(WRIST_ARM_GRACE, wristRotateGrace(dropAtMs = t, lastResumeMs = 0, dropReason = "org.bluez.Reason.Timeout", reasonAtMs = t))
         assertEquals(WRIST_ARM_GRACE, wristRotateGrace(dropAtMs = t, lastResumeMs = t - 600_000, dropReason = "org.bluez.Reason.Local", reasonAtMs = t - 600_000))
+    }
+
+    @Test
+    fun `the watch armed on a fresh start outlasts its first BlueZ connect attempt`() {
+        assertEquals(WRIST_RELINK_GRACE, wristRotateGrace(dropAtMs = null, lastResumeMs = 0, dropReason = null, reasonAtMs = 0, freshArm = true))
     }
 }
