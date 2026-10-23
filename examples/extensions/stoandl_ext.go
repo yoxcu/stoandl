@@ -281,6 +281,35 @@ func (e *Ext) Synthesize(text, language string, cb func(blocks [][]byte, ms int,
 	}, true)
 }
 
+// AddTodo saves a to-do in the host's to-do list (calendar.todos, a CalDAV list or a local calendar), so the
+// extension needs no sign-in of its own. due is "", "YYYY-MM-DD", "YYYY-MM-DDTHH:MM" (the host's local
+// time) or the same with an offset ("2026-10-22T17:00:00+02:00", that instant); a due to-do gets a reminder. cb gets status "saved", or "queued" when the server couldn't take it now (the host
+// keeps it and sends it after a later calendar sync; problem is why, "" when the server wasn't reachable;
+// for a local file, "the calendar is being synchronized": written as soon as that sync is over),
+// or err: "off" (no list chosen) or what went wrong. A host older than it answers "method not found: addTodo".
+func (e *Ext) AddTodo(title, due, note string, cb func(status, problem, err string)) {
+	params := map[string]any{"title": title}
+	if due != "" {
+		params["due"] = due
+	}
+	if note != "" {
+		params["note"] = note
+	}
+	e.requestE("addTodo", params, func(res map[string]any) {
+		if failure, failed := res["error"]; failed {
+			msg, _ := failure.(map[string]any)["message"].(string)
+			if msg == "" {
+				msg = "addTodo failed"
+			}
+			cb("", "", msg)
+			return
+		}
+		status, _ := res["status"].(string)
+		problem, _ := res["problem"].(string)
+		cb(status, problem, "")
+	}, true)
+}
+
 // CancelSynthesize drops this extension's Synthesize still in flight (its cb gets "cancelled"), so the
 // host's engine stops on a sentence nobody will hear. A host with none in flight, or one older than
 // it, ignores it.

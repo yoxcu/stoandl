@@ -5,14 +5,14 @@ package de.yoxcu.stoandl.pebble
  * first stays connected or holds the connect goal (QOL-G3), and the rules are testable.
  *
  * One owner of the connect goal at a time: during a window the pairing flow hands it to the NEW watch
- * once; known watches reconnect only through libpebble3's connectGoal and the wrist follower.
+ * once; known watches reconnect only through libpebble3's connectGoal, which `watch connect` moves.
  */
 internal object PairingWindow {
     /** What the BT Classic handler does with a discovered Classic watch (see [classicCandidate]). */
     enum class ClassicStep { NONE, HINT, PAIR_THEN_CONNECT, CONNECT }
 
     /** Whether the Classic handler looks at this watch at all: only an unknown one with no connection
-     *  under way and Bluetooth on. A known watch is libpebble3's and the wrist follower's to reconnect;
+     *  under way and Bluetooth on. A known watch is libpebble3's to reconnect (and `watch connect`'s to pick);
      *  giving it the goal from here as well made two owners that fought (the airplane-mode flip-flop). */
     fun classicCandidate(known: Boolean, active: Boolean, btOn: Boolean): Boolean = btOn && !known && !active
 

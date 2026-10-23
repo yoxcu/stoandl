@@ -151,6 +151,29 @@ class Extension:
         if token:
             self._request("release", {"token": token})
 
+    def add_todo(self, title, due="", note="", on_result=None):
+        """Save a to-do in the host's to-do list (calendar.todos). due is "", "YYYY-MM-DD",
+        "YYYY-MM-DDTHH:MM" (the host's local time) or the same with an offset (that instant). on_result(status, problem, err) gets "saved", or "queued" (kept by
+        the host and sent later; problem is why, "" when the server wasn't reachable, "the calendar is being
+        synchronized" for a local file a sync holds: written once it is over), or err ("off": no list
+        chosen)."""
+        def done(res):
+            if not on_result:
+                return
+            if "error" in res:
+                on_result("", "", (res["error"] or {}).get("message", "addTodo failed"))
+            else:
+                on_result(res.get("status", ""), res.get("problem", ""), "")
+        params = {"title": title}
+        if due:
+            params["due"] = due
+        if note:
+            params["note"] = note
+        rid = next(self._ids)
+        self._pending[rid] = done
+        self._want_err.add(rid)
+        self._send({"jsonrpc": "2.0", "id": rid, "method": "addTodo", "params": params})
+
     def install_pbw(self, path, on_result=None):
         """Sideload a .pbw onto the watch. on_result(bool) receives success."""
         self._request("installPbw", {"path": path},

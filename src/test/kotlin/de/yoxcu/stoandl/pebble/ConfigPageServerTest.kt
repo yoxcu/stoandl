@@ -4,6 +4,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -68,6 +70,24 @@ class ConfigPageServerTest {
         assertEquals("", closeData(null))
         assertEquals("", closeData(""))
         assertEquals("%zz", closeData("%zz"))
+    }
+
+    @Test
+    fun `the advertised URL connects when the JVM prefers the system address order`() {
+        // Set by the test task as main() sets it; under it getLoopbackAddress() is ::1 wherever the host has it.
+        assertEquals("system", System.getProperty("java.net.preferIPv6Addresses"))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val url = ConfigPageServer(scope).open("app", "data:text/html,%3Cp%3Eok") {}
+            val uri = URI(url)
+            assertEquals("127.0.0.1", uri.host)
+            Socket().use { it.connect(InetSocketAddress(uri.host, uri.port), 2_000) }
+            val page = HttpClient.newHttpClient().send(HttpRequest.newBuilder(uri).build(), HttpResponse.BodyHandlers.ofString())
+            assertEquals(200, page.statusCode())
+            assertTrue(page.body().contains("<p>ok"), page.body())
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test

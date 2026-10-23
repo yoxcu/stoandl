@@ -43,9 +43,10 @@ private const val LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
  * the system suspends, and logind waits until it releases the lock (at most `InhibitDelayMaxSec`, 5 s
  * by default). We hold one permanently and on `PrepareForSleep(true)`:
  *  1. set the host-suspending hint ([WatchLinkActivity.setHostSuspending]) — the pairing-window
- *     discovery loops read it and don't restart a scan until the resume;
+ *     discovery loops read it and don't restart a scan until the resume, and libpebble3's BlobDB starts
+ *     no new non-notification transfer (pins, weather, apps) until then;
  *  2. wait while watch traffic is still owed or awaited — the notification the push that woke us
- *     produced, a PPoG ACK ([pendingWork]) — for at most [maxHold];
+ *     produced, a PPoG ACK, a BlobDB transfer already in flight ([pendingWork]) — for at most [maxHold];
  *  3. release the lock, so the suspend proceeds.
  * On `PrepareForSleep(false)` we clear the hint, emit [resumed] (overdue wall-clock work runs on it,
  * see [delayWallClock]) and take the lock again — logind refuses new delay locks for a moment right
@@ -262,7 +263,9 @@ class SleepGuard(
         resumedAt = TimeSource.Monotonic.markNow()
         linkActivity.setHostSuspending(false)
         _resumed.tryEmit(Unit)
-        log.debug { "resumed" }
+        // TRACE: once per wake (every ~75 s on a deep-sleeping phone). The next PrepareForSleep line at
+        // DEBUG carries the awake time, so the resume is its timestamp minus that.
+        log.trace { "resumed" }
         if (holdLock) acquire(Event.Acquire(0, generation))
     }
 

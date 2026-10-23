@@ -193,6 +193,49 @@ func lookupToolParam() anthropic.BetaToolUnionParam {
 	}}
 }
 
+// todoTool saves a to-do in the user's list through the daemon (calendar.todos). Claude writes the
+// confirmation into the call, in the user's language, so a to-do costs one request: the tool runs here,
+// its confirmation is the answer (the extension fills in the due it saved, todo.go), and the turn is stored as that text (like a searched answer), which keeps
+// the conversation append-only without tool_result turns.
+const todoTool = "add_todo"
+
+// todoInput is what Claude passes to todoTool.
+type todoInput struct {
+	Title        string `json:"title"`
+	Due          string `json:"due"`
+	Note         string `json:"note"`
+	Confirmation string `json:"confirmation"`
+	Lang         string `json:"lang"`
+}
+
+func todoToolParam() anthropic.BetaToolUnionParam {
+	return anthropic.BetaToolUnionParam{OfTool: &anthropic.BetaToolParam{
+		Name: todoTool,
+		Description: anthropic.String("Save a to-do in the user's to-do list. Call it, before writing any answer text, " +
+			"when the user wants something noted, remembered or added to their to-dos (\"don't let me forget to " +
+			"call the garage tomorrow\", \"remind me to buy milk\", \"note: ...\"); once per separate to-do. " +
+			"Never call it for a question."),
+		InputSchema: anthropic.BetaToolInputSchemaParam{
+			Properties: map[string]any{
+				"title": map[string]any{"type": "string", "description": "The to-do as a short imperative in the " +
+					"user's language, such as \"Call the garage\"; fix obvious speech recognition errors"},
+				"due": map[string]any{"type": "string", "description": "Only when the user named a day or time: " +
+					"YYYY-MM-DDTHH:MM local wall time without an offset or Z, or YYYY-MM-DD for a day without a " +
+					"time; copy the date from the Days line of the message. 12 AM is 00:00 at the start of that " +
+					"day, 12 PM is noon. If the day or AM/PM is unclear, or the due would be in the past, ask " +
+					"instead of calling"},
+				"note": map[string]any{"type": "string", "description": "Details beyond the title, if any"},
+				"confirmation": map[string]any{"type": "string", "description": "One short sentence in the user's " +
+					"language saying it is noted, without any day or time words, with {due} where the day and " +
+					"time go, such as \"Noted: call the garage, {due}.\""},
+				"lang": map[string]any{"type": "string", "description": "The language of the confirmation " +
+					"as a two-letter code, such as en or de"},
+			},
+			Required: []string{"title", "confirmation"},
+		},
+	}}
+}
+
 func systemText(extra string) string {
 	if extra = strings.TrimSpace(extra); extra != "" {
 		return systemPrompt + "\n\n" + extra
@@ -226,9 +269,12 @@ func (r askRequest) params() anthropic.BetaMessageNewParams {
 		p.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
 	}
 	switch {
-	case r.WebSearch && !r.Searching:
-		p.Tools = []anthropic.BetaToolUnionParam{lookupToolParam()}
-	case r.Searching:
+	case !r.Searching:
+		p.Tools = []anthropic.BetaToolUnionParam{todoToolParam()}
+		if r.WebSearch {
+			p.Tools = append(p.Tools, lookupToolParam())
+		}
+	default:
 		if fam == famHaiku {
 			p.Tools = []anthropic.BetaToolUnionParam{{OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{MaxUses: anthropic.Int(1)}}}
 		} else {
@@ -405,10 +451,12 @@ type askResult struct {
 	Err       *askError
 }
 
-// streamHooks receive the answer while it streams. Both may be nil.
+// streamHooks receive the answer while it streams. Any may be nil.
 type streamHooks struct {
 	Text      func(delta string)
 	Searching func()
+	// Todo saves one to-do Claude asked for and returns the text to show for it.
+	Todo func(ctx context.Context, in todoInput) string
 }
 
 // runAsk streams one answer from Claude. It enforces the 20 s first-text and 60 s total limits,
@@ -534,6 +582,22 @@ func runAsk(parent context.Context, client anthropic.Client, req askRequest, hoo
 				}
 				continue
 			}
+			if todos := todoCalls(msg); len(todos) > 0 && hooks.Todo != nil {
+				firstTimer.Stop()
+				for _, in := range todos {
+					say := hooks.Todo(ctx, in)
+					if text.Len() > 0 {
+						say = "\n\n" + say
+					}
+					text.WriteString(say)
+					if hooks.Text != nil {
+						hooks.Text(say)
+					}
+				}
+				res.Text = text.String()
+				res.Content = textOnly(res.Text)
+				return res
+			}
 		}
 		if req.Searching {
 			res.Content = textOnly(res.Text)
@@ -553,6 +617,21 @@ func callsLookup(msg anthropic.BetaMessage) bool {
 	return false
 }
 
+// todoCalls are the todoTool calls in msg, in order.
+func todoCalls(msg anthropic.BetaMessage) []todoInput {
+	var out []todoInput
+	for _, b := range msg.Content {
+		if b.Type != "tool_use" || b.Name != todoTool {
+			continue
+		}
+		var in todoInput
+		if json.Unmarshal(b.Input, &in) == nil && strings.TrimSpace(in.Title) != "" {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
 // textOnly is the stored content for an answer cut off mid-stream: its text alone, since a partial
 // thinking or tool block can't be replayed.
 func textOnly(text string) []json.RawMessage {
@@ -560,24 +639,71 @@ func textOnly(text string) []json.RawMessage {
 	return []json.RawMessage{b}
 }
 
-// timeLine is the first line of each user turn; the time stays out of the system prompt so the
-// prompt prefix is stable.
+// timeLine opens each user turn: the local time, and the dates of the coming week (daysLine). It stays
+// out of the system prompt so the prompt prefix is stable.
 func timeLine(now time.Time) string {
 	s := "Local time: " + now.Format("Mon 2 Jan 2006 15:04 MST")
-	if z := zoneName(); z != "" {
+	if z := zoneName(now.Location()); z != "" {
 		s += " (" + z + ")"
 	}
-	return s
+	return s + "\n" + daysLine(now)
 }
 
-func zoneName() string {
-	if tz := strings.TrimPrefix(os.Getenv("TZ"), ":"); tz != "" && !strings.HasPrefix(tz, "/") {
-		return tz
+// daysLine lists today, tomorrow and the six days after with their dates, so a due for add_todo is a
+// date copied from it rather than worked out (late in the evening the model's own arithmetic slips a day).
+// The days step from noon in now's zone, so a DST change can't skip or repeat a date.
+func daysLine(now time.Time) string {
+	y, m, d := now.Date()
+	noon := time.Date(y, m, d, 12, 0, 0, 0, now.Location())
+	parts := make([]string, 8)
+	for i := range parts {
+		parts[i] = noon.AddDate(0, 0, i).Format("Mon 2006-01-02")
 	}
-	if p, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+	parts[0], parts[1] = "today "+parts[0], "tomorrow "+parts[1]
+	return "Days: " + strings.Join(parts, ", ")
+}
+
+// localtimePath is the host's zone file, read on every localZone call (a variable for the tests).
+var localtimePath = "/etc/localtime"
+
+// localZone is the host's zone now. Go reads time.Local once at start, but the extension runs for days
+// while the phone's zone changes (travel, timedatectl set-timezone), and the Days line and a to-do's due
+// must be in the zone the daemon saves it in, which follows the host. So /etc/localtime is read again;
+// only a TZ variable, fixed for the process, keeps time.Local.
+func localZone() *time.Location {
+	if _, set := os.LookupEnv("TZ"); set {
+		return time.Local
+	}
+	data, err := os.ReadFile(localtimePath)
+	if err != nil {
+		return time.Local
+	}
+	name := "Local"
+	if p, err := filepath.EvalSymlinks(localtimePath); err == nil {
 		if i := strings.Index(p, "zoneinfo/"); i >= 0 {
-			return p[i+len("zoneinfo/"):]
+			name = p[i+len("zoneinfo/"):]
 		}
+	}
+	loc, err := time.LoadLocationFromTZData(name, data)
+	if err != nil {
+		return time.Local
+	}
+	return loc
+}
+
+// localNow is the assistant's clock: the time in the host's current zone.
+func localNow() time.Time { return time.Now().In(localZone()) }
+
+// zoneName is loc's zone name for the time line, "" when unknown.
+func zoneName(loc *time.Location) string {
+	if loc == time.Local {
+		if tz := strings.TrimPrefix(os.Getenv("TZ"), ":"); tz != "" && !strings.HasPrefix(tz, "/") {
+			return tz
+		}
+		return ""
+	}
+	if n := loc.String(); n != "Local" {
+		return n
 	}
 	return ""
 }

@@ -28,12 +28,8 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
-import kotlin.math.asin
-import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
@@ -662,14 +658,6 @@ internal fun looseUrl(url: String): LooseUrl? {
 
 private fun decodeQueryPart(s: String): String =
     runCatching { URLDecoder.decode(s, Charsets.UTF_8) }.getOrDefault(s)
-
-/** Great-circle distance in km. */
-private fun distanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-    val dLat = Math.toRadians(lat2 - lat1)
-    val dLon = Math.toRadians(lon2 - lon1)
-    val a = sin(dLat / 2).pow(2) + cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
-    return 2 * 6371.0 * asin(sqrt(a))
-}
 
 private fun Double.rounded(decimals: Int): Double {
     val f = 10.0.pow(decimals)

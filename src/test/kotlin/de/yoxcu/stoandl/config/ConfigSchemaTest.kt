@@ -531,7 +531,7 @@ class ConfigSchemaTest {
         val inertMasters = setOf("weather.enabled", "calendar.enabled")
         fun off(f: ConfigField): Boolean = when (f.type) {
             "toggle" -> f.value(d) == "false"
-            "combo" -> f.choices.firstOrNull { it.selected(d) }?.token == "off"
+            "combo" -> f.choices.firstOrNull { it.selected(d) }?.token.let { it == "off" || it == "" }
             else -> f.value(d).isEmpty()
         }
         fun requirementMet(f: ConfigField): Boolean = f.requires.isEmpty() || requirements(f).any { (key, negated, value) ->

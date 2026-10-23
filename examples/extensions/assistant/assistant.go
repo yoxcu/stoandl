@@ -67,7 +67,7 @@ type assistant struct {
 }
 
 func newAssistant(ext *Ext) *assistant {
-	return &assistant{ext: ext, now: time.Now, hist: newHistory(), inbound: make(chan map[string]any, 32)}
+	return &assistant{ext: ext, now: localNow, hist: newHistory(), inbound: make(chan map[string]any, 32)}
 }
 
 // init reads the config and state. Called from OnInitialize, before any other event.
@@ -273,6 +273,7 @@ func (a *assistant) run(j *job, req askRequest) {
 					j.sink.searching()
 				}
 			},
+			Todo: a.addTodo,
 		})
 	}
 	if res.Err == nil {
@@ -335,6 +336,65 @@ func (a *assistant) run(j *job, req askRequest) {
 		return
 	}
 	a.postResult(j, res.Err, text)
+}
+
+// todoWait is how long a to-do may take to save: the daemon's CalDAV request gives up within 45 s, and an
+// unreachable server is usually known much sooner.
+var todoWait = 30 * time.Second
+
+// addTodo saves one to-do Claude asked for through the daemon and returns what the watch shows: Claude's
+// confirmation with the saved due in words, a note when the to-do waits on this device, or why it wasn't
+// saved.
+func (a *assistant) addTodo(ctx context.Context, in todoInput) string {
+	now := a.now()
+	var wire, words string
+	if s := strings.TrimSpace(in.Due); s != "" {
+		due, ok := parseDue(s, now.Location())
+		if !ok {
+			a.ext.Logf("todo: unclear due %q", s)
+			return "Couldn't save the to-do: unclear date"
+		}
+		if due.past(now) {
+			a.ext.Logf("todo: past due %s", due.wire())
+			return "Couldn't save the to-do: that time has passed"
+		}
+		wire, words = due.wire(), due.words(now, todoLanguage(a.cfg.Language, in.Lang))
+	}
+	type outcome struct{ status, problem, err string }
+	done := make(chan outcome, 1)
+	a.ext.AddTodo(strings.TrimSpace(in.Title), wire, strings.TrimSpace(in.Note),
+		func(status, problem, err string) { done <- outcome{status, problem, err} })
+	var o outcome
+	select {
+	case o = <-done:
+	case <-time.After(todoWait):
+		o.err = "no answer from stoandl"
+	case <-ctx.Done():
+		o.err = "cancelled"
+	}
+	confirmation := strings.TrimSpace(in.Confirmation)
+	if confirmation == "" {
+		confirmation = "Noted: " + strings.TrimSpace(in.Title) + "."
+	}
+	confirmation = todoConfirmation(confirmation, words)
+	logged := wire
+	if logged == "" {
+		logged = "none"
+	}
+	a.ext.Logf("todo: status=%s problem=%q err=%q due=%s", o.status, o.problem, o.err, logged)
+	switch {
+	case o.err == "off":
+		return "No to-do list chosen: pick one in stoandl, Settings → Calendar → To-do list."
+	case strings.HasPrefix(o.err, "method not found"):
+		return "Couldn't save the to-do: this stoandl is too old for to-dos."
+	case o.err != "":
+		return "Couldn't save the to-do: " + o.err
+	case o.status == "queued" && o.problem == "":
+		return confirmation + " (Saved offline, syncs later.)"
+	case o.status == "queued":
+		return confirmation + " (Not synced yet: " + o.problem + ".)"
+	}
+	return confirmation
 }
 
 func (a *assistant) postResult(j *job, e *askError, text string) {

@@ -102,7 +102,7 @@ Pure logic gets Go tests: paging, chunk flushing, markdown to plain text, histor
   "name": "assistant",
   "cmd": "./stoandl-assistant",
   "author": "stoandl",
-  "version": "1.1.3",
+  "version": "1.2.1",
   "description": "Ask Claude from your wrist: voice or presets, answers as notifications or in the Assistant app.",
   "requiresConfig": true,
   "watchapps": ["assistant.pbw"],
@@ -145,7 +145,7 @@ The GUI renders the schema (an enum shows its first option when the value is unk
 |---|---|
 | Client | `anthropic.NewClient(option.WithAPIKey(cfg.api_key), option.WithBaseURL(cfg.base_url))`. Always streaming: `client.Messages.NewStreaming` (beta `client.Beta.Messages.NewStreaming` where a beta is needed) with `message.Accumulate`. |
 | System prompt | Fixed text (`systemPrompt` in claude.go: Pebble screen, 1–3 sentences / at most 40 words, answer first, plain text, longer only on request, expect speech-recognition errors), then `"\n\n"` + a reply-language line when `language` is set, then `"\n\n" + system_prompt_extra` if set. The whole text is part of the conversation fingerprint, so changing it starts a new conversation. |
-| User turn | `"Local time: Fri 17 Oct 2026 14:05 CEST (Europe/Berlin)\n\n" + question`. The time stays out of the system prompt so the system prompt is a stable prefix. |
+| User turn | `"Local time: Wed 21 Oct 2026 14:05 CEST (Europe/Berlin)\nDays: today Wed 2026-10-21, tomorrow Thu 2026-10-22, Fri 2026-10-23, …, Wed 2026-10-28\n\n" + question`: the local time and eight dates (today, tomorrow, the six days after; stepped from noon, so a DST change neither skips nor repeats one), which `add_todo`'s `due` copies. Both stay out of the system prompt so the system prompt is a stable prefix. |
 | Haiku 4.5 | No `thinking`, no `effort`. Web search tool `web_search_20250305`. |
 | Sonnet 5 | `output_config.effort = cfg.effort`, `thinking` omitted (runs adaptive). Web search `web_search_20260209`. |
 | Opus 5.5 | `output_config.effort = cfg.effort` (always sent: its default is `medium`), `thinking` omitted (it can't be disabled). Beta `server-side-fallback-2026-07-01` with `fallbacks: "default"`. Web search `web_search_20260209`. |
@@ -154,6 +154,7 @@ The GUI renders the schema (an enum shows its first option when the value is unk
 | Timeouts | No text after 20 s: TIMEOUT. Whole request capped at 60 s: the partial text becomes the answer with TRUNCATED (no text at all: TIMEOUT). SDK retries: `option.WithMaxRetries(1)`. |
 | Concurrency | One request in flight, globally. A new question from any entry point cancels the running one; its partial answer is discarded and never posted. |
 | keepAwake | `keepAwake{why:"answering a question", maxMs:60000}` before the request, `release` when it finishes, fails or is cancelled. |
+| To-dos | Every regular request carries the client tool `add_todo {title, due?, note?, confirmation, lang?}` (the one-off search request does not). On `stop_reason: tool_use` with `add_todo` calls, `due` is local wall time copied from the Days line (no offset; Claude asks back when the day or AM/PM is unclear or the due has passed) and `confirmation` has no day or time words but a `{due}` placeholder. The extension parses `due` in every form the daemon takes (`YYYY-MM-DD`, `THH:MM`, `THH:MM:SS`, with or without an offset or `Z`) into local time (the host's zone at that moment: `/etc/localtime` is read again for every ask, unless `TZ` is set, so a zone change while the extension runs moves the Days line and the saved due with it, as it moves the daemon's); one it can't read gives `Couldn't save the to-do: unclear date` and isn't sent, and one before now (a time more than 5 min ago, a day before today) gives `Couldn't save the to-do: that time has passed` and isn't sent. Each call goes to the daemon's `addTodo {title, due, note}` (docs/extensions.md; 30 s wait) with the due as RFC 3339 with its offset (`2026-10-22T17:00:00+02:00`) or the bare date, and the answer is the calls' confirmations joined, `{due}` replaced by that due in words relative to now (`tomorrow, Thursday 22 October, 17:00` / `morgen, Donnerstag, 22. Oktober, 17:00` for a `language` of English or German, `2026-10-22 17:00` for any other `language`; with `language` empty, the call's `lang` code (`en`/`de`, the confirmation's language) picks the names instead; appended when the placeholder is missing), with ` (Saved offline, syncs later.)` / ` (Not synced yet: <problem>.)` for `queued`, or the reason instead (`off`, an error, a daemon without `addTodo`). No second request: the turn is stored as that text only, like a searched answer, so the history needs no `tool_result` turns. |
 | Log (stderr) | One line per request: `ask conv=<id> turn=<n> model=<m> ttft=<ms> total=<ms> in=<tok> out=<tok> cost=$<x> stop=<reason> sink=<app\|notif>`. Never log the key, and log question text only at the start of the line, cut to 40 chars. |
 
 **Text cleanup** (before paging or chunking; in streaming mode up to 32 B that could still be a marker are held back):

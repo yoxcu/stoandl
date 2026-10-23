@@ -657,3 +657,92 @@ func thinkingAndText(text string) []json.RawMessage {
 	t, _ := json.Marshal(map[string]string{"type": "text", "text": text})
 	return []json.RawMessage{json.RawMessage(`{"type":"thinking","thinking":"","signature":"SIG9"}`), t}
 }
+
+func todoBlock(id string, in todoInput) []string {
+	js, _ := json.Marshal(in)
+	partial, _ := json.Marshal(string(js))
+	return []string{
+		`{"type":"content_block_start","index":IDX,"content_block":{"type":"tool_use","id":"` + id + `","name":"add_todo","input":{}}}`,
+		`{"type":"content_block_delta","index":IDX,"delta":{"type":"input_json_delta","partial_json":` + string(partial) + `}}`,
+	}
+}
+
+func TestTodoToolIsOfferedOutsideTheSearchRequest(t *testing.T) {
+	r := askRequest{Model: modelHaiku, MaxTokens: 100, Prompt: "q"}
+	if b, _ := json.Marshal(r.params()); !strings.Contains(string(b), "add_todo") || strings.Contains(string(b), "web_lookup") {
+		t.Fatalf("regular request without web search: %s", b)
+	}
+	r.WebSearch, r.Searching = true, true
+	b, _ := json.Marshal(r.params())
+	if strings.Contains(string(b), "add_todo") {
+		t.Fatalf("the one-off search request carries only web search: %s", b)
+	}
+}
+
+// A to-do Claude asks for is saved through the daemon in the same request, with its due as the instant
+// with the offset, and Claude's confirmation, the due filled in, is the answer, stored as text only.
+func TestTodoSavedThroughTheDaemon(t *testing.T) {
+	cases := []struct {
+		name   string
+		reply  map[string]any
+		want   string
+		params map[string]any
+	}{
+		{"saved", map[string]any{"status": "saved"}, "Noted: call the garage, tomorrow, Thursday 22 October, 17:00.",
+			map[string]any{"title": "Call the garage", "due": "2026-10-22T17:00:00+02:00", "note": "ask about tyres"}},
+		{"queued offline", map[string]any{"status": "queued", "problem": ""},
+			"Noted: call the garage, tomorrow, Thursday 22 October, 17:00. (Saved offline, syncs later.)", nil},
+		{"queued refused", map[string]any{"status": "queued", "problem": "Sign-in failed (401)"},
+			"Noted: call the garage, tomorrow, Thursday 22 October, 17:00. (Not synced yet: Sign-in failed (401).)", nil},
+		{"off", map[string]any{"error": map[string]any{"message": "off"}},
+			"No to-do list chosen: pick one in stoandl, Settings -> Calendar -> To-do list.", nil},
+		{"old daemon", map[string]any{"error": map[string]any{"message": "method not found: addTodo"}},
+			"Couldn't save the to-do: this stoandl is too old for to-dos.", nil},
+	}
+	in := todoInput{Title: "Call the garage", Due: "2026-10-22T17:00", Note: "ask about tyres",
+		Confirmation: "Noted: call the garage, {due}."}
+	now := time.Date(2026, 10, 21, 23, 2, 0, 0, berlin(t))
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeAPI(t, fakeResponse{events: sseMessage("tool_use", 300, 40, todoBlock("toolu_1", in))})
+			a, out := newTestAssistant(t, f, map[string]string{"language": "English"})
+			a.mu.Lock()
+			a.now = func() time.Time { return now }
+			a.mu.Unlock()
+			stop := fakeHost(a, out, func(l map[string]any) map[string]any {
+				switch l["method"] {
+				case "addTodo":
+					return c.reply
+				case "keepAwake":
+					return map[string]any{"token": "t"}
+				}
+				return nil
+			})
+			defer stop()
+			a.onReply("item1", anchorToken, "don't let me forget to call the garage tomorrow at 5")
+			n := params(waitFor(t, out, "answer card", isNotify))
+			if n["body"] != c.want {
+				t.Fatalf("body %q, want %q", n["body"], c.want)
+			}
+			if c.params != nil {
+				got := params(waitFor(t, out, "addTodo", func(l map[string]any) bool { return l["method"] == "addTodo" }))
+				if fmt.Sprint(got) != fmt.Sprint(c.params) {
+					t.Fatalf("addTodo params %v, want %v", got, c.params)
+				}
+			}
+			if len(f.requests()) != 1 {
+				t.Fatalf("a to-do takes one request, sent %d", len(f.requests()))
+			}
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			conv, _, _ := parseToken(n["extToken"].(string))
+			turn := a.hist.find(conv).Turns[0]
+			if turn.Err != 0 || len(turn.Content) != 1 || strings.Contains(string(turn.Content[0]), "tool_use") {
+				t.Fatalf("stored turn: %+v", turn)
+			}
+			if strings.HasPrefix(c.want, "Noted") && !strings.Contains(string(turn.Content[0]), "tomorrow, Thursday 22 October, 17:00") {
+				t.Fatalf("stored turn %s doesn't carry the due", turn.Content[0])
+			}
+		})
+	}
+}

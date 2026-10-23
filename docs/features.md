@@ -87,6 +87,17 @@ _Implemented — to be tested ([TESTING.md §5.33f](../TESTING.md)):_ with the l
 reaches only an allow-list of host methods (before, any Java method), intercepted XHRs (timeline-pin
 apps) fire `onload`, and a reused `XMLHttpRequest` sends again.
 
+_Implemented — to be tested ([TESTING.md §5.70q–r](../TESTING.md)):_ an XHR ends instead of hanging on a
+dead link: 15 s to connect, then the app's `xhr.timeout` (60 s when it sets none) for the whole request,
+with `timeout` and `loadend` events; `abort()`, and closing the app, stop a request in flight and close its
+connection. A failed request logs one WARN line with its host only, no stack trace and no query (which often
+carries the location or an API key); `STOANDL_LOG=DEBUG` adds its stack.
+
+_Implemented — to be tested ([TESTING.md §5.73m–n](../TESTING.md)):_ a connection closes right after its
+last answer instead of idling in a pool until the server closes it (whose FIN woke a sleeping phone; a
+half-closed pooled connection also failed the next request with `EOFException`), and an app's HTTP client
+ends with its session.
+
 _Implemented — to be tested ([TESTING.md §5.72](../TESTING.md)):_ PKJS sessions start on one shared GraalJS
 engine (one per host-access policy, so PKJS and plugins get one each) with the shims parsed once, so an app's
 JS starts 2–3× faster (warm JVM on x86: ~45–57 ms → 13–25 ms per session), and Truffle's per-launch
@@ -203,9 +214,8 @@ _Implemented — to be tested ([TESTING.md §5.74](../TESTING.md)):_ a **second 
 the first is connected (BLE or Bluetooth Classic), and a Classic one also while the first is away: the window waits for a watch that wasn't known
 when it opened, the new watch takes the link over once it bonds, and a declined or timed-out pairing hands
 the connection back to the watch that had it. Known watches reconnect only through libpebble3's connect
-goal and the wrist follower (the Classic pairing step no longer re-requests a known classic watch, which
-fought the follower every ~21 s), and the follower gives a watch that dropped right after a resume 90 s
-instead of 20 s to re-link before it switches. The GUI offers *Re-pair* on a disconnected or endlessly
+goal, which only pairing and `stoandl watch connect` move (the Classic pairing step no longer re-requests a
+known classic watch). The GUI offers *Re-pair* on a disconnected or endlessly
 connecting watch, and the pair dialog offers to turn on Bluetooth Classic for a Pebble Time / Time Steel /
 Round.
 
@@ -239,13 +249,18 @@ Reconnection needs the adapter's LE scanner free; another process running Blueto
 it — stoandl warns (and sends a desktop notification) when it detects that. See
 [devices.md](devices.md#wont-reconnect) if a watch won't come back.
 
-**Multiple paired watches — follow the wrist.** stoandl connects one watch at a time, so with two or
-more paired it picks whichever is actually in range instead of only ever the last one you paired: it
-arms the most-recently-connected watch and, if it's out of range, rotates to the next until one
-connects. It never drops a live link to chase another watch, and it holds the goal steady across a
-firmware/language update's reboot. On by default (`connection.autoswitch`, inert with a single watch) —
-set it off to pin the connection to the last watch you chose (`stoandl watch connect <name>` to move
-it). When both watches are in range at once the tie goes to the most recently used.
+**Multiple paired watches — switch by hand.** stoandl links one watch at a time: the one you last
+connected or paired, and only that one reconnects, after a drop, a resume or a restart. `stoandl watch
+connect <name>` (or *Connect* on a watch in the GUI's Watch page) switches: the chosen watch gets the
+connection goal and every other watch loses it, in libpebble3's database too, so the old watch's link or
+connect attempt ends at once and a restart reconnects only the new one. A switch is refused while a
+firmware or language update runs, since the updating watch has to reconnect to confirm it, and while a
+pairing window is open, whose end gives the goal back to the watch that had it. A bare
+`stoandl watch connect` gives the goal back to the most recently connected watch when none holds it (a
+declined pairing, the watch that held it unpaired); it leaves an open pairing window's goal alone. _The automatic "follow the wrist" switching
+(`connection.autoswitch`) was removed on 2026-10-21: rotating the goal between watches that were away kept
+the phone awake, and it rotated off a watch that was still linking up. A leftover line in stoandl.conf is
+ignored with a warning._ _To be tested ([TESTING.md §5.30](../TESTING.md))._
 
 ### Music / now-playing control
 
@@ -272,7 +287,8 @@ companion app: a **Sunrise** and a **Sunset** pin per day (today … +2 days) fo
 with the daytime/overnight halves split from Open-Meteo's hourly forecast. The primary follows
 GPS-then-first-location priority; other locations show in each pin's detail view. No libpebble3
 change — pins use the public `LibPebble` timeline API. Refreshes on an interval and on connect; on by
-default, `weather.pins = false` disables just the pins. Temperatures are in the watch's own units
+default, `weather.pins = false` disables just the pins. The GPS entry's forecast position moves only once
+a fix is more than 5 km away (and outside its own accuracy radius), so a jittering neighborhood-level fix doesn't rewrite the pins on every refresh. The position is looked up at most every 45 min (cell tower, no GPS), and a watchapp's recent fix answers too: weather and watchapp geolocation share one GeoClue provider, whose client stops at each answer. Its coordinates are rounded to about 2 km before they go to Open-Meteo or Nominatim, so a watchapp's GPS fix discloses no more than weather's own scrambled one. Temperatures are in the watch's own units
 (`stoandl health profile set units metric|imperial`), which fw 4.37+ also uses for its weather warnings.
 
 ```sh
@@ -330,6 +346,12 @@ not done):_
 
 _Implemented — to be tested ([TESTING.md §5.56a, §5.33l](../TESTING.md)):_ all-day events are sent at
 UTC midnight of their date, which the watch expects (east of UTC they landed on the previous day), and with the libpebble3 bump a reminder offers Dismiss/Snooze on the watch.
+
+_Implemented — to be tested ([TESTING.md §5.61a–c](../TESTING.md)):_ a local `.ics` file is parsed again
+only when its content changed, not on every sync tick or vdirsyncer rewrite (a read and a checksum
+instead); a weekly series with a date-only `UNTIL` on a timed start (old Outlook/Thunderbird data) and a
+recurring event in floating time expand instead of failing; `calendar.todos` no longer starts a calendar
+sync, and the reminder settings start one, not two.
 
 See [configuration.md](configuration.md#calendar).
 
@@ -866,7 +888,8 @@ Expose the device's position to watchapps via libpebble3's `SystemGeolocation` h
 `navigator.geolocation` and location-aware sports/GPS watchapps get a fix. The fix comes from GeoClue2
 — the same provider weather's "current location" uses — so it works headlessly on a Linux phone (modem
 GPS + Wi-Fi/cell) with no GPS-specific code. The GPS runs only for apps that ask for high accuracy, and
-GeoClue stops a minute after the last request. A small fork addition makes the GraalJS PKJS runtime
+GeoClue stops as soon as a request is answered; only `watchPosition` ticks at most a minute apart keep it
+between ticks. A small fork addition makes the GraalJS PKJS runtime
 route `_PebbleGeo` through the shared `GeolocationInterface`, and stoandl overrides the no-op
 `SystemGeolocation` binding with a GeoClue-backed one. Off by default — it hands the device's location
 to whatever watchapp asks — enable with `geolocation.enabled`. _To be tested — needs a watch + a
@@ -924,7 +947,8 @@ a notification in flight has reached the watch; weather/calendar/firmware checks
 run right after a resume when overdue; pairing-window scans run with the display off too, but only
 while the phone is awake (stopped for every suspend); a reconnecting watch catches up on the
 notifications it missed ([below](#missed-notification-catch-up)); an optional datalog pause while the
-display is off. Groundwork for keeping the watch link across suspend ("Mode B", needs host kernel
+display is off (health and battery data then arrive when the screen is next on, when stoandl asks the
+watch for the backlog). Groundwork for keeping the watch link across suspend ("Mode B", needs host kernel
 work). _Partially verified on hardware (OnePlus 6, postmarketOS, 2026-09-29): in Mode A, notifications
 while the phone is awake and the logind delay lock work. Delivery of notifications that arrive with a
 push wake (catch-up after reconnect) is fixed and to be tested. Mode B is untested
@@ -1069,6 +1093,13 @@ notification stop it; quiet in Quiet Time (Hold Down still plays). Speech never 
 stalls for 35 s. The sleep hold ("reading an answer aloud") lasts only while it reads. German and English
 answers pick a voice of that language. [assistant.md → Reading answers aloud](assistant.md#reading-answers-aloud).
 
+_Implemented — to be tested ([TESTING.md §5.76](../TESTING.md)):_ **to-dos by voice.** "Don't let me forget
+to call the garage tomorrow at five" becomes a to-do in your list, with the due time and a reminder, in the
+same single request (Claude's `add_todo` call carries the confirmation it speaks). The daemon writes it to
+`calendar.todos` (a CalDAV list of an existing calendar account, or a local `.ics`/vdir) through the new
+extension method `addTodo`, and keeps a to-do the server can't take now until a later calendar sync sends
+it. Also `stoandl calendar todo`. [assistant.md → To-dos](assistant.md#to-dos).
+
 ### Missed-notification catch-up
 
 A reconnecting watch also gets the notifications posted while it was disconnected. This covers Mode A
@@ -1107,8 +1138,8 @@ With `connection.disconnect_persists` (default on, as in the official app) the p
 daemon restart; set it off and a restart reconnects. While paused nothing reaches the watch (calls neither);
 notifications posted meanwhile arrive after `connect` (paused time doesn't count towards the catch-up window).
 
-It applies to every watch: stoandl links one watch at a time, and the multi-watch auto-switch doesn't rotate
-to another watch while paused. It stacks with the Quiet Time pause (`power.quiet_time_link_off`): the link is
+It applies to every watch: stoandl links one watch at a time, and a paused link moves to no other watch.
+It stacks with the Quiet Time pause (`power.quiet_time_link_off`): the link is
 off while either holds it, so Quiet Time ending doesn't undo a manual disconnect, and `connect` inside the
 Quiet Time window takes effect when the window ends (Connect says so). `stoandl watch list` and the GUI's
 Watch page show either pause (D-Bus `LinkPause`). _Implemented — to be tested

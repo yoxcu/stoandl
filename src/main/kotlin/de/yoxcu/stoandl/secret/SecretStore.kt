@@ -10,6 +10,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
 import java.util.Base64
+import kotlin.time.Duration
 
 private val log = KotlinLogging.logger {}
 
@@ -30,6 +31,11 @@ interface SecretStore {
     fun get(ref: String): String?
     fun put(ref: String, value: String): SecretBackend
     fun remove(ref: String)
+
+    /** Wait up to [timeout] for a backend that isn't running yet (a keyring the session starts after the
+     *  daemon): true when one came up meanwhile, false when it was already up, there is none to wait for,
+     *  or it didn't come. A secret [get] missed before then may be there now. */
+    suspend fun awaitLateBackend(timeout: Duration): Boolean = false
 }
 
 /**
@@ -103,6 +109,8 @@ class FileSecretStore(private val file: File) : SecretStore {
  */
 class LayeredSecretStore(private val keyring: SecretStore, private val file: FileSecretStore) : SecretStore {
     override fun get(ref: String): String? = keyring.get(ref) ?: file.get(ref)
+
+    override suspend fun awaitLateBackend(timeout: Duration): Boolean = keyring.awaitLateBackend(timeout)
 
     override fun put(ref: String, value: String): SecretBackend = try {
         keyring.put(ref, value).also {

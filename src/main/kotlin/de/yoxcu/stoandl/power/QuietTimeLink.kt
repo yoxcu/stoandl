@@ -70,7 +70,8 @@ class QuietTimeLink(
     private val display: Flow<Boolean?>,
     /** Why the link must stay up right now regardless of Quiet Time, or null. */
     private val mustStayOn: () -> String?,
-    /** Watch traffic still owed (not counting this class's own); the hold waits until it is null. */
+    /** Watch traffic still owed (not counting this class's own), records still to sync included; the hold
+     *  waits until it is null. */
     private val pendingWork: () -> String?,
     private val wakeups: Flow<Unit>,
 ) {

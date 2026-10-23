@@ -9,8 +9,13 @@ import de.yoxcu.stoandl.dbus.SecretService
 import de.yoxcu.stoandl.dbus.SecretValue
 import de.yoxcu.stoandl.util.softOpenSessionBus
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.freedesktop.dbus.DBusPath
 import org.freedesktop.dbus.connections.impl.DBusConnection
+import org.freedesktop.dbus.interfaces.DBus
 import org.freedesktop.dbus.interfaces.DBusSigHandler
 import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
@@ -18,6 +23,7 @@ import org.freedesktop.dbus.types.Variant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlin.time.Duration
 
 private val log = KotlinLogging.logger {}
 
@@ -110,6 +116,31 @@ class SecretServiceStore : SecretStore {
             }
         } catch (e: Exception) {
             log.debug { "Keyring remove($ref) failed: ${e.message}" }
+        }
+    }
+
+    /** KWallet's ksecretd isn't D-Bus-activatable and starts with the session, often after the daemon:
+     *  wait for the name's owner ([SECRETS_BUS_NAME]), announced by NameOwnerChanged. */
+    override suspend fun awaitLateBackend(timeout: Duration): Boolean = withContext(Dispatchers.IO) {
+        val conn = softOpenSessionBus() ?: return@withContext false
+        val appeared = CompletableDeferred<Unit>()
+        // Registered before the owner check, so an owner taking the name in between is not missed.
+        val handler = DBusSigHandler<DBus.NameOwnerChanged> { sig ->
+            if (sig.name == SECRETS_BUS_NAME && sig.newOwner.isNotEmpty()) appeared.complete(Unit)
+        }
+        try {
+            conn.addSigHandler(DBus.NameOwnerChanged::class.java, handler)
+            val dbus = conn.getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java)
+            if (dbus.NameHasOwner(SECRETS_BUS_NAME)) return@withContext false
+            log.info { "Waiting up to $timeout for the keyring ($SECRETS_BUS_NAME)" }
+            (withTimeoutOrNull(timeout) { appeared.await() } != null).also { up ->
+                log.info { if (up) "Keyring ($SECRETS_BUS_NAME) is up" else "No keyring ($SECRETS_BUS_NAME) within $timeout" }
+            }
+        } catch (e: Exception) {
+            log.debug { "Waiting for the keyring failed: ${e.message}" }
+            false
+        } finally {
+            try { conn.close() } catch (e: Exception) { log.debug { "secret-bus close failed: ${e.message}" } }
         }
     }
 

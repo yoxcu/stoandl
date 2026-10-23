@@ -60,6 +60,55 @@ class ICalParserTest {
         }
     }
 
+    /** A weekly series as old Outlook/Thunderbird data writes it: a date-time DTSTART, a date-only UNTIL. */
+    private fun dateOnlyUntil(dtStart: String, rrule: String = "FREQ=WEEKLY;UNTIL=20210713;BYDAY=TU") = ICalParser.parse(
+        """
+            BEGIN:VCALENDAR
+            VERSION:2.0
+            PRODID:-//stoandl//ICalParserTest//EN
+            BEGIN:VEVENT
+            UID:weekly@stoandl.test
+            DTSTAMP:20210401T000000Z
+            DTSTART$dtStart
+            DURATION:PT1H
+            RRULE:$rrule
+            SUMMARY:Weekly
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent().replace("\n", "\r\n"),
+        calendarId = "test",
+        start = Instant.parse("2021-04-01T00:00:00Z"), end = Instant.parse("2021-08-01T00:00:00Z"),
+        zone = ZoneId.of("Europe/Paris"),
+    ).map { it.startTime }
+
+    @Test
+    fun `a date-only UNTIL on a zoned series expands up to and including that day`() {
+        val starts = dateOnlyUntil(";TZID=Europe/Berlin:20210420T120000")
+        assertEquals(13, starts.size) // every Tuesday, 20 April .. 13 July
+        assertEquals(Instant.parse("2021-04-20T10:00:00Z"), starts.first())
+        assertEquals(Instant.parse("2021-07-13T10:00:00Z"), starts.last())
+    }
+
+    @Test
+    fun `west of UTC the last day's instance is kept`() {
+        // 20:00 in Los Angeles on 13 July is 03:00Z on the 14th: an UNTIL of 13 July 23:59:59Z would drop it.
+        val starts = dateOnlyUntil(";TZID=America/Los_Angeles:20210420T200000")
+        assertEquals(13, starts.size)
+        assertEquals(Instant.parse("2021-07-14T03:00:00Z"), starts.last())
+    }
+
+    @Test
+    fun `a date-only UNTIL on a UTC series expands too`() {
+        assertEquals(Instant.parse("2021-07-13T12:00:00Z"), dateOnlyUntil(":20210420T120000Z").last())
+    }
+
+    @Test
+    fun `a floating series repeats at the same wall-clock time in the host's zone`() {
+        // Paris is UTC+2 in summer.
+        assertEquals(Instant.parse("2021-07-27T10:00:00Z"), dateOnlyUntil(":20210420T120000", "FREQ=WEEKLY;BYDAY=TU").last())
+        assertEquals(Instant.parse("2021-07-13T10:00:00Z"), dateOnlyUntil(":20210420T120000").last())
+    }
+
     private companion object {
         val ICS = """
             BEGIN:VCALENDAR

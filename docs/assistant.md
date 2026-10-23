@@ -30,6 +30,30 @@ app menu, or **Open app** on the anchor card): dictation starts at once, `Thinki
 streams in. Select asks a follow-up, hold Select starts a new chat, hold Up opens the presets. If you leave
 the app before the answer is done, it arrives as a notification instead; it is never lost.
 
+## To-dos
+
+Say what you mustn't forget, either way of asking: "don't let me forget to call the garage tomorrow at
+five", "remind me to buy milk", "note: the parking spot is C4". Claude saves it as a to-do in your list and
+answers with a short confirmation ("Noted: call the garage, tomorrow, Thursday 22 October, 17:00."), read
+aloud like any answer. Claude takes the due day from a list of the coming week's dates sent with each
+question, and asks back when the day or AM/PM is unclear or the time has passed; a due that has passed
+anyway (more than 5 minutes ago, or a day before today) is not saved ("Couldn't save the to-do: that time
+has passed"). The dates follow the phone's time zone when it changes. The day and time in the answer are
+not Claude's words: the extension says the due it saved, relative to now (today, tomorrow, or the
+weekday), with English or German names: those of `language` when it is set (any other language gets
+`2026-10-22 17:00`), else those of the language you spoke. A to-do with a time gets a reminder in your to-do app, one with only a day a reminder at 09:00.
+Several things in one sentence become several to-dos.
+
+The list is stoandl's `calendar.todos` (Settings → Calendar → To-do list): a CalDAV list of one of your
+calendar accounts, or a local calendar file ([configuration.md → To-dos](configuration.md#to-dos)). The
+extension needs no sign-in of its own. When the server can't be reached, the to-do is kept on the phone and
+sent after the next calendar sync; the answer then ends with "(Saved offline, syncs later.)". Asking needs
+the network, though: in a dead zone Claude can't be reached at all.
+
+Every question carries the small `add_todo` tool definition (a few hundred input tokens). A to-do costs one
+request: Claude writes the confirmation into the tool call, and the turn is kept as that text, the due
+filled in. The dates of the coming week add about a hundred input tokens to each question.
+
 ## Reading answers aloud
 
 On a watch with a speaker (Pebble Time 2, Pebble 2 Duo) the Assistant app can speak its answers. The
@@ -132,10 +156,15 @@ web search; prompt caching is ignored.
 
 ## Timeouts and errors
 
+A to-do that can't be saved shows why instead of the confirmation: "No to-do list chosen: …" (set
+`calendar.todos`), "Couldn't save the to-do: unclear date" (a due that isn't a date or time; nothing is
+saved), "Couldn't save the to-do: that time has passed" (a due before now; nothing is saved), "Couldn't save the to-do: …" (the daemon's reason, or no answer within 30 s), "this stoandl is too
+old for to-dos" (a daemon without `addTodo`).
+
 No text within 20 s, or a network error, gives `Claude: no answer`; a request is capped at 60 s (any text
 by then is shown, marked cut). HTTP 401/403 → `key rejected`; 429/529/overloaded → `busy`; a refusal →
 `Claude declined`; other API errors → `Claude: error <status>` with the API's message. Only one question
 runs at a time: a new one cancels the running one. While a question runs the extension holds a short
 logind sleep block (`keepAwake`, at most 60 s), so a phone doesn't suspend mid-answer.
 
-_Implemented — to be tested ([TESTING.md §5.50](../TESTING.md))._
+_Implemented — to be tested ([TESTING.md §5.50](../TESTING.md); to-dos §5.76)._

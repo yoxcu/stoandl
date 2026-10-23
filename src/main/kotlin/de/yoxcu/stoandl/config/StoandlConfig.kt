@@ -183,6 +183,10 @@ data class StoandlConfig(
     /** Vibration for every calendar reminder: a name from libpebble3's vibe-pattern table (`Standard`,
      *  `Pulses`, …); null = the watch's own default. Read live. */
     val calendarReminderVibe: String?,
+    /** Where a to-do from the assistant (an extension's `addTodo`) or `stoandl calendar todo` goes: a CalDAV
+     *  collection URL of a `calendar.caldav` account, a local `.ics` file, or a vdir directory; empty = off.
+     *  Read live. */
+    val calendarTodos: String,
     /** Speech-to-text for the watch's dictation and extensions' voice notes: off, a local command, or an
      *  OpenAI-compatible HTTP endpoint (egress, opt-in). Read on every use. */
     val voiceBackend: VoiceBackend,
@@ -302,14 +306,6 @@ data class StoandlConfig(
      *  runs while a pairing window is open, and a bonded watch reconnects by paging its fixed address).
      *  The BLE path is unaffected — BLE-native watches use BLE. */
     val classicDiscover: Boolean,
-    /** "Follow the wrist": when two or more watches are paired, connect whichever one is actually in
-     *  range instead of only ever the watch that last held the connection goal (the last one paired or
-     *  explicitly `Connect`ed — which need not be the one you're wearing). The daemon arms the
-     *  most-recently-connected watch first and, if it's out of range, rotates the goal to the next
-     *  candidate until one connects; a live link is never dropped to chase another watch. Inert with a
-     *  single paired watch. On by default; turn off to pin the connection to the last-chosen watch
-     *  (use `stoandl watch connect <name>` to move it). */
-    val connectionAutoswitch: Boolean,
     /** `stoandl watch disconnect` (or the GUI's Disconnect) lasts across a daemon restart until
      *  `stoandl watch connect`, like the official app's Disconnect. Off: a restart reconnects. */
     val connectionDisconnectPersists: Boolean,
@@ -322,10 +318,13 @@ data class StoandlConfig(
     /** Longest a suspend is held for pending watch traffic, in ms (logind's own cap is
      *  `InhibitDelayMaxSec`, 5 s by default). */
     val powerSleepGuardMaxMs: Long,
-    /** Pause the watch's datalog sends (health data, app datalog) while the display is off, resume when
-     *  it comes on (DataLogging SetSendEnabled). Saves the ~4 watch-initiated wakes per hour of the
-     *  15-minute datalog flush on a phone that keeps the link across suspend; health data then arrives
-     *  in bursts when the phone is used. Off by default. */
+    /** Pause the watch's datalog sends (health data, the battery heartbeat, app datalog) while the display
+     *  is off, resume when it comes on (DataLogging SetSendEnabled). Saves the ~4 watch-initiated wakes per
+     *  hour of the 15-minute datalog flush on a phone that keeps the link across suspend. The cost: that
+     *  data (steps, heart rate, battery history) arrives only when the screen is next on — once data has been
+     *  held 15 min (short dark periods add up) stoandl then asks the watch to send it at once — and a health
+     *  sync asked for with the
+     *  screen off (`stoandl health sync` over ssh) gets nothing new while paused. Off by default. */
     val powerPauseDatalogScreenOff: Boolean,
     /** Keep the watch disconnected during the watch's own *scheduled* Quiet Time (its weekday/weekend
      *  windows, read from the synced watch prefs) once the display has been off for a while; reconnect
@@ -433,6 +432,10 @@ data class StoandlConfig(
                 "power.screen_gate is no longer read: a pairing window always discovers, display on or off. " +
                     "Remove the line from ${file.path}."
             }
+            if (logResult && "connection.autoswitch" in map) log.warn {
+                "connection.autoswitch is no longer read: stoandl reconnects the watch you last connected; " +
+                    "`stoandl watch connect <name>` switches watches. Remove the line from ${file.path}."
+            }
             if (logResult && ("ble.conn_params" in map || "ble.conn_params_fast" in map)) log.warn {
                 "ble.conn_params and ble.conn_params_fast are no longer read: the watch chooses its own link " +
                     "parameters. Remove the lines from ${file.path}."
@@ -506,6 +509,7 @@ data class StoandlConfig(
                 calendarReminders = map["calendar.reminders"]?.let { parseBool(it) } ?: true,
                 calendarShowDeclined = parseBool(map["calendar.show_declined"]),
                 calendarReminderVibe = map["calendar.reminder_vibe"]?.trim()?.takeIf { it.isNotEmpty() },
+                calendarTodos = map["calendar.todos"]?.trim()?.let(::expandTilde).orEmpty(),
                 voiceBackend = parseVoiceBackend(map["voice.backend"]),
                 voiceFallbackBackend = parseVoiceBackend(map["voice.fallback_backend"]),
                 voiceLocalModel = map["voice.local_model"]?.trim().orEmpty(),
@@ -545,7 +549,6 @@ data class StoandlConfig(
                 // Default TRUE, so only an explicit falsey value disables it — a bare parseBool() would
                 // read an absent key as false and contradict defaults(), conf.example and the docs.
                 classicDiscover = map["classic.discover"]?.let { parseBool(it) } ?: true,
-                connectionAutoswitch = map["connection.autoswitch"]?.let { parseBool(it) } ?: true,
                 connectionDisconnectPersists = map["connection.disconnect_persists"]?.let { parseBool(it) } ?: true,
                 powerSleepGuard = map["power.sleep_guard"]?.let { parseBool(it) } ?: true,
                 powerSleepGuardMaxMs = map["power.sleep_guard_max_ms"]?.trim()?.toLongOrNull()
@@ -591,7 +594,6 @@ data class StoandlConfig(
                     ", battery=history:${cfg.batteryHistory}/heartbeat:${cfg.batteryHeartbeat}" +
                     (if (cfg.batteryHistory || cfg.batteryHeartbeat) " (retention=${cfg.batteryRetentionDays}d)" else "") +
                     (if (cfg.classicDiscover) ", classicDiscover=true" else "") +
-                    (if (!cfg.connectionAutoswitch) ", autoswitch=off" else "") +
                     (if (!cfg.powerSleepGuard) ", sleepGuard=off" else if (cfg.powerSleepGuardMaxMs != DEFAULT_SLEEP_GUARD_MAX_MS) ", sleepGuardMaxMs=${cfg.powerSleepGuardMaxMs}" else "") +
                     (if (cfg.powerPauseDatalogScreenOff) ", pauseDatalogScreenOff=true" else "") +
                     (if (cfg.powerQuietTimeLinkOff) ", quietTimeLinkOff=true" else "") +

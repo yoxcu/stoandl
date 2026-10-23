@@ -1,5 +1,7 @@
 package de.yoxcu.stoandl.calendar
 
+import de.yoxcu.stoandl.util.RepeatedLines
+import de.yoxcu.stoandl.util.warnWhenChanged
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.calendar.CalendarEvent
 import io.rebble.libpebblecommon.calendar.EventAttendee
@@ -10,6 +12,8 @@ import net.fortuna.ical4j.model.Parameter
 import net.fortuna.ical4j.model.Property
 import net.fortuna.ical4j.model.component.VAlarm
 import net.fortuna.ical4j.model.component.VEvent
+import net.fortuna.ical4j.model.property.DtStart
+import net.fortuna.ical4j.model.property.RRule
 import net.fortuna.ical4j.model.property.Trigger
 import net.fortuna.ical4j.util.CompatibilityHints
 import java.io.StringReader
@@ -19,6 +23,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.time.temporal.Temporal
 import java.time.temporal.TemporalAmount
@@ -27,6 +32,9 @@ import java.time.Instant as JInstant
 import net.fortuna.ical4j.model.Period as ICalPeriod
 
 private val log = KotlinLogging.logger {}
+
+/** A broken event fails again on every sync: WARN once per daemon run, DEBUG after that. */
+private val failures = RepeatedLines()
 
 /**
  * Wraps ical4j to turn raw iCalendar text into libpebble3 [CalendarEvent]s. This is the ONLY file
@@ -81,12 +89,16 @@ object ICalParser {
         // the event's DTSTART resolution or java.time throws "Unsupported unit: …":
         //   - date-time events need a date-time window — java.time.Instant lacks WEEKS/MONTHS/YEARS,
         //     so we use ZonedDateTime (UTC; per-event zones still come from each DTSTART);
-        //   - all-day (VALUE=DATE) events need a date-only window — LocalDate lacks SECONDS.
+        //   - all-day (VALUE=DATE) events need a date-only window — LocalDate lacks SECONDS;
+        //   - floating (no zone) date-times need a floating window, in the host's [zone] — a
+        //     LocalDateTime can't become a ZonedDateTime.
         // So the window is chosen per-event below.
         val startZdt = start.toQueryZdt()
         val endZdt = end.toQueryZdt()
         val startDate = startZdt.toLocalDate()
         val endDate = endZdt.toLocalDate().plusDays(1) // make the last day inclusive for all-day events
+        val startFloating = startZdt.withZoneSameInstant(zone).toLocalDateTime()
+        val endFloating = endZdt.withZoneSameInstant(zone).toLocalDateTime()
         val out = ArrayList<CalendarEvent>()
         for (event in cal.getComponents<VEvent>(Component.VEVENT)) {
             // Detached overrides (a single edited instance of a series) carry RECURRENCE-ID. ical4j
@@ -99,10 +111,17 @@ object ICalParser {
             val dateOnly = dtStart?.getParameter<Parameter>(Parameter.VALUE)?.orElse(null)?.value
                 .equals("DATE", ignoreCase = true)
             val occurrences = try {
-                if (dateOnly) event.calculateRecurrenceSet<Temporal>(ICalPeriod(startDate, endDate))
-                else event.calculateRecurrenceSet<Temporal>(ICalPeriod(startZdt, endZdt))
+                val first = if (dateOnly) null else event.getProperty<DtStart<Temporal>>(Property.DTSTART).orElse(null)?.date
+                first?.let { event.boundDateOnlyUntil(it) }
+                event.calculateRecurrenceSet<Temporal>(when {
+                    dateOnly -> ICalPeriod<Temporal>(startDate, endDate)
+                    first is LocalDateTime -> ICalPeriod<Temporal>(startFloating, endFloating)
+                    else -> ICalPeriod<Temporal>(startZdt, endZdt)
+                })
             } catch (e: Exception) {
-                log.warn { "Recurrence expansion failed for an event in '$calendarId': ${e.message}" }
+                val uid = event.text(Property.UID) ?: "?"
+                log.warnWhenChanged(failures, "$calendarId $uid",
+                    "Recurrence expansion failed for UID $uid (RRULE ${event.text(Property.RRULE) ?: "none"}) in '$calendarId': ${e.message}")
                 continue
             }
             if (occurrences.isEmpty()) continue
@@ -157,6 +176,30 @@ object ICalParser {
         getProperty<Property>(name).orElse(null)?.value?.takeIf { it.isNotBlank() }
 
     private fun VEvent.has(name: String): Boolean = getProperty<Property>(name).isPresent
+
+    /**
+     * Old Outlook/Thunderbird data pairs a date-time DTSTART with an RRULE whose UNTIL is a bare date
+     * (RFC 5545 §3.3.10 wants them the same type). ical4j can't compare the two and throws "Unsupported
+     * unit: Seconds", losing the whole series. Read such an UNTIL as the end of that day in DTSTART's zone
+     * (so a zone west of UTC keeps its last instance): in UTC, or as a floating time for a floating DTSTART.
+     */
+    private fun VEvent.boundDateOnlyUntil(dtStart: Temporal) {
+        val rrule = getProperty<Property>(Property.RRULE).orElse(null) ?: return
+        val until = DATE_ONLY_UNTIL.find(rrule.value)?.groups?.get(1) ?: return
+        val endOfDay = LocalDate.parse(until.value, DateTimeFormatter.BASIC_ISO_DATE).plusDays(1).atStartOfDay()
+        val bound = when (dtStart) {
+            is LocalDateTime -> FLOATING_STAMP.format(endOfDay.minusSeconds(1))
+            is ZonedDateTime -> UTC_STAMP.format(endOfDay.atZone(dtStart.zone).minusSeconds(1).withZoneSameInstant(ZoneOffset.UTC))
+            is OffsetDateTime -> UTC_STAMP.format(endOfDay.atOffset(dtStart.offset).minusSeconds(1).atZoneSameInstant(ZoneOffset.UTC))
+            else -> UTC_STAMP.format(endOfDay.atZone(ZoneOffset.UTC).minusSeconds(1)) // an Instant: DTSTART in UTC
+        }
+        replace<VEvent>(RRule<Temporal>(rrule.value.replaceRange(until.range, bound)))
+    }
+
+    /** An RRULE's `UNTIL=yyyyMMdd` part with no time. */
+    private val DATE_ONLY_UNTIL = Regex("(?i)(?:^|;)UNTIL=(\\d{8})(?=;|$)")
+    private val UTC_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+    private val FLOATING_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
 
     /** Best-effort attendee names/emails for the pin's "Attendees" section. No self-detection or
      *  RSVP status (we report supportsPinActions=false), so this is display-only. */

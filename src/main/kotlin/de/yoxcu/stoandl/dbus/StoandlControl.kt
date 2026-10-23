@@ -168,6 +168,16 @@ interface StoandlControl : DBusInterface {
      *  Returns `ok:removed`, `notfound:`, or `error:`. */
     fun RemoveCalendarSource(id: String): String
 
+    /** Save a to-do in the list `calendar.todos` names (a CalDAV list, a local .ics file or a vdir).
+     *  [due] is empty, `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` (local time; an offset or `Z` is also taken); a due
+     *  to-do gets a reminder at that time (09:00 on a due day). [note] may be empty. Returns `ok:saved`,
+     *  `ok:queued\t<problem>` (the server couldn't take it now: kept on this device and sent after a later
+     *  calendar sync; problem is empty when the server wasn't reachable) or `error:<msg>`. */
+    fun AddTodo(title: String, due: String, note: String): String
+
+    /** The to-dos waiting to be sent, oldest first: `title \t target \t lastError`. */
+    fun PendingTodos(): List<String>
+
     /** Open a ~2-minute pairing window and start monitoring for a connection. Returns
      *  `ok:` immediately; poll [PairStatus] for the outcome. The window discovers whether or not the
      *  display is on (it is an explicit request), but only while the host is awake: discovery stops for

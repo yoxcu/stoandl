@@ -1,6 +1,8 @@
 package de.yoxcu.stoandl.calendar
 
 import de.yoxcu.stoandl.secret.SecretStore
+import de.yoxcu.stoandl.util.RepeatedLines
+import de.yoxcu.stoandl.util.infoWhenChanged
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -16,12 +18,16 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
+import java.util.zip.CRC32
 import javax.xml.parsers.DocumentBuilderFactory
 import org.w3c.dom.Document
 import org.w3c.dom.Element
 import kotlin.time.Instant
 
 private val log = KotlinLogging.logger {}
+
+/** Sources are rebuilt for every refresh, so what each last found lives here: INFO only on a change. */
+private val summaries = RepeatedLines()
 
 /**
  * One calendar the daemon can read, abstracted over where it lives (local .ics file, published iCal
@@ -38,6 +44,14 @@ class RawCalendar(
     val name: String,
     val accountId: String,
     val fetchEvents: suspend (start: Instant, end: Instant) -> List<CalendarEvent>,
+    /** Whether a to-do can be written here (`calendar.todos`): a local .ics file, or a CalDAV collection
+     *  that takes VTODO. */
+    val acceptsTodos: Boolean = false,
+    /** What the calendar's content is now, cheaply (a local file's length and checksum), so
+     *  [LinuxSystemCalendar] reuses its last [fetchEvents] while the content is unchanged instead of
+     *  re-parsing on every change signal. Never throws; null when it can't be read (the next fetch says
+     *  why). No fingerprint (CalDAV, iCal URL): the last fetch holds until the next change signal. */
+    val fingerprint: (suspend () -> Any?)? = null,
 )
 
 /**
@@ -64,12 +78,18 @@ interface CalendarSource {
 
 /** Build a [RawCalendar] backed by a local .ics file, read fresh on each sync, attributed to [accountId].
  *  Each read is reported to [health] (null: the discovery bucket, which isn't a listed source). */
-private fun icsFileCalendar(file: File, accountId: String, health: SourceHealth?): RawCalendar {
+private fun icsFileCalendar(
+    file: File,
+    accountId: String,
+    health: SourceHealth?,
+    name: String = file.nameWithoutExtension,
+): RawCalendar {
     val path = file.absoluteFile.normalize().path
     return RawCalendar(
         platformId = path,
-        name = file.nameWithoutExtension,
+        name = name,
         accountId = accountId,
+        acceptsTodos = true,
         fetchEvents = { start, end ->
             try {
                 val text = withContext(Dispatchers.IO) { file.readText() }
@@ -81,8 +101,23 @@ private fun icsFileCalendar(file: File, accountId: String, health: SourceHealth?
                 emptyList()
             }
         },
+        // By content, not mtime: vdirsyncer rewrites every file on each run, mostly unchanged. A read
+        // and a checksum cost a few ms where the parse of a large file costs most of a second.
+        fingerprint = {
+            try {
+                withContext(Dispatchers.IO) { fileFingerprint(file.readBytes()) }
+                    .also { health?.ok(accountId, path) }
+            } catch (_: Exception) {
+                null
+            }
+        },
     )
 }
+
+/** A local calendar file's content, for [RawCalendar.fingerprint]. */
+internal data class FileFingerprint(val length: Int, val crc32: Long)
+
+internal fun fileFingerprint(bytes: ByteArray) = FileFingerprint(bytes.size, CRC32().apply { update(bytes) }.value)
 
 /** Expand one configured path (a file, or a directory scanned for `*.ics`) into calendars, all
  *  attributed to [accountId] — so every .ics under a configured dir groups under that dir's source. */
@@ -113,14 +148,79 @@ class IcsPathSource(private val paths: List<String>, private val health: SourceH
  * Best-effort auto-discovery of calendars the desktop environment already keeps as local .ics files
  * — primarily Calindori (the Plasma Mobile calendar app, which stores plain .ics and is the realistic
  * "reuse the DE's calendars" path on the phone). Gated by `calendar.discover`. No egress.
+ *
+ * Calindori's own list ([calindoriCalendars]) comes first, under the names it shows: its "external"
+ * calendars are files anywhere (a vdirsyncer `singlefile` copy, say) and are found nowhere else. The
+ * directory scan adds what that list doesn't name.
  */
 class DiscoverySource : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> {
+        val listed = calindoriCalendars().filter { it.file.isFile }
+            .map { icsFileCalendar(it.file, SourceId.DISCOVER, health = null, name = it.name) }
         val candidates = calendarDiscoveryDirs().filter { it.isDirectory }
-        val cals = candidates.flatMap { icsPathToCalendars(it, SourceId.DISCOVER, health = null) }
-        log.info { "Calendar discovery scanned ${candidates.size} known dir(s), found ${cals.size} calendar(s)" }
-        return cals
+        val known = listed.map { it.platformId }.toSet()
+        val scanned = candidates.flatMap { icsPathToCalendars(it, SourceId.DISCOVER, health = null) }
+            .filter { it.platformId !in known }
+        log.infoWhenChanged(summaries, "discover",
+            "Calendar discovery: ${listed.size} from Calindori's list, ${scanned.size} more in ${candidates.size} known dir(s)")
+        return listed + scanned
     }
+}
+
+/** One calendar in Calindori's list: the name it shows, its .ics file, and the [lockFile] a sync tool holds
+ *  (flock) while it rewrites that file, if its group names one. */
+data class NamedIcs(val name: String, val file: File, val lockFile: File? = null)
+
+/** The calendars Calindori shows, read from its `calindorirc` (KConfig): `[general] calendars=` are its
+ *  own (`<data>/calindori/calindori_<name>.ics` unless the group names a `file`), `externalCalendars=`
+ *  are files kept elsewhere (each group's `file`). Empty when Calindori isn't set up. */
+fun calindoriCalendars(): List<NamedIcs> {
+    val home = System.getProperty("user.home") ?: return emptyList()
+    val configHome = System.getenv("XDG_CONFIG_HOME")?.takeIf { it.isNotBlank() } ?: "$home/.config"
+    val dataHome = System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotBlank() } ?: "$home/.local/share"
+    val runtimeDir = System.getenv("XDG_RUNTIME_DIR")?.takeIf { it.isNotBlank() }?.let(::File)
+    val rc = File(configHome, "calindorirc")
+    if (!rc.isFile) return emptyList()
+    return runCatching { parseCalindoriRc(rc.readText(), File(dataHome, "calindori"), runtimeDir) }
+        .onFailure { log.warn { "Can't read ${rc.path}: ${it.message}" } }
+        .getOrDefault(emptyList())
+}
+
+/** The lock a sync tool holds while it rewrites [file], when Calindori's list names one for it. */
+fun calindoriLockFile(file: File): File? = calindoriSyncLocks()[file.absoluteFile.normalize()]
+
+/** The sync locks of Calindori's list: see [syncLocksOf]. */
+fun calindoriSyncLocks(): Map<File, File> = syncLocksOf(calindoriCalendars())
+
+/** The [NamedIcs.lockFile] of each of the [calendars] that has one, by its file (absolute, normalized). */
+internal fun syncLocksOf(calendars: List<NamedIcs>): Map<File, File> =
+    calendars.mapNotNull { c -> c.lockFile?.let { c.file.absoluteFile.normalize() to it } }.toMap()
+
+/**
+ * [ownDir]: Calindori's own calendars. [runtimeDir]: `$XDG_RUNTIME_DIR`, which a relative `lockFile` is
+ * under, as Calindori resolves it (patch "Save only while no synchronization runs", r103); without it a
+ * relative one is ignored.
+ */
+internal fun parseCalindoriRc(text: String, ownDir: File, runtimeDir: File? = null): List<NamedIcs> {
+    val groups = mutableMapOf<String, MutableMap<String, String>>()
+    var group: MutableMap<String, String>? = null
+    for (raw in text.lineSequence()) {
+        val line = raw.trim()
+        when {
+            line.isEmpty() || line.startsWith("#") -> {}
+            line.startsWith("[") && line.endsWith("]") -> group = groups.getOrPut(line.substring(1, line.length - 1)) { mutableMapOf() }
+            "=" in line -> group?.put(line.substringBefore('=').trim(), line.substringAfter('=').trim())
+        }
+    }
+    fun names(key: String) = groups["general"]?.get(key).orEmpty().split(';').map { it.trim() }.filter { it.isNotEmpty() }
+    fun lockFile(n: String) = groups[n]?.get("lockFile")?.takeIf { it.isNotEmpty() }?.let { lock ->
+        if (File(lock).isAbsolute) File(lock) else runtimeDir?.let { File(it, lock) }
+    }
+    val own = names("calendars").map { n ->
+        NamedIcs(n, groups[n]?.get("file")?.let(::File) ?: File(ownDir, "calindori_$n.ics"), lockFile(n))
+    }
+    val external = names("externalCalendars").mapNotNull { n -> groups[n]?.get("file")?.let { NamedIcs(n, File(it), lockFile(n)) } }
+    return (own + external).distinctBy { it.file.absoluteFile.normalize().path }
 }
 
 /** Well-known directories where desktop environments keep calendars as plain local .ics files.
@@ -186,7 +286,8 @@ class CalDavSource(
     /** A configured account: an opaque [id] (the source/secret key), its [url] and [username]. The
      *  password is NOT held here — it's resolved per sync from [secretStore] under `caldav:<id>`. */
     data class Entry(val id: String, val url: String, val username: String)
-    private data class Collection(val url: String, val name: String)
+    /** [todos]: the collection takes VTODO (its supported-calendar-component-set lists it, or it has none). */
+    private data class Collection(val url: String, val name: String, val todos: Boolean = true)
 
     override suspend fun calendars(): List<RawCalendar> = entries.flatMap { e ->
         val accountId = SourceId.caldav(e.id)
@@ -197,7 +298,8 @@ class CalDavSource(
             // Not discoverable (or already a leaf collection) — use the URL as a single calendar.
             listOf(Collection(e.url, urlLabel(e.url)))
         }
-        log.info { "CalDAV ${e.url}: ${collections.size} calendar(s) [${collections.joinToString { it.name }}]" }
+        log.infoWhenChanged(summaries, "caldav ${e.url}",
+            "CalDAV ${e.url}: ${collections.size} calendar(s) [${collections.joinToString { it.name }}]")
         health.retain(accountId, collections.map { it.url }.toSet())
         collections.map { col -> calendarFor(col, auth, accountId) }
     }
@@ -206,6 +308,7 @@ class CalDavSource(
         platformId = col.url,
         name = col.name,
         accountId = accountId,
+        acceptsTodos = col.todos,
         fetchEvents = { start, end ->
             try {
                 val resp = client.request(col.url) {
@@ -245,7 +348,7 @@ class CalDavSource(
             val xml = propfind(baseUrl, auth, "0", PROPFIND_DISCOVER)
             val info = withContext(Dispatchers.IO) { parseDiscover(xml) }
             when {
-                info.selfIsCalendar -> listOf(Collection(baseUrl, info.selfName ?: urlLabel(baseUrl)))
+                info.selfIsCalendar -> listOf(Collection(baseUrl, info.selfName ?: urlLabel(baseUrl), info.selfTodos))
                 info.homeHref != null -> listCalendars(resolveHref(baseUrl, info.homeHref), auth)
                 info.principalHref != null -> {
                     val principalUrl = resolveHref(baseUrl, info.principalHref)
@@ -270,7 +373,7 @@ class CalDavSource(
                 val resp = responses.item(i) as? Element ?: return@mapNotNull null
                 if (!resp.isCalendarCollection()) return@mapNotNull null
                 val href = resp.firstTextNS(DAV_NS, "href") ?: return@mapNotNull null
-                Collection(resolveHref(homeUrl, href), resp.firstTextNS(DAV_NS, "displayname") ?: urlLabel(href))
+                Collection(resolveHref(homeUrl, href), resp.firstTextNS(DAV_NS, "displayname") ?: urlLabel(href), resp.takesTodos())
             }
         }
     }
@@ -318,7 +421,8 @@ class CalDavSource(
     }
 
     private data class DiscoverInfo(
-        val selfIsCalendar: Boolean, val selfName: String?, val principalHref: String?, val homeHref: String?,
+        val selfIsCalendar: Boolean, val selfName: String?, val selfTodos: Boolean, val principalHref: String?,
+        val homeHref: String?,
     )
 
     /** Parse the Depth:0 discovery PROPFIND: is the URL itself a calendar, and what principal/home does
@@ -329,6 +433,7 @@ class CalDavSource(
         return DiscoverInfo(
             selfIsCalendar = self?.isCalendarCollection() == true,
             selfName = self?.firstTextNS(DAV_NS, "displayname"),
+            selfTodos = self?.takesTodos() ?: true,
             principalHref = (doc.getElementsByTagNameNS(DAV_NS, "current-user-principal").item(0) as? Element)
                 ?.firstTextNS(DAV_NS, "href"),
             homeHref = firstHomeHref(doc),
@@ -344,12 +449,12 @@ class CalDavSource(
         private const val CALDAV_NS = "urn:ietf:params:xml:ns:caldav"
         private val PROPFIND_DISCOVER = """<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop>
-<d:resourcetype/><d:displayname/><d:current-user-principal/><c:calendar-home-set/>
+<d:resourcetype/><d:displayname/><d:current-user-principal/><c:calendar-home-set/><c:supported-calendar-component-set/>
 </d:prop></d:propfind>"""
         private val PROPFIND_HOME_SET = """<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-home-set/></d:prop></d:propfind>"""
         private val PROPFIND_LIST = """<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:resourcetype/><d:displayname/></d:prop></d:propfind>"""
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:resourcetype/><d:displayname/><c:supported-calendar-component-set/></d:prop></d:propfind>"""
     }
 }
 
@@ -390,4 +495,14 @@ private fun Element.isCalendarCollection(): Boolean {
         if (rt.getElementsByTagNameNS("urn:ietf:params:xml:ns:caldav", "calendar").length > 0) return true
     }
     return false
+}
+
+/** Whether this collection takes VTODO: RFC 4791 §5.2.3, a collection without a
+ *  supported-calendar-component-set takes every component type. */
+internal fun Element.takesTodos(): Boolean {
+    val set = getElementsByTagNameNS("urn:ietf:params:xml:ns:caldav", "supported-calendar-component-set").item(0) as? Element
+        ?: return true
+    val comps = set.getElementsByTagNameNS("urn:ietf:params:xml:ns:caldav", "comp")
+    if (comps.length == 0) return true
+    return (0 until comps.length).any { (comps.item(it) as Element).getAttribute("name").equals("VTODO", ignoreCase = true) }
 }

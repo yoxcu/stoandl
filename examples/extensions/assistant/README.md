@@ -31,6 +31,8 @@ at its default.
 - **Notifications:** open the "Ask Claude" card → Reply → speak or pick a preset. The answer comes back
   as a card; Reply on it to follow up, **More** for the next page.
 - **Watchapp:** launch Assistant; dictation starts at once and the answer streams in.
+- **To-dos:** say "don't let me forget to …"; Claude saves it in stoandl's to-do list (`calendar.todos`,
+  Settings → Calendar → To-do list), with the due time you said.
 - **Read aloud** (Pebble Time 2 and 2 Duo): once text to speech is set up in stoandl (Settings → Voice),
   answers in the app are spoken on the watch speaker (`speak = always`, the default; silent in Quiet
   Time). Hold Down reads the answer on screen, or stops; Select stops it before you speak.

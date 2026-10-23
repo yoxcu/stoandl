@@ -2,13 +2,14 @@ package de.yoxcu.stoandl.pebble
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import de.yoxcu.stoandl.util.LOOPBACK_V4
 import de.yoxcu.stoandl.util.decodeDataUri
+import de.yoxcu.stoandl.util.loopbackOrigin
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URLDecoder
@@ -68,7 +69,7 @@ class ConfigPageServer(private val scope: CoroutineScope, private val ttlMs: Lon
             if (end(token) != null) log.info { "Config page for $app expired unsaved" }
         }
         sessions[token] = Session(app, sourceUrl, onClose, expiry, bridge?.takeUnless { it.isEmpty })
-        val base = "http://127.0.0.1:$port/$token/"
+        val base = "${loopbackOrigin(port)}/$token/"
         return localPageUrl(base, sourceUrl, closeUrl(base))
     }
 
@@ -92,13 +93,13 @@ class ConfigPageServer(private val scope: CoroutineScope, private val ttlMs: Lon
     private fun startServer(): HttpServer {
         // Loopback only: the page and its Save carry the user's settings, and the token keeps other
         // local users and websites from guessing a session.
-        val s = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
+        val s = HttpServer.create(InetSocketAddress(LOOPBACK_V4, 0), 0)
         s.createContext("/") { exchange -> exchange.use { handle(it) } }
         // One thread per request: a page's event stream stays open while it is shown.
         s.executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
         s.start()
         server = s
-        log.debug { "Config page server listening on 127.0.0.1:${s.address.port}" }
+        log.debug { "Config page server listening on ${loopbackOrigin(s.address.port)}" }
         return s
     }
 
@@ -123,7 +124,7 @@ class ConfigPageServer(private val scope: CoroutineScope, private val ttlMs: Lon
                     log.warn { "Config page for ${session.app}: can't load ${describeConfigUrl(session.sourceUrl)}: ${e.message}" }
                     return exchange.reply(502, "Couldn't load the settings page: ${e.message}")
                 }
-                val base = "http://127.0.0.1:${exchange.localAddress.port}/$token/"
+                val base = "${loopbackOrigin(exchange.localAddress.port)}/$token/"
                 exchange.reply(200, rewriteConfigPage(page, session.sourceUrl, closeUrl(base), bridge?.let { configPageShim(base) }), html = true)
             }
             listOf("close") -> {

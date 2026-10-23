@@ -2,6 +2,9 @@ package de.yoxcu.stoandl.calendar
 
 import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.delayWallClock
+import de.yoxcu.stoandl.util.Flock
+import de.yoxcu.stoandl.util.RepeatedLines
+import de.yoxcu.stoandl.util.infoWhenChanged
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.calendar.CalendarEvent
 import io.rebble.libpebblecommon.calendar.NewCalendarEvent
@@ -9,18 +12,20 @@ import io.rebble.libpebblecommon.calendar.SystemCalendar
 import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import java.io.File
 import java.nio.file.ClosedWatchServiceException
@@ -29,12 +34,16 @@ import java.nio.file.Path
 import java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
 import java.nio.file.StandardWatchEventKinds.ENTRY_DELETE
 import java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY
+import java.time.ZoneId
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 private val log = KotlinLogging.logger {}
+
+/** The per-sync summary repeats every refresh: INFO only when the calendars changed. */
+private val summaries = RepeatedLines()
 
 /**
  * The Linux implementation of libpebble3's [SystemCalendar]. stoandl registers this (overriding the
@@ -58,12 +67,18 @@ class LinuxSystemCalendar(
     // Directories file-watched for near-instant .ics updates. Read once when the watch starts; a path
     // added live is still picked up by [requestRefresh] + the ticker (just not the instant file-watch).
     private val watchDirs: () -> List<File>,
+    // The lock a sync tool holds while it rewrites a calendar file, by that file (absolute, normalized):
+    // its Calindori group's `lockFile`, e.g. dav-sync's. Read at each file change: a change to a file whose
+    // lock is held re-reads once the sync is done; a file without one, or whose lock is free, at once.
+    private val syncLocks: () -> Map<File, File> = { emptyMap() },
     // Live master switch (`calendar.enabled`): when off, we expose no calendars/events so
     // PhoneCalendarSyncer removes the watch's pins. [requestRefresh] re-evaluates it, so toggling it at
     // runtime clears or repopulates pins without a restart. Default always-on for non-GUI callers.
     private val isEnabled: () -> Boolean = { true },
     // Invoked when the syncer reads events (a sync happened) — stamps the GetSyncStatus lastSync time.
     private val onSync: (() -> Unit)? = null,
+    // Invoked on every enumeration (each sync, calendar.enabled or not): the to-do queue's retry.
+    private val onRefresh: (() -> Unit)? = null,
     // Resume signal (SleepGuard.resumed): the ticker counts wall-clock time and re-checks on resume, so
     // the timeline window keeps rolling on a phone that is suspended most of the time.
     private val wakeups: Flow<Unit> = NoWakeups,
@@ -97,11 +112,16 @@ class LinuxSystemCalendar(
      *  calendar isn't from a currently-known source (resolved from the last enumeration). */
     fun accountIdFor(platformId: String): String? = byPlatformId[platformId]?.accountId
 
+    /** The calendars a to-do can be written to (`calendar.todos`), from the last enumeration. */
+    fun todoLists(): List<RawCalendar> = byPlatformId.values.filter { it.acceptsTodos }
+
     override suspend fun getCalendars(): List<CalendarEntity> {
+        onRefresh?.invoke()
         if (!isEnabled()) {
             // Disabled at runtime: expose nothing so the syncer drops every calendar (and its pins).
             if (byPlatformId.isNotEmpty()) { byPlatformId = emptyMap(); _calendarsChanged.tryEmit(Unit) }
-            log.info { "Calendar sync disabled (calendar.enabled=false) — no calendars exposed" }
+            eventCache.clear()
+            log.infoWhenChanged(summaries, "calendars", "Calendar sync disabled (calendar.enabled=false) — no calendars exposed")
             return emptyList()
         }
         val raws = sources().flatMap { src ->
@@ -117,7 +137,9 @@ class LinuxSystemCalendar(
         val unique = raws.associateBy { it.platformId }
         if (unique.keys != byPlatformId.keys) _calendarsChanged.tryEmit(Unit)
         byPlatformId = unique
-        log.info { "Calendar: ${unique.size} calendar(s)${if (unique.isEmpty()) "" else " [" + unique.values.joinToString { it.name } + "]"}" }
+        eventCache.keys.retainAll(unique.keys) // a removed calendar's events go with it
+        log.infoWhenChanged(summaries, "calendars",
+            "Calendar: ${unique.size} calendar(s)${if (unique.isEmpty()) "" else " [" + unique.values.joinToString { it.name } + "]"}")
         return unique.values.map { rc ->
             CalendarEntity(
                 platformId = rc.platformId,
@@ -140,25 +162,39 @@ class LinuxSystemCalendar(
         val rc = byPlatformId[calendar.platformId]
             ?: run { getCalendars(); byPlatformId[calendar.platformId] }
             ?: return emptyList()
-        // The calendar plugin asks every minute for the next few days; a remote calendar (CalDAV, iCal URL)
-        // would make that a network round trip a minute. Answer from the last fetch while nothing changed
-        // (no tick, file change or manual sync since) and its window covers the request.
+        // The one cache of a calendar's events. The calendar plugin asks every minute for the next few days;
+        // a remote calendar (CalDAV, iCal URL) would make that a network round trip a minute, and every
+        // tick or vdirsyncer run would re-parse unchanged local files. Answer from the last fetch while its
+        // window covers the request and nothing changed: no change signal since (tick, file change, manual
+        // sync), or its content fingerprint is the same as when it was fetched. The parse also depends on
+        // the host zone (floating times, all-day alarms), which no change signal follows: a new zone misses.
         val gen = generation.get()
-        eventCache[calendar.platformId]?.let { c ->
-            if (c.generation == gen && c.start <= startDate && c.end >= endDate) {
-                return c.events.filter { it.endTime > startDate && it.startTime < endDate }
+        val zone = ZoneId.systemDefault()
+        val cached = eventCache[calendar.platformId]
+            ?.takeIf { it.zone == zone && it.start <= startDate && it.end >= endDate }
+        // Taken BEFORE the fetch, so a change racing it leaves a fingerprint older than the events: the next
+        // sync re-reads once, never keeps stale events.
+        val fingerprint = if (cached != null && cached.generation == gen) null
+            else rc.fingerprint?.invoke()
+        if (cached != null && (cached.generation == gen || (fingerprint != null && fingerprint == cached.fingerprint))) {
+            if (cached.generation != gen) {
+                // A sync round over unchanged content: still a sync (GetSyncStatus), without the parse.
+                eventCache[calendar.platformId] = CachedEvents(gen, zone, fingerprint, cached.start, cached.end, cached.events)
+                onSync?.invoke()
             }
+            return cached.events.filter { it.endTime > startDate && it.startTime < endDate }
         }
         // Fetch a window covering both callers (the pin sync's yesterday … +6 d, the plugin's now … +7 d).
         val now = Clock.System.now()
         val fetchStart = minOf(startDate, now - 1.days)
         val fetchEnd = maxOf(endDate, now + 8.days)
         val all = rc.fetchEvents(fetchStart, fetchEnd) // already defensive: returns empty on failure
-        eventCache[calendar.platformId] = CachedEvents(gen, fetchStart, fetchEnd, all)
+        eventCache[calendar.platformId] = CachedEvents(gen, zone, fingerprint, fetchStart, fetchEnd, all)
         val events = all.filter { it.endTime > startDate && it.startTime < endDate }
         onSync?.invoke()
         log.debug { "Calendar '${calendar.name}': ${events.size} event(s) in window $startDate .. $endDate" }
-        log.debug {
+        // TRACE: every event's title, each sync (personal data, and the count above says what changed).
+        log.trace {
             "Calendar '${calendar.name}' events: " + events.sortedBy { it.startTime }.joinToString("; ") {
                 "${it.startTime}${if (it.allDay) " (all-day)" else ""} ${it.title}" +
                     if (it.reminders.isEmpty()) "" else " [+${it.reminders.size} reminder(s)]"
@@ -172,9 +208,19 @@ class LinuxSystemCalendar(
         // "enable sync at the source" concept like Android's CalendarContract.
     }
 
-    /** Bumped by every change signal: cached events from before it are stale. */
+    /** Bumped by every change signal: cached events from before it are stale unless their calendar's
+     *  [RawCalendar.fingerprint] says the content is the same. */
     private val generation = java.util.concurrent.atomic.AtomicLong()
-    private class CachedEvents(val generation: Long, val start: Instant, val end: Instant, val events: List<CalendarEvent>)
+    /** One calendar's last fetch: the [generation], host [zone] and content [fingerprint] (null: none, or
+     *  unreadable) it was fetched at, its window and its events. */
+    private class CachedEvents(
+        val generation: Long,
+        val zone: ZoneId,
+        val fingerprint: Any?,
+        val start: Instant,
+        val end: Instant,
+        val events: List<CalendarEvent>,
+    )
     private val eventCache = java.util.concurrent.ConcurrentHashMap<String, CachedEvents>()
 
     override fun registerForCalendarChanges(): Flow<Unit> =
@@ -206,11 +252,16 @@ class LinuxSystemCalendar(
 
     /** Emit when a `.ics` under any watched directory changes. Best-effort: registration errors just
      *  disable file-watching (the ticker still covers refresh). Blocks in take() (cancellation interrupts
-     *  it) rather than polling, so an idle calendar costs no wakeups. */
-    private fun fileWatch(): Flow<Unit> = flow {
+     *  it) rather than polling, so an idle calendar costs no wakeups. A change to a file whose sync lock
+     *  ([syncLocks]) a sync tool holds emits once that sync has ended, once for everything it wrote:
+     *  vdirsyncer rewrites the files one collection at a time, seconds apart, which made one re-read per
+     *  collection. A file no held lock covers emits at once, sync or not. */
+    private fun fileWatch(): Flow<Unit> = channelFlow {
         val dirs = watchDirs().filter { it.isDirectory }
-        if (dirs.isEmpty()) return@flow
+        if (dirs.isEmpty()) return@channelFlow
         val ws = FileSystems.getDefault().newWatchService()
+        // A held lock -> the wait that emits when its sync ends; a change under it meanwhile adds nothing.
+        val syncWaits = mutableMapOf<File, Job>()
         try {
             dirs.forEach { dir ->
                 try {
@@ -219,20 +270,58 @@ class LinuxSystemCalendar(
                     log.debug { "Cannot watch $dir for calendar changes: ${e.message}" }
                 }
             }
-            while (currentCoroutineContext().isActive) {
+            while (isActive) {
                 val key = try {
                     runInterruptible { ws.take() }
                 } catch (_: ClosedWatchServiceException) {
-                    return@flow
+                    return@channelFlow
                 }
-                val touchedIcs = key.pollEvents().any { ev ->
-                    (ev.context() as? Path)?.toString()?.endsWith(".ics", ignoreCase = true) == true
+                val dir = key.watchable() as? Path
+                val changed = key.pollEvents().mapNotNull { ev ->
+                    (ev.context() as? Path)?.takeIf { it.toString().endsWith(".ics", ignoreCase = true) }
+                        ?.let { (dir?.resolve(it) ?: it).toFile() }
                 }
                 key.reset()
-                if (touchedIcs) emit(Unit)
+                if (changed.isEmpty()) continue
+                val held = heldSyncLocks(changed)
+                // Locked and unlocked files in one batch: the unlocked ones are read now, the sync's after it.
+                if (held.size < changed.size) send(Unit)
+                for (lock in held.toSet()) {
+                    if (syncWaits[lock]?.isActive == true) continue
+                    log.debug { "Calendar files changed while $lock is held: re-reading once the sync is done" }
+                    syncWaits[lock] = launch {
+                        if (!Flock.awaitFree(lock, SYNC_LOCK_WAIT)) log.warn { "$lock still held after $SYNC_LOCK_WAIT: re-reading the calendars anyway" }
+                        send(Unit)
+                    }
+                }
             }
         } finally {
             runCatching { ws.close() }
         }
     }.flowOn(Dispatchers.IO)
+
+    /** The held sync lock of each of the [changed] files that has one (repeats included, so a count below
+     *  `changed.size` means some file has none held). */
+    private fun heldSyncLocks(changed: List<File>): List<File> {
+        val locks = syncLocks()
+        if (locks.isEmpty()) return emptyList()
+        val held = mutableMapOf<File, Boolean>()
+        return changed.mapNotNull { file ->
+            locks[file.absoluteFile.normalize()]?.takeIf { lock ->
+                held.getOrPut(lock) {
+                    try {
+                        Flock.isHeld(lock)
+                    } catch (e: Throwable) {
+                        log.debug { "Can't check the sync lock $lock: ${e.message}" }
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    private companion object {
+        /** dav-sync gives vdirsyncer 300 s, after a guard step of its own. */
+        val SYNC_LOCK_WAIT = 6.minutes
+    }
 }

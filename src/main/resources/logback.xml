@@ -39,8 +39,9 @@
     <logger name="CompanionAppLifecycleManager" level="INFO"/>
     <logger name="PKJSApp" level="INFO"/>
     <logger name="GraalJsRunner" level="INFO"/>
-    <!-- XHR: only log errors; PKJS console.log covers the normal case -->
-    <logger name="JvmXHR" level="WARN"/>
+    <!-- XHR: follows STOANDL_LOG, but its only lines are a failure's one WARN with the host and, at DEBUG,
+         that failure's stack (cause chain: TLS, proxy); PKJS console.log covers the normal case -->
+    <logger name="JvmXHR" level="${logLevel}"/>
     <logger name="JvmPKJS" level="INFO"/>
 
     <!-- BLE / connection details: per-packet spam in debug mode only -->
@@ -68,6 +69,17 @@
 
     <!-- Suppress permanently — these are never useful at normal verbosity -->
     <logger name="org.freedesktop.dbus" level="WARN"/>
+    <!-- dbus-java's Message names its logger after the message's class (getClass()), so every signal
+         stoandl sends or receives logs "Creating message with serial N" and "Appending sig" under
+         stoandl's own signal class, at DEBUG, out of reach of the org.freedesktop.dbus cap. One entry per
+         interface that nests a DBusSignal (logback splits names at '$' too, so it covers all of them); the
+         classes log nothing themselves. LogbackSignalLoggersTest fails for a new one missing here.
+         Never cap de.yoxcu.stoandl.dbus as a whole: its monitors' decisions are DEBUG. -->
+    <logger name="de.yoxcu.stoandl.dbus.StoandlControl" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.ModemVoice" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.ModemCall" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.MprisPlayer" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.FreedesktopNotifications" level="INFO"/>
     <!-- ical4j Configurator logs "ical4j.properties not found." at INFO on startup (an empty
          ical4j.properties on the classpath silences it at the source); WARN catches any other chatter. -->
     <logger name="net.fortuna.ical4j" level="WARN"/>
@@ -88,8 +100,9 @@
          capability (e.g. SupportsWeatherApp) — the decisive signal for diagnosing empty weather. -->
     <logger name="BlobDB" level="${logLevel}"/>
     <!-- Calendar sync detail from libpebble3 (Got N calendars, New/Deleting Pin, Synced) — follows
-         STOANDL_LOG. stoandl's own calendar reader logs one summary line per sync at INFO
-         ("Calendar: N calendar(s) […]") and each calendar's event count at DEBUG. -->
+         STOANDL_LOG. stoandl's own calendar reader logs its summary ("Calendar: N calendar(s) […]") at INFO
+         when the calendars changed (TRACE while they repeat), each calendar's event count at DEBUG and
+         the event titles at TRACE. -->
     <logger name="PhoneCalendarSyncer" level="${logLevel}"/>
     <!-- Music control (MPRIS bridge) watch-side protocol detail — follows STOANDL_LOG.
          stoandl's MprisMusicControl logs the user-facing music activity at INFO regardless. -->

@@ -131,7 +131,9 @@ the watch; `alerts.extensions` silences it), and `install`/`enable`/`restart`
 return a clear "not started — needs configuration" status instead of a fake failure. Configure it (the
 GUI form or `stoandl ext config` start it by themselves), or edit its `config` and run
 `stoandl ext restart <name>`. (Extensions whose settings are all optional, like find-my-phone's `sound`,
-omit the flag and start normally.)
+omit the flag and start normally.) At daemon start, an extension with secret fields whose settings
+look missing while no keyring is on the bus waits up to 2 minutes for one first: KWallet's ksecretd isn't
+D-Bus-activatable and starts with the session, after stoandl, so a key it holds reads as missing until then.
 
 **`watchapps`** (manifest): bundled `.pbw` filenames stoandl keeps installed for the extension, e.g.
 `"watchapps": ["matrix-preview.pbw"]`. Declared apps are **managed**: the daemon (re)installs them on every
@@ -316,6 +318,31 @@ or invoke. Requests time out after 15 s.
 The daemon's own speech-to-text (`voice.*`), so an extension needs no engine, codec or network access of
 its own. `language` defaults to `voice.language`. Up to a minute; answered asynchronously. The Matrix
 extension uses it for voice notes.
+
+### addTodo (save a to-do in the user's list)
+
+```jsonc
+// ext -> host (request); due is optional: "YYYY-MM-DD", "YYYY-MM-DDTHH:MM[:SS]" (the host's local time), or the
+// same with an offset or Z (that instant, whatever the host's zone)
+{"jsonrpc":"2.0","id":51,"method":"addTodo","params":{"title":"Call the garage","due":"2026-10-22T17:00:00+02:00","note":"ask about tyres"}}
+// host -> ext
+{"jsonrpc":"2.0","id":51,"result":{"status":"saved"}}
+{"jsonrpc":"2.0","id":51,"result":{"status":"queued","problem":""}}                      // server not reachable
+{"jsonrpc":"2.0","id":51,"result":{"status":"queued","problem":"Sign-in failed (401)"}}  // server refused it for now
+{"jsonrpc":"2.0","id":51,"result":{"status":"queued","problem":"the calendar is being synchronized"}}  // local file
+{"jsonrpc":"2.0","id":51,"error":{"message":"off"}}                                       // calendar.todos is empty
+{"jsonrpc":"2.0","id":51,"error":{"message":"due '…' is not YYYY-MM-DD or YYYY-MM-DDTHH:MM"}}
+```
+
+The daemon's to-do list (`calendar.todos`, [configuration.md](configuration.md#to-dos)): a CalDAV list of one
+of the user's calendar accounts, a local `.ics` file or a vdir. The extension needs no sign-in or network
+access of its own. A due to-do gets a reminder at that time, or at 09:00 on a due day. `queued` means the
+daemon keeps the to-do and sends it after a later calendar sync; tell the user it isn't on the server yet. A
+local file's `queued` (`the calendar is being synchronized`: a sync held the file's Calindori `lockFile` for
+more than 10 s) is written as soon as that sync is over.
+Answered asynchronously, within the daemon's HTTP timeout (45 s at most). Go helper: `Ext.AddTodo(title,
+due, note, cb)`; Python: `ext.add_todo(title, due, note, on_result)`. The [assistant](assistant.md) uses it
+for "don't let me forget …" and sends the due with its offset, so the day it reads out is the one saved.
 
 ### synthesize (text to speech for the extension's watchapp)
 

@@ -30,6 +30,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
+import de.yoxcu.stoandl.calendar.SYNC_RUNNING
 import de.yoxcu.stoandl.ext.configFields
 import de.yoxcu.stoandl.ext.extConfigPayload
 import de.yoxcu.stoandl.ext.extConfigTable
@@ -66,11 +67,25 @@ internal const val EXIT_UNREACHABLE = 3
 private val CTL_COMMANDS = setOf("status", "watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
 
 private const val LOGBACK_CONFIG_PROPERTY = "logback.configurationFile"
+private const val HTTP_KEEPALIVE_PROPERTY = "jdk.httpclient.keepalive.timeout"
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
 
 fun main(args: Array<String>) {
+    // Connect in the OS's address order (RFC 6724), not IPv4 first: on an IPv6-only mobile link the JDK's
+    // HttpClient and Ktor CIO try only the first address. Read once, when InetAddress first loads, so before
+    // anything resolves a name. Local servers bind LOOPBACK_V4, as getLoopbackAddress() becomes ::1.
+    System.setProperty("java.net.preferIPv6Addresses", "system")
+    // No pooled connections in java.net.http (watchapp XHRs, firmware, voice models, OAuth, the config-page
+    // proxy): on a phone that suspends between requests a pooled connection only waits for the server's idle
+    // close (12 s to 5 min), and that FIN wakes the phone; the JDK's own 30 s timer counts awake time only.
+    // With 0 every HTTP/1.1 request opens its own connection (java.net.http never pipelines) and an HTTP/2
+    // connection serves only the streams running at once; each closes right after its answer, while the
+    // phone is awake. The cost is a TCP+TLS handshake per sequential request, made while awake anyway.
+    // Read once, when the first HttpClient initialises, so before any is built; HTTP/2 inherits it
+    // (keepalive.timeout.h2). An explicit -D still wins. Ktor CIO already closes after each request.
+    if (System.getProperty(HTTP_KEEPALIVE_PROPERTY) == null) System.setProperty(HTTP_KEEPALIVE_PROPERTY, "0")
     // Image decoding (javax.imageio) must never reach for a display, even in a desktop session.
     System.setProperty("java.awt.headless", "true")
     // Any argument means a CLI call: log to stderr only (logback-cli.xml), never to the daemon's log file.
@@ -166,6 +181,7 @@ private fun printUsage() {
     row("sync", "list · enable/disable <service>")
     row("weather", "[sync] · search <city> [--add [n]]")
     row("calendar", "list sources sync enable disable add remove passwd dump")
+    row("", "todo todos")
     row("health", "[days] hr sync activities dump")
     row("datalog", "list dump tail")
     println("Maintenance")
@@ -327,10 +343,24 @@ private fun ctl(args: Array<String>) {
                     }
                 }
                 "passwd", "password" -> ctlCalendarPasswd(args.drop(2))
+                "todo" -> ctlCalendarTodo(args.drop(2))
+                "todos" -> withControl { control ->
+                    val pending = control.PendingTodos()
+                    if (pending.isEmpty()) println("No to-dos waiting to be sent.")
+                    else {
+                        println("Waiting to be sent (retried after every calendar sync):")
+                        pending.forEach { row ->
+                            val p = row.split('\t')
+                            println("  ${p[0]}  → ${p.getOrElse(1) { "" }}" + p.getOrElse(2) { "" }.let { if (it.isEmpty()) "" else "  ($it)" })
+                        }
+                    }
+                    println("\nThe list: stoandl daemon get calendar.todos")
+                }
                 else -> {
                     System.err.println(
                         "Usage: stoandl calendar <list|sources|sync|enable <id|name>|disable <id|name>|\n" +
-                            "                          add <caldav|ical|ics> <url|path> [username]|passwd <id>|remove <id>|dump <file|url>>",
+                            "                          add <caldav|ical|ics> <url|path> [username]|passwd <id>|remove <id>|dump <file|url>|\n" +
+                            "                          todo <title> [--due YYYY-MM-DD[THH:MM]] [--note <text>]|todos>",
                     )
                     System.exit(EXIT_USAGE)
                 }
@@ -521,6 +551,41 @@ private fun ctlCalendarAdd(rest: List<String>) {
         val parts = message.split('\t')
         println("Added $type source (${parts.getOrElse(0) { "" }})" + secretNote(parts.getOrElse(1) { "none" }))
         println("Syncing… run `stoandl calendar list` shortly to see its calendars.")
+    }
+}
+
+/** `stoandl calendar todo <title…> [--due YYYY-MM-DD[THH:MM]] [--note <text>]`: save a to-do in
+ *  `calendar.todos`, like the assistant does. */
+private fun ctlCalendarTodo(rest: List<String>) {
+    val title = mutableListOf<String>()
+    var due = ""
+    var note = ""
+    var i = 0
+    while (i < rest.size) {
+        when (rest[i]) {
+            "--due" -> { due = rest.getOrNull(i + 1).orEmpty(); i++ }
+            "--note" -> { note = rest.getOrNull(i + 1).orEmpty(); i++ }
+            else -> title += rest[i]
+        }
+        i++
+    }
+    if (title.isEmpty()) {
+        System.err.println("Usage: stoandl calendar todo <title> [--due YYYY-MM-DD[THH:MM]] [--note <text>]")
+        System.exit(EXIT_USAGE); return
+    }
+    withControl(CTL_SLOW_REPLY_TIMEOUT_MS) { control ->
+        val (status, message) = splitStatus(control.AddTodo(title.joinToString(" "), due, note))
+        if (status != "ok") { System.err.println(message.ifEmpty { status }); System.exit(1); return }
+        val parts = message.split('\t')
+        val problem = parts.getOrElse(1) { "" }
+        if (parts[0] == "queued" && problem == SYNC_RUNNING) {
+            println("Saved on this device; it is written to the calendar once its sync is over.")
+        } else if (parts[0] == "queued") {
+            println("Saved on this device; it is sent after the next calendar sync" +
+                if (problem.isEmpty()) " (server not reachable)." else " ($problem).")
+        } else {
+            println("Saved.")
+        }
     }
 }
 

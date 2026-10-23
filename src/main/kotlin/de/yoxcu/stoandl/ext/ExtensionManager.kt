@@ -2,6 +2,7 @@
 
 package de.yoxcu.stoandl.ext
 
+import de.yoxcu.stoandl.calendar.TodoWriter
 import de.yoxcu.stoandl.config.ConfList
 import de.yoxcu.stoandl.dbus.sendDesktopNotification
 import de.yoxcu.stoandl.imaging.ImageSource
@@ -61,6 +62,7 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -99,6 +101,8 @@ class ExtensionManager(
     private val synthesize: suspend (text: String, language: String?, format: String) -> Synthesis = { _, _, _ -> Synthesis.Error("off") },
     /** `prepareSynthesize` (TtsService.prepare): load the voice for a reading in this language. */
     private val prepareSynthesize: (language: String?) -> Unit = {},
+    /** `addTodo`: save a to-do in `calendar.todos` (title, due, note; due and note may be empty). */
+    private val addTodo: suspend (title: String, due: String, note: String) -> TodoWriter.Result = { _, _, _ -> TodoWriter.Result.Off },
     /** Where an extension's plugin (declared in its `initialize` result) is registered and removed. */
     private val pluginHost: ExtensionPluginHost? = null,
     /** Where `"secret": true` config fields live (ref [extSecretRef]); never the `config` file. */
@@ -136,7 +140,7 @@ class ExtensionManager(
             log.info { "No extensions enabled (set extensions.enabled or run `stoandl ext install`)" }
         } else {
             log.info { "Starting ${enabledAtStart.size} extension(s): $enabledAtStart" }
-            enabledAtStart.forEach { startProcess(it) }
+            enabledAtStart.forEach { startProcess(it, awaitKeyring = true) }
         }
         // Tell running extensions when a watch (re)connects so they can re-arm. The watch reports
         // Connected before its BlobDB is ready, so settle briefly (and re-check) before broadcasting.
@@ -163,7 +167,9 @@ class ExtensionManager(
 
     private enum class StartResult { STARTED, NEEDS_CONFIG, NO_ENTRYPOINT }
 
-    private fun startProcess(name: String): StartResult {
+    /** [awaitKeyring]: at daemon start, a secret the keyring holds reads as missing until the keyring
+     *  is up ([awaitKeyringThenStart]); every later start finds it running. */
+    private fun startProcess(name: String, awaitKeyring: Boolean = false): StartResult {
         if (running.containsKey(name)) return StartResult.STARTED
         val flags = extSecrets.flagsOf(name)
         extSecrets.migrate(name, flags.secretKeys)
@@ -176,7 +182,7 @@ class ExtensionManager(
         // An extension that can't run until the user supplies settings: don't spawn a doomed child;
         // notify + bail gracefully so it's clear what to do.
         if (!configSatisfied(def, flags.requiredKeys)) {
-            notifyNeedsConfig(name)
+            if (awaitKeyring && flags.secretKeys.isNotEmpty()) awaitKeyringThenStart(name) else notifyNeedsConfig(name)
             return StartResult.NEEDS_CONFIG
         }
         val proc = ExtensionProcess(def, watchNotifier, owners, libPebbleRef, scope,
@@ -185,10 +191,19 @@ class ExtensionManager(
                 onExtensionState?.invoke(name, state)
             },
             notificationImagesOn = notificationImagesOn, transcribe = transcribe, synthesize = synthesize, prepareSynthesize = prepareSynthesize, pluginHost = pluginHost,
-            holdAwake = holdAwake)
+            holdAwake = holdAwake, addTodo = addTodo)
         running[name] = proc
         proc.launch()
         return StartResult.STARTED
+    }
+
+    /** Start [name] once a keyring that wasn't running yet comes up, as long as it is still enabled and
+     *  stopped; alert only when none comes or the settings are still missing then. */
+    private fun awaitKeyringThenStart(name: String) {
+        scope.launch {
+            if (!secrets.awaitLateBackend(KEYRING_WAIT)) notifyNeedsConfig(name)
+            else if (name in currentEnabled() && !running.containsKey(name)) startProcess(name)
+        }
     }
 
     /** Required-but-unconfigured extension: log it, and post a *desktop* notification (on the phone/
@@ -606,6 +621,8 @@ private const val BACKOFF_BASE_MS = 1_000L
 private const val BACKOFF_MAX_MS = 60_000L
 private const val INIT_TIMEOUT_MS = 10_000L
 private const val CONNECT_SETTLE_MS = 3_000L
+// How long a start waits for a keyring the session hasn't started yet (KWallet came ~10 s after the daemon on op6).
+private val KEYRING_WAIT = 2.minutes
 
 /** One supervised extension child: spawn → handshake → relay, restart-with-backoff on exit. Owns a
  *  child scope so [shutdown] cleanly stops the supervise loop, the inbound collectors, and the child. */
@@ -635,6 +652,7 @@ private class ExtensionProcess(
     private val prepareSynthesize: (language: String?) -> Unit = {},
     private val pluginHost: ExtensionPluginHost? = null,
     holdAwake: (String) -> AutoCloseable = { AutoCloseable {} },
+    private val addTodo: suspend (title: String, due: String, note: String) -> TodoWriter.Result = { _, _, _ -> TodoWriter.Result.Off },
 ) {
     private val tag = def.name
     // Host → extension requests (readSource, invokeAction) awaiting their reply, by JSON-RPC id. The
@@ -810,6 +828,7 @@ private class ExtensionProcess(
             method == "installPbw" -> handleInstallPbw(id, params)
             // Off the read loop: a transcription or a synthesis takes seconds.
             method == "transcribe" -> scope.launch { handleTranscribe(id, params) }
+            method == "addTodo" -> scope.launch { handleAddTodo(id, params) }
             method == "synthesize" -> {
                 val before = synthesizing
                 val answered = AtomicBoolean(false)
@@ -933,6 +952,20 @@ private class ExtensionProcess(
         val body = result.substring(colon + 1)
         if (kind == "ok") reply(id) { put("text", body.substringAfter('\t')) }
         else replyError(id, if (kind == "off") "off" else "$kind: $body")
+    }
+
+    /** `addTodo {title, due?, note?}` → `{status: "saved"}` or `{status: "queued", problem}` (kept on this
+     *  device for a retry; problem empty when the server couldn't be reached), or an error `off` / why it
+     *  failed. The daemon's to-do list (`calendar.todos`): the extension needs no CalDAV sign-in of its own. */
+    private suspend fun handleAddTodo(id: JsonElement?, params: JsonObject?) {
+        val title = params?.str("title")?.trim().orEmpty()
+        if (title.isEmpty()) { replyError(id, "addTodo: missing title"); return }
+        when (val r = addTodo(title, params?.str("due").orEmpty(), params?.str("note").orEmpty())) {
+            TodoWriter.Result.Saved -> reply(id) { put("status", "saved") }
+            is TodoWriter.Result.Queued -> reply(id) { put("status", "queued"); put("problem", r.problem) }
+            TodoWriter.Result.Off -> replyError(id, "off")
+            is TodoWriter.Result.Failed -> replyError(id, r.message)
+        }
     }
 
     /** `synthesize {text, language?, format?}` → `{blocks:[base64…], ms}` (`pebble-adpcm`, the default) or

@@ -101,3 +101,16 @@ adapter's single LE scanner, so BlueZ can't issue the watch's connection and it 
 with `bluetoothctl show | grep Discovering`; if it's `yes` and you didn't start it, close the scanner —
 the watch reconnects within a second. stoandl logs a warning (and sends a desktop notification) when it
 detects this.
+
+## bluetoothd crashes after a watch reconnects?
+
+BlueZ 5.87 stores a primary GATT service as a secondary one when its newly discovered record collides
+with the watch's cached record. The cache then keeps the wrong type (lines like `0023=2801:…` in
+`/var/lib/bluetooth/<adapter>/cache/<watch MAC>`), so every reconnect removes and re-creates those
+services. One such cycle left bluetoothd exporting a characteristic whose memory was already freed, and
+the next client to list BlueZ's objects (stoandl does, right after the services resolve) crashed
+bluetoothd with SIGSEGV. The fix is upstream after 5.87: `a9cfc988d` ("shared/gatt-client: Keep primary
+flag on re-insert"), plus `6cdb936eb` and `a338533f9` for a discovery that a dropped link cuts short.
+`sudo grep -c '=2801:' /var/lib/bluetooth/*/cache/<watch MAC>` above 0 means the watch is affected (a
+Pebble has no secondary services). Until your distribution ships the fix, stopping `bluetooth.service`,
+deleting that cache file and starting it again clears it until the next collision.

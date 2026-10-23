@@ -16,7 +16,7 @@ class PairingWindowTest {
 
     @Test
     fun `a known Classic watch is never the handler's, whatever the window`() {
-        // The airplane flip-flop: the Steel known and disconnected, the follower arming the Time 2.
+        // The airplane flip-flop: the Steel known and disconnected, the Time 2 holding the goal.
         assertFalse(PairingWindow.classicCandidate(known = true, active = false, btOn = true))
         assertFalse(PairingWindow.classicCandidate(known = false, active = true, btOn = true))
         assertFalse(PairingWindow.classicCandidate(known = false, active = false, btOn = false))

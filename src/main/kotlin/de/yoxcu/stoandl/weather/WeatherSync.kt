@@ -22,6 +22,7 @@ import io.rebble.libpebblecommon.weather.WeatherLocationData
 import io.rebble.libpebblecommon.weather.WeatherType
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -54,10 +55,6 @@ import kotlin.uuid.Uuid
 
 private val log = KotlinLogging.logger {}
 
-// On a failed/partial sync, retry sooner than the configured interval, backing off each time before
-// falling back to the normal cadence on success. Covers transient blips (cold-start DNS, a slow API).
-private val WEATHER_RETRY_BACKOFF = listOf(30.seconds, 1.minutes, 5.minutes)
-
 /**
  * Fetches weather for the configured fixed locations from Open-Meteo (free, no API key, no account —
  * a good fit for a headless daemon) and pushes it to the watch's system Weather app via libpebble3's
@@ -81,8 +78,9 @@ class WeatherSync(
     private val intervalMinutes: Long,
     // When non-null, an additional "current location" entry is resolved from GeoClue each sync and
     // marked isCurrentLocation so the watch shows it prominently. [gpsFallbackName] labels it when
-    // reverse geocoding yields nothing.
-    private val gps: GeoClueLocationProvider? = null,
+    // reverse geocoding yields nothing. The daemon's shared provider ([GeoClueProviders.current]), which
+    // this class only asks: its owner, not [stop], releases it.
+    private val gps: (() -> GeoClueLocationProvider)? = null,
     private val gpsFallbackName: String = "Current location",
     // Opt-in: reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default
     // because it discloses the device's coordinates to a third-party web service.
@@ -117,6 +115,17 @@ class WeatherSync(
     // Stable BlobDB key for the GPS-tracked current location (its coordinates change, but it is one entry).
     private val currentLocationKey = keyFor("stoandl::current-location")
     private val nominatim = NominatimReverseGeocoder(client)
+    // Neighborhood level is plenty for a forecast and the lowest one that uses the cell tower (GeoClue's
+    // CITY level only asks BeaconDB for an IP guess, ±25 km off Wi-Fi). No GPS (EXACT only) and no Wi-Fi
+    // scans (STREET and up). The client stops at the answer; any fix of the shared provider's from the last
+    // WEATHER_POSITION_MAX_AGE answers without starting one (a watchapp's GPS fix included, hence the
+    // rounding: what weather sends stays as coarse as its own fix).
+    private val gpsPosition = gps?.let { provider ->
+        StickyPosition({
+            provider().fix(GeoClueAccuracy.NEIGHBORHOOD, timeout = WEATHER_POSITION_TIMEOUT, maxAge = WEATHER_POSITION_MAX_AGE)
+                ?.let(::coarsened)
+        })
+    }
 
     fun start() {
         // Immediate sync whenever a watch transitions into the connected state, so a freshly
@@ -175,7 +184,7 @@ class WeatherSync(
                     failStreak = 0
                     intervalMinutes.minutes
                 } else {
-                    val backoff = WEATHER_RETRY_BACKOFF.getOrElse(failStreak) { WEATHER_RETRY_BACKOFF.last() }
+                    val backoff = weatherRetryDelay(failStreak, intervalMinutes.minutes)
                     failStreak++
                     log.info { "Weather incomplete — retrying in $backoff" }
                     backoff
@@ -186,14 +195,13 @@ class WeatherSync(
     }
 
     /** Stop syncing and release everything this instance owns — cancel the scope (on-connect trigger,
-     *  periodic loop, in-flight fetches), close the HTTP client (its CIO engine has its own threads +
-     *  connection pool, independent of [scope]), and stop the GeoClue provider (its system-bus
-     *  connection). The watch keeps its last-pushed weather data; re-enabling builds a fresh [WeatherSync]
-     *  (with a fresh client + provider) that refreshes it. */
+     *  periodic loop, in-flight fetches) and close the HTTP client (its CIO engine has its own threads +
+     *  connection pool, independent of [scope]). The GeoClue provider isn't this instance's: watchapps
+     *  share it, and its client stops after each answer anyway. The watch keeps its last-pushed weather
+     *  data; re-enabling builds a fresh [WeatherSync] (with a fresh client) that refreshes it. */
     fun stop() {
         scope.cancel()
         client.close()
-        gps?.stop()
     }
 
     /**
@@ -207,14 +215,13 @@ class WeatherSync(
 
         // GPS current location first, so it sorts to the top of the watch's Weather app (and is the
         // primary location for timeline pins).
-        val gpsProvider = gps
-        if (gpsProvider != null) {
+        val position = gpsPosition
+        if (position != null) {
+            // A retry (the last sync failed somewhere) forecasts at the last position without asking GeoClue.
+            val retry = !lastSyncOk
             tasks += scope.async {
-                // City level is plenty for a forecast: cell towers and Wi-Fi already seen, no GPS and
-                // no scans of GeoClue's own. A fix from the last few minutes (an on-connect sync right
-                // after a periodic one) is reused.
-                val coords = gpsProvider.fix(GeoClueAccuracy.CITY, timeout = 30.seconds, maxAge = 5.minutes)
-                    ?.let { it.latitude to it.longitude }
+                // Sticky, so the forecast and its name only change when the phone has moved.
+                val coords = position.resolve(retry)
                 if (coords == null) {
                     // No fix yet: send a "failed" marker so the entry's last-known data is preserved
                     // on the watch rather than wiped.
@@ -379,36 +386,51 @@ class WeatherSync(
 }
 
 /** Coordinates → place name via OSM Nominatim (free, no key), cached by coarse coordinates to respect
- *  Nominatim's usage policy (≤1 req/s). Null on any failure. Shared by the GPS weather entry and the PKJS
- *  weather interceptors; callers gate it on `weather.reverse_geocode`. */
-class NominatimReverseGeocoder(private val client: HttpClient) {
-    @Volatile private var lastKey: String? = null
-    @Volatile private var cacheName: String? = null
+ *  Nominatim's usage policy (≤1 req/s). Shared by the GPS weather entry and the PKJS weather interceptors;
+ *  callers gate it on `weather.reverse_geocode`. [lookup] is the request (Nominatim's JSON body), a seam
+ *  for tests. */
+class NominatimReverseGeocoder internal constructor(private val lookup: suspend (Double, Double) -> String) {
+    constructor(client: HttpClient) : this({ latitude, longitude ->
+        client.get("https://nominatim.openstreetmap.org/reverse") {
+            parameter("lat", latitude)
+            parameter("lon", longitude)
+            parameter("format", "json")
+            parameter("zoom", 10) // city-level
+            parameter("addressdetails", 1)
+            // Nominatim's policy requires an identifying User-Agent.
+            header("User-Agent", "stoandl/0.1 (Pebble companion daemon; https://github.com/yoxcu/stoandl)")
+        }.bodyAsText()
+    })
 
+    // The last answered lookup: its key, its point and the name it gave.
+    private class Answer(val key: String, val latitude: Double, val longitude: Double, val name: String?)
+    @Volatile private var last: Answer? = null
+
+    /** The place at the coordinates; on a failed lookup the last name found within [KEEP_NAME_RADIUS_KM]
+     *  (a transient error doesn't relabel the forecast), else null. */
     suspend fun nameAt(latitude: Double, longitude: Double): String? {
         // ~3 decimal places ≈ 100 m: stable enough to dedupe repeated lookups while standing still.
         val cacheKey = String.format(java.util.Locale.ROOT, "%.3f,%.3f", latitude, longitude)
-        if (cacheKey == lastKey) return cacheName
+        val previous = last
+        if (cacheKey == previous?.key) return previous.name
         return try {
-            val body = client.get("https://nominatim.openstreetmap.org/reverse") {
-                parameter("lat", latitude)
-                parameter("lon", longitude)
-                parameter("format", "json")
-                parameter("zoom", 10) // city-level
-                parameter("addressdetails", 1)
-                // Nominatim's policy requires an identifying User-Agent.
-                header("User-Agent", "stoandl/0.1 (Pebble companion daemon; https://github.com/yoxcu/stoandl)")
-            }.bodyAsText()
-            val address = LenientJson.parseToJsonElement(body).jsonObject["address"]?.jsonObject
+            val address = LenientJson.parseToJsonElement(lookup(latitude, longitude)).jsonObject["address"]?.jsonObject
             val name = listOf("city", "town", "village", "municipality", "county")
                 .firstNotNullOfOrNull { address?.get(it)?.jsonPrimitive?.contentOrNull }
-            lastKey = cacheKey
-            cacheName = name
+            last = Answer(cacheKey, latitude, longitude, name)
             name
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            log.warn { "Reverse geocode failed for $cacheKey: ${e.message}" }
-            null
+            val kept = previous?.takeIf { distanceKm(latitude, longitude, it.latitude, it.longitude) <= KEEP_NAME_RADIUS_KM }?.name
+            log.warn { "Reverse geocode failed for $cacheKey: ${e.message}${if (kept != null) " — keeping \"$kept\"" else ""}" }
+            kept
         }
+    }
+
+    private companion object {
+        /** A failed lookup this close to the last answered one keeps its name (zoom 10 names a town). */
+        const val KEEP_NAME_RADIUS_KM = 10.0
     }
 }
 

@@ -3,6 +3,7 @@ package de.yoxcu.stoandl.plugin
 import com.sun.net.httpserver.HttpServer
 import de.yoxcu.stoandl.secret.SecretStore
 import de.yoxcu.stoandl.util.ConfFile
+import de.yoxcu.stoandl.util.LOOPBACK_V4
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.plugin.PluginErrors
 import io.rebble.libpebblecommon.plugin.PluginNativeException
@@ -19,7 +20,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URLDecoder
@@ -162,8 +162,9 @@ class LocalPluginOAuth(
     private suspend fun awaitRedirect(c: OAuthConnector, state: String, challenge: String, open: (String) -> Unit): String? {
         val redirect = URI(c.redirectUri)
         val got = CompletableDeferred<String?>()
+        // 127.0.0.1 as the redirect says; a browser sent to `localhost` falls back to it from ::1.
         val server = withContext(Dispatchers.IO) {
-            HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), redirect.port), 0)
+            HttpServer.create(InetSocketAddress(LOOPBACK_V4, redirect.port), 0)
         }
         server.createContext(redirect.path.ifEmpty { "/" }) { ex ->
             ex.use {

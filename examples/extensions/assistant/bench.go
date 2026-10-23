@@ -158,7 +158,7 @@ func benchMain(args []string, stdout, stderr io.Writer) int {
 
 func benchOne(client anthropic.Client, model, effort string, web bool, q string) benchRun {
 	req := askRequest{Model: model, Effort: effort, MaxTokens: 2048, WebSearch: web,
-		Prompt: timeLine(time.Now()) + "\n\n" + q}
+		Prompt: timeLine(localNow()) + "\n\n" + q}
 	res := runAsk(context.Background(), client, req, streamHooks{})
 	r := benchRun{Model: model, TTFT: res.TTFT, Total: res.Total, In: res.In, Out: res.Out,
 		Stop: res.Stop, Searches: res.Searches, Cost: res.Cost}

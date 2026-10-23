@@ -13,6 +13,12 @@
     </appender>
 
     <logger name="org.freedesktop.dbus" level="WARN"/>
+    <!-- dbus-java's per-message lines, logged under stoandl's signal classes: see logback.xml. -->
+    <logger name="de.yoxcu.stoandl.dbus.StoandlControl" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.ModemVoice" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.ModemCall" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.MprisPlayer" level="INFO"/>
+    <logger name="de.yoxcu.stoandl.dbus.FreedesktopNotifications" level="INFO"/>
     <logger name="net.fortuna.ical4j" level="WARN"/>
 
     <root level="${STOANDL_LOG:-WARN}">

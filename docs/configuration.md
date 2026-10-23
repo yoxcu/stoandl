@@ -77,8 +77,8 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `weather.locations` | list | _(empty)_ | Locations to fetch weather for, each as `Name:lat:lon` (e.g. `Berlin:52.52:13.405`). Merged with `weather.location_source`. |
 | `weather.location_source` | string | `manual` | Where extra locations come from: `manual` (only the list above), `gnome` (read GNOME/Phosh's weather GSettings), or `command` (run `weather.location_command`). |
 | `weather.location_command` | string | _(empty)_ | For `weather.location_source = command`: a shell command that prints `Name:lat:lon` lines. |
-| `weather.interval` | number | `30` | Minutes between weather refreshes. |
-| `weather.gps` | bool | `false` | Add a GeoClue2 **current location** entry (shown first on the watch) alongside the fixed locations. City-level accuracy, so no GPS. |
+| `weather.interval` | number | `30` | Minutes between weather refreshes. A failed refresh is retried after 30 s, 1 min, 5 min and 15 min, then every interval. |
+| `weather.gps` | bool | `false` | Add a GeoClue2 **current location** entry (shown first on the watch) alongside the fixed locations. Neighborhood-level accuracy (cell tower, Wi-Fi already seen), so no GPS; a fix up to 45 min old is reused. |
 | `weather.gps_desktop_id` | string | `stoandl` | GeoClue `DesktopId` — must match the allow-list entry in `/etc/geoclue/geoclue.conf` (see below). |
 | `weather.gps_name` | string | `Current location` | Label for the GPS entry (used as-is unless `weather.reverse_geocode` is on). |
 | `weather.reverse_geocode` | bool | `false` | Reverse-geocode GPS coordinates to a place name via OSM Nominatim. Off by default — it discloses your coordinates to a third-party web service. |
@@ -86,7 +86,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `weather.intercept_pkjs` | bool | `false` | Answer the weather APIs classic watchfaces call from PKJS (Yahoo YQL, dead since 2019; OpenWeatherMap 2.5 when OWM rejects the app's own key) from Open-Meteo, in the shape each API returned. Place names are looked up with Open-Meteo geocoding (a `weather.locations` name answers without a lookup); coordinates are named via `weather.reverse_geocode` if on, else the nearest `weather.locations` entry within 10 km. Off by default — it sends the watchface's coordinates or place name to a web service. Location-based watchfaces also need `geolocation.enabled`. Read live. |
 | `weather.place_search` | bool | `false` | Let `stoandl weather search <city>` and the GUI's *Find a location* look a city up by name (Open-Meteo geocoding) to add it to `weather.locations`; the found coordinates are rounded to 4 decimals and a same-named entry is replaced. Off by default — it sends the typed name to a web service, and only when you search. Refused while `weather.enabled` is off. Read live. |
 | `weather.enabled` | bool | `true` | Master switch for weather sync, the first row of the GUI's Settings → Weather (`stoandl sync enable\|disable weather` is an alias). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
-| `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Reuses the `weather.gps_desktop_id` GeoClue identity. See [Geolocation](#geolocation). |
+| `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Shares weather's GeoClue provider (one client at a time, one fix cache) and its `weather.gps_desktop_id` identity. See [Geolocation](#geolocation). |
 | `apps.order_faces_by_last_used` | bool | `false` | Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3 `orderWatchfacesByLastUsed`, which the official app turns on at first run). Off by default so the order you set (`stoandl apps order`, the GUI) stays as it was. Live. |
 | `plugins.enabled` | bool | `false` | Plugins: phone-side data sources and actions watchfaces and watchapps use (upstream's plugin system): the built-in ones (weather, music, calendar, phone state, watch settings, watch state), the plugin a `.pbw` ships, and extensions that serve sources. Also turns on app permissions for every watchapp's PKJS. Off by default: no plugin code runs and nothing is fetched. See [plugins.md](plugins.md). |
 | `plugins.permission_policy` | string | `ask_if_exfiltrating` | When an app must ask before using a permission: `ask_if_exfiltrating` (only when the data could leave this machine), `always_ask`, or `never_ask` (everything granted; explicit denials stand). |
@@ -95,7 +95,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `voice.fallback_backend` | string | `off` | A second engine (`local`, `command` or `http`, with the same settings as below) tried when `voice.backend` isn't ready, fails, hears nothing or doesn't answer in time. A dictation then gives the first engine 7 of the watch's 14 seconds (the official app's split) and the fallback the rest; a file transcription keeps 7 s of its minute for the fallback. `off`, or the same as `voice.backend`, means none. `http` sends the audio off the machine. See [voice.md](voice.md#fallback). |
 | `voice.local_model` | string | _(empty)_ | `voice.backend = local`: the id of a downloaded model (`stoandl voice models`: `parakeet-v3`, `parakeet-v3-small`, `whisper-small`, `whisper-base`, `whisper-turbo`). The GUI lists only downloaded ones. |
 | `voice.command` | text | _(empty)_ | `voice.backend = command`: a shell command line printing the transcript of `{wav}` (16 kHz mono 16-bit WAV) in language `{lang}`. Recommended engines and command lines: [voice.md](voice.md). |
-| `voice.url` | text | _(empty)_ | `voice.backend = http`: the transcription endpoint (`…/v1/audio/transcriptions`): a whisper.cpp `whisper-server`, speaches, LocalAI, or a hosted service. |
+| `voice.url` | text | _(empty)_ | `voice.backend = http`: the transcription endpoint (`…/v1/audio/transcriptions`): a whisper.cpp `whisper-server`, speaches, LocalAI, or a hosted service. For a server on this device write `127.0.0.1`, not `localhost`: stoandl connects in the system's address order, which tries `::1` first and doesn't fall back, and a server listening only on IPv4 (whisper-server's default) refuses that. |
 | `voice.http_model` | text | _(empty)_ | `voice.backend = http`: sent as the `model` form field when set. |
 | `voice.api_key` | secret | _(unset)_ | `voice.backend = http`: a Bearer token. Set with `stoandl daemon set voice.api_key <key>` or the GUI; kept in the keyring (else the 0600 `secrets` file), never in `stoandl.conf`, and out of backups. |
 | `voice.language` | text | `auto` | The language you speak: an ISO-639 code (`de`, `en`) or `auto`. |
@@ -104,7 +104,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `tts.local_voice` | string | _(empty)_ | `tts.backend = local`: the id of a downloaded voice (`stoandl voice models`: `piper-de-thorsten-low`, `piper-en-kathleen-low`, …) or `espeak-ng` (offered while it is installed). The GUI lists the installed ones. Also the voice for a language no downloaded voice speaks; for German or English text stoandl picks an installed voice of that language. |
 | `tts.speed` | int | `100` | Speaking rate in percent of normal, 50–200: Piper's length scale (100/speed), espeak-ng's words per minute (175 × speed/100), the HTTP `speed` field. |
 | `tts.command` | text | _(empty)_ | `tts.backend = command`: a shell command line that reads the text on stdin and writes a WAV to stdout. `{lang}` is replaced by the language of the text (`de`, `en`; the system language when the text has none, else `en`). |
-| `tts.url` | text | _(empty)_ | `tts.backend = http`: the speech endpoint (`…/v1/audio/speech`): speaches, LocalAI, openedai-speech, or a hosted service. |
+| `tts.url` | text | _(empty)_ | `tts.backend = http`: the speech endpoint (`…/v1/audio/speech`): speaches, LocalAI, openedai-speech, or a hosted service. Write a server on this device as `127.0.0.1`, not `localhost` (see `voice.url`). |
 | `tts.http_model` | text | _(empty)_ | `tts.backend = http`: sent as `model` when set (e.g. `tts-1`). |
 | `tts.http_voice` | text | _(empty)_ | `tts.backend = http`: sent as `voice` when set (e.g. `alloy`); empty = the server's default. |
 | `tts.api_key` | secret | _(unset)_ | `tts.backend = http`: a Bearer token. Separate from `voice.api_key` and never inherited from it, so a key only goes to the server it was meant for. Set with `stoandl daemon set tts.api_key <key>` or the GUI; kept in the keyring (else the 0600 `secrets` file), never in `stoandl.conf`, and out of backups. |
@@ -120,12 +120,11 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `classic.discover` | bool | `true` | **Experimental.** Discover classic-era Pebbles (Time / Time Steel) over a BR/EDR inquiry and auto-pair + auto-connect them over [Bluetooth Classic](#bluetooth-classic). The RFCOMM channel is resolved via SDP. Inquiry runs only while a pairing window (`stoandl watch pair`) is open, so it's idle when no classic watch is paired. On by default; set `false` to disable. **Needs a daemon restart.** |
 | `power.sleep_guard` | bool | `true` | Hold a logind *delay* inhibitor so a suspend waits until watch traffic in flight (e.g. the notification a push wake produced) has reached the watch. Never makes a suspend fail. See [deep-sleep.md](deep-sleep.md). **Needs a daemon restart.** |
 | `power.sleep_guard_max_ms` | number | `3000` | Longest a suspend is held for pending watch traffic (0–4500; logind's own cap is `InhibitDelayMaxSec`, 5 s). `0` doesn't wait for watch traffic; stoandl still stops its own discovery before every suspend. **Needs a daemon restart.** |
-| `power.pause_datalog_screen_off` | bool | `false` | Pause the watch's datalog sends (health data, app datalog) while the display is off; resumed when it comes on. |
+| `power.pause_datalog_screen_off` | bool | `false` | Pause the watch's datalog sends (health data, the battery heartbeat, app datalog) while the display is off; resumed when it comes on, and once data has been held 15 min (short dark periods add up) stoandl asks the watch for the backlog at once. Fewer wakes in the dark, but steps, heart rate and battery history arrive only when the screen is next on, and a health sync with the screen off (`stoandl health sync`) gets nothing new while paused. See [deep-sleep.md](deep-sleep.md). Read live. |
 | `power.quiet_time_link_off` | bool | `false` | Keep the watch disconnected during the watch's own **scheduled** Quiet Time (weekday/weekend windows) once the display has been off for 10 min; reconnect when the window ends or the display comes on. Notifications posted meanwhile reach the watch afterwards (paused time doesn't count towards `notification.catch_up_minutes`). Stays connected if calls may interrupt Quiet Time. See [deep-sleep.md → Quiet Time pause](deep-sleep.md#quiet-time-pause). |
 | `battery.history` | bool | `true` | Log the watch's BLE GATT battery level whenever it changes, as a lean **fallback** for `stoandl watch battery history\|insights` when the analytics heartbeat has no decoded data for a watch. Local-only. |
 | `battery.heartbeat` | bool | `true` | Capture and decode the watch's hourly analytics native-heartbeat — state of charge, real voltage, the firmware's own time-to-empty and a measured charge signal. The **primary** battery source (and the only one over Bluetooth Classic / across disconnects). The raw blob is written under `<configDir>/battery/heartbeat/` and never uploaded. Decoded only behind a strict firmware-layout guard, else captured raw. |
 | `battery.retention_days` | int | `90` | How many days of battery history (both sources) to keep before pruning. |
-| `connection.autoswitch` | bool | `true` | "Follow the wrist": with two or more paired watches, connect whichever is actually in range rather than only the one that last held the connection goal. A live link is never dropped to chase another watch. Inert with a single paired watch. |
 | `connection.disconnect_persists` | bool | `true` | A manual disconnect (`stoandl watch disconnect`, the GUI's Disconnect) lasts across a daemon restart until `stoandl watch connect`, like the official app's Disconnect. `false`: a restart reconnects. See [features → Manual disconnect](features.md#manual-disconnect). |
 | `datalog.enabled` | bool | `false` | Capture datalog frames from custom watchapps (PebbleKit DataLogging) to NDJSON under `<configDir>/datalog/<uuid>/<tag>.ndjson`. Local-only, but it writes app-supplied data to disk, so it's off by default. **Needs a daemon restart.** |
 | `dnd.sync` | string | `off` | Mirror the desktop's Do Not Disturb state to/from the watch's manual Quiet Time: `off`, `to_watch`, `to_host` or `both`. Opt-in — it actively changes state on both sides (it never touches the network). GNOME (`show-banners` GSettings) and KDE/Plasma (the `Inhibited` property) are auto-detected. Set it with `stoandl daemon set dnd.sync <mode>`; `stoandl sync enable\|disable dnd` no longer works (a switch can't say which direction it means). |
@@ -382,12 +381,26 @@ is still fetched from Open-Meteo — importing only supplies the coordinates, no
 
 Set `weather.gps = true` to add a **current location** entry tracked via
 [GeoClue2](https://gitlab.freedesktop.org/geoclue/geoclue) — the standard Linux geolocation service,
-which aggregates modem GPS, Wi-Fi, cell towers and IP. Weather asks it for **city-level** accuracy:
-enough for a forecast and served from cell towers and Wi-Fi networks already seen, so the GPS stays off.
-It's resolved fresh on every refresh (so it follows `weather.interval`); GeoClue runs only for that lookup
-and stops a minute later. The entry is marked as the current location so the watch shows it first. By default the entry
-is labelled `weather.gps_name`; set `weather.reverse_geocode = true` to instead look up the nearest place
-name from the coordinates (via OSM Nominatim — see the network note below).
+which aggregates modem GPS, Wi-Fi, cell towers and IP. Weather asks it for **neighborhood-level**
+accuracy (within 5 km): enough for a forecast, and the lowest level at which GeoClue uses the cell tower
+(at city level it only asks for an IP guess, ±25 km off Wi-Fi). No GPS and no Wi-Fi scans of GeoClue's
+own. A fix up to 45 minutes old answers without asking GeoClue, so at the default 30-minute interval
+every other refresh looks the position up; weather and [watchapps](#geolocation) share one GeoClue
+provider and its fixes, so a watchapp's recent fix (accurate enough) also answers. GeoClue runs only for
+the lookup: its client stops as soon as the answer is in. A fix wanders by a few hundred metres to a
+few km from one lookup to the next, so the forecast stays at the last position until a fix lands more
+than 5 km from it (or beyond the fix's own accuracy radius, if wider): the forecast, its name and the
+timeline pins change when the phone has moved, not on every refresh. When no neighborhood-level fix comes
+within 10 s (of wall-clock time, so a phone that suspends meanwhile doesn't stretch it), GeoClue's best
+guess (often ±25 km) stands in only until there is a position; it never moves one. Whatever fix places the
+forecast, its coordinates are rounded to 0.02° (about 2 km) first, so a watchapp's GPS fix doesn't send
+Open-Meteo (or Nominatim) a more precise position than weather's own lookup would: GeoClue scrambles a
+neighborhood fix by up to 3 km. A retry after a failed
+refresh (30 s, 1 min, 5 min, 15 min, then `weather.interval`) reuses that position without asking GeoClue
+again, also when the failed refresh got no fix at all. The entry is marked as the current location so the watch shows it first. By default
+the entry is labelled `weather.gps_name`; set `weather.reverse_geocode = true` to instead look up the
+nearest place name from the coordinates (via OSM Nominatim — see the network note below). A lookup that
+fails keeps the last name found within 10 km.
 
 GeoClue authorises clients by their `DesktopId`: through the session's location agent if one runs
 (GNOME Shell, Phosh, GeoClue's demo agent), otherwise only if the daemon is **allow-listed**. Add this
@@ -412,8 +425,8 @@ and off by default:
 
 | Service | What is sent | When it's called |
 |---------|--------------|------------------|
-| [Open-Meteo](https://open-meteo.com/) | location coordinates | only when `weather.locations` or `weather.gps` is set |
-| [OSM Nominatim](https://nominatim.openstreetmap.org/) | GPS coordinates | only when `weather.reverse_geocode = true` |
+| [Open-Meteo](https://open-meteo.com/) | location coordinates (the `weather.gps` entry's rounded to about 2 km) | only when `weather.locations` or `weather.gps` is set |
+| [OSM Nominatim](https://nominatim.openstreetmap.org/) | GPS coordinates, rounded to about 2 km | only when `weather.reverse_geocode = true` |
 | [Open-Meteo geocoding](https://open-meteo.com/en/docs/geocoding-api) | the place name you type | only when you run `stoandl weather search` (or search in the GUI) with `weather.place_search = true` and `weather.enabled` on |
 
 GeoClue (location) is a local system service, not a web call; importing a location from your DE
@@ -439,8 +452,15 @@ altitude, heading and speed are passed through to the watchapp when GeoClue repo
 The request's options are honoured as a phone browser would: `enableHighAccuracy: true` asks GeoClue
 for an exact fix (the GPS, within 100 m), otherwise street level (Wi-Fi and cell towers, no GPS,
 within 1 km); `timeout` bounds the wait for a fix that accurate (30 s when unset), after which the
-best one so far answers; `maximumAge` lets a recent, accurate-enough fix answer without waking
-GeoClue at all. GeoClue, and the GPS with it, stops a minute after the last request.
+best one so far answers (the wait counts wall-clock time too); `maximumAge` lets a recent,
+accurate-enough fix answer without waking GeoClue at all, whether a watchapp or weather asked for it.
+GeoClue, and the GPS with it, stops as soon as `getCurrentPosition` has its answer. `watchPosition`
+keeps the client between ticks that come at most a minute apart (until 5 s after the next tick was due),
+so a sports app's GPS stays locked; slower ticks start it for each fix. Only a client at the tick's own
+level is kept: a street-level watch answered while the GPS runs for another request doesn't keep the GPS
+on, and a one-shot high-accuracy request ends the GPS at its answer even while a street watch runs. A
+cached fix gives way to a less accurate later one only after an hour, so an indoor high-accuracy request
+that times out with a ±25 km guess still gets that guess but doesn't push a better fix out of the cache.
 
 It's **off by default** because, once on, *any* watchapp you launch can read your location with no
 per-app prompt (Linux has no location-permission UI; libpebble3's per-app permission defaults to
@@ -543,7 +563,10 @@ stoandl calendar dump <file|url>      # parse + print events offline (no daemon/
 There is no cross-desktop calendar API, so "reuse the DE's calendars" means different things per DE:
 
 - **Plasma Mobile (Calindori)** keeps calendars as plain local `.ics` — `calendar.discover = yes`
-  (or point `calendar.ics_paths` at `~/.local/share/calindori`) picks them up with no reconfiguration.
+  picks them up with no reconfiguration, under Calindori's names: its own calendars and the external ones
+  it lists in `~/.config/calindorirc` (for example `vdirsyncer` copies kept anywhere). A file that changes
+  while a sync holds its calendar's `lockFile` is re-read once the sync has finished, so one vdirsyncer run
+  costs one re-read, not one per collection it wrote; a calendar without that lock is re-read at once.
 - **Any DE** can point `calendar.ics_paths` at a local `.ics` (one your calendar app writes, or one a
   tool like `vdirsyncer` syncs), or use `calendar.ical_urls` / `calendar.caldav` for online accounts.
 - **GNOME (Evolution Data Server)** and **KDE desktop (Akonadi)** keep *online* calendars (Google,
@@ -563,6 +586,43 @@ securely. RSVP
 (accept/decline from the watch) isn't wired up yet. A single edited occurrence of a recurring event
 shows at its original time (detached overrides are skipped to avoid duplicates).
 
+### To-dos
+
+The [assistant](assistant.md) can note things down for you ("don't let me forget to call the garage
+tomorrow at 5"), and so can `stoandl calendar todo`. The to-do goes to one list:
+
+```ini
+# A CalDAV list of one of your calendar.caldav accounts (its sign-in is used), a local .ics file (the to-do
+# is added to it, e.g. a vdirsyncer `singlefile`), or a folder (a vdir: one <uid>.ics per to-do). Empty = off.
+calendar.todos = https://dav.example.com/dav/calendars/alice/tasks/
+```
+
+The GUI's Calendar page offers the lists the last calendar sync found: the CalDAV lists that take to-dos
+(their `supported-calendar-component-set` includes `VTODO`, or they don't say) and the local calendars.
+`stoandl daemon set calendar.todos <name>` takes the same names. A folder can only be set in
+`stoandl.conf`.
+
+A to-do with a time is due then and gets a reminder alarm at that time; one with only a day gets a
+reminder at 09:00 that day. Your to-do app (Nextcloud Tasks, Thunderbird, Calindori, …) shows the
+reminder; the watch doesn't. When the CalDAV server can't be reached (or refuses the sign-in), the to-do
+waits in `~/.config/stoandl/todo-queue/` and is sent after each calendar sync until it gets through, so a
+note dictated in a dead zone isn't lost. A list that no longer exists (404) drops what waits for it, with
+a log line.
+
+```sh
+stoandl calendar todo Call the garage --due 2026-10-22T17:00 --note "ask about tyres"
+stoandl calendar todos                 # what is waiting to be sent
+```
+
+A sync tool that rewrites a local `.ics` (vdirsyncer reads the file when a sync starts and puts its copy
+back at the end) would drop a to-do added in between. When Calindori's list gives the file a `lockFile`
+(`calindorirc`, relative to `$XDG_RUNTIME_DIR` unless absolute: the flock the sync holds, e.g. the op6's
+`dav-sync.lock`), stoandl writes the to-do under that lock, as Calindori saves: it waits up to 10 s for a
+running sync, and after that keeps the to-do like an offline one (`stoandl calendar todos`) and writes it
+as soon as the sync lets the lock go (waiting up to 6 minutes; after that, with the next calendar sync). Without a `lockFile` the file is written at once. A program that keeps the file open and
+writes its own copy back without such a lock may still overwrite a to-do added meanwhile. A vdir has no
+such writer.
+
 ### Network / external services
 
 Local `.ics` files and discovery make **no web requests.** The two network sources are opt-in:
@@ -571,6 +631,7 @@ Local `.ics` files and discovery make **no web requests.** The two network sourc
 |---------|--------------|------------------|
 | iCal feed URL(s) | an HTTP(S) GET to each `calendar.ical_urls` entry | only when `calendar.ical_urls` is set |
 | CalDAV server(s) | PROPFIND discovery + a `calendar-query` REPORT (Basic auth) for each `calendar.caldav` account's calendars | only when `calendar.caldav` is set |
+| CalDAV server of the to-do list | a PUT of each to-do (Basic auth), and retries of the queued ones after each calendar sync | only when `calendar.todos` names a CalDAV list and a to-do is added |
 
 ## Watch settings (advanced)
 
@@ -855,7 +916,8 @@ so stoandl requests the data and projects it to a local NDJSON store other tools
 stoandl health                 # last 7 days: steps / distance / sleep / active / resting+avg HR
 stoandl health 30              # last 30 days
 stoandl health activities      # recent Walk/Run/workout sessions
-stoandl health sync            # ask a connected watch to sync now, then re-export
+stoandl health sync            # ask a connected watch to sync now, then re-export (with
+                               # power.pause_datalog_screen_off and the screen off: nothing new)
 stoandl health dump daily      # raw NDJSON (daily | activities)
 ```
 

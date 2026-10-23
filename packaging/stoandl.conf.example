@@ -153,9 +153,11 @@ weather.interval = 30
 # watch.dndWeekdaySchedule = 22:00-07:00   # its hours (HH:MM-HH:MM; end < start runs overnight)
 # watch.dndNotificationBacklight = false   # fw >= 4.41: notifications don't light the screen in Quiet Time
 
-# Optional: add a "current location" entry from GeoClue2 at city level (cell towers / Wi-Fi, no GPS).
-# It's shown first on the watch and re-resolved every refresh. The place name is reverse-geocoded
-# from the coordinates (OSM Nominatim), falling back to weather.gps_name.
+# Optional: add a "current location" entry from GeoClue2 at neighborhood level (cell tower / Wi-Fi
+# already seen, no GPS). It's shown first on the watch; its position is looked up at most every 45 min
+# (a watchapp's recent fix counts too, rounded to about 2 km like every fix weather sends), and the
+# forecast moves only once a fix is more than 5 km away. The place name is reverse-geocoded from the coordinates (OSM Nominatim, below),
+# falling back to weather.gps_name.
 # GeoClue must allow this daemon: a location agent does, otherwise add to /etc/geoclue/geoclue.conf
 # (id matches weather.gps_desktop_id):
 #   [stoandl]
@@ -238,6 +240,14 @@ calendar.show_declined = false
 # `stoandl notif vibe-add` (its exact spelling here; the GUI and `stoandl daemon set` list and match it).
 # Empty = the watch's default.
 calendar.reminder_vibe =
+
+# Where to-dos you dictate to the assistant extension (or add with `stoandl calendar todo`) are saved:
+#   - a CalDAV list's URL (one of `calendar.caldav`'s accounts, whose sign-in is used): a to-do that
+#     can't be sent now waits on this device and is sent after the next calendar sync
+#   - a local .ics file (the to-do is added to it), e.g. one vdirsyncer syncs
+#   - a folder: a vdir, one <uid>.ics per to-do
+# `stoandl calendar todos` lists the lists found and what is waiting. Empty = off.
+calendar.todos =
 
 # ── Music control ────────────────────────────────────────────────────────────────────────────────
 # Bridge desktop media players (MPRIS) to the watch's native Music app: now-playing title/artist/
@@ -382,16 +392,10 @@ classic.discover = true
 #     btmgmt pair -t bredr <MAC>           # confirm the passkey ON THE WATCH
 #     bluetoothctl trust <MAC>
 
-# ── Multi-watch: follow the wrist ────────────────────────────────────────────────────────────────
-# When two or more watches are paired, connect whichever one is actually in range instead of only ever
-# the watch that last held the connection goal (the last one paired or `stoandl watch connect`ed — which
-# need not be the one you're wearing). The daemon arms the most-recently-connected watch first and, if
-# it's out of range, rotates to the next candidate until one connects; a live link is never dropped to
-# chase another watch (a brief drop is tolerated — it reconnects on its own). Inert with a single paired
-# watch. On by default. Set to false to pin the connection to the last-chosen watch (move it with
-# `stoandl watch connect <name>`).
-connection.autoswitch = true
-
+# ── Watch connection ─────────────────────────────────────────────────────────────────────────────
+# stoandl links one watch at a time: the one you last connected or paired, and only that one reconnects.
+# `stoandl watch connect <name>` (or Connect on the GUI's Watch page) switches to another watch.
+#
 # `stoandl watch disconnect` (or Disconnect on the GUI's Watch page) keeps every watch disconnected until
 # `stoandl watch connect`. With this on the pause also lasts across a daemon restart, like the official
 # app's Disconnect; set to false to have a restart reconnect.
@@ -404,8 +408,10 @@ connection.disconnect_persists = true
 # flight — typically the notification a push wake just produced — has reached the watch.
 power.sleep_guard = true
 power.sleep_guard_max_ms = 3000
-# Pause the watch's datalog (health data, flushed every 15 min) while the display is off; it arrives
-# when the phone is used again. Saves ~4 wakes/h on a phone that keeps the watch link across suspend.
+# Pause the watch's datalog (health data and battery heartbeat, flushed every 15 min) while the display
+# is off. Saves ~4 wakes/h on a phone that keeps the watch link across suspend; the data arrives only
+# when the screen is next on (stoandl asks for it then), and a health sync with the screen off gets
+# nothing new while paused.
 power.pause_datalog_screen_off = false
 # No watch link during the watch's scheduled Quiet Time (its weekday/weekend windows) once the display
 # has been off for 10 min; back on when the window ends or the display comes on. Notifications from the

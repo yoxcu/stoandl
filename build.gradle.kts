@@ -73,6 +73,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // The address order main() sets, so the tests' sockets resolve and bind as the daemon's do.
+    systemProperty("java.net.preferIPv6Addresses", "system")
     // Shipped files the tests compare against (conf.example, the GUI mock's goldens) live outside the test
     // sources: without them as inputs an edit to one leaves `test` UP-TO-DATE and the mismatch unseen.
     inputs.files("packaging/stoandl.conf.example", fileTree("gui/tools") { include("*.tsv") })

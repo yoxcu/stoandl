@@ -261,6 +261,8 @@ with `/usr/libexec/geoclue-2.0/demos/where-am-i` (or `where-am-i` from the `geoc
 | 4.15 | No fix yet | `stoandl weather` before a fix | Log: `GPS enabled but no fix yet — keeping last-known current location`; fixed locations still update; the watch isn't blanked. |
 | 4.16 | Not allow-listed | remove the `[stoandl]` block, restart | Log warns GeoClue init failed with the geoclue.conf hint; fixed `weather.locations` still sync. |
 | 4.17 | GPS only | `weather.gps = true`, no `weather.locations` | Weather sync still starts; once a fix lands the watch shows the current location alone. |
+| 4.17a | Sticky position | `weather.gps = true`, phone at rest for a day | After the first sync of a run, `Weather pins: 6 pin(s) across 3 day(s), 0 changed` except when the forecast itself changes or the day rolls over (was 6 changed on nearly every sync: the CITY fix jitters); with `weather.reverse_geocode` one Nominatim request per run. A `GeoClue: no neighborhood fix within 10s, using the best one: ±25000 m` changes neither the pins nor the name. Moving more than 5 km changes the pins on the next sync. Offline: `WeatherPositionTest`. |
+| 4.17b | Retry keeps the position | `weather.gps = true`, a position from an earlier sync, then mobile data and Wi-Fi off across a sync (its own GeoClue lookup may fail) | `Weather incomplete — retrying in 30s`, then 1m, 5m, 15m, then the interval; the retries log no `GeoClue client started` / `no neighborhood fix within 10s`. With `weather.reverse_geocode`, a failed Nominatim lookup logs `— keeping "<town>"` and the pins keep the name. |
 
 ### 4c. City search (`stoandl weather search`)  ⚠️ UNVERIFIED (needs network; 4.18f a watch)
 
@@ -525,6 +527,10 @@ For DEBUG sync logs: `STOANDL_LOG=DEBUG` (see [README](README.md#logging--report
 | 5.59d | CalDAV (auto-discover) | set `calendar.caldav = <account/principal-url>\|<user>\|<pass>` (e.g. SOGo `https://host/SOGo/dav/<user>/`), restart | Log: `CalDAV <url>: N calendar(s) [names…]` — the PROPFIND walk found **all** the account's calendars; each shows in `stoandl calendar list` and syncs. Disable any you don't want. |
 | 5.60 | Discovery (Plasma Mobile) ⚠️ _untested_ | on the phone, `calendar.discover = yes` with Calindori in use | Calindori's local `.ics` (`~/.local/share/calindori`) are found and synced with no explicit paths. |
 | 5.61 | Reminder fires | (from the fixture — Dentist is +35 min out with a −30 min alarm; `calendarReminders` is on by default) | **~5 min after you generate the fixture**, the watch shows/vibrates a reminder for "Dentist". DEBUG: a `TimelineReminder` is inserted for the pin. |
+| 5.61a | Unchanged files aren't parsed again ⚠️ UNVERIFIED | `STOANDL_LOG=DEBUG`. On the phone first check that a no-op `dav-sync --force` keeps the bytes (`sha256sum ~/.local/share/op6-dav/calendars/*/*.ics` before and after). Then wait for a sync tick, or run `dav-sync --force` with nothing changed on the server; then edit one event in Calindori; then `sudo timedatectl set-timezone <another zone>` and `stoandl calendar sync` (set it back after) | Tick / no-op sync: the sync runs (`syncDeviceCalendarsToDb`) but logs no `Calendar '<name>': N event(s) in window` line; GUI/`stoandl sync` still show a fresh last sync. After the edit: that one calendar logs its line, its pin updates, the others stay silent. After the zone change: every calendar logs its line again (floating times follow the new zone). |
+| 5.61b | Date-only UNTIL ⚠️ UNVERIFIED | add to the fixture a VEVENT with `DTSTART;TZID=Europe/Berlin:<today>T120000`, `DURATION:PT1H`, `RRULE:FREQ=DAILY;UNTIL=<today+2, date only>`; `stoandl calendar dump /tmp/stoandl-test.ics` | Three instances, the last on <today+2> at 12:00 Berlin time; no `Recurrence expansion failed` WARN. |
+| 5.61c | Calendar settings sync once ⚠️ UNVERIFIED | GUI Settings → Calendar: change the To-do list, then toggle Event reminders | To-do list: no calendar sync at all (no `syncDeviceCalendarsToDb` in the DEBUG log). Event reminders: exactly one sync, and the pins' reminders follow. |
+| 5.61d | One re-read per dav-sync ⚠️ UNVERIFIED | OnePlus 6, `calendar.discover = yes`, Calindori's groups with `lockFile=dav-sync.lock`, `STOANDL_LOG=DEBUG`; change one event on the server, then `dav-sync --force` (or unlock the screen after 10 min) | While `~/wakeup/logs/dav-sync.log` shows the sync running: one DEBUG `Calendar files changed while /run/user/<uid>/dav-sync.lock is held` and no `syncDeviceCalendarsToDb`. Within ~6 s of its `sync ok`: exactly one calendar sync (one `Calindori's list` line per run, before: 2–6), and the changed event's pin follows. A Calindori save outside a sync still re-reads within seconds, and so does one to a calendar without a `lockFile` (an `ics_paths` file, a local-only calendar) during a sync. |
 
 ### Not covered / known limitations (don't file these as bugs)
 
@@ -982,6 +988,7 @@ enabled** (NOT LE-only mode); `classic.discover = true` in `stoandl.conf`; daemo
 | 5.225 | Inquiry only while pairing | with **no** pairing window open: `bluetoothctl show \| grep Discovering` (or watch `btmon`) | `Discovering: no` — there is no always-on BR/EDR inquiry. A bonded watch reconnects with no scan; inquiry appears only during the ~2 min after `stoandl watch pair`. |
 | 5.226 | BLE-native watch unaffected | have a Pebble Time 2 / Pebble 2 around too; `stoandl watch list` + log | The Time 2 connects over **BLE** as before and is **not** misclassified as Classic (the classic scanner requires a Class-of-Device, which BLE-only devices lack). No regression to the BLE path. |
 | 5.227 | `connect <name>` switches the active watch | with two known watches, `stoandl watch connect <other>` | The named watch becomes the connected one (single-watch mode hands over the slot). Exact-then-substring match. Works for BLE and classic watches alike. |
+| 5.227a | Switching away from a paging Classic watch is quiet ⚠️ UNVERIFIED | the Classic watch holds the goal but is out of range (airplane mode), so it pages; `stoandl watch connect <BLE watch>`, a few times, some while `STOANDL_LOG=DEBUG` shows `rfcomm connect retry` | The BLE watch connects. No ERROR `failed to connect: Failed(reason=ClassicConnectionFailed)` and no `Already connecting … (this is a bug)`: an attempt cancelled during its page now ends as a cancellation, one ended by `disconnect()` as `NotAnError_DisconnectRequested` at DEBUG (fork `BluezBtClassicConnectorTest`). A BLE watch moved away while arming logs `failed to connect: Failed(reason=NotAnError_DisconnectRequested)` at DEBUG, not ERROR. |
 | 5.228 | `unpair <name>` forgets one watch | `stoandl watch unpair <name>` for a classic watch (even while connected) | Only that watch is forgotten — its BlueZ bond removed by MAC; other watches untouched. `stoandl watch unpair` with no name still forgets **all**. `stoandl watch list` reflects the change. |
 | 5.229 | Pairing fallback to manual | a dual-mode watch that pairs but won't connect (got an LE bond, not a BR/EDR link key) | Log: `BT Classic: pairing <mac> failed — try btmgmt pair -t bredr <mac> by hand`. Running that, then restarting the daemon, yields a working link. |
 
@@ -1405,40 +1412,35 @@ on; the new build installed. For M-f, a watch still on an older release, or old 
 
 ---
 
-## 5.30 Follow-the-wrist multi-watch auto-switch  ⚠️ UNVERIFIED (needs 2 bonded Pebbles)
+## 5.30 Switching watches by hand  ⚠️ UNVERIFIED (needs 2 bonded Pebbles)
 
-stoandl connects **one** watch at a time (single-watch mode). With two or more paired, libpebble3 would
-otherwise only ever reconnect the watch holding its persisted `connectGoal` — the last one paired or
-`stoandl watch connect`ed — which need not be the one you're wearing. A daemon-side policy loop
-(`startWristFollower`, gated by `connection.autoswitch`, on by default) drives the goal from **recency +
-presence** instead: it arms the most-recently-connected known watch and, if it doesn't come up within
-`WRIST_ARM_GRACE` (20 s → out of range), rotates the goal to the next candidate (most-recent first) until
-one connects. It only ever chooses an identifier and calls `device.connect()`; libpebble3's single-watch
-machinery (set `connectGoal` on it, clear the rest) does the arm/disconnect/reconnect — **zero fork
-change, no second live connection.** A connected watch is never dropped to chase another; a brief drop is
-tolerated (its standing `Device1.Connect()` re-links it inside the grace). Rotation is suppressed for
-`WRIST_OP_GRACE` (2 min) after a firmware/language op is last seen active, so a flash's reboot gap never
-hands the goal to a sibling.
+The wrist follower (`startWristFollower`, `connection.autoswitch`, rows 5.300–5.307 before 2026-10-21) is
+**removed**: rotating the connect goal between away watches kept the phone awake (71 rotations a day on the
+op6) and rotated off a watch that was still linking. stoandl links one watch at a time, the one holding
+libpebble3's persisted `connectGoal`, and only `stoandl watch connect <name>` (GUI: *Connect* on a watch row)
+or a pairing moves it. `requestConnection` sets the goal on that watch and clears it on every other one, in
+the database too. Off-device: fork `WatchManagerTest` (`requestConnectionMovesThePersistedGoal`,
+`goalMovedOffAnArmingWatchConnectsTheOther`), `ManualDisconnectTest` (the bare `watch connect` goal rule, and
+no switch during an update or a pairing window).
 
-**Prerequisite:** two bonded Pebbles (ideally both BLE-native, e.g. Pebble 2 / Time 2), `connection.autoswitch`
-on (default), the daemon restarted. Watch the log for `Auto-switch: arming …`.
+**Prerequisite:** two bonded Pebbles A and B, A connected. Log at INFO.
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 5.300 | Reconnect the last-used watch | Wear + connect watch A. `systemctl --user restart stoandl` with **both** A and B in range | A reconnects (the most-recently-connected), not B. Log: `Auto-switch: arming <A> (most recently connected; …)` then A connects. |
-| 5.301 | Switch by presence | With A connected, take A out of range (power off / walk away), leave B in range | After ~20 s: `Auto-switch: arming <B> (<A> unreachable; …)`; B connects. A is not needed. |
-| 5.302 | No flap while both present | A connected, B also sitting in range (bonded) | A stays connected indefinitely; **no** `arming <B>` entries — only the goal watch is armed, so B can't steal the slot. |
-| 5.303 | Brief drop self-heals | A connected; briefly toggle A's Bluetooth (or step out < 20 s) | A reconnects on its own; **no** rotation to B (the drop is inside `WRIST_ARM_GRACE`). |
-| 5.304 | Startup with only the away watch present | Persisted goal / most-recent = A but A is off; only B in range | Arms A first (it's most-recent), A doesn't connect, after ~20 s rotates to B, B connects. First connect may take up to one grace period. |
-| 5.305 | Firmware update not hijacked | A connected + B in range; flash firmware to A (`stoandl firmware update`); A reboots | During the flash **and** the reboot gap the goal stays on A (log shows no `arming <B>`); A reconnects and the update confirms. `connection.autoswitch` off would also pass, but this proves the `WRIST_OP_GRACE` guard. |
-| 5.306 | Kill switch | set `connection.autoswitch = false` (GUI **Daemon configuration** toggle or conf), no restart needed | Follower goes inert within a tick; behaviour reverts to "reconnect the last-chosen watch only". Toggle back on → follows again. |
-| 5.307 | Single watch unaffected | one paired watch only | Follower is inert (`known.size < 2`); reconnect behaves exactly as before. |
+| 5.300 | Switch | both in range: `stoandl watch connect <B>` | `Connecting <B>`; log `Connect: handing the connection slot to <B>`; A's link ends within seconds, B connects. `stoandl watch list` shows B connected, A disconnected. |
+| 5.301 | Only B reconnects after a restart | after 5.300, `systemctl --user restart stoandl` with both in range | B reconnects; A gets no connect attempt (no `connecting`/`RFCOMM` lines for A). |
+| 5.302 | … and after a resume | after 5.300, suspend and resume the phone (or take B out of range and back) | Only B re-links; A stays disconnected, also while B is away. |
+| 5.303 | Switch to an away watch | A connected, B powered off: `stoandl watch connect <B>`; then power B on | A disconnects at once and nothing connects until B is on; then B connects. No rotation back to A, no `Auto-switch` lines. |
+| 5.304 | Old key | add `connection.autoswitch = true` to stoandl.conf, restart | One WARN `connection.autoswitch is no longer read …`; behaviour as above. |
+| 5.305 | Not during an update | flash firmware to A, and while it runs (or within 2 min of its reboot) `stoandl watch connect <B>` | `error:A firmware or language update is running — switch watches when it's done`; A reconnects and confirms the update. |
+| 5.306 | Lost goal | unpair the goal-holding watch A (`stoandl watch unpair <A>`) with B known; then `stoandl watch connect` with no name | Nothing connects after the unpair; the bare connect answers `Connecting <B>` and B connects. With Bluetooth off and both known it changes nothing. |
+| 5.307 | GUI | Watch page with A connected: *Connect* on B's row; then *Disconnect* (paused) and *Connect* on A's row | As 5.300; the page shows B connected within a second (WatchesChanged). From the pause, the row's Connect resumes with A (as 5.55f). No setting or text mentions following the wrist. |
+| 5.308 | Not during a pairing window | A connected: `stoandl watch pair`, and while it searches `stoandl watch connect <B>`; then a bare `stoandl watch connect` | The named one: `error:A pairing window is open — switch watches when it's closed`, A stays. The bare one changes nothing (no `handing it to` line), also while a new watch is connecting. After the window: `watch connect <B>` switches as in 5.300. |
+| 5.309 | A declined pairing leaves no stale scan | A connected, B in range and not connected: `stoandl watch pair`, let it time out (or decline); then `stoandl watch connect <B>`, wait a minute | After the window, DEBUG `clearScanResults`. B connects and keeps the link: no `Requesting connection to <A>` line, A gets no connect attempt (before, A's leftover scan result made the auto-connect take the goal back for it). |
 
-**Open questions for hardware:** (a) does BlueZ cleanly tear down watch A's armed connection when the
-goal rotates to B, or does a stale LE link linger? (b) rotation latency with a real out-of-range
-`ConnectTimeout` (the connector may hold `Connecting` longer than 20 s — tune `WRIST_ARM_GRACE` if so);
-(c) behaviour with one **Classic** + one **BLE** watch (the follower is transport-agnostic but only
-BLE-native pairs were exercised in design).
+**Open question for hardware:** a switch while A is still negotiating (`connecting` with the link up): does
+A's half-built session end cleanly, or does it linger as a zombie connection (seen once after the follower
+moved the goal mid-negotiation, 2026-10-21 05:27–08:13)?
 
 ---
 
@@ -1502,8 +1504,8 @@ of them restart-only. Everything below needs the real daemon.
 
 See [docs/deep-sleep.md](docs/deep-sleep.md). The sleep guard holds a logind **delay** lock
 (`systemd-inhibit --who=stoandl --mode=delay … cat` child) and, on `PrepareForSleep(true)`, waits up to
-`power.sleep_guard_max_ms` while libpebble3's `WatchLinkActivity` (PPoG backlog + unattempted BlobDB
-records) or a notification being built/just queued is pending (not a reconnect handshake — see
+`power.sleep_guard_max_ms` while libpebble3's `WatchLinkActivity` (PPoG backlog, unattempted notification
+records, the one other BlobDB transfer in flight) or a notification being built/just queued is pending (not a reconnect handshake — see
 `pendingWatchWork()`). Weather/calendar/firmware
 checks use the wall clock and re-check on every resume. A pairing window scans whether or not the
 display is on (it is an explicit, 2-minute request), but only while the phone is awake: the scan is
@@ -1527,14 +1529,16 @@ now follow `STOANDL_LOG`.)
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
 | 5.320 | Lock taken | start the daemon; `systemd-inhibit --list` | Log `Sleep guard on: logind delay lock …`; the list shows `stoandl … sleep … delay`. |
-| 5.321 | Idle suspend not delayed | nothing pending; `systemctl suspend`, wake it | Suspend proceeds at once; DEBUG `PrepareForSleep: nothing pending`; after resume the lock is back in `systemd-inhibit --list` within ~2 s (logind refuses it for a moment — DEBUG `delay lock refused` then taken). |
+| 5.321 | Idle suspend not delayed | nothing pending; `systemctl suspend`, wake it | Suspend proceeds at once; DEBUG `PrepareForSleep: nothing pending (awake N ms)` (the resume before it is that line's time minus N; `resumed` itself is TRACE); after resume the lock is back in `systemd-inhibit --list` within ~2 s (logind refuses it for a moment — DEBUG `delay lock refused` then taken). |
 | 5.322 | Delivery before sleep | send a notification (e.g. `notify-send test`) and suspend within 1 s | Log `PrepareForSleep: held the suspend N ms until the watch traffic was done (…)` with N ≲ 1500; the notification is on the watch **before** the phone sleeps (with Mode B: no extra wake for it). |
+| 5.322b | Pins and weather don't hold the suspend | `weather.interval = 30`, `STOANDL_LOG=DEBUG`, watch connected, phone mostly suspended for a day | A weather sync that lands right after a resume no longer holds the next suspend for its pins: no `still pending after … (blobdb-bulk:…)` cap, and a `held the suspend` line naming `blobdb-bulk:<watch>=1` lasts at most one round trip (≲ 1 s). No `insert: Pin …` / `insert: Weather …` line between a `PrepareForSleep: …` line and the next resume (the kernel's `PM: suspend exit`; `resumed` is TRACE); the remaining pins go out after it, each once: a weather pin the resume's refresh replaced is inserted only in its new version (no `insert: Pin` for the same key twice within a few seconds). Notifications still hold the suspend as in 5.322 (`blobdb:<watch>=…`). Count forced re-wakes: a cap or hold followed within 3 s by a resume whose first line is `insert: result = …` should be ~0 for pins/weather (13 of 33 caps before, 2026-10-21). |
+| 5.322c | Stale hint doesn't halt syncing | Hard to provoke (needs a missed `PrepareForSleep(false)`); watch for it in a day's log | `Host-suspending hint still set after 60s awake` WARN at most once per suspend, followed by `insert: Pin …`/`insert: Weather …` lines while awake. Never pins and weather silently unsent for minutes while the phone is awake. |
 | 5.323 | Cap | watch out of range but "connected" state stale, or pull the watch's battery mid-delivery | `still pending after 3000 ms (…) — letting the system sleep`; the 4th identical one is ignored (DEBUG `ignoring`). |
 | 5.324 | Lock dies with the daemon | `kill -9` the stoandl JVM; `systemd-inhibit --list` | No `stoandl` entry left (cat got EOF). Restart: lock back. |
 | 5.325 | Weather on the wall clock | `weather.interval = 30`, phone mostly suspended for 2 h | `Weather updated` roughly every 30 min of **real** time (right after a wake), not every 30 min awake. A reconnect within 30 min logs `weather is N min old, not refetching`. |
 | 5.326 | Discovery warning: another app's discovery | Open the Plasma Bluetooth page, then turn the display off | One WARN `Bluetooth discovery is running while the display is off` (per display-off period). It has no key (`power.screen_gate` was removed; a leftover line in stoandl.conf is ignored) and never affects stoandl's own pairing-window scan: see 5.32e1–e3. |
-| 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min, then on | `Watch datalog sends paused (display state\|before suspend)` / `resumed (display state)`; no datalog wakes while paused; health data arrives after the display comes on (`stoandl health` / `health/daily.ndjson`). |
-| 5.328b | Datalog pause applies live | key off, watch connected: `stoandl daemon set power.pause_datalog_screen_off true` (no restart), display off for > 10 s; then, display still off, `stoandl daemon set power.pause_datalog_screen_off false` | Within ~5 s of the display going off: `Watch datalog sends paused (display state)`. Within ~5 s of the second `set`: `Watch datalog sends resumed (display state)`, although the display is still off: turning the option off never leaves the watch paused. |
+| 5.328 | Datalog pause (needs `power.pause_datalog_screen_off = true`) | display off for > 20 min (`stoandl health sync` over ssh meanwhile), then on | `Watch datalog sends paused (display state\|before suspend)`, then `resumed (display state); asking for the backlog (held N min)`; no datalog wakes while paused; the health sync in the dark brings nothing new (expected while paused). Within ~30 s of the display coming on the health data arrives (STOANDL_LOG=DEBUG: `handleSendDataItems`, `Datalog backlog request to … acknowledged`; `stoandl health` / `health/daily.ndjson` show the dark period's steps and heart rate). A pause shorter than 15 min resumes without the backlog request; dark periods of ~10 min with short screen-ons between add up: the resume once 15 min have passed since the first of them asks for the backlog. A screen-off within a few seconds of that resume (cutting the burst short) means the next screen-on asks again, however short the dark period. |
+| 5.328b | Datalog pause applies live | key off, watch connected: `stoandl daemon set power.pause_datalog_screen_off true` (no restart), display off for > 10 s; then, display still off, `stoandl daemon set power.pause_datalog_screen_off false` | Within ~5 s of the display going off: `Watch datalog sends paused (display state)`. Within ~5 s of the second `set`: `Watch datalog sends resumed (display state)`, although the display is still off: turning the option off never leaves the watch paused. Repeated with > 15 min between the two `set`s, the line ends `; asking for the backlog (held N min)` and the data arrives at once. |
 | 5.329 | Desktop regression | on a desktop without suspend | Only `Sleep guard on` at startup; nothing else changes. Without systemd-inhibit: `neither systemd-inhibit nor elogind-inhibit found` WARN, daemon otherwise normal. |
 
 **Open questions for hardware:** (a) how long a push-wake delivery really takes (the 3 s cap vs. the
@@ -1670,7 +1674,7 @@ bluetoothctl info <MAC> | grep -E "Paired|Bonded|Trusted"                       
 | 5.32c4 | rfkill | `rfkill block bluetooth`, wait 2 min, `rfkill unblock bluetooth` | Same as c2. |
 | 5.32c5 | Regression: unpaired on the watch still detected | forget the phone in the watch's Bluetooth settings (as in 3e) | Within ~25 s: `Broken-bond detector: …` and a "Pebble won't stay connected" notification with **Re-pair**. **Before** tapping it, `bluetoothctl info <MAC>` still shows `Paired: yes` (stoandl deleted nothing on its own). Tap **Re-pair** with the watch in pairing mode (or run `stoandl watch repair "<name>"`) → it re-pairs and data flows. Needs BlueZ ≥ 5.83 (pmOS: 5.87). |
 | 5.32c6 | Regression: host-side removal still handled | watch nearby and still holding its bond: `bluetoothctl remove <MAC>` (as in 3f) | **First, no alert.** `remove` deletes BlueZ's device object, and stoandl treats a missing object as "away" (it scans only in a pairing window). Expect only `failed to connect … FailedToConnect` retries; the watch is still in `stoandl watch list`; no bond lines. **Then make BlueZ see the watch again:** `bluetoothctl scan le` for ~15 s, then `scan off`. Once `bluetoothctl info <MAC>` lists the device again with `Paired: no`, within ~30 s: `Host bond lost for <name> …`, a "Pebble pairing removed" notification with **Pair**, and the watch is forgotten (`stoandl watch list`). If the object never comes back (e.g. the watch isn't advertising), no notification follows. That is a known gap from the present-object gate (d4aae65), not a regression of #3; recover with `stoandl watch unpair "<name>"`, unpair on the watch, then `stoandl watch pair`. |
-| 5.32c7 | Two watches (if available) | two bonded watches, `connection.autoswitch` on; repeat c1 | Whichever watch reconnects, both bonds stay intact (`bluetoothctl info` for each); no new bond lines. |
+| 5.32c7 | Two watches (if available) | two bonded watches; repeat c1 | Only the watch holding the goal reconnects; both bonds stay intact (`bluetoothctl info` for each); no new bond lines. |
 
 ### 5.32d `classic.discover` defaults on with a config file (handoff #4)  ⚠️ UNVERIFIED
 
@@ -1743,15 +1747,16 @@ The connector now wakes as soon as the link resolves. The INFO line shows the ti
 deliver the suspend-time drop after thaw, plus libpebble3's 2.5 s `WatchManager` settle
 (`delayBleDisconnections`). Whether to skip that settle after a `Suspend` drop is decided by h2.
 
-**Prerequisite:** `STOANDL_LOG=DEBUG`. It now also shows the `BluezGattConnector` arming lines and
-SleepGuard's `resumed`. Then run:
+**Prerequisite:** `STOANDL_LOG=DEBUG`. It now also shows the `BluezGattConnector` arming lines.
+SleepGuard's `resumed` is TRACE (`STOANDL_LOG=TRACE`, which also logs every packet); at DEBUG take the
+resume from the kernel's `PM: suspend exit` in the journal. Then run:
 `tail -f /tmp/stoandl.log | grep -E "resumed|link dropped|connect\(\) starting|connected and services resolved|Connect\(\) (returned|pending)|re-arming|Bluetooth (disabled|re-enabled)|forcing reconnect"`
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
 | 5.32h1 | In-range reconnect (any host, desktop is fine) | Watch connected and in range. Run `bluetoothctl disconnect <watch MAC>` and leave the watch where it is. Wait for the reconnect. Repeat 5×. | Each time: `link dropped` → ~2.5 s → `connect() starting` → `connected and services resolved (N ms after connect())`. **Pass:** N < 5000 every time, and not clustered at 5.0–5.7 s / ~10.5 s. Record each N; well under 5 s is expected. Link time was never measured before, so N < 2000 is something to note, not a requirement. There will be one or two `Connect()` DEBUG lines between the two INFO lines. Record the **first** one after `connect() starting`: `Connect() returned`, or `Connect() pending/failed, tolerating: <msg>` (also record `<msg>`). A second `Connect() returned` right next to the success line is the harmless re-issue after the early wake. A test notification still reaches the watch afterwards. No `TimeoutInitializingPpog` / negotiation timeout right after the reconnect. |
 | 5.32h1b | Watch-side drop (optional) | Turn the watch's airplane mode on for ~10 s, then off. Note the moment you switch it off. | Don't judge N here: the connector starts ~2.5 s after the drop while the watch is still away, so N includes the rest of the airplane time. Instead time it from switching airplane mode off to `connected and services resolved`. Expected: well under 5 s. Record it. |
-| 5.32h2 | Mode A resume (phone) | Watch connected. Screen off; let the phone suspend ≥ 1 min. Wake it with a push (send a Matrix message) or the power button. | Record these timestamps: the journal's resume time (e.g. the kernel's `PM: suspend exit`; use it as the reference, like the baseline did), `resumed`, `link dropped, reason: Suspend`, `connect() starting`, and `connected and services resolved (N ms …)`. `resumed` may come **after** the drop: logind sends PrepareForSleep(false) only once the sleep job and its hooks finish, but bluetoothd delivers the drop right after thaw. Expected: resume → `connect() starting` still ≈ 2.9 s (unchanged). N well under 5000 (before: 5.05 s). Resume → resolved ≈ 2.9 s + N, well under the 2026-09-29 baseline of 7.9 s (34.1 → 42.03). **Also record** whether `Bluetooth disabled — pausing` / `Bluetooth re-enabled — resuming` appear between the resume and `connect() starting`. This decides the follow-up that would also skip the 2.5 s settle after a Suspend drop. |
+| 5.32h2 | Mode A resume (phone) | Watch connected. Screen off; let the phone suspend ≥ 1 min. Wake it with a push (send a Matrix message) or the power button. | Record these timestamps: the journal's resume time (e.g. the kernel's `PM: suspend exit`; use it as the reference, like the baseline did), `resumed` (only under `STOANDL_LOG=TRACE`), `link dropped, reason: Suspend`, `connect() starting`, and `connected and services resolved (N ms …)`. `resumed` may come **after** the drop: logind sends PrepareForSleep(false) only once the sleep job and its hooks finish, but bluetoothd delivers the drop right after thaw. Expected: resume → `connect() starting` still ≈ 2.9 s (unchanged). N well under 5000 (before: 5.05 s). Resume → resolved ≈ 2.9 s + N, well under the 2026-09-29 baseline of 7.9 s (34.1 → 42.03). **Also record** whether `Bluetooth disabled — pausing` / `Bluetooth re-enabled — resuming` appear between the resume and `connect() starting`. This decides the follow-up that would also skip the 2.5 s settle after a Suspend drop. |
 | 5.32h3 | No faster retry loop while away | Walk out of range (or turn on watch airplane mode) for ≥ 3 min, then return. | While away: a single `connect() starting` at INFO. DEBUG `waiting up to 5s for it to resolve before re-arming` never more often than every 5 s (no tight loop). On return: `connected and services resolved (N ms …)` within seconds of the watch advertising. No `forcing reconnect to re-resolve GATT` unless the link really stalled. |
 | 5.32h4 | Stuck-resolve pacing unchanged (opportunistic) | Only if a log shows `connected but services unresolved for 4 cycles — forcing reconnect to re-resolve GATT`. | It comes ≈ 15–18 s after `connect() starting`, as before this change (2026-07-23 log: 16.0–17.5 s). The stuck check runs before each 5 s wait, so the 4th sighting is 3 waits after the first, plus the Connect() attempts. A stuck link never resolves, so each wait still lasts the full 5 s. It comes later only if the watch was away first (Connect() pending). |
 
@@ -1852,7 +1857,7 @@ dbus-daemon bus with an activatable mock server (2026-10-01).
 | 5.36e | Refused wrist reply (B5) | as §5.34g: answer a message on the phone, then Reply to it on the watch | The watch shows *Already closed* with the failed icon (note what the Time 2 shows, and whether it shows the text at all); the journal has one INFO `Reply on … refused: …` and no WARN with a stack trace. |
 | 5.36f | DEBUG without the packet firehose (B3) | One hour on the phone in Mode B with `STOANDL_LOG=DEBUG`; then 10 min with `STOANDL_LOG=TRACE` | DEBUG: no `sendData: emitting PropertiesChanged`, `WriteValue: N bytes`, `inbound pebble protocol packet`, `sending …`, `sendPacketImmediately`, `dynamicQuery: refreshing` or `Found N sleep entries` lines; `SleepGuard`, connect/drop and catch-up lines still there; stoandl well under the 66 % of the user journal it had (target < 20 %). TRACE: the packet lines are back. |
 
-## 5.37 OnePlus 6 handoff 2026-10-02: Quiet Time pause, connection-parameter log  ⚠️ UNVERIFIED (needs a watch; 5.37a–h on the phone)
+## 5.37 OnePlus 6 handoff 2026-10-02: Quiet Time pause, connection-parameter log  ⚠️ UNVERIFIED (needs a watch; 5.37a–h and 5.37k on the phone)
 
 `power.quiet_time_link_off` keeps the watch disconnected during the watch's scheduled Quiet Time
 ([deep-sleep.md → Quiet Time pause](docs/deep-sleep.md#quiet-time-pause)); libpebble3's
@@ -1875,6 +1880,7 @@ For the btmon rows, `sudo btmon -w …` runs alongside (C5.2 of the handoff).
 | 5.37h | A night with the switch on | Weekday window e.g. 23:00–07:00, phone on the bench all night | BT UART wakes ≈ 0/h inside the window (journal times from the `paused`/`back on` lines); average current inside the window ≈ night5 (handoff C5.3). Watch alarms still ring. |
 | 5.37i | Connection-parameter log (C1) | Any connect of a Time 2, `STOANDL_LOG=DEBUG` | Once per run: `watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself`; no `connection params not set up` line any more. (Builds before 2026-10-05 had no `ConnectionParams` logger in logback, so the line never showed.) |
 | 5.37j | Leftover connection-parameter keys | Restart with `ble.conn_params = off` (as the old conf.example shipped it) and `ble.conn_params_fast = 15,15,0,6000` still in the config; `stoandl daemon get ble.conn_params`; GUI → Settings → Deep sleep | Start: one WARN `ble.conn_params and ble.conn_params_fast are no longer read …`; the daemon starts normally. `get`: `No config key 'ble.conn_params'`. Deep sleep shows four rows, no connection parameters. |
+| 5.37k | Pause waits for a sync | As 5.37a, then a moment before the display has been off 10 min, trigger a sync with `stoandl weather sync` (or a calendar change) | DEBUG `Quiet Time: pausing the watch connection once this is delivered: … to sync: blobdb:<watch>=N` while pins go out; `paused until …` only after the last `insert: Pin …`/`insert: Weather …`. |
 
 ## 5.38 OnePlus 6 handoff 2026-10-02c: a withdrawn call stops ringing on the watch  ⚠️ UNVERIFIED (needs a watch, the phone and a second phone)
 
@@ -1946,29 +1952,40 @@ closed the tab and delivered the settings; the can't-close fallback (5.40b2) is 
 | 5.40e | Loopback only | While a page is open: `ss -ltnp \| grep java` on the phone; from another machine, `curl http://<phone-ip>:<port>/` | Listens on `127.0.0.1:<port>` only; the remote curl is refused. About a second after the last page closes the port is gone. |
 | 5.40f | http(s) config page | An app whose config URL is a website (not Clay); change a value, Save | Images/scripts load (`<base>` = the site), the page reads its current settings from the URL's query/hash, and Save arrives as in 5.40b. |
 | 5.40g | CLI | `stoandl config "<app>"` | Prints `Config URL: http://127.0.0.1:…` and opens it, then exits; Save still reaches the watch (the daemon, not the CLI, receives it). |
+| 5.40h | IPv4 loopback under the system address order | Since main() sets `java.net.preferIPv6Addresses=system`: open a page as in 5.40a, then `ss -ltnp \| grep java` | The page loads and Save arrives as in 5.40b; the server listens on `127.0.0.1:<port>`, not `[::1]` (that would refuse the `127.0.0.1` URL). Same for a plugin's OAuth redirect (5.48l): `127.0.0.1:47811` while the sign-in waits. |
 
-## 5.41 GeoClue only while a fix is wanted  ⚠️ PARTLY VERIFIED (5.41a, 5.41e on the op6, 2026-10-08/09)
+## 5.41 GeoClue only while a fix is wanted  ⚠️ PARTLY VERIFIED (old 1-min idle: 5.41a, 5.41e on the op6, 2026-10-08/09; the stop at the answer is unverified)
 
 The GeoClue client used to start at EXACT accuracy on first use and stay started for the life of the
 daemon, which kept the phone's modem GPS on (`gps-nmea` in `mmcli -m any --location-status`).
-`GeoClueLocationProvider` now starts a client per request at the accuracy asked for (weather: city;
-watchapps: street, or exact with `enableHighAccuracy`), waits within the timeout for a fix inside that
-level's radius (exact 100 m, street 1 km, city 15 km; the best one so far when time runs out), reuses an
-accurate-enough fix within `maximumAge` while stopped, and stops one wall-clock minute after the last
-request. GeoClue's first location is often a ±25 km guess even at exact: the op6 handed that to
-WarnWeather three times on 2026-10-09 while the GPS fix came seconds later.
-Each client has its own private system-bus connection (the shared one gave weather and watchapps the
-same GeoClue client). Off-device: `GeoClueLocationProviderTest`. Log (`STOANDL_LOG=DEBUG`):
-`grep GeoClue /tmp/stoandl.log`.
+`GeoClueLocationProvider` now starts a client per request at the accuracy asked for (weather:
+neighborhood; watchapps: street, or exact with `enableHighAccuracy`), waits within the timeout (awake and
+wall-clock time) for a fix inside that level's radius (exact 100 m, street 1 km, neighborhood 5 km, city
+15 km; the best one so far when time runs out), reuses an accurate-enough fix within `maximumAge` while
+stopped, and stops the client right after the answer. Only `watchPosition` ticks at most 60 s apart keep it
+(interval + 5 s), only at their own level (a new client starts with no linger, and a street tick answered by
+a GPS client doesn't extend it), and a request without that linger, or a cancelled one, never cuts a kept
+client short. A cached fix gives way to a less accurate later one only after an hour. The 1-minute idle
+before kept the op6's GPS on ~64 s per WarnWeather fix that took ~4 s (19 sessions on 2026-10-22, 1085 s
+awake), and each running client re-queried BeaconDB on every resume. GeoClue's first location is often a
+±25 km guess even at exact: the op6 handed that to WarnWeather three times on 2026-10-09 while the GPS fix
+came seconds later. Weather and watchapps share one provider (`GeoClueProviders`, keyed by
+`weather.gps_desktop_id`, its only owner) and so one fix cache; each client has its own private system-bus
+connection. Off-device: `GeoClueLocationProviderTest`, `GeoClueProvidersTest`. Log (`STOANDL_LOG=DEBUG`):
+`grep GeoClue /tmp/stoandl.log` (`GeoClue client stopped (<level>, ran N s)`, `GeoClue: cached <level> fix
+answers (age …)`). On the phone: `/home/vscode/.cache/power-measure/gps-exact.sh` and `gps-city.sh`.
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 5.41a | Weather: city level, then off | `weather.gps = true`; restart; wait 70 s; `busctl --system tree --list org.freedesktop.GeoClue2`; `mmcli -m any --location-status` | `GeoClue client started at city`, `Weather updated: 1/1`, then `GeoClue client stopped` 60 s later; no `/Client/N` left; `gps-nmea` not enabled. ✅ op6 2026-10-08 (`agps-msb` stayed enabled from the old build's EXACT session: GeoClue doesn't clear it). |
-| 5.41b | Watchapp, normal accuracy | `geolocation.enabled = true`; a PKJS app calling `navigator.geolocation.getCurrentPosition` without options (WarnWeather with "Using GPS") | `started at street`, the app gets a position (no `gps_1` error), `stopped` a minute later; `gps-nmea` stays off. |
-| 5.41c | Watchapp, high accuracy | An app with `enableHighAccuracy: true` (or a sports app) outdoors | `started at exact`; `gps-nmea` enabled while it runs; off again a minute after its last request. |
+| 5.41a | Weather: neighborhood level, then off | `weather.gps = true`; restart; wait 15 s; `busctl --system tree --list org.freedesktop.GeoClue2`; `mmcli -m any --location-status` | `GeoClue client started at neighborhood`, `Weather updated: 1/1`, `GeoClue client stopped (neighborhood, ran N s)` with N ≤ 10 right after the fix; no `/Client/N` left; `gps-nmea` not enabled. (Old 1-min idle at city level ✅ op6 2026-10-08.) |
+| 5.41b | Watchapp, normal accuracy | `geolocation.enabled = true`; a PKJS app calling `navigator.geolocation.getCurrentPosition` without options or with `enableHighAccuracy: false` (the 5.12 test app; WarnWeather's "Using GPS" asks exact, see 5.41c) | `started at street`, the app gets a position (no `gps_1` error), `stopped (street, ran N s)` right after the fix; `gps-nmea` stays off. |
+| 5.41c | Watchapp, high accuracy | An app with `enableHighAccuracy: true` (WarnWeather's "Using GPS", `maximumAge: 0`) outdoors | `started at exact`; `gps-nmea` enabled while it runs; `stopped (exact, ran N s)` with N ≈ the fix time (was ~64 s), and off again at once. `gps-exact.sh` over an idle day: gps_on per session ≈ fix time + < 0.5 s. |
 | 5.41d | First fix waits | Cold start (no recent fix), app requests location | The app gets a position on its first request (up to its `timeout`, 30 s when unset) instead of an immediate `No location fix available`. |
-| 5.41e | Suspend while held | Request a fix, suspend the phone within the minute, wake it after 5 min | On resume the client stops at once (`stopped` right after `resumed`), not a minute of awake time later. ✅ op6 overnight 2026-10-08/09 (`resumed` then `last fix before stopping` + `stopped` within 20 ms, 2–5 min after the start). |
-| 5.41f | Accuracy, not the first fix | WarnWeather ("Using GPS", exact) outdoors with no recent fix | `GeoClue exact fix: ±N m` with N ≤ 100 (not `±25000 m`), or `no exact fix within …, using the best one` indoors after the timeout; weather's `city fix` ≤ ±15000 m. |
+| 5.41e | Watch linger, suspend while held | A sports app (or test app) calling `watchPosition` at ≤ 60 s; then `clearWatch`, or suspend the phone with the watch open and wake it after 5 min | One `started` for the whole watch (no start/stop per tick); after `clearWatch` it stops interval + 5 s after the last tick, also when the `clearWatch` lands while a tick waits for a fix (no `GeoClue didn't answer or refused` WARN). Across a suspend the linger counts wall-clock time: on resume the client stops at once (`stopped` right after the kernel's `PM: suspend exit`, or SleepGuard's `resumed` under `STOANDL_LOG=TRACE`) if the linger has passed. (Old 1-min idle ✅ op6 overnight 2026-10-08/09.) |
+| 5.41f | Accuracy, not the first fix | WarnWeather ("Using GPS", exact) outdoors with no recent fix | `GeoClue exact fix: ±N m` with N ≤ 100 (not `±25000 m`), or `no exact fix within …, using the best one` indoors after the timeout; weather's `neighborhood fix` ≤ ±5000 m. |
+| 5.41g | One cache for weather and watchapps | `weather.gps = true`, `geolocation.enabled = true`, WarnWeather active; watch the log over two hours | A weather refresh within 45 min of a WarnWeather exact fix logs `GeoClue: cached neighborhood fix answers (age N min, ±… m)` and starts no client, also after a WarnWeather request that timed out indoors with `using the best one: ±25000 m` in between; never two GeoClue clients at once (`busctl --system tree --list org.freedesktop.GeoClue2` shows at most one `/Client/N`). Toggling `weather.enabled` off and on doesn't break the next watchapp request. |
+| 5.41h | Neighborhood on LTE | Wi-Fi off, at work, an LTE day; then `/home/vscode/.cache/power-measure/gps-city.sh "<day> 07:00" "<day> 17:45"` | Weather's lookups end with a fix (the cell, often from GeoClue's local map) instead of `no … fix within …, ±25000 m`; each client lives ≤ ~10 s of wall time. Targets against 2026-10-22 (20 city sessions, client_life_s 2907, net_wakes_while_alive 165, 17 × ±25000 m): ≤ 11 sessions, client_life_s < 200, net_wakes_while_alive ≤ 20, cache_hits > 0. |
+| 5.41i | GPS only for the request that asked | A test app with `watchPosition` (`enableHighAccuracy: false`, 30 s), then `getCurrentPosition({enableHighAccuracy: true})` from it or another app while the watch runs | `stopped (street, …)`, `started at exact`, then `stopped (exact, ran N s)` right after the one-shot's answer (not at `clearWatch`); the next tick logs `started at street`. `gps-nmea` is on only for the one-shot. Offline: `GeoClueLocationProviderTest`. |
 
 ## 5.42 Notification parity: history actions, desktop → watch dismissal  ⚠️ UNVERIFIED (needs a watch)
 
@@ -2244,7 +2261,7 @@ connect [name]` (GUI: the banner's *Connect*, or a known watch's *Connect*) or a
 | 5.55c | Connect | `stoandl watch connect` | `Watch connection resumed`; the watch reconnects and gets the notification from 5.55b (catch-up: paused time doesn't count). |
 | 5.55d | Restart, persisting | disconnect, `systemctl --user restart stoandl` | Still disconnected after the restart; log `Watch connection stays paused …`. `stoandl watch connect` reconnects. |
 | 5.55e | Restart, not persisting | `stoandl daemon set connection.disconnect_persists false`, disconnect, restart the daemon | The watch reconnects after the restart. |
-| 5.55f | Two watches | two paired watches, `connection.autoswitch` on; disconnect, wait 2 min; then `stoandl watch connect <other>` | No `Auto-switch: arming …` while paused; the connect resumes and hands the slot to `<other>`. |
+| 5.55f | Two watches | two paired watches; disconnect, wait 2 min; then `stoandl watch connect <other>` | No watch connects while paused; the connect resumes and hands the slot to `<other>`. |
 | 5.55g | Quiet Time | `power.quiet_time_link_off` on, inside the scheduled window with the display off 10 min (link paused for Quiet Time); `stoandl watch disconnect`, then `stoandl watch connect` | Connect answers `Resumed — the connection stays paused until Quiet Time ends`; the watch reconnects only when the window ends or the display comes on. Disconnect before the window ends: the watch stays off after it. |
 | 5.55h | Pairing resumes | disconnected; `stoandl watch pair` | The pause ends (log `Watch connection resumed`), the window opens as usual. |
 | 5.55i | GUI | Watch page with a watch connected | A *Disconnect* action; after it, a *Watch disconnected* banner with *Connect*; a CLI disconnect/connect updates the page within a second (WatchesChanged). Inside a Quiet Time pause an information banner says so. |
@@ -2448,7 +2465,8 @@ piece, HELLO's speaker capabilities).
 ## 5.70 CLI: exit codes, `stoandl status`, faster start, logging, packaging  ⚠️ UNVERIFIED (5.70a–g on the OnePlus 6; 5.70n–o a watch)
 
 [docs/dbus-interface.md → CLI exit codes](docs/dbus-interface.md#cli-exit-codes). Off-device: `CtlErrorTest`,
-`UsedWhenTest`.
+`UsedWhenTest`; for the logging rows `LogbackSignalLoggersTest`, `RepeatedLinesTest` and the fork's
+`GraalJsRunnerTest.xhrTimesOutAtTheAppsTimeout`.
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
@@ -2461,11 +2479,15 @@ piece, HELLO's speaker capabilities).
 | 5.70g | CDS impossible | fill the home partition, remove `~/.cache/stoandl/cli-*`, run `stoandl watch list`; free space and reinstall | Output and exit code unchanged, no JVM error, a `cli-*.nocds` file appears; after the reinstall the archive is created again. |
 | 5.70h | CLI logs to stderr | run several CLI commands | `/tmp/stoandl.log`'s mtime and owner don't change from CLI calls; warnings go to stderr. |
 | 5.70i | DEBUG covers stoandl | `STOANDL_LOG=DEBUG` (`install.sh -d`): a sleep/resume, a GeoClue start, a firmware check, an extension start; a neighbour's unbonded Pebble in range | DEBUG lines from SleepGuard, GeoClue, the firmware check cache and the extension plumbing in `/tmp/stoandl.log`; "Skipping <id>: not bonded, pairing mode inactive" once per watch, not per scan result. |
-| 5.70j | Calendar log | a calendar sync at INFO, then DEBUG | INFO: one `Calendar: N calendar(s) […]` line per sync; DEBUG adds `Calendar '<name>': N event(s) in window …`. |
+| 5.70j | Calendar log | a calendar sync at INFO, then DEBUG; add or remove a calendar; an event whose RRULE ical4j can't expand | INFO: `Calendar: N calendar(s) […]` (and `Calendar discovery: …`, `CalDAV <url>: …`) once after the start, then only when it changes, at DEBUG too (an unchanged sync logs it at TRACE: no `Calendar discovery` burst every few seconds in the journal). DEBUG adds `Calendar '<name>': N event(s) in window …`; the event titles are TRACE only. The broken event warns once per run, `Recurrence expansion failed for UID <uid> (RRULE <rule>) in '<calendar>'`, and TRACE after that. |
 | 5.70k | One launcher | `apk add` the built package | `/usr/bin/stoandl` is stoandl-ctl with `java=/usr/lib/jvm/java-25-openjdk/bin/java` and the `/usr/share/java/stoandl/stoandl.jar` path; the post-install message shows `systemctl --user enable --now stoandl`; daemon and CLI start without "restricted method" warnings (journal, stderr, OpenRC's `/var/log/stoandl.log`). |
 | 5.70l | install.sh --remote | `./install.sh --remote phone` twice with rsync on both ends | The second rsync sends far less than the JAR (`--progress` or wall time); the phone keeps `~/.cache/stoandl/install/stoandl.jar`. |
 | 5.70m | Slimmer JAR | the new JAR on the phone | BLE pair/connect/notifications, PKJS (`Pebble JS Bridge initialized.`), the Classic transport and SQLite all work: no NoClassDefFoundError for com.sun.jna, no missing-native error. |
 | 5.70n | Calls during a slow one | during `stoandl firmware check --refresh` (egress on) or a screenshot, open the GUI | Its quick reads (ListWatches, GetConfig) answer at once (12 method-call threads). |
+| 5.70p | No dbus-java lines under DEBUG | `STOANDL_LOG=DEBUG`; connect and drop the watch, `stoandl daemon set` a key, take a call | `grep -cE "Creating message with serial\|Appending sig" /tmp/stoandl.log` is 0: the `StoandlControl$…`, `ModemVoice$…`, `ModemCall$…` signal loggers are capped at INFO. SleepGuard's `resumed` is gone too (TRACE); `PrepareForSleep: nothing pending (awake N ms)` stays. |
+| 5.70q | Offline XHR | a PKJS weather app (WarnWeather) with the phone offline (airplane mode, or an IPv6-only bearer) | One WARN per failed request, `XHR N to <host> failed: ConnectException: …`: no path or query (no coordinates, no API token) in the journal, and no stack trace at INFO; at `STOANDL_LOG=DEBUG` a DEBUG `XHR N failed` with the stack follows it. The app's error handling runs as before. |
+| 5.70r | Stalled XHR | a PKJS app whose XHR reaches a host that accepts and never answers (`nc -lk 8080` on the LAN), first without `xhr.timeout`, then with `xhr.timeout = 5000`; then close the app mid-request | WARN `XHR N to <host> timed out after 60000 ms` (then `5000 ms`); the app's `ontimeout` and `onloadend` run, not `onerror`. Closing the app ends the request at once (`nc` sees the connection close), not after the timeout. |
+| 5.70s | IPv6-only data link | the OnePlus 6 on mobile data whose bearer has IPv6 only (`mmcli -b <n>`: IPv6 settings, no IPv4; or `nmcli` with `ipv4.method disabled` on the connection), Wi-Fi off; weather with `weather.reverse_geocode`, a PKJS weather app on Bright Sky; then `voice.url = http://localhost:8080/…` against a whisper-server on 127.0.0.1 | Hosts with an AAAA record (api.brightsky.dev, nominatim.openstreetmap.org, api.waqi.info) answer: no `Network is unreachable` for them. IPv4-only hosts (api.open-meteo.com, GitHub) still fail unless the carrier does NAT64. With `localhost` the transcription is refused (`::1` first, no fallback); `127.0.0.1` works, as configuration.md says. |
 
 ## 5.71 Extensions: `ext config`, directory install, quarantine alert, last error  ⚠️ UNVERIFIED (on a desktop; a watch for the needs-setup bridge)
 
@@ -2474,6 +2496,7 @@ piece, HELLO's speaker capabilities).
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
 | 5.71a | Needs setup | install Matrix (or the assistant), remove its config and secrets, `stoandl ext restart <name>` | Desktop (and bridged watch) alert "<name> needs setup", naming "Apps → Extensions → <name> → Settings" and `stoandl ext config <name>`; the restart reply ends with the same sentence. |
+| 5.71a2 | Keyring after the daemon | the assistant's API key in KWallet (`ext config` with the wallet open); reboot the OnePlus 6 | No "needs setup" alert. Log: `Waiting up to 2m for the keyring (org.freedesktop.secrets)`, `Keyring (org.freedesktop.secrets) is up` once ksecretd starts (~10 s), then the assistant starts. With the key removed instead, the alert comes once, after the keyring is up. |
 | 5.71b | ext config | `stoandl ext config <name>`; `stoandl ext config <name> <secret key>`; `… <key> <value>` with a bad enum value; `… <key> --unset` | Lists the settings; the secret is prompted without echo, saved to the keyring, and the extension starts; the bad value is refused (exit 2); `--unset` clears it. A secret on argv is refused with a hint. |
 | 5.71c | Directory install | `stoandl ext install ./examples/extensions/<dir>`; a checkout with a `loop -> .` symlink; a checkout over 512 MB; `stoandl ext install ~/.config/stoandl/ext/<name>` | Installs from the directory: the entry point stays executable, no `.git` copied, the symlink kept as a link; >512 MB is refused and the previous install is still listed and running; the install location itself is refused with "overlaps the install location". |
 | 5.71d | Uninstall with an outside link | `stoandl ext uninstall <name>` on an extension with a symlink pointing outside its dir | The link's target is untouched. |
@@ -2492,9 +2515,10 @@ Fork `b0863aea` ([CLAUDE.md → PKJS](CLAUDE.md#pkjs-pebblekit-js)). Off-device:
 | 5.72d | No fallback warning | several app launches | The journal no longer shows Truffle's "polyglot engine uses a fallback runtime" warning per launch. |
 | 5.72e | Start time (optional) | app launch → `Pebble JS Bridge initialized.` | Record against the previous build (expected 2–3× faster). |
 
-## 5.73 Watch tasks, global mute, startup name, calendar source health, idle wakeups  ⚠️ UNVERIFIED (needs a watch; 5.73g–h the OnePlus 6)
+## 5.73 Watch tasks, global mute, startup name, calendar source health, idle wakeups  ⚠️ UNVERIFIED (needs a watch; 5.73g–h and 5.73m–n the OnePlus 6)
 
-Off-device: `WatchTasksTest`, `UserDirsTest`, `GlobalMuteTest`, `SourceHealthTest`, `ConfigReloadTest`.
+Off-device: `WatchTasksTest`, `UserDirsTest`, `GlobalMuteTest`, `SourceHealthTest`, `ConfigReloadTest`; the fork's
+`GraalJsRunnerTest` (`stopEndsTheXhrClientThread`, `closedXhrManagerFailsFast`).
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
@@ -2503,18 +2527,20 @@ Off-device: `WatchTasksTest`, `UserDirsTest`, `GlobalMuteTest`, `SourceHealthTes
 | 5.73c | Screenshot and logs paths | `stoandl screenshot` and `stoandl logs` with no argument; a second `stoandl screenshot` while one runs; `stoandl support --coredump` | Saved under `~/Pictures/Screenshots` (or the localized XDG dir) and `~/Documents/stoandl`, paths printed; the second says busy; the support bundle still holds the watch logs and the coredump. |
 | 5.73d | GUI stays responsive | a GUI sideload of a big `.pbw` | Other GUI calls answer meanwhile; "Installing x.pbw…", then "Sideloaded …". |
 | 5.73e | Calendar source health | a CalDAV source with a wrong password; fix it and `stoandl calendar sync` | `stoandl calendar sources` shows `problem: Sign-in failed (401)` (the GUI too); afterwards the problem clears and `last sync: just now` appears. |
-| 5.73g | Idle wakeups | OnePlus 6, display off, no pairing window: `strace -f -c -p <pid>` or powertop for a few minutes, with autoswitch on and one watch, then two watches with one connected | stoandl's idle wakeups drop from about 5/s to near 0. |
+| 5.73g | Idle wakeups | OnePlus 6, display off, no pairing window: `strace -f -c -p <pid>` or powertop for a few minutes, with one watch, then two watches with one connected | stoandl's idle wakeups drop from about 5/s to near 0. |
 | 5.73h | Listeners still reconnect | kill and restart dbus-broker or the session bus | The notification monitor, ModemManager and MPRIS log "connection lost, reconnecting" and work again. |
 | 5.73i | Datalog pause | `power.pause_datalog_screen_off = true`: display off, then on; display off, suspend, wake with the display on | Datalog pauses and resumes with the display; after the resume `Watch datalog sends resumed` within ~5 s. |
 | 5.73j | Quiet Time pause | in the scheduled window, display off for 10 min; then during Quiet Time with the display already off, `stoandl daemon set power.quiet_time_link_off true` | Pauses after 10 min; switched on with the display off it pauses at once (not after SCREEN_OFF_MIN). |
 | 5.73k | Live .ics | edit a watched `.ics` | Still syncs within seconds. |
 | 5.73l | GUI global-mute chip | `stoandl notif mute-all 1h` with the Watch tab open; `mute-all never`; Alerts → Mute all 30 min, then suspend the phone past the end and wake it | The "Muted until" chip appears within 20 s (at once on re-focus) and goes with `never`; after the suspend it is gone within a minute (at once when the app comes to the front). |
+| 5.73m | No idle HTTP connections | OnePlus 6 on Wi-Fi, screen on, a PKJS weather face that fetches (WarnWeather); right after its `Fetching from Brightsky` log line run `/home/vscode/.cache/op6.sh 'P=$(pgrep -f stoandl.jar\|head -1); for i in $(seq 40); do echo "$(date +%T) $(ss -tnpH state established \| grep -c "pid=$P,")"; sleep 1; done'` | The count of stoandl's established TCP connections is back to 0 within about 1 s of the round's last answer (before: above 0 for about 30 s). Each sequential request opens its own connection (a chained XHR such as geocode then forecast shows two short-lived ones); only requests running at once on an HTTP/2 host share one. With `JAVA_TOOL_OPTIONS=-Djdk.httpclient.keepalive.timeout=30` in a service drop-in the old 30 s comes back (an explicit setting wins). On an LTE day the capture shows no idle-close/FIN wakes from the weather hosts. |
+| 5.73n | XHR client ends with the session | as 5.73m; then switch watchfaces a few times (each PKJS session ends) and after an hour run `/home/vscode/.cache/op6.sh 'cat /proc/$(pgrep -f stoandl.jar\|head -1)/task/*/comm \| grep -c HttpClient'` | At most one `HttpClient-N-SelectorManager` per running PKJS session, plus one for each daemon client used since the start (firmware check, voice-model download, plugin OAuth, config-page proxy: these stay for the daemon's life, see the open item in [deep-sleep.md](docs/deep-sleep.md#what-stoandl-does)); the number doesn't grow with the sessions. |
 
 ## 5.74 Pairing a second watch, one owner of the connect goal  ⚠️ UNVERIFIED (needs a Time 2 and a Time Steel)
 
 Field findings of 2026-10-19 (`next-work/qol-2026-10-19/field/CLASSIC-PAIR.md`); fork `2679eb8b`, `3d39201d`.
 Off-device: `PairingWindowTest` (the Classic step, the discovery predicate, new-watch resolution, goal
-restore), `WristFollowTest` (relink grace), fork `WatchManagerTest` ("A never finishes connecting →
+restore), fork `WatchManagerTest` ("A never finishes connecting →
 requestConnection(B) still connects B").
 
 | # | Test | Steps | Expected |
@@ -2524,9 +2550,9 @@ requestConnection(B) still connects B").
 | 5.74c | Pair while away | Time 2 in airplane mode (holds the goal), `stoandl watch pair` for the Steel | `BT Classic: discovering`; the Steel bonds and connects without a BT toggle; PairStatus `ok:`. |
 | 5.74d | Known watch returns | Time 2 away, open the window, bring the Time 2 back before the Steel is found | The window stays open (no `ok:Paired and connected` from the Time 2). |
 | 5.74e | Give back | Time 2 connected, `stoandl watch pair`, decline the code on the Steel (or let it time out) | `handing the connection back to Pebble B349`; the Time 2 reconnects. |
-| 5.74f | One owner | both watches known, autoswitch on, Steel in airplane mode | The follower arms the Time 2 and it stays connected: no `BT Classic: connecting`, no flip every ~21 s. |
-| 5.74g | Follower off an away BLE watch | Time 2 away, Steel worn, autoswitch on | After about 20 s the follower arms the Steel and it connects without a BT toggle; no "re-arming" loop for the Time 2. |
-| 5.74h | Relink grace | Time 2 connected, Steel in airplane mode; suspend and resume the phone so the Time 2's link drops (reason Local) | The follower waits up to 90 s and the Time 2 re-links; no rotation to the unreachable Steel at 18 s. |
+| 5.74f | One owner | both watches known, the Time 2 holding the goal, Steel in airplane mode | The Time 2 stays connected: no `BT Classic: connecting`, no flip every ~21 s. |
+| 5.74g | Off an away BLE watch | Time 2 away (holding the goal), Steel worn: `stoandl watch connect <Steel>` | The Steel connects without a BT toggle; no "re-arming" loop for the Time 2 (5.74g–h were follower rows before 2026-10-21). |
+| 5.74h | Re-link after a resume | Time 2 connected, Steel in airplane mode; suspend and resume the phone so the Time 2's link drops (reason Local) | The Time 2 re-links however long it takes; nothing moves the goal to the Steel. |
 | 5.74i | Repair | `stoandl watch repair B349` with the Time 2 connected; a connected Classic watch | PairStatus stays pending until the watch re-pairs, not `ok:` at once; the Classic window ends `ok:` once it is back. |
 | 5.74j | GUI | Watch tab → Pair new watch with the Time 2 connected; `classic.discover=false` → Pair new watch; no watch in pairing mode; a disconnected or endlessly connecting known watch | The dialog ends "Paired and connected"; it offers "Pebble Time, Time Steel or Round? … Turn on Bluetooth Classic", which restarts stoandl and reopens the dialog searching; after a timeout the "Not found? …" hint and Retry (a new window); *Re-pair* on the row (and Watch details → Re-pair watch…) confirms, then pairs it again. |
 | 5.74k | After deploying | on the op6, set `classic.discover` back to `true` (it was off as a workaround) | Classic pairing and 5.74a–i behave as above. |
@@ -2553,6 +2579,25 @@ The GUI-only items of the wave (gui `f4f0e79`…`3144dca`, [gui/CLAUDE.md](gui/C
 | 5.75m | Desktop start | start the GUI on a desktop | No "Could not create delegate for ToolBarLayout" lines. |
 | 5.75n | Calendars | a CalDAV source with a wrong password, a good one; Choose a file… / Choose a folder… | "Sign-in failed (401)"; "Last synced …"; the pickers fill the `.ics` path. |
 | 5.75o | Extension crash | a quarantined extension | "Last error: <stderr line>" and a Restart button that brings it back. |
+| 5.75p | Idle CPU | OnePlus 6: open the GUI on the Watch tab and leave it 60 s in front, then 60 s in the background (another app in front, then minimised); sample `utime+stime` from `/proc/<pid>/stat` and the voluntary context switches of `/proc/<pid>/task/*/status` over each minute; close it and read `journalctl --user` for `app-de.yoxcu.stoandl.gui@…: Consumed` | About 0 ticks and under 100 voluntary switches a minute in every case (before: 2–9 % of awake time, Breeze's hidden progress bars animating); the thin top bar, the firmware flash bar, a language install's bar and a voice model download's bar still show and move. In the background `dbus-monitor` shows no `ListWatches` every 20 s; coming back reads it at once. |
+
+## 5.76 To-dos from the assistant  ⚠️ UNVERIFIED (needs a CalDAV account, the assistant and a watch with a microphone)
+
+`calendar.todos`, the extension method `addTodo` and the assistant's `add_todo` tool
+([configuration.md → To-dos](docs/configuration.md#to-dos), [assistant.md](docs/assistant.md#to-dos)).
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| 5.76a | The list | a CalDAV account with a calendar and a task list (Nextcloud: "Personal" and "Tasks"), plus a local `.ics`; Settings → Calendar → To-do list | Both CalDAV lists that take to-dos and the local calendar are offered, labelled "Name (host)" / "Name (this device)"; a calendar limited to events (Nextcloud: a calendar with tasks turned off) is not. |
+| 5.76b | CLI | `stoandl calendar todo Buy milk`; `… --due <tomorrow>T17:00 --note "2 l"`; `--due <tomorrow>` | "Saved."; the to-dos show in Nextcloud Tasks / Thunderbird with the due time and a reminder at 17:00, and at 09:00 for the day-only one. The log reads `To-do: Saved`, `To-do (due <tomorrow>T17:00+02:00): Saved` (your offset) and `To-do (due <tomorrow>, all day): Saved`. |
+| 5.76c | Assistant | Assistant app: "don't let me forget to call the garage tomorrow at five"; in German with `language=German`; "remember milk and eggs" | One request; the answer is Claude's confirmation with the saved due ("Noted: call the garage, tomorrow, Thursday 22 October, 17:00." with `language=English`, spoken if `speak=always`); a to-do due tomorrow 17:00; German title and confirmation ("morgen, Donnerstag, 22. Oktober, 17:00"); two to-dos for the last. The log's `[assistant] todo:` line carries `due=<date>T17:00:00+02:00` (your offset), and the daemon saves that instant. A plain question still gets an answer and no to-do. |
+| 5.76d | Notification card | Reply on "Ask Claude" with a to-do | The answer card carries the confirmation; the to-do is on the server. |
+| 5.76e | Offline | airplane mode on the phone (local `voice.backend`), dictate a to-do… | Claude itself needs the network, so expect "Claude: no answer" here; instead stop the CalDAV server or block its host, then dictate: "… (Saved offline, syncs later.)"; `stoandl calendar todos` lists it; after the server is back, the next calendar sync (or `stoandl calendar sync`) sends it and the list is empty. |
+| 5.76f | Wrong password | change the account's password on the server, add a to-do | "(Not synced yet: Sign-in failed (401).)"; `calendar todos` shows the problem; after `stoandl calendar passwd`, the next sync sends it. |
+| 5.76g | Local file / vdir | `calendar.todos` = a vdirsyncer `singlefile` `.ics`, then a vdir folder; add a to-do; `vdirsyncer sync` | The `.ics` gains a VTODO before `END:VCALENDAR` (its events untouched); the folder gains `<uid>.ics`; vdirsyncer uploads both. |
+| 5.76h | Off | `calendar.todos` empty, ask for a to-do | "No to-do list chosen: pick one in stoandl, Settings -> Calendar -> To-do list." |
+| 5.76i | The day said is the day saved | after 22:00: "remind me tomorrow at 8 pm to call Flo"; "… on Saturday at 9"; "… at 12" (no AM/PM); `language` empty | The answer names the weekday and date (tomorrow's date, the coming Saturday) and the to-do app shows exactly that day and time; the 12 o'clock one gets a question back, or a to-do at noon (never one at midnight just past: a due before now answers "Couldn't save the to-do: that time has passed"); with `language` empty the due is said in the language you spoke ("tomorrow, Thursday 22 October, 20:00" / "morgen, Donnerstag, …"), and with `language=French` it reads `2026-10-22 20:00`. Then `sudo timedatectl set-timezone America/New_York` (back afterwards) without restarting stoandl, and ask for one "tomorrow at 5": the log's `todo:` line has `T17:00:00-04:00` and the to-do app shows 17:00 in the new zone. |
+| 5.76j | During a sync ⚠️ UNVERIFIED | OnePlus 6, `calendar.todos` = a calendar whose Calindori group has `lockFile=dav-sync.lock` (`work`); hold the lock: `flock /run/user/$(id -u)/dav-sync.lock sleep 30` in a terminal; within it `stoandl calendar todo Test lock`; then again with `sleep 5` | 30 s hold: after ~10 s "Saved on this device; it is written to the calendar once its sync is over."; `stoandl calendar todos` lists it; the `.ics` is unchanged; within ~1 s of the hold's end, with no `stoandl calendar sync`, it is in the file, the list is empty and the log has `Queued to-do 'Test lock' saved to …`. 5 s hold: "Saved." once the hold ends. During a real `dav-sync --force`, a to-do comes out the same way and survives the sync (vdirsyncer uploads it on the next one). |
 
 ## 7. Regression sanity  (run after any of the above)
 

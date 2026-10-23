@@ -220,8 +220,8 @@ private fun combo(
 /** A combo whose options are read on every use ([ConfigField.choicesOf]). */
 private fun dynamicCombo(
     key: String, s: ConfigSection, label: String, desc: String, help: String = "", requires: String = "",
-    choices: () -> List<ConfigChoice>,
-) = ConfigField(key, "combo", s, label, desc, ConfigApply.LIVE, help, requires, choicesOf = choices)
+    egress: String = "", choices: () -> List<ConfigChoice>,
+) = ConfigField(key, "combo", s, label, desc, ConfigApply.LIVE, help, requires, egress, choicesOf = choices)
 
 private fun text(
     key: String, s: ConfigSection, label: String, desc: String, help: String = "", requires: String = "",
@@ -287,6 +287,9 @@ internal data class ConfigEnvironment(
     /** What `voice.local_model` (STT) and `tts.local_voice` (TTS) can be set to, as (id, display name). */
     val installedModels: (ModelKind) -> List<Pair<String, String>> = { VoiceModels.choices(it) },
     val customVibeNames: () -> List<String> = { emptyList() },
+    /** What `calendar.todos` can be set to besides off, as (target, display name): the lists the last
+     *  calendar sync found, and a hand-set target that isn't among them (wired once the daemon is up). */
+    val todoLists: () -> List<Pair<String, String>> = { emptyList() },
 )
 
 @Volatile internal var configEnvironment = ConfigEnvironment()
@@ -314,6 +317,12 @@ private fun reminderVibeChoices(): List<ConfigChoice> =
         (runCatching { configEnvironment.customVibeNames() }.getOrNull() ?: emptyList()).map { n ->
             ConfigChoice(n, n) { it.calendarReminderVibe.equals(n, ignoreCase = true) }
         }
+
+/** The `calendar.todos` options: off, then the lists [ConfigEnvironment.todoLists] names. */
+private fun todoListChoices(): List<ConfigChoice> =
+    listOf(ConfigChoice("Off", "") { it.calendarTodos.isEmpty() }) +
+        (runCatching { configEnvironment.todoLists() }.getOrNull() ?: emptyList())
+            .map { (target, name) -> ConfigChoice(name, target) { it.calendarTodos == target } }
 
 /** The engine choices of `voice.backend`, `voice.fallback_backend` and `tts.backend`, one list so they
  *  can't drift; [off] names the "none" option. */
@@ -345,6 +354,7 @@ private val S_WEATHER_WATCH = ConfigSection(P_WEATHER, "Weather on the watch")
 private const val P_CALENDAR = "Calendar"
 private val S_CALENDAR = ConfigSection(P_CALENDAR, "Calendar")
 private val S_REMINDERS = ConfigSection(P_CALENDAR, "Reminders")
+private val S_TODOS = ConfigSection(P_CALENDAR, "To-dos")
 
 private const val P_MUSIC = "Music"
 private val S_MUSIC = ConfigSection(P_MUSIC, "Music")
@@ -517,9 +527,10 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         requires = "weather.enabled=true", egress = "geocoding-api.open-meteo.com") { it.weatherPlaceSearch },
     toggle("weather.gps", S_WEATHER, "Current location",
         "Add weather for where you are, via the location service",
-        help = "Adds a place that follows you, found by GeoClue at city level (usually Wi-Fi and cell towers). It " +
-            "is shown first and updated on every refresh. GeoClue must allow stoandl: a location agent asks you, " +
-            "or allow the app id under Apps & plugins → Advanced.") { it.weatherGps },
+        help = "Adds a place that follows you, found by GeoClue at neighborhood level (the cell tower and Wi-Fi " +
+            "networks already seen, no GPS). It is shown first; its position is looked up at most every 45 " +
+            "minutes, and a watchapp's recent fix counts too. GeoClue must allow stoandl: a location agent asks " +
+            "you, or allow the app id under Apps & plugins → Advanced.") { it.weatherGps },
     toggle("weather.reverse_geocode", S_WEATHER, "Name places from coordinates",
         "Look up town names for coordinates",
         help = "Turns the current location, and coordinates that classic watchfaces ask about, into a town name. " +
@@ -585,6 +596,12 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
     toggle("calendar.show_declined", S_REMINDERS, "Show declined events",
         "Keep invitations you declined on the timeline",
         help = "Off hides them. Turn on to see your full schedule.") { it.calendarShowDeclined },
+    dynamicCombo("calendar.todos", S_TODOS, "To-do list",
+        "Where to-dos you dictate to the assistant are saved",
+        help = "Offers the CalDAV lists that take to-dos and the local calendars found so far. A to-do with a time " +
+            "gets a reminder in your to-do app. When the server can't be reached, the to-do waits on this " +
+            "device and is sent after the next calendar sync. A folder (vdir) can be set in stoandl.conf.",
+        egress = "the CalDAV server of the chosen list", choices = ::todoListChoices),
     int("calendar.sync_interval", advanced(P_CALENDAR), "Re-read every",
         "How often calendars are checked for changes (minutes)",
         help = "Local files are picked up when they change anyway; this mainly sets how often CalDAV accounts and " +
@@ -790,10 +807,6 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
         placeholder = "stoandl") { it.weatherGpsDesktopId },
 
     // === Connection & power ===
-    toggle("connection.autoswitch", S_CONNECTION, "Follow the wrist",
-        "With several watches, connect the one in range",
-        help = "stoandl tries the most recently used watch first and moves on if it is out of range. A working " +
-            "connection is never dropped to switch.") { it.connectionAutoswitch },
     toggle("connection.disconnect_persists", S_CONNECTION, "Stay disconnected after restart",
         "A manual disconnect survives restarts",
         help = "A watch you disconnect stays disconnected until you connect it again, even across restarts, like " +
@@ -809,10 +822,12 @@ val GUI_CONFIG_FIELDS: List<ConfigField> = listOf(
             "connection pauses until Quiet Time ends or the screen comes on; notifications from that time are " +
             "delivered then. If calls may interrupt Quiet Time, the connection stays on.") { it.powerQuietTimeLinkOff },
     toggle("power.pause_datalog_screen_off", S_PHONE_BATTERY, "Hold watch data while the screen is off",
-        "Fewer wake-ups; health data arrives later",
+        "Fewer wake-ups; health data arrives only when the screen is on",
         help = "The watch sends health and app data about every 15 minutes, which wakes a sleeping phone about " +
-            "four times an hour. With this on it keeps the data until the screen is on. Only useful on a phone " +
-            "that stays connected while suspended.") { it.powerPauseDatalogScreenOff },
+            "four times an hour. With this on it keeps the data while the screen is off, and stoandl asks for " +
+            "it when the screen comes on. Steps, heart rate and battery history then lag until you next use " +
+            "the phone, and a health sync with the screen off gets nothing new. Only useful on a phone that " +
+            "stays connected while suspended.") { it.powerPauseDatalogScreenOff },
     toggle("power.sleep_guard", advanced(P_CONNECTION), "Finish sending before suspend",
         "Briefly delay suspend for pending watch traffic",
         help = "Before suspend, stoandl asks the system to wait until anything on its way to the watch has " +

@@ -80,6 +80,7 @@ import de.yoxcu.stoandl.datalog.DatalogStore
 import de.yoxcu.stoandl.health.HealthExporter
 import de.yoxcu.stoandl.weather.DeLocationSource
 import de.yoxcu.stoandl.location.GeoClueLocationProvider
+import de.yoxcu.stoandl.location.GeoClueProviders
 import de.yoxcu.stoandl.location.LiveGeolocation
 import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.weather.WeatherPlaces
@@ -218,7 +219,12 @@ import de.yoxcu.stoandl.calendar.IcalUrlSource
 import de.yoxcu.stoandl.calendar.IcsPathSource
 import de.yoxcu.stoandl.calendar.LinuxSystemCalendar
 import de.yoxcu.stoandl.calendar.calendarDiscoveryDirs
+import de.yoxcu.stoandl.calendar.calindoriCalendars
+import de.yoxcu.stoandl.calendar.calindoriSyncLocks
 import de.yoxcu.stoandl.calendar.SourceHealth
+import de.yoxcu.stoandl.calendar.NewTodo
+import de.yoxcu.stoandl.calendar.TodoDue
+import de.yoxcu.stoandl.calendar.TodoWriter
 import de.yoxcu.stoandl.secret.FileSecretStore
 import de.yoxcu.stoandl.secret.LayeredSecretStore
 import de.yoxcu.stoandl.secret.SecretServiceStore
@@ -307,20 +313,10 @@ private val BROKEN_BOND_WINDOW = 3.minutes
 private const val BROKEN_BOND_FLAPS = 5   // auth-failure (Reason.Authentication) disconnects → notify
 private val RENOTIFY_INTERVAL = 10.minutes // re-show the churn notification this often while it persists
 
-// "Follow the wrist" multi-watch auto-switch (connection.autoswitch). Single-watch mode connects only
-// the ONE watch holding libpebble3's persisted connectGoal — the last one paired or explicitly
-// `Connect`ed — which need not be the one you're wearing. The follower loop chooses the goal from
-// recency + presence instead: arm the most-recently-connected watch, and if it doesn't come up within
-// [WRIST_ARM_GRACE] (out of range) rotate to the next candidate and try that. The grace also doubles as
-// the tolerance for a brief drop of a *connected* watch — long enough that BlueZ's standing
-// Device1.Connect re-links it before we'd rotate, so an in-use watch that flaps is never abandoned (and
-// [WRIST_RELINK_GRACE] for a drop that re-links slowly, see wristRotateGrace).
-private val WRIST_FOLLOW_TICK = 3.seconds
-// After a firmware/language op is last seen active, hold the goal for this long even while the watch is
-// disconnected — a firmware flash reboots the watch (a disconnect that can outlast [WRIST_ARM_GRACE]),
-// and it MUST be the same watch that reconnects to confirm the update, so the follower must not rotate
-// the goal to a sibling during the reboot gap.
-private val WRIST_OP_GRACE = 2.minutes
+// After a firmware/language op is last seen active, it still counts as running for this long: a flash
+// reboots the watch (a disconnect that can outlast a minute), and the same watch must reconnect to confirm
+// the update, so neither a manual disconnect nor a switch to another watch may take the link meanwhile.
+private val WATCH_OP_GRACE = 2.minutes
 /** The longest [PebbleIntegration] keeps the phone awake for one firmware or language transfer. */
 private val TRANSFER_AWAKE_MAX = 30.minutes
                                            // (in place, via replaces_id — it updates, never stacks)
@@ -337,7 +333,6 @@ private const val NOTIFICATION_PICKUP_GRACE_MS = 1_000L
 // On-connect health request: skipped when the last one is this recent (a reconnect after a short drop;
 // on a live link the watch's own 15-minute datalog flushes keep the data coming anyway).
 private val HEALTH_RECONNECT_MIN_AGE = 15.minutes
-// Datalog pause (power.pause_datalog_screen_off): how often the display state is sampled while awake.
 
 private val log = KotlinLogging.logger {}
 
@@ -363,6 +358,9 @@ class PebbleIntegration(
     private var notificationAppsControl: NotificationAppsControl? = null
     private val libPebbleRef = AtomicReference<LibPebble?>(null)
     private val weatherSyncRef = AtomicReference<WeatherSync?>(null)
+    // The one GeoClue provider (weather's current location and watchapps' geolocation share its client
+    // and cache), rebuilt when weather.gps_desktop_id changes; only this holder ever stops it.
+    private val geoClue = GeoClueProviders({ config.weatherGpsDesktopId }) { id -> GeoClueLocationProvider(id, wakeups()) }
     private val healthExporterRef = AtomicReference<HealthExporter?>(null)
     // Battery insights (see docs). Heartbeat is the primary source and is fed straight from the
     // WebServices override, so its ref is a plain field (initialised before init() wires initKoin);
@@ -440,6 +438,19 @@ class PebbleIntegration(
     private val calendarHttpClient by lazy { stoandlHttpClient() }
     /** Each calendar source's last problem and last good read, for ListCalendarSources. */
     private val calendarHealth = SourceHealth()
+    /** Saves to-dos to `calendar.todos`; what it couldn't send is retried on every calendar sync (one kept
+     *  back by a sync of its file, also once that sync is over). */
+    private val todoWriter by lazy {
+        TodoWriter(
+            target = { configStore.current().calendarTodos },
+            accounts = { configStore.current().calendarCalDav },
+            accountIdFor = { calendarSyncRef.get()?.accountIdFor(it) },
+            secretStore = secretStore,
+            client = calendarHttpClient,
+            queueDir = File(StoandlConfig.configDir(), "todo-queue"),
+            scope = scope,
+        )
+    }
     // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
     private var mprisMusicControl: MprisMusicControl? = null
     // The shared notification send choke point (assigned in init()); passed to StoandlControlImpl so
@@ -496,13 +507,10 @@ class PebbleIntegration(
     private lateinit var manualDisconnect: ManualDisconnect
     private lateinit var linkActivity: WatchLinkActivity
     @Volatile private var lastHealthRequestMs = 0L
-    // BlueZ's last Device1.Disconnected reason and when it came, by the device path's last segment
-    // ("dev_XX_…"); recorded by the churn detector, read by the wrist follower (wristRotateGrace).
-    private val linkDropReasons = ConcurrentHashMap<String, Pair<String, Long>>()
-    // When the host last resumed (ms, 0 = not yet); the wrist follower's post-resume grace keys on it.
-    @Volatile private var lastResumeMs = 0L
     // Datalog send state last pushed to the connected watch (null = none yet); see startDatalogPolicy.
     @Volatile private var datalogSendState: Boolean? = null
+    // When the datalog pause started, to ask for the backlog at the end of a long one.
+    private val datalogPause = DatalogPause()
 
     fun init() {
         // Register the pairing agent before any connection so MITM pairing has an answerer. It is the
@@ -583,7 +591,10 @@ class PebbleIntegration(
         // (watchClaims advertises SupportsTwoWayDismissal), so routes outlive the popup.
         val routeTable = NotifRouteTable()
         vibePatterns = VibePatterns(koin.get())
-        configEnvironment = configEnvironment.copy(customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } })
+        configEnvironment = configEnvironment.copy(
+            customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } },
+            todoLists = ::todoListOptions,
+        )
         watchNotifier = WatchNotifier(
             libPebbleRef, routeTable, notifDao, timelineNotifDao, configStore, notificationFilters, appNamePlacements,
             notificationImages, vibePatterns::custom, deviceInUse = SessionLock::inUse,
@@ -618,6 +629,7 @@ class PebbleIntegration(
             transcribe = { path, language -> voiceControl.transcribe(path, language) },
             synthesize = ttsService::synthesize,
             prepareSynthesize = ttsService::prepare,
+            addTodo = ::addTodo,
             pluginHost = object : ExtensionPluginHost {
                 override fun register(plugin: io.rebble.libpebblecommon.plugin.Plugin) {
                     koinRef.get()?.get<io.rebble.libpebblecommon.plugin.PluginRegistry>()?.registerPlugin(plugin)
@@ -707,15 +719,14 @@ class PebbleIntegration(
             single<SystemCalendar> { calendarSync }
             // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
             // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
-            // the GeoClue client is only created when a watchapp first asks for location. Reuses the
-            // weather GeoClue identity (its own client; GeoClue is per-sender multi-client). When off
+            // the GeoClue provider is only created when a watchapp first asks for location. Shares the
+            // weather GeoClue provider (one client at a time, one fix cache). When off
             // (the default), bind DisabledGeolocation instead of leaving libpebble3's no-op so the
             // watchapp's error says it's disabled (opt-in), not the misleading "Not supported on Linux".
             single<SystemGeolocation> {
                 LiveGeolocation(
                     enabled = { config.geolocation },
-                    desktopId = { config.weatherGpsDesktopId },
-                    provider = { id -> GeoClueLocationProvider(id, wakeups()) },
+                    provider = geoClue::current,
                 )
             }
         }), allowOverride = true)
@@ -748,7 +759,7 @@ class PebbleIntegration(
                 .stateIn(scope, SharingStarted.Eagerly, config.powerQuietTimeLinkOff),
             display = displayState.on,
             mustStayOn = ::linkNeeded,
-            pendingWork = ::watchTraffic,
+            pendingWork = ::quietTimeOwed,
             wakeups = wakeups(),
         ).also { it.start() }
         libPebble.init()
@@ -784,7 +795,7 @@ class PebbleIntegration(
         startUserFacingErrors()
         startScanLoop()
         startAutoConnect()
-        startWristFollower()
+        trackWatchOps()
         startClassicWatch()
         startDiscoveryInterferenceWarning()
         startNotificationActionListener()
@@ -867,6 +878,7 @@ class PebbleIntegration(
         // Drop the logind delay lock now rather than when the JVM's pipes close.
         sleepGuard?.stop()
         routeStore?.flush()
+        geoClue.stop()
     }
 
     /**
@@ -918,7 +930,7 @@ class PebbleIntegration(
         // For each discovered classic Pebble that is new to stoandl (PairingWindow.classicCandidate): inside
         // a pairing window pair it if needed and give it the goal, once per window; outside one only hint at
         // `stoandl watch pair`, so we never pop an unsolicited pairing prompt on the watch. A known watch is
-        // never touched here: WatchManager reconnects the one holding the goal, the wrist follower moves it.
+        // never touched here: WatchManager reconnects the one holding the goal, `watch connect` moves it.
         // Pairing is a blocking ~10s Device1.Pair (confirm the code on the watch) done OUTSIDE the connect
         // attempt so it doesn't race the connection timeout.
         // mac → the window (PairingGate.current(), 0 = none) in which its step was taken: each is decided
@@ -995,13 +1007,25 @@ class PebbleIntegration(
             // torn down — observed as ~33s connect/drop(reason Local) flapping).
             val tick = 2.seconds
             var displayOffNoted = false // this window's "discovering with the display off" line is logged
+            var scannedInWindow = false // a window was open since the scan results were last cleared
+            // Once the window is closed (and its scan stopped), drop the scan's results: libpebble3 keeps them
+            // until the next scan, and a known watch with one shows as discovered, not known, whenever it lacks
+            // the goal, so the auto-connect would take the goal back for it from the watch `watch connect` (or
+            // the window's hand-back) gave it to. Watches with the goal or a connection keep their entries.
+            fun clearScanResultsAfterWindow() {
+                if (!scannedInWindow || pairingGate.isOpen()) return
+                scannedInWindow = false
+                watchConnector.clearScanResults()
+            }
             while (true) {
                 // Wait while Bluetooth is off (libpebble3 reads BlueZ: no adapter, powered off or rfkill-blocked).
                 val btOn = libPebble.bluetoothEnabled.value.enabled()
                 if (!btOn) {
                     if (libPebble.isScanningBle.value) libPebble.stopBleScan()
+                    clearScanResultsAfterWindow()
                     if (pairingGate.isOpen()) showPairingScanPause(PAIRING_PAUSED_BT_OFF)
                     libPebble.bluetoothEnabled.first { it.enabled() }
+                    clearScanResultsAfterWindow() // the window may have ended while Bluetooth was off
                     showPairingScanPause(null)
                     delay(2.seconds) // brief settle so BlueZ is ready before we scan
                     continue
@@ -1033,6 +1057,7 @@ class PebbleIntegration(
                     libPebble.stopBleScan()
                 }
                 if (windowOpen) {
+                    scannedInWindow = true
                     showPairingScanPause(devices.firstOrNull { it is ConnectingPebbleDevice }?.let {
                         "$PAIRING_PAUSED_BLE_BUSY${it.displayName()} is connecting (a scan would disturb it)."
                     } ?: pairingGate.scanFailures.note(System.currentTimeMillis())
@@ -1046,7 +1071,9 @@ class PebbleIntegration(
                     }
                     delay(tick)
                 } else {
-                    // The scan was stopped above; nothing to tick for until the next window opens.
+                    // The scan was stopped above.
+                    clearScanResultsAfterWindow()
+                    // Nothing to tick for until the next window opens.
                     displayOffNoted = false
                     pairingGate.awaitOpen()
                 }
@@ -1261,7 +1288,6 @@ class PebbleIntegration(
                         if (!path.contains("/dev_")) return@addGenericSigHandler
                         val params = msg.getParameters() ?: return@addGenericSigHandler
                         val reason = params.getOrNull(0) as? String ?: return@addGenericSigHandler
-                        linkDropReasons[path.substringAfterLast('/')] = reason to System.currentTimeMillis()
                         if (reason == "org.bluez.Reason.Authentication") {
                             drops.getOrPut(path) { java.util.Collections.synchronizedList(ArrayList()) }
                                 .add(System.currentTimeMillis())
@@ -1637,9 +1663,7 @@ class PebbleIntegration(
             log.info { "Weather sync disabled (no weather.locations, no source, weather.gps off)" }
             return
         }
-        val gps = if (config.weatherGps) {
-            GeoClueLocationProvider(config.weatherGpsDesktopId, wakeups())
-        } else null
+        val gps = if (config.weatherGps) geoClue::current else null
         val deSource = when (config.weatherLocationSource) {
             WeatherLocationSource.MANUAL -> null
             WeatherLocationSource.GNOME -> DeLocationSource(DeLocationSource.Mode.GNOME, "")
@@ -1682,10 +1706,35 @@ class PebbleIntegration(
             sources = ::currentCalendarSources,
             intervalMinutes = { config.calendarSyncIntervalMinutes },
             watchDirs = ::calendarWatchDirs,
+            syncLocks = ::calindoriSyncLocks,
             isEnabled = { config.calendarEnabled },
             onSync = { stampSync("calendar") },
+            onRefresh = { scope.launch { todoWriter.flush() } },
             wakeups = wakeups(),
         )
+
+    /** The one path a to-do takes (an extension's `addTodo`, D-Bus `AddTodo`): read its due, then write it. */
+    private suspend fun addTodo(title: String, due: String, note: String): TodoWriter.Result {
+        val zone = ZoneId.systemDefault()
+        val dueAt = due.trim().takeIf { it.isNotEmpty() }?.let {
+            TodoDue.parse(it, zone) ?: return TodoWriter.Result.Failed("due '$it' is not YYYY-MM-DD or YYYY-MM-DDTHH:MM")
+        }
+        // The due as read, so a wrong zone or a day taken for a moment shows in the log.
+        return todoWriter.add(NewTodo(title.trim(), dueAt, note.trim()))
+            .also { log.info { "To-do${dueAt?.let { d -> " (due ${d.describe(zone)})" } ?: ""}: $it" } }
+    }
+
+    /** The `calendar.todos` options besides off: the lists the last sync found (labelled with their host, or
+     *  as on this device), then a hand-set target that isn't among them, so it shows instead of reading as off. */
+    private fun todoListOptions(): List<Pair<String, String>> {
+        val found = calendarSyncRef.get()?.todoLists().orEmpty().map { rc ->
+            val where = if (rc.platformId.startsWith("/")) "this device"
+                else runCatching { java.net.URI(rc.platformId).host }.getOrNull() ?: "CalDAV"
+            rc.platformId to "${rc.name} ($where)"
+        }.sortedBy { it.second.lowercase() }
+        val current = configStore.current().calendarTodos
+        return if (current.isEmpty() || found.any { it.first == current }) found else found + (current to current)
+    }
 
     /** Assemble the calendar sources from the CURRENT config (read live, so source CRUD takes effect on
      *  the next refresh). Local .ics/discovery are egress-free; iCal URLs and CalDAV are opt-in egress.
@@ -1706,12 +1755,16 @@ class PebbleIntegration(
     }
 
     /** Directories file-watched for near-instant .ics updates: each ics_paths dir, the parent dir of each
-     *  ics_paths file, plus the discovery dirs (from the CURRENT config). Network sources use the ticker. */
+     *  ics_paths file, plus the discovery dirs and those of Calindori's calendars (from the CURRENT config).
+     *  Network sources use the ticker. */
     private fun calendarWatchDirs(): List<File> {
         val cfg = configStore.current()
         return buildList {
             cfg.calendarIcsPaths.map(::File).forEach { f -> add(if (f.isDirectory) f else f.parentFile) }
-            if (cfg.calendarDiscover) addAll(calendarDiscoveryDirs())
+            if (cfg.calendarDiscover) {
+                addAll(calendarDiscoveryDirs())
+                calindoriCalendars().forEach { add(it.file.parentFile) }
+            }
         }.filterNotNull().distinct()
     }
 
@@ -1733,7 +1786,8 @@ class PebbleIntegration(
      *  Deliberately NOT "a (re)connect/negotiation is in progress": on a kernel that drops every link at
      *  suspend (Mode A) the watch reconnects after every wake, so holding each suspend for that handshake
      *  would roughly double the phone's awake time for nothing — the link drops again right after. Real
-     *  deliveries still count: their PPoG packets and BlobDB records show up in [linkActivity]. */
+     *  deliveries still count: their PPoG packets, unsent notification records and the BlobDB transfer in
+     *  flight show up in [linkActivity]. */
     private fun pendingWatchWork(): String? {
         // While paused by hand, Quiet Time ending reconnects nothing: don't wait for that reconnect.
         val quietTime = quietTimeLink?.pendingDescription()
@@ -1755,8 +1809,15 @@ class PebbleIntegration(
         return if (parts.isEmpty()) null else parts.joinToString("; ")
     }
 
+    /** For the Quiet Time pause: [watchTraffic] plus the records still to sync that a suspend doesn't wait
+     *  for (pins, weather, apps, settings), so a pause doesn't cut a sync in two and hold the rest until
+     *  the window ends. */
+    private fun quietTimeOwed(): String? =
+        listOfNotNull(watchTraffic(), linkActivity.backlogSummary()?.let { "to sync: $it" })
+            .joinToString("; ").ifEmpty { null }
+
     private fun watchUpdateRunning(): Boolean =
-        System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds
+        System.currentTimeMillis() - lastWatchOpMs < WATCH_OP_GRACE.inWholeMilliseconds
 
     private fun linkPaused(): Boolean = quietTimeLink?.held == true || manualDisconnect.held
 
@@ -1787,6 +1848,10 @@ class PebbleIntegration(
      * display pauses the watch at the next sample; turned off while paused, the watch is resumed at once
      * instead of staying paused until its next fresh connect. With the option off the display isn't
      * followed at all, so it costs no wakeups.
+     *
+     * A resume once data has been held for [DATALOG_FLUSH_MIN_HELD] (counted from the first pause since the
+     * watch last sent everything, so short dark periods add up; also the resume that follows turning the
+     * option off) asks each watch for its backlog right away; see [DatalogPause].
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun startDatalogPolicy() {
@@ -1819,8 +1884,10 @@ class PebbleIntegration(
         if (!force && datalogSendState == enabled) return
         val watches = libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>()
         if (watches.isEmpty()) return
+        val pausedFor = datalogPause.update(enabled, System.currentTimeMillis())
         watches.forEach { w ->
             runCatching { w.sendPPMessage(DataLoggingOutgoingPacket.SetSendEnabled(enabled)) }
+                .onSuccess { if (pausedFor != null) requestDatalogBacklog(w) }
                 .onFailure { log.warn { "Datalog SetSendEnabled($enabled) to ${w.displayName()} failed: ${it.message}" } }
         }
         val previous = datalogSendState
@@ -1828,9 +1895,22 @@ class PebbleIntegration(
         // INFO for a real pause or resume: any change while the option is on, and the resume that follows
         // turning it off while the watch was paused. The plain "enabled" of every fresh connect stays DEBUG.
         if (previous != enabled && (config.powerPauseDatalogScreenOff || previous == false)) {
-            log.info { "Watch datalog sends ${if (enabled) "resumed" else "paused"} ($why)" }
+            val backlog = pausedFor?.let { "; asking for the backlog (held ${it.inWholeMinutes} min)" } ?: ""
+            log.info { "Watch datalog sends ${if (enabled) "resumed" else "paused"} ($why)$backlog" }
         } else {
             log.debug { "Watch datalog sends ${if (enabled) "enabled" else "disabled"} ($why)" }
+        }
+    }
+
+    /** Ask [w] to send its spooled datalog now (health-sync request: PebbleOS sends every datalog session,
+     *  not only health). Launched, not awaited: the request waits up to 10 s for the watch's ACK. Counts as
+     *  the last health request, so a fresh connect right after doesn't send another. */
+    private fun requestDatalogBacklog(w: ConnectedPebbleDevice) {
+        lastHealthRequestMs = System.currentTimeMillis()
+        scope.launch {
+            runCatching { w.requestHealthData(fullSync = false) }
+                .onSuccess { acked -> log.debug { "Datalog backlog request to ${w.displayName()}: ${if (acked) "acknowledged" else "no answer"}" } }
+                .onFailure { log.warn { "Datalog backlog request to ${w.displayName()} failed: ${it.message}" } }
         }
     }
 
@@ -2062,8 +2142,9 @@ class PebbleIntegration(
             "battery" -> applyBattery()
             "dnd" -> applyDnd()
             "notifications" -> log.info { "Notification forwarding ${if (config.notificationForward) "on" else "paused"}" }
-            // Only the pinned libpebble3 config changed (re-projected above), which libpebble3 reads live.
-            "libpebble" -> log.info { "Catch-up window ${config.notificationCatchUpMinutes} min" }
+            // Only the pinned libpebble3 config changed (re-projected above), which libpebble3 reads live;
+            // reloadConfig has logged the key.
+            "libpebble" -> {}
             "plugins" -> log.info { "Plugins ${if (config.pluginsEnabled) "on (permission policy ${config.pluginsPermissionPolicy.name.lowercase()})" else "off"}" }
             "apps" -> log.info { "Watchfaces ${if (config.appsOrderFacesByLastUsed) "move to the top when activated" else "keep their order"}" }
             "images" -> if (!config.notificationImages) {
@@ -2071,25 +2152,6 @@ class PebbleIntegration(
                 log.info { "Notification pictures off; stored pictures deleted" }
             }
         }
-    }
-
-    /** Map a GUI config key to the sync subsystem that must be re-applied for it to take effect live, or
-     *  null when the value is read live by its consumer with nothing to restart (notification.per_app →
-     *  the push gate; geolocation.enabled → LiveGeolocation; firmware.notify → the notifier loop; tts.* →
-     *  each synthesis). `libpebble` only re-projects the config libpebble3 reads live (the catch-up window). */
-    private fun serviceForConfigKey(key: String): String? = when {
-        key.startsWith("weather.") -> "weather"
-        key.startsWith("music.") -> "music"
-        key.startsWith("health.") -> "health"
-        key.startsWith("battery.") -> "battery"
-        key == "dnd.sync" -> "dnd"
-        key.startsWith("calendar.") -> "calendar"
-        key.startsWith("plugins.") -> "plugins"
-        key.startsWith("apps.") -> "apps"
-        key == "notification.forward" -> "notifications"
-        key == "notification.images" -> "images"
-        key == "notification.catch_up_minutes" -> "libpebble"
-        else -> null
     }
 
     private fun buildSyncStatus(): List<String> {
@@ -2304,6 +2366,14 @@ class PebbleIntegration(
             crudCalendarSource { CalendarSources.update(id, url, username, password, configStore, StoandlConfig.configFile(), secretStore) }
         override fun removeCalendarSource(id: String): String =
             crudCalendarSource { CalendarSources.remove(id, configStore, StoandlConfig.configFile(), secretStore) }
+        override fun addTodo(title: String, due: String, note: String): String =
+            when (val r = runBlocking { this@PebbleIntegration.addTodo(title, due, note) }) {
+                TodoWriter.Result.Saved -> "ok:saved"
+                is TodoWriter.Result.Queued -> "ok:queued\t${r.problem}"
+                TodoWriter.Result.Off -> "error:No to-do list chosen (calendar.todos)"
+                is TodoWriter.Result.Failed -> "error:${r.message}"
+            }
+        override fun pendingTodos(): List<String> = todoWriter.pending().map { "${it.title}\t${it.target}\t${it.lastError}" }
     }
 
     /** Run a [CalendarSources] CRUD op (it persists under the conf lock), then apply it through
@@ -2509,124 +2579,15 @@ class PebbleIntegration(
         }.launchIn(scope)
     }
 
-    /**
-     * "Follow the wrist" — decide which of several paired watches to connect (gated by
-     * `connection.autoswitch`, on by default; inert with a single paired watch). Single-watch mode only
-     * ever connects the ONE watch holding libpebble3's persisted connectGoal — the last one paired or
-     * explicitly `Connect`ed — which need not be the watch you're actually wearing. This loop drives the
-     * goal from recency + presence instead: arm the most-recently-connected known watch, and if it hasn't
-     * come up within [WRIST_ARM_GRACE] (out of range), rotate the goal to the next candidate (most-recent
-     * first) and try that one, so we land on whichever watch is nearby. A connected watch is never dropped
-     * to chase another; a brief link drop is tolerated (its own standing Device1.Connect re-links it inside
-     * the grace, so we don't rotate). We only ever choose an identifier and call [PebbleDevice.connect] —
-     * libpebble3's single-watch machinery (connectGoal set on it, cleared on the rest) does the actual
-     * arm/disconnect/reconnect, so there's no fork change and no second live connection.
-     *
-     * Note the goal moves through libpebble3's persisted connectGoal, so on startup libpebble3 may briefly
-     * connect the stale persisted goal before this loop's first tick re-picks by recency; whenever the
-     * connected watch later goes out of range the loop rotates to whichever watch is present, so it
-     * converges. When two watches are in range at once the tie is broken by "most recently connected".
-     */
-    private fun startWristFollower() {
-        // Track firmware/language activity so we never rotate the goal across an update's reboot gap
-        // (the flashing watch disconnects to reboot and must be the one that reconnects). statusFlow emits
-        // the live phase right up to the reboot, so the last active-phase timestamp anchors [WRIST_OP_GRACE].
+    /** Firmware/language activity, so a watch update counts as running across its reboot gap (see
+     *  [WATCH_OP_GRACE]): statusFlow emits the live phase right up to the reboot, so the last active-phase
+     *  timestamp anchors the grace. */
+    private fun trackWatchOps() {
         scope.launch { firmwareControl.statusFlow().collect(::noteWatchOp) }
         scope.launch { languageControl.statusFlow().collect(::noteWatchOp) }
-        wakeups().onEach { lastResumeMs = System.currentTimeMillis() }.launchIn(scope)
-        scope.launch {
-            var armedId: String? = null      // identifier we last handed the goal to
-            var armedAt = 0L                 // when we armed it (ms) — also the brief-drop grace anchor
-            // The same moment on the monotonic clock, which the grace is measured on: it stops while the
-            // phone is suspended, so a suspend right after arming doesn't use up the armed watch's grace
-            // (wall time did, and the follower rotated away the moment the phone woke — field, 2026-10-20).
-            var armedMono = 0L
-            var droppedAt: Long? = null      // set when armedAt is the armed watch's drop from connected
-            var freshArm = false             // armed by a fresh start, not by a drop or a rotation
-            // Only ticks while there is something to choose: autoswitch on and two or more known watches.
-            val needed = combine(
-                configStore.updates.map { it.connectionAutoswitch },
-                libPebble.watches.map { ws -> ws.count { it is KnownPebbleDevice } >= 2 },
-            ) { on, several -> on && several }
-            while (true) {
-                if (!needed.first()) { armedId = null; needed.first { it } }
-                delay(WRIST_FOLLOW_TICK)
-                if (!config.connectionAutoswitch) { armedId = null; continue }
-                // Don't fight pairing (its discovery/connect path owns the radio) or a powered-off adapter,
-                // and hold the goal steady across a firmware/language update's reboot gap.
-                if (pairingGate.isOpen()) continue
-                if (!libPebble.bluetoothEnabled.value.enabled()) continue
-                if (linkPaused()) { armedId = null; continue } // paused on purpose: nothing to rotate
-                if (System.currentTimeMillis() - lastWatchOpMs < WRIST_OP_GRACE.inWholeMilliseconds) continue
-
-                val known = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
-                if (known.size < 2) { armedId = null; continue }   // nothing to choose between
-
-                val connected = known.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
-                if (connected != null) {
-                    // Hold the live link: adopt it as the goal and wait (no ticks) until it drops; the drop
-                    // starts the grace, so it gets the full window to self-heal before we'd consider rotating.
-                    armedId = connected.identifier.asString
-                    libPebble.watches.first { ws -> ws.none { it is ConnectedPebbleDevice } }
-                    armedAt = System.currentTimeMillis()
-                    armedMono = System.nanoTime()
-                    droppedAt = armedAt
-                    freshArm = false
-                    continue
-                }
-
-                // Nobody connected: make sure a goal is armed, and rotate off one that's taking too long.
-                val byRecency = known.sortedByDescending { it.lastConnected.epochSeconds }
-                val now = System.currentTimeMillis()
-                val current = armedId?.let { id -> byRecency.firstOrNull { it.identifier.asString == id } }
-                when {
-                    current == null -> {
-                        // Fresh start, or the armed watch vanished from the known set → arm most-recent.
-                        val pick = byRecency.first()
-                        armGoal(pick, "most recently connected")
-                        armedId = pick.identifier.asString
-                        armedAt = now
-                        armedMono = System.nanoTime()
-                        droppedAt = null
-                        freshArm = true
-                    }
-                    (System.nanoTime() - armedMono) / 1_000_000 >= rotateGrace(current, droppedAt, freshArm).inWholeMilliseconds -> {
-                        // Armed watch hasn't come up in time → it's out of range; try the next candidate.
-                        val idx = byRecency.indexOfFirst { it.identifier.asString == armedId }
-                        val next = byRecency[(idx + 1) % byRecency.size]
-                        if (next.identifier.asString != armedId) armGoal(next, "${current.displayName()} unreachable")
-                        armedId = next.identifier.asString
-                        armedAt = now   // restart the grace whether we rotated or (lone candidate) kept waiting
-                        armedMono = System.nanoTime()
-                        droppedAt = null
-                        freshArm = false
-                    }
-                }
-            }
-        }
     }
 
-    /** [wristRotateGrace] for the armed [watch]; [droppedAt] when it dropped from connected, if it did;
-     *  [freshArm] when the follower armed it on a fresh start (daemon start, autoswitch turned on). */
-    private fun rotateGrace(watch: PebbleDevice, droppedAt: Long?, freshArm: Boolean): kotlin.time.Duration {
-        val key = when (val id = watch.identifier) {
-            is PebbleBleIdentifier -> bluezObjectPath(id.asString)?.substringAfterLast('/')
-            is PebbleBtClassicIdentifier -> "dev_" + id.macAddress.uppercase().replace(':', '_')
-            else -> null
-        }
-        val reason = key?.let(linkDropReasons::get)
-        return wristRotateGrace(droppedAt, lastResumeMs, reason?.first, reason?.second ?: 0L, freshArm)
-    }
-
-    /** Hand the single connection slot to [device]: sets its connectGoal (clearing the others in
-     *  single-watch mode) so libpebble3 connects it once it's in range. */
-    private fun armGoal(device: KnownPebbleDevice, why: String) {
-        log.info { "Auto-switch: arming ${device.displayName()} ($why; last connected ${relAge(device.lastConnected.epochSeconds)})" }
-        device.connect()
-    }
-
-    // Last time a firmware/language op was seen active (ms). Read by the wrist-follower to hold the goal
-    // across an update's reboot gap; see [WRIST_OP_GRACE]. Written from the status collectors above.
+    // Last time a firmware/language op was seen active (ms); see [trackWatchOps] and [watchUpdateRunning].
     @Volatile private var lastWatchOpMs = 0L
 
     /**
@@ -3179,6 +3140,10 @@ internal interface SyncControl {
     fun updateCalendarSource(id: String, url: String, username: String, password: String): String
     /** Remove a calendar source by id (and its stored password); persists + re-syncs. */
     fun removeCalendarSource(id: String): String
+    /** Save a to-do in `calendar.todos` (AddTodo). */
+    fun addTodo(title: String, due: String, note: String): String
+    /** The to-dos waiting to be sent (PendingTodos). */
+    fun pendingTodos(): List<String>
 }
 
 private class StoandlControlImpl(
@@ -3314,6 +3279,10 @@ private class StoandlControlImpl(
         syncControl.updateCalendarSource(id, url, username, password)
 
     override fun RemoveCalendarSource(id: String): String = syncControl.removeCalendarSource(id)
+
+    override fun AddTodo(title: String, due: String, note: String): String = syncControl.addTodo(title, due, note)
+
+    override fun PendingTodos(): List<String> = syncControl.pendingTodos()
 
     override fun SetCalendarEnabled(query: String, enabled: Boolean): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
@@ -4559,12 +4528,21 @@ private class StoandlControlImpl(
         if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
         if (watch.isBlank()) {
             val resumed = manualDisconnect.resume()
-            // A lone watch also gets the goal back: a failed pairing may have cleared it.
-            known.singleOrNull()?.takeIf { it !is ActiveDevice }?.connect()
+            // Nobody holds the goal (a failed pairing cleared it, or its watch was unpaired): give it back. A
+            // holder is any connecting or connected watch, a new one still pairing (not yet known) included.
+            val candidates = known.map { GoalCandidate(it.identifier.asString, it.lastConnected.toEpochMilliseconds()) }
+            val goalHeld = lp.watches.value.any { it is ActiveDevice }
+            val target = resumeGoalTo(candidates, goalHeld, btOn(), pairingGate.isOpen())
+                ?.let { id -> known.first { it.identifier.asString == id } }
+            target?.let {
+                it.connect()
+                log.info { "Connect: no watch held the connection slot, handing it to ${it.displayName()}" }
+            }
             return when {
                 quietTimeHeld() && resumed -> "ok:Resumed — the connection stays paused until Quiet Time ends"
                 quietTimeHeld() -> "ok:The connection is paused for Quiet Time — it comes back when Quiet Time ends"
                 resumed -> "ok:Watch connection resumed"
+                target != null -> "ok:Connecting ${target.displayName()}"
                 else -> "ok:Watch connection wasn't paused"
             }
         }
@@ -4573,10 +4551,16 @@ private class StoandlControlImpl(
             is WatchMatch.One -> m.device
             is WatchMatch.Error -> return m.message
         }
+        // A switch waits for an update (the flashing watch needs the link) and for a pairing window (its
+        // hand-back at the end would undo the switch).
+        if (match !is ActiveDevice) switchRefusal(watchUpdateRunning(), pairingGate.isOpen())?.let { return "error:$it" }
         manualDisconnect.resume()
         if (match is ConnectedPebbleDevice) return "ok:${match.displayName()} already connected"
-        // requestConnection: in single-watch mode this sets connectGoal on the chosen watch and clears
-        // it on the others, handing it the one connection slot (it connects once in range).
+        // The switch: in single-watch mode requestConnection sets connectGoal on the chosen watch and clears
+        // it on every other one, and libpebble3 persists both, so only this watch reconnects after a resume
+        // or a restart. Clearing the old watch's goal ends its link or its standing connect attempt (for BLE
+        // a Device1.Disconnect, which also cancels BlueZ's own), freeing the one connection slot for this
+        // one. No requestDisconnection() for the old watch: the cleared goal is exactly what it would write.
         match.connect()
         log.info { "Connect: handing the connection slot to ${match.displayName()}" }
         return if (quietTimeHeld()) "ok:${match.displayName()} connects when Quiet Time ends"
@@ -4678,3 +4662,28 @@ private class StoandlControlImpl(
         notificationFilters.remove(pattern)
 }
 
+/** Map a GUI config key to the sync subsystem `reconcile` must re-apply for it to take effect live, or
+ *  null when the value is read live by its consumer with nothing to restart (notification.per_app →
+ *  the push gate; geolocation.enabled → LiveGeolocation; firmware.notify → the notifier loop; tts.* →
+ *  each synthesis; calendar.todos → the to-do writer). `libpebble` only re-projects the config libpebble3
+ *  reads live: the catch-up window, and the calendar knobs, on which PhoneCalendarSyncer re-syncs by
+ *  itself (a `calendar` refresh on top would be a second sync). */
+internal fun serviceForConfigKey(key: String): String? = when {
+    key.startsWith("weather.") -> "weather"
+    key.startsWith("music.") -> "music"
+    key.startsWith("health.") -> "health"
+    key.startsWith("battery.") -> "battery"
+    key == "dnd.sync" -> "dnd"
+    key == "calendar.todos" -> null
+    key in LIBPEBBLE_CALENDAR_KEYS -> "libpebble"
+    key.startsWith("calendar.") -> "calendar"
+    key.startsWith("plugins.") -> "plugins"
+    key.startsWith("apps.") -> "apps"
+    key == "notification.forward" -> "notifications"
+    key == "notification.images" -> "images"
+    key == "notification.catch_up_minutes" -> "libpebble"
+    else -> null
+}
+
+/** The calendar keys [libPebbleConfigOf] projects into the WatchConfig PhoneCalendarSyncer follows. */
+private val LIBPEBBLE_CALENDAR_KEYS = setOf("calendar.reminders", "calendar.show_declined", "calendar.reminder_vibe")

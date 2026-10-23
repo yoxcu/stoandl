@@ -117,6 +117,7 @@ plugins page, below.
 | Reminders | `calendar.reminders` | toggle | live | projected into libpebble3's `WatchConfig` (`libPebbleConfigOf`) | `true` |
 | Reminders | `calendar.reminder_vibe` | combo | live | ”; the options are the built-ins plus the user's custom vibrations, read per use | `Watch default` |
 | Reminders | `calendar.show_declined` | toggle | live | ” | `false` |
+| To-dos | `calendar.todos` | combo | live | read per to-do; the options are the lists the last calendar sync found, read per use | `Off` |
 | Advanced calendar | `calendar.sync_interval` | int | live¹ | the ticker re-samples it each tick | `30` min |
 
 ¹ Applies at once: the ticker is keyed on a `StateFlow` of the interval, so changing the value cancels
@@ -185,17 +186,16 @@ is nothing to reconcile. A finished model or voice download writes `voice.local_
 | Plugins and permissions | `plugins.ask_legacy_apps` | toggle | live | — | `false` |
 | Advanced apps & plugins | `weather.gps_desktop_id` | text | live² | — | `stoandl` |
 
-² Also the GeoClue identity for weather GPS. `LiveGeolocation`'s provider cache is keyed on the id.
+² Also the GeoClue identity for weather GPS. The shared provider holder `GeoClueProviders` (weather and `LiveGeolocation`) is keyed on the id.
 
 ### Connection & power
 
 | Section | Key | Kind | Applies | Why | Default |
 | --- | --- | --- | --- | --- | --- |
-| Connection | `connection.autoswitch` | toggle | live | read inside the wrist-follower loop | `true` |
 | Connection | `connection.disconnect_persists` | toggle | live | read at startup, when `ManualDisconnect.restore()` finds the pause marker; nothing to apply before then | `true` |
 | Connection | `classic.discover` | toggle | **restart** | `startClassicWatch()` is a one-shot check in `init()` | `true` |
 | Phone battery | `power.quiet_time_link_off` | toggle | live | a live `StateFlow` `QuietTimeLink` follows: on, it evaluates on every tick, resume and display change; turning it on while the display is off pauses at once, off releases the hold at once | `false` |
-| Phone battery | `power.pause_datalog_screen_off` | toggle | live | the datalog pause follows the shared display state only while this is on, and the before-sleep hook reads it; turning it off while paused resumes the sends | `false` |
+| Phone battery | `power.pause_datalog_screen_off` | toggle | live | the datalog pause follows the shared display state only while this is on, and the before-sleep hook reads it; turning it off while paused resumes the sends; a resume once data has been held 15 min (from the first pause since the watch last sent everything, so short pauses add up; a request cut short by the next pause is repeated) also sends a health-sync request so the watch sends its backlog at once (`pebble/DatalogPause.kt`) | `false` |
 | Advanced connection & power | `power.sleep_guard` | toggle | **restart** | `SleepGuard` takes or skips its logind delay lock once, at construction in `init()` | `true` |
 | Advanced connection & power | `power.sleep_guard_max_ms` | int | **restart** | handed to `SleepGuard` at construction; 0–4500 ms | `3000` |
 
