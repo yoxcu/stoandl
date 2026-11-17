@@ -26,6 +26,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import de.yoxcu.stoandl.calendar.ICalParser
 import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
+import de.yoxcu.stoandl.store.StoreApi
+import de.yoxcu.stoandl.store.StoreApp
+import de.yoxcu.stoandl.store.StoreCatalog
+import de.yoxcu.stoandl.store.StoreException
+import de.yoxcu.stoandl.store.StoreItemType
+import de.yoxcu.stoandl.store.StoreSearchPage
+import de.yoxcu.stoandl.store.storePlatformFromWatchTypeName
 import de.yoxcu.stoandl.notification.AppNamePlacement
 import io.rebble.libpebblecommon.notification.DefaultVibePattern
 import io.rebble.libpebblecommon.timeline.TimelineColor
@@ -42,7 +49,7 @@ private val log = KotlinLogging.logger {}
 /** How long the CLI waits for the daemon's answer (the daemon bounds each long call itself). */
 private const val CTL_REPLY_TIMEOUT_MS = 120_000L
 
-private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
+private val CTL_COMMANDS = setOf("watch", "apps", "settings", "notif", "ext", "weather", "calendar", "health", "datalog", "firmware", "language", "store", "screenshot", "logs", "support", "reset", "developer", "sync", "backup", "restore", "config", "daemon", "fakecall", "voice", "plugins", "perms")
 
 private val HELP_FLAGS = setOf("help", "--help", "-h")
 private val VERSION_FLAGS = setOf("version", "--version", "-v")
@@ -123,6 +130,7 @@ private fun printUsage() {
     row("", "battery [history|insights|activity|")
     row("", "         power|heartbeat] · find")
     row("apps", "list launch install remove order")
+    row("store", "search info install")
     row("settings", "list · set <id> <value>")
     row("notif", "list mute unmute style filter")
     row("ext", "list install enable disable")
@@ -186,6 +194,7 @@ private fun ctl(args: Array<String>) {
     }
     when (args[0]) {
         "apps" -> ctlApps(args.drop(1))
+        "store" -> ctlStore(args.drop(1))
         "firmware" -> ctlFirmware(args.drop(1))
         "language" -> ctlLanguage(args.drop(1))
         "notif" -> ctlNotif(args.drop(1))
@@ -1697,6 +1706,195 @@ private fun appLaunchOrRemove(launch: Boolean, query: String?) {
         handleStatusResponse(resp)
     }
 }
+
+// ---- store group (Rebble app store) ------------------------------------------------------------
+
+/** `stoandl store …` — browse/search the public Rebble store, inspect an app, then download its PBW
+ *  and hand it to the daemon's existing `SideloadApp` path (same as `apps install`). Browse, detail and
+ *  download are unauthenticated; no app-store account is involved. */
+private fun ctlStore(rest: List<String>) {
+    when (val sub = rest.firstOrNull() ?: "search") {
+        "search" -> storeSearch(rest.drop(1))
+        "info" -> storeInfo(rest.getOrNull(1))
+        "install" -> storeInstall(rest.getOrNull(1))
+        else -> {
+            System.err.println("Usage: stoandl store <search <query> [--type watchface|watchapp] [--limit N] [--platform <board>] | info <id> | install <id>>")
+            System.exit(1)
+        }
+    }
+}
+
+/** `store search`: Algolia text search, filtered to the connected watch's hardware (or `--platform`).
+ *  Flags may appear anywhere; the remaining words are the query. */
+private fun storeSearch(args: List<String>) {
+    var type = StoreItemType.FACES
+    var limit = 15
+    var platformArg: String? = null
+    val words = mutableListOf<String>()
+    var i = 0
+    while (i < args.size) {
+        when (val a = args[i]) {
+            "--type", "-t" -> {
+                val parsed = StoreItemType.parse(args.getOrNull(i + 1))
+                if (parsed == null) { System.err.println("--type expects watchface or watchapp"); System.exit(2); return }
+                type = parsed; i += 2
+            }
+            "--limit", "-n" -> {
+                val n = args.getOrNull(i + 1)?.toIntOrNull()
+                if (n == null || n < 1) { System.err.println("--limit expects a positive number"); System.exit(2); return }
+                limit = n.coerceAtMost(StoreCatalog.MAX_HITS); i += 2
+            }
+            "--platform", "-p" -> {
+                val p = args.getOrNull(i + 1)?.trim()?.lowercase()
+                if (p == null || p !in StoreApi.HARDWARE) {
+                    System.err.println("Unknown platform '${p.orEmpty()}' — one of: ${StoreApi.HARDWARE.sorted().joinToString(", ")}")
+                    System.exit(2); return
+                }
+                platformArg = p; i += 2
+            }
+            else -> { words += a; i += 1 }
+        }
+    }
+    val query = words.joinToString(" ").trim()
+    if (query.isEmpty()) {
+        System.err.println("Usage: stoandl store search <query> [--type watchface|watchapp] [--limit N] [--platform <board>]")
+        System.exit(1); return
+    }
+    val platform = platformArg ?: connectedStorePlatform()
+    if (platform == null) {
+        System.err.println("No watch connected — connect one, or pass --platform <${StoreApi.HARDWARE.sorted().first()}|…>")
+        System.exit(1); return
+    }
+    val page = try {
+        runBlocking { StoreCatalog().search(query, type, platform, limit) }
+    } catch (e: StoreException) {
+        System.err.println(e.message); System.exit(1); return
+    } catch (e: Exception) {
+        System.err.println("Store search failed: ${e.message ?: e::class.simpleName}"); System.exit(1); return
+    }
+    printStoreHits(page, type)
+}
+
+private fun printStoreHits(page: StoreSearchPage, type: StoreItemType) {
+    if (page.hits.isEmpty()) {
+        println("No ${type.noun}s found.")
+        return
+    }
+    println("%6s  %-30s %-18s %-10s %s".format("HEARTS", "TITLE", "AUTHOR", "TYPE", "ID"))
+    page.hits.forEach { h ->
+        println("%6d  %-30s %-18s %-10s %s".format(
+            h.hearts,
+            clip(h.title, 30),
+            clip(h.author, 18),
+            clip(h.type.ifBlank { type.wire }, 10),
+            h.id,
+        ))
+    }
+    println()
+    val of = if (page.pages > 1) " (page ${page.page + 1} of ${page.pages})" else ""
+    println("${page.total} ${type.noun}(s) found$of.")
+    println("Show one with 'stoandl store info <id>', install it with 'stoandl store install <id>'.")
+}
+
+/** `store info <id>`: full listing plus the PBW's size and platform compatibility. Works with no
+ *  watch connected (the compatibility line is then not matched against a watch). */
+private fun storeInfo(id: String?) {
+    if (id.isNullOrBlank()) {
+        System.err.println("Usage: stoandl store info <id>"); System.exit(1); return
+    }
+    val catalog = StoreCatalog()
+    val app = try {
+        runBlocking { catalog.info(id) }
+    } catch (e: StoreException) {
+        System.err.println(e.message); System.exit(1); return
+    } catch (e: Exception) {
+        System.err.println("Store request failed: ${e.message ?: e::class.simpleName}"); System.exit(1); return
+    }
+    if (app == null) { System.err.println("No app with id '$id' in the Rebble store."); System.exit(1); return }
+    val size = try { runBlocking { catalog.downloadSize(app) } } catch (e: Exception) { null }
+    printStoreApp(app, size, connectedStorePlatform())
+}
+
+private fun printStoreApp(app: StoreApp, size: Long?, watchPlatform: String?) {
+    println("${app.title} — ${app.author}")
+    println("  Type:       ${app.type.ifBlank { "unknown" }}")
+    println("  Category:   ${app.category.ifBlank { "unknown" }}")
+    println("  Hearts:     ${app.hearts}")
+    println("  Version:    ${app.version ?: "unknown"}")
+    println("  Published:  ${app.publishedDate ?: "unknown"}")
+    println("  Download:   ${size?.let(::humanSize) ?: "unknown size"}")
+    println("  Platforms:  ${app.platforms.joinToString(", ").ifEmpty { "unknown" }}")
+    if (watchPlatform != null) {
+        println(if (app.supports(watchPlatform)) "  Compatible: yes ($watchPlatform)"
+                else "  Compatible: NO — your watch is $watchPlatform")
+    }
+    println("  ID:         ${app.id}")
+    if (!app.pbwUrl.isNullOrBlank()) println("  PBW:        ${app.pbwUrl}")
+    println()
+    println(app.description.trim().ifEmpty { "(no description)" }.prependIndent("  "))
+}
+
+/** `store install <id>`: download the PBW into `<configDir>/store/pbw/`, then install it through the
+ *  daemon's normal sideload path, which also syncs it to the watch's locker. */
+private fun storeInstall(id: String?) {
+    if (id.isNullOrBlank()) {
+        System.err.println("Usage: stoandl store install <id>"); System.exit(1); return
+    }
+    val platform = connectedStorePlatform()
+    if (platform == null) {
+        System.err.println("No watch connected — connect one first ('stoandl watch list').")
+        System.exit(1); return
+    }
+    val catalog = StoreCatalog()
+    val app = try {
+        runBlocking { catalog.info(id) }
+    } catch (e: StoreException) {
+        System.err.println(e.message); System.exit(1); return
+    } catch (e: Exception) {
+        System.err.println("Store request failed: ${e.message ?: e::class.simpleName}"); System.exit(1); return
+    }
+    if (app == null) { System.err.println("No app with id '$id' in the Rebble store."); System.exit(1); return }
+    if (!app.supports(platform)) {
+        System.err.println("'${app.title}' isn't available for $platform — it supports: ${app.platforms.joinToString(", ").ifEmpty { "nothing" }}")
+        System.exit(1); return
+    }
+    val file = try {
+        runBlocking { catalog.download(app) }
+    } catch (e: StoreException) {
+        System.err.println(e.message); System.exit(1); return
+    } catch (e: Exception) {
+        System.err.println("Download failed: ${e.message ?: e::class.simpleName}"); System.exit(1); return
+    }
+    println("Downloaded ${app.title} (${humanSize(file.length())}) from the Rebble store.")
+    withControl { control ->
+        val resp = try { control.SideloadApp(file.absolutePath) } catch (e: Exception) {
+            System.err.println("Error contacting the daemon: ${e.message}"); System.exit(1); return
+        }
+        if (resp.startsWith("ok:")) {
+            println("Installed ${app.title} on the watch — it syncs in the background.")
+        } else {
+            handleStatusResponse(resp)
+        }
+    }
+}
+
+/** The connected watch's store platform, via D-Bus `WatchDetails`, or null when no daemon/watch. */
+private fun connectedStorePlatform(): String? {
+    val conn = softOpenSessionBus() ?: return null
+    return try {
+        val control = conn.getRemoteObject(STOANDL_BUS_NAME, STOANDL_OBJECT_PATH, StoandlControl::class.java)
+        val (kind, body) = splitStatus(control.WatchDetails())
+        if (kind == "ok") storePlatformFromWatchTypeName(body.split('\t').getOrNull(3)) else null
+    } catch (e: Exception) {
+        null
+    } finally {
+        conn.disconnect()
+    }
+}
+
+/** Shorten [s] to [width] characters so a long store title doesn't break the table alignment. */
+private fun clip(s: String, width: Int): String =
+    if (s.length <= width) s else s.take((width - 1).coerceAtLeast(1)) + "…"
 
 private fun ctlExt(rest: List<String>) {
     val sub = rest.firstOrNull() ?: "list"
