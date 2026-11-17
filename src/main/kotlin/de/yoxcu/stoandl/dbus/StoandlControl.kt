@@ -53,6 +53,36 @@ interface StoandlControl : DBusInterface {
 
     /** Reset the system apps to their default locker order. Returns `ok:<msg>` or `notready:<msg>`. */
     fun RestoreSystemAppOrder(): String
+
+    /** Text search of the public Rebble app store, filtered to one watch platform. [type] is
+     *  `watchface` or `watchapp` (also accepts `faces`/`apps`); a blank [platform] uses the connected
+     *  watch's hardware (`aplite`, `emery`, …), otherwise it must be one of those codenames. [limit] is
+     *  clamped to 1–1000 and [offset] is the number of hits to skip.
+     *
+     *  Returns `ok:<json>` — `{query, platform, total, page, pages, hits: [{id, uuid, type, title,
+     *  author, category, hearts, image, platforms[], compatible}]}` — or `error:`/`notready:`.
+     *  `compatible` is true/false when the index lists the app's hardware (it does for most, but not
+     *  all, documents) and null when it does not — `StoreDetails` has the authoritative map.
+     *  Browsing is public and needs no account; it does not require a connected watch when [platform]
+     *  is given. */
+    fun SearchStore(type: String, query: String, platform: String, limit: Int, offset: Int): String
+
+    /** One store app's listing as `ok:<json>`: the search-hit fields plus `description`, `version`,
+     *  `published`, `pbw` (download URL), `sizeBytes` (null when unknown) and `compatible`/`platform`
+     *  for the connected watch (both null with no watch). `notfound:` when the store has no such id. */
+    fun StoreDetails(id: String): String
+
+    /** Download and install store app [id] on the connected watch. The work runs asynchronously;
+     *  returns `ok:<title>` once kicked off (poll [StoreInstallStatus]), or `busy:<title>`,
+     *  `notfound:`, `incompatible:<supported platforms>`, `notready:` (no watch), `error:`.
+     *  The PBW is cached under `<configDir>/store/pbw/` and installed through the same libpebble3
+     *  sideload call as [SideloadApp] — there is no second install path. */
+    fun InstallStoreApp(id: String): String
+
+    /** Current store-install state: `idle:`, `downloading:<percent>` (−1 when the host gave no
+     *  length), `installing:<title>`, `done:<title>` (just finished), or `failed:<reason>`.
+     *  Poll this after [InstallStoreApp]. */
+    fun StoreInstallStatus(): String
     /** Open the settings page of the PKJS app matching [app] (name or UUID; "" = the running one),
      *  launching it first if needed. Returns a loopback `http://127.0.0.1:<port>/<token>/…` URL the
      *  daemon serves the page from, for the caller to open in a browser; Save on the page goes
@@ -632,6 +662,12 @@ interface StoandlControl : DBusInterface {
      *  [phase] ∈ {downloading,installing,done,idle,failed,notready} (same vocabulary as [LanguageStatus]);
      *  [percent] is 0–100 while `installing`, else `-1`; [detail] is the language name / failure reason. */
     class LanguageProgress(path: String, val phase: String, val percent: Int, val detail: String) :
+        DBusSignal(path, phase, percent, detail)
+
+    /** Store-install progress (the [LanguageProgress] twin for [InstallStoreApp]). [phase] is
+     *  `idle`/`downloading`/`installing`/`done`/`failed`; [percent] is 0–100 while `downloading` (else
+     *  `-1`); [detail] is the app title while `installing`/`done`, the failure reason when `failed`. */
+    class StoreProgress(path: String, val phase: String, val percent: Int, val detail: String) :
         DBusSignal(path, phase, percent, detail)
 
     /** Poke emitted when an extension's installed/enabled/running state changes — enable/disable/restart/

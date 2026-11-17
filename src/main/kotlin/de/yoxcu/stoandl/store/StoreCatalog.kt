@@ -76,9 +76,10 @@ class StoreCatalog(
 
     /**
      * Download [app]'s PBW into the store's cache, reusing a previous copy. Returns the absolute file,
-     * ready to hand to `SideloadApp`.
+     * ready to hand to `SideloadApp`. [onProgress] follows the network read (a cached copy reports
+     * nothing — it is a pure disk hit).
      */
-    suspend fun download(app: StoreApp): File {
+    suspend fun download(app: StoreApp, onProgress: (Long, Long) -> Unit = { _, _ -> }): File {
         val url = app.pbwUrl ?: throw StoreException("'${app.title}' has no downloadable PBW")
         val releaseId = url.substringAfterLast('/').substringBefore('?').removeSuffix(".pbw")
             .takeIf { it.matches(SAFE_NAME) } ?: sha256(url)
@@ -87,7 +88,7 @@ class StoreCatalog(
             log.info { "Store: reusing cached PBW ${dest.path} (${dest.length()} bytes)" }
             return dest
         }
-        val bytes = api.download(url)
+        val bytes = api.download(url, onProgress)
         if (!pbwDir.isDirectory && !pbwDir.mkdirs()) throw StoreException("Couldn't create ${pbwDir.path}")
         val tmp = File(pbwDir, "$releaseId.pbw.part")
         tmp.writeBytes(bytes)

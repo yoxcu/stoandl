@@ -31,8 +31,8 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 91 |
-| **Signals** | **7** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `CalendarsChanged` (reactive layer on top of the poll methods) |
+| **Methods** | 107 |
+| **Signals** | **10** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `StoreProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `PluginsChanged`, `PermissionRequestsChanged`, `CalendarsChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). The daemon calls `requestBusName("de.yoxcu.stoandl")` at startup (`Main.kt:69`) and `releaseBusName` on shutdown (`Main.kt:90`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
 
@@ -41,9 +41,9 @@ The session connection is `DBusConnectionBuilder.forSessionBus().withShared(fals
 `Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus` so the headless daemon reaches the user
 session bus with no graphical login.
 
-### Nine signals augment polling; no properties
+### Ten signals augment polling; no properties
 
-`de.yoxcu.stoandl.Control` now emits **nine D-Bus signals** as a reactive layer **on top of** the
+`de.yoxcu.stoandl.Control` now emits **ten D-Bus signals** as a reactive layer **on top of** the
 poll methods — they do not replace them:
 
 | Signal | D-Bus sig | Meaning | Client reaction |
@@ -52,14 +52,15 @@ poll methods — they do not replace them:
 | `FirmwareProgress` | `sis` | firmware-flash `phase` (the `FirmwareStatus` kinds, `prf` included) + `percent` (0–100 while `inprogress`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
 | `LockerChanged` | *(none)* | the locker (installed apps/faces) or the active watchface changed — incl. from the watch or another client | re-call `ListApps` |
 | `LanguageProgress` | `sis` | language-pack install `phase` + `percent` (0–100 while `installing`, else −1) + `detail` | drive the progress UI directly; every phase change and % tick |
+| `StoreProgress` | `sis` | store-install `phase` (`idle`/`downloading`/`installing`/`done`/`failed`) + `percent` (0–100 while `downloading`, else −1) + `detail` (app title / failure reason) | drive the Store install UI; every phase change and % tick |
 | `ExtensionsChanged` | *(none)* | an extension's installed/enabled/running state changed (enable/disable/restart/install/uninstall — incl. from the CLI) | re-call `ExtList` |
 | `ExtensionStateChanged` | `ss` | per-extension runtime transition: `name` + `state` (`ready` / `exited` (restarting) / `quarantined`) — the unsolicited crash/quarantine the poke can't catch | show the live state (a `quarantined` ext otherwise polls as `running`) |
 | `PluginsChanged` | *(none)* | the set of plugins changed (plugins switched on/off, a plugin `.pbw` installed or removed, an extension's plugin came or went) | re-call `PluginList` |
 | `PermissionRequestsChanged` | *(none)* | the permission requests waiting for an answer changed | re-call `PermPending` |
 | `CalendarsChanged` | *(none)* | a calendar sync added/dropped calendars — after a source CRUD (the sync runs ~5 s later + CalDAV discovery) or a periodic re-read | re-call `ListCalendars` (+ `ListCalendarSources`); lets the GUI update when the data's ready, not race the async sync |
 
-The pokes carry no payload; the typed signals are `FirmwareProgress`/`LanguageProgress` (the live %, which a
-poke would lose) and `ExtensionStateChanged` (the per-extension state a `quarantined` ext can't be polled
+The pokes carry no payload; the typed signals are `FirmwareProgress`/`LanguageProgress`/
+`StoreProgress` (the live %, which a poke would lose) and `ExtensionStateChanged` (the per-extension state a `quarantined` ext can't be polled
 for — its ExtList row still reads `running`). **The methods stay the source of truth** — a signal says
 *something changed*, the client re-reads the authoritative method. Because the daemon is **not**
 D-Bus-activated (above), a client that starts late or after a daemon restart can **miss** a signal, so
@@ -70,8 +71,9 @@ fallback poll. Long-running ops still also expose *polled status strings*
 Daemon side: the signals are nested `DBusSignal` subclasses on `StoandlControl`
 ([`StoandlControl.kt`](../src/main/kotlin/de/yoxcu/stoandl/dbus/StoandlControl.kt)), emitted with
 `serviceConn.sendMessage(...)` from collectors in `PebbleIntegration.startSignalEmitters()` (watch
-state ← `libPebble.watches`; firmware ← `FirmwareControl.statusFlow()`'s inner progress flow; locker ←
-`getAllLockerUuids()` + `activeWatchface`).
+state ← `libPebble.watches`; firmware ← `FirmwareControl.statusFlow()`'s inner progress flow; language ←
+`LanguageControl.statusFlow()`; store ← `StoreControl.statusFlow`; locker ← `getAllLockerUuids()` +
+`activeWatchface`).
 
 The only other object stoandl exports on any bus is an internal **BlueZ pairing agent**
 (`org.bluez.Agent1` at `/io/stoandl/agent`, on the **system** bus, from
@@ -215,6 +217,47 @@ locker version string, empty if unknown), where `flags` is a
 comma-joined subset of **`{active, sideloaded, config, system, synced}`** (`active` = current
 watchface, `config` = has a Clay/PKJS config page, `system` = built-in, `sideloaded` = installed from
 a `.pbw`, `synced` = present on the watch — system apps are always synced).
+
+### Store (`stoandl store`)
+
+Browse and install from the **public Rebble app store**. No account is involved: search, detail and
+the PBW download are open endpoints, and the daemon never touches hearts or account pages. Search
+goes to Rebble's public Algolia index (the store's only text search — its REST category endpoints
+ignore `q`); detail goes to `appstore-api.rebble.io`. Both are **opt-in egress by use**: nothing is
+fetched until a client searches, opens a detail, or installs.
+
+| Method | In → Out | Purpose | CLI |
+|---|---|---|---|
+| `SearchStore` | `(sssii) → s` | Text search filtered to one watch board. Args are `(type, query, platform, limit, offset)`: `type` ∈ `watchface`/`watchapp` (also accepts `faces`/`apps`); a blank `platform` uses the connected watch's codename, else it must be one of `aplite,basalt,chalk,diorite,emery,flint,gabbro`; `limit` is clamped to 1–1000; `offset` is hits to skip. `ok:<json>` / `error:` / `notready:`. | `store search <query>` (`--type`, `--limit`, `--platform`) |
+| `StoreDetails` | `(s) → s` | One app's full listing, including its description and download URL. `ok:<json>` / `notfound:` / `error:`. Works with no watch (the compatibility verdict is then `null`). | `store info <id>` |
+| `InstallStoreApp` | `(s) → s` | Download the app's PBW into `<configDir>/store/pbw/` and sideload it. Asynchronous: `ok:<title>` once kicked off (poll `StoreInstallStatus`, or subscribe to `StoreProgress`), `busy:<title>`, `notfound:`, `incompatible:<supported platforms>`, `notready:` (no watch) or `error:`. | `store install <id>` (the CLI downloads itself, then calls `SideloadApp` — same install path) |
+| `StoreInstallStatus` | `() → s` | `idle:`, `downloading:<percent>` (−1 when the host sent no length), `installing:<title>`, `done:<title>`, `failed:<reason>`. | *(GUI only)* |
+
+`SearchStore` payload (compact JSON in the `ok:` tail):
+
+```
+{ "query": "tictoc", "platform": "aplite", "total": 20, "page": 0, "pages": 4,
+  "hits": [ { "id": "60803d141342ae009528070f", "uuid": "0bcee2c3-…", "type": "watchface",
+              "title": "TicToc+", "author": "Nikki", "category": "Faces", "hearts": 68,
+              "image": "https://assets2.rebble.io/exact/144x144/…",
+              "platforms": ["aplite","basalt","chalk","diorite"], "compatible": true } ] }
+```
+
+`StoreDetails` payload: every hit field plus `description`, `version`, `published`, `pbw` (the
+download URL), `sizeBytes` (null when the host reports no length), and `platform`/`compatible` for
+the connected watch (both null with no watch).
+
+Two notes on the payloads:
+
+- **`compatible` can be `null`.** The Algolia index omits `compatibility` for some documents, so a
+  search hit's `compatible` is only a hint; `StoreDetails` reads the REST compatibility map and is
+  authoritative. `InstallStoreApp` refuses an app the REST map says has no binary for the board.
+- **JSON, not tab-separated records.** Titles and descriptions can contain tabs/newlines, and the
+  GUI needs the description verbatim, so this group returns JSON (like `ExtGetConfig`) rather than
+  the `as` record convention.
+
+Downloads are capped at 16 MiB and only follow `https://` URLs. The raw API JSON is cached for 1 h
+and PBWs are cached by release id, so reopening a detail or retrying an install does not re-download.
 
 ### Watch settings (`stoandl settings`)
 
@@ -445,15 +488,18 @@ per-service runtime master on/off (notifications, weather, calendar, music, heal
 
 ## Long-running operations
 
-Three operations run asynchronously on the daemon and report progress via a **polled status
-string** — there is no progress signal. The CLI's poll loops document the cadence and terminal
-states:
+Four operations run asynchronously on the daemon. Each reports progress two ways: a **polled status
+string** (the CLI's poll loops document the cadence and terminal states below, and a client may
+always fall back to polling) and a typed **progress signal** (`FirmwareProgress`,
+`LanguageProgress`, `StoreProgress`) for clients that subscribe. Pairing has no progress signal —
+`PairStatus` is the only channel.
 
 | Operation | Start method | Polled method | Cadence | Timeout | Terminal states |
 |---|---|---|---|---|---|
 | **Pair / Repair** | `Pair()` / `Repair(name)` | `PairStatus()` | 1.5 s | 145 s | `ok:` (paired), `error:`, `timeout:`; `pending:<msg>` continues (progress, or a `Discovery paused — …`/`BLE scan paused — …`/`Searching again — the phone slept …` reason); `confirm:<code>` → answer with `ConfirmPairing(b)` (≤60 s or it declines) |
 | **Firmware flash** | `UpdateFirmware()` / `SideloadFirmware(path)` | `FirmwareStatus()` | 0.8 s | 600 s | `reboot:` or post-activity `notready:` = success; `failed:` = failure; `prf:` continues (restart the activity tracking and the timeout: the flash resumes from recovery after a reconnect) |
 | **Language install** | `InstallLanguage(query)` / `SideloadLanguage(path)` | `LanguageStatus()` | 0.6 s | 180 s | `done:` = success; `failed:` = failure; post-activity `notready:` = disconnected |
+| **Store install** | `InstallStoreApp(id)` | `StoreInstallStatus()` | 0.5 s | 180 s | `done:` = success; `failed:` = failure (the download or the sideload); `idle:` = nothing started |
 
 For firmware/language, the start method returns `ok:` (kicked off) and the *snapshot* status is read
 repeatedly. A successful flash/install ends with the watch rebooting, so the link drops and the poll
@@ -481,6 +527,9 @@ is down — and a reminder that **backup/restore are not daemon capabilities**:
   `~/.config/stoandl/health/*.ndjson` directly (`health sync` and `health hr` call the daemon).
 - `notif styles` — generated offline from the `TimelineColor`/`TimelineIcon` enums, the vibe presets
   and the app-name placements.
+- `store search` / `store info` — call the Rebble API (and the on-disk cache) directly, so they work
+  with no daemon; `store install` downloads in-process and then calls `SideloadApp` on the daemon.
+  The daemon's own `SearchStore`/`StoreDetails`/`InstallStoreApp` are for the GUI.
 - `version` and `language list` use a *soft* connection: they call the daemon if reachable and
   degrade to embedded/offline output otherwise.
 

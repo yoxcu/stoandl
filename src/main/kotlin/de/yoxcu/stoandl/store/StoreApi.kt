@@ -10,11 +10,13 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.readAvailable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -27,6 +29,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.io.ByteArrayOutputStream
 
 private val log = KotlinLogging.logger {}
 
@@ -165,8 +168,10 @@ class StoreApi(private val client: HttpClient = stoandlHttpClient()) {
     }
 
     /** Download a PBW. Refuses (before reading the body when Content-Length is present) anything over
-     *  [MAX_PBW_BYTES], so a bad store URL can't fill memory/disk. */
-    suspend fun download(url: String): ByteArray {
+     *  [MAX_PBW_BYTES], so a bad store URL can't fill memory/disk. Reads in chunks and reports
+     *  `(downloaded, total)` to [onProgress] (total is -1 when the host sends no Content-Length), so a
+     *  client can show a percentage; the cap is enforced during the read, not only at the end. */
+    suspend fun download(url: String, onProgress: (Long, Long) -> Unit = { _, _ -> }): ByteArray {
         require(url.startsWith("https://")) { "Store download URL must be HTTPS" }
         val resp = try {
             client.get(url)
@@ -180,9 +185,24 @@ class StoreApi(private val client: HttpClient = stoandlHttpClient()) {
         }
         val declared = resp.headers[HttpHeaders.ContentLength]?.toLongOrNull()
         if (declared != null && declared > MAX_PBW_BYTES) throw tooLarge(declared)
-        val bytes = resp.bodyAsBytes()
-        if (bytes.size > MAX_PBW_BYTES) throw tooLarge(bytes.size.toLong())
-        return bytes
+        val channel = resp.bodyAsChannel()
+        val out = ByteArrayOutputStream(declared?.coerceAtMost(MAX_PBW_BYTES)?.toInt() ?: 64 * 1024)
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val read = channel.readAvailable(buffer, 0, buffer.size)
+            if (read == -1) break
+            if (read == 0) continue
+            total += read
+            if (total > MAX_PBW_BYTES) {
+                val tooBig = tooLarge(total)
+                channel.cancel(tooBig)
+                throw tooBig
+            }
+            out.write(buffer, 0, read)
+            onProgress(total, declared ?: -1)
+        }
+        return out.toByteArray()
     }
 
     /** HEAD a PBW for its size (for `store info`), or null if the host doesn't report one. */
