@@ -62,6 +62,7 @@ import de.yoxcu.stoandl.language.LanguageControl
 import de.yoxcu.stoandl.notification.NotificationAppsControl
 import de.yoxcu.stoandl.icons.AppIconExtractor
 import de.yoxcu.stoandl.screenshot.ScreenshotControl
+import de.yoxcu.stoandl.store.StoreControl
 import de.yoxcu.stoandl.support.LogsControl
 import de.yoxcu.stoandl.battery.BatteryStore
 import de.yoxcu.stoandl.battery.HeartbeatStore
@@ -327,6 +328,7 @@ class PebbleIntegration(
     private lateinit var watchConnector: WatchConnector
     private lateinit var firmwareControl: FirmwareControl
     private lateinit var languageControl: LanguageControl
+    private lateinit var storeControl: StoreControl
     private lateinit var screenshotControl: ScreenshotControl
     private lateinit var logsControl: LogsControl
     private lateinit var debugControl: DebugControl
@@ -659,6 +661,7 @@ class PebbleIntegration(
             sendActionableNotification(summary, body, label, onInvoke = onAction)
         })
         languageControl = LanguageControl(libPebbleRef) { config }
+        storeControl = StoreControl(libPebbleRef, scope)
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
@@ -2098,7 +2101,7 @@ class PebbleIntegration(
 
     private fun registerControlService() {
         try {
-            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl) { libPebble.bluetoothEnabled.value.enabled() })
+            serviceConn.exportObject(STOANDL_OBJECT_PATH, StoandlControlImpl(libPebbleRef, weatherSyncRef, watchPrefsControlRef, calendarSyncRef, firmwareControl, languageControl, storeControl, screenshotControl, logsControl, debugControl, developerControl, notificationAppsControl, healthExporterRef, batteryStoreRef, heartbeatStoreRef, extensionManager, scope, pairingGate, pairingState, pairingConfirmation, requireConfirm, pairingResult, bondCache, syncControl, notificationFilters, watchNotifier, { mprisMusicControl }, ::wakeups, voiceControl, pluginControl) { libPebble.bluetoothEnabled.value.enabled() })
             log.info { "D-Bus control service registered at $STOANDL_OBJECT_PATH" }
         } catch (e: Exception) {
             log.warn(e) { "Failed to register D-Bus control service" }
@@ -2148,6 +2151,9 @@ class PebbleIntegration(
             .launchIn(scope)
         languageControl.statusFlow()
             .onEach { val (p, pct, d) = parse(it, "installing"); emit(StoandlControl.LanguageProgress(STOANDL_OBJECT_PATH, p, pct, d)) }
+            .launchIn(scope)
+        storeControl.statusFlow
+            .onEach { val (p, pct, d) = parse(it, "downloading"); emit(StoandlControl.StoreProgress(STOANDL_OBJECT_PATH, p, pct, d)) }
             .launchIn(scope)
 
         // LockerChanged: poke when apps/faces are added/removed or the active watchface changes.
@@ -2868,6 +2874,7 @@ private class StoandlControlImpl(
     private val calendarSyncRef: AtomicReference<LinuxSystemCalendar?>,
     private val firmwareControl: FirmwareControl,
     private val languageControl: LanguageControl,
+    private val storeControl: StoreControl,
     private val screenshotControl: ScreenshotControl,
     private val logsControl: LogsControl,
     private val debugControl: DebugControl,
@@ -3056,6 +3063,23 @@ private class StoandlControlImpl(
     }
 
     override fun LanguageStatus(): String = languageControl.status()
+
+    override fun SearchStore(type: String, query: String, platform: String, limit: Int, offset: Int): String {
+        log.info { "SearchStore(type=$type, query='$query', platform='$platform', limit=$limit, offset=$offset)" }
+        return storeControl.search(type, query, platform, limit, offset)
+    }
+
+    override fun StoreDetails(id: String): String {
+        log.info { "StoreDetails: $id" }
+        return storeControl.details(id)
+    }
+
+    override fun InstallStoreApp(id: String): String {
+        log.info { "InstallStoreApp: $id" }
+        return storeControl.install(id)
+    }
+
+    override fun StoreInstallStatus(): String = storeControl.status()
 
     override fun TakeScreenshot(path: String): String {
         log.info { "TakeScreenshot: $path" }

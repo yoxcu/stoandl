@@ -19,8 +19,8 @@ daemon that bridges your Linux desktop to a Pebble watch over Bluetooth: **BLE**
 
 At its core stoandl forwards your desktop notifications (`org.freedesktop.Notifications`) to the
 watch — but it does most of what the official Android/iOS Pebble companion apps do: the locker,
-weather, music, calendar, firmware flashing, language packs, health sync, battery insights and
-screenshots. All headless — from the CLI, with no phone, no account and no UI.
+the app store, weather, music, calendar, firmware flashing, language packs, health sync, battery
+insights and screenshots. All headless — from the CLI, with no phone, no account and no UI.
 
 It's also **extensible**: an [extension system](docs/extensions.md) lets you plug in your own
 host-side integrations — Matrix, Signal, SMS, "find my phone", anything — in any language, driving
