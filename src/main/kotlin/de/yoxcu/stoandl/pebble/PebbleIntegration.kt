@@ -2483,6 +2483,13 @@ private const val MAX_WRIST_ACTIONS = 3
 /** How long a dialer notification waits for ModemManager to report the call it is about. */
 private const val DIALER_CALL_WAIT_MS = 1_500L
 
+/** How long `apps launch` waits for the watch to confirm the app started. Long enough for a face
+ *  swap over Classic, short enough that a dropped ack cannot wedge a D-Bus receiver thread for good. */
+private const val LAUNCH_ACK_WAIT_MS = 10_000L
+
+/** How long, after a missing launch ack, to wait for the locker to show the requested face active. */
+private const val LAUNCH_RECORD_WAIT_MS = 2_000L
+
 /** Whether a notification comes from one of [dialerApps]: its app name or desktop-entry id, exact and
  *  case-insensitive. A substring match would take "Microphone" for "phone". */
 internal fun isDialerApp(dialerApps: List<String>, appName: String, appId: String?): Boolean =
@@ -3694,8 +3701,30 @@ private class StoandlControlImpl(
         val app = matches.first()
         log.info { "LaunchApp: ${app.properties.title} (${app.properties.id})" }
         return try {
-            runBlocking { lp.launchApp(app.properties.id) }
-            "ok:Launched ${app.properties.title}"
+            // The watch acknowledges AppRunStateStart with its own start packet, and libpebble3's
+            // launchApp suspends until that arrives. Some relaunches never get the ack (seen with a
+            // system face on aplite), so the wait is unbounded. Because this runs via runBlocking on
+            // a D-Bus receiver thread, one missing ack wedges the whole control interface — bound it.
+            val started = runBlocking {
+                withTimeoutOrNull(LAUNCH_ACK_WAIT_MS) {
+                    lp.launchApp(app.properties.id)
+                    true
+                }
+            }
+            if (started == true) {
+                "ok:Launched ${app.properties.title}"
+            } else {
+                // No ack. LibPebble records a watchface switch in the locker *before* it starts
+                // waiting, and the watch has in practice already switched, so a matching locker
+                // entry means the face the user is now wearing is the one they asked for.
+                val recorded = runBlocking {
+                    withTimeoutOrNull(LAUNCH_RECORD_WAIT_MS) {
+                        lp.activeWatchface.first { it?.properties?.id == app.properties.id }
+                    }
+                }
+                if (recorded != null) "ok:Launched ${app.properties.title} (no ack from the watch)"
+                else "timeout:The watch did not confirm launching ${app.properties.title}; it may have switched anyway"
+            }
         } catch (e: Exception) {
             log.warn(e) { "LaunchApp(${app.properties.id}) failed" }
             "error:${e.message ?: "launch failed"}"
