@@ -7,10 +7,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The store has two JSON dialects: Algolia (search; `compatibility` is a platform-name array and
- * `list_image` a URL string) and the REST detail endpoint (`compatibility` is a per-platform object and
+ * The store has two JSON dialects: Algolia (search; `compatibility` is a per-platform object and
+ * `list_image` a URL string) and the REST detail endpoint (`compatibility` is the same object and
  * `list_image` a size→URL map). Both are normalized here, and this is what fixes the field layout the
- * CLI depends on — the earlier plan had them backwards.
+ * CLI depends on — the earlier plan had them backwards. The index used to send `compatibility` as a
+ * plain array of platform names; that shape is still parsed for older cached pages and fixtures.
  */
 class StoreParsingTest {
 
@@ -27,9 +28,19 @@ class StoreParsingTest {
         assertEquals("Nikki", hit.author)
         assertEquals("watchface", hit.type)
         assertEquals(68, hit.hearts)
-        // ios/android are in compatibility too; only watch hardware belongs in the platform list.
-        assertEquals(listOf("aplite", "basalt", "chalk", "diorite", "emery"), hit.platforms)
+        // ios/android are in compatibility too, and emery has no binary; only installable watch
+        // hardware belongs in the platform list.
+        assertEquals(listOf("aplite", "basalt", "chalk", "diorite"), hit.platforms)
         assertEquals("https://assets2.rebble.io/exact/144x144/60803d251342ae009528071a", hit.listImage)
+    }
+
+    @Test
+    fun `an older Algolia page with a compatibility array still parses`() {
+        val hit = parseSearchResponse(
+            """{"hits":[{"id":"abc","title":"Legacy",
+               "compatibility":["ios","aplite","emery"]}]}"""
+        ).hits.single()
+        assertEquals(listOf("aplite", "emery"), hit.platforms)
     }
 
     @Test
@@ -100,7 +111,15 @@ class StoreParsingTest {
                   "type": "watchface",
                   "category": "Faces",
                   "hearts": 68,
-                  "compatibility": ["ios", "android", "aplite", "basalt", "chalk", "diorite", "emery"],
+                  "compatibility": {
+                    "ios": {"supported": true},
+                    "android": {"supported": true},
+                    "aplite": {"firmware": {"major": 3}, "has_binary": true, "supported": true},
+                    "basalt": {"firmware": {"major": 3}, "has_binary": true, "supported": true},
+                    "chalk": {"firmware": {"major": 3}, "has_binary": true, "supported": true},
+                    "diorite": {"firmware": {"major": 3}, "has_binary": true, "supported": true},
+                    "emery": {"firmware": {"major": 3}, "has_binary": false, "supported": true}
+                  },
                   "list_image": "https://assets2.rebble.io/exact/144x144/60803d251342ae009528071a"
                 },
                 {
@@ -110,7 +129,7 @@ class StoreParsingTest {
                   "author": "Someone",
                   "type": "watchface",
                   "hearts": 3,
-                  "compatibility": ["aplite"],
+                  "compatibility": {"aplite": {"supported": true, "has_binary": true}},
                   "list_image": "https://example.invalid/second"
                 }
               ],

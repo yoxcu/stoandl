@@ -283,13 +283,17 @@ internal fun parseDetailResponse(body: String): StoreApp? {
     )
 }
 
-/** Algolia lists supported platforms as `["ios","android","aplite",…]`; keep the watch ones only. */
-private fun platformList(element: JsonElement?): List<String> =
-    (element as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+/** Algolia and REST both send `compatibility` as `{"aplite":{"supported":true,"has_binary":true,…}, …}`;
+ *  the index used to send a plain array of platform names, which is still accepted. Only watch hardware
+ *  with a binary belongs in the list (an entry can be `supported` and still have `has_binary: false`). */
+private fun platformList(element: JsonElement?): List<String> = when (element) {
+    is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         .filter { it in StoreApi.HARDWARE }
         .distinct()
+    else -> supportedPlatforms(element)
+}
 
-/** REST lists compatibility as `{"aplite":{"supported":true,"has_binary":true,…}, …}`. */
+/** REST (and the index) lists compatibility as a per-platform map. */
 private fun supportedPlatforms(element: JsonElement?): List<String> {
     val map = element as? JsonObject ?: return emptyList()
     return map.entries.mapNotNull { (platform, value) ->

@@ -249,9 +249,12 @@ the connected watch (both null with no watch).
 
 Two notes on the payloads:
 
-- **`compatible` can be `null`.** The Algolia index omits `compatibility` for some documents, so a
-  search hit's `compatible` is only a hint; `StoreDetails` reads the REST compatibility map and is
-  authoritative. `InstallStoreApp` refuses an app the REST map says has no binary for the board.
+- **`compatible` can be `null`, and a search hit is only a hint.** The index omits `compatibility`
+  for some documents, so `compatible` is null there (unknown must not read as "yes"). Its `_tags`
+  are not a reliable platform filter either: a document can carry an `aplite` tag while its
+  `compatibility.aplite.supported` is false, so a platform-scoped search does return apps that
+  cannot run on that watch. `StoreDetails` reads the REST compatibility map and is authoritative;
+  `InstallStoreApp` refuses an app the map says has no binary for the board.
 - **JSON, not tab-separated records.** Titles and descriptions can contain tabs/newlines, and the
   GUI needs the description verbatim, so this group returns JSON (like `ExtGetConfig`) rather than
   the `as` record convention.
