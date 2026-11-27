@@ -4,11 +4,13 @@ import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
+import io.rebble.libpebblecommon.database.entity.ColorWatchPref
 import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.services.FirmwareVersion
+import io.rebble.libpebblecommon.timeline.TimelineColor
 import kotlinx.coroutines.flow.flowOf
 import java.lang.reflect.Proxy
 import kotlin.test.Test
@@ -103,13 +105,32 @@ class WatchPrefsControlTest {
         )
     }
 
-    /** The fork's description already names the firmware; the derived note must not repeat it. */
+    /** The firmware note comes once, whether or not the description names the firmware itself. */
     @Test
     fun `the quiet time notification backlight says 4_41 once`() {
         listed = listOf(WatchPreference(BoolWatchPref.QuietTimeNotificationBacklight, null))
         val row = control.list().single().split('\t')
         assertEquals(listOf("dndNotificationBacklight", "bool", "true", "true"), row.take(4))
         assertEquals(1, Regex("4\\.41").findAll(row[7]).count(), row[7])
+    }
+
+    /** The accent colour is a pick from a short list: the watch crashes on a colour outside it. */
+    @Test
+    fun `the accent colour takes only the colours the watch offers`() {
+        listed = listOf(WatchPreference(ColorWatchPref.ThemeHighlightColor, null))
+        val row = control.list().single().split('\t')
+        assertEquals(listOf("themeHighlightColor", "enum", "Vivid Cerulean", "Vivid Cerulean"), row.take(4))
+        assertContains(row[4], "|Cyan|")
+        assertTrue("Melon" !in row[4].split('|'), row[4])
+        assertEquals(
+            "ok:Set themeHighlightColor = Cyan (syncs to the watch on next connect)",
+            control.setOne("themeHighlightColor", "cyan"),
+        )
+        assertTrue(control.setOne("themeHighlightColor", "Vivid Cerulean").startsWith("ok:"))
+        assertEquals(listOf<Any?>(TimelineColor.Cyan, TimelineColor.VividCerulean), written.map { it.value })
+        val r = control.setOne("themeHighlightColor", "Melon")
+        assertTrue(r.startsWith("error:"), r)
+        assertEquals(2, written.size, "nothing more may reach the watch")
     }
 
     @Test
@@ -157,8 +178,8 @@ class WatchPrefsControlTest {
         assertEquals(listOf("Quiet Time", "Timeline Future", "Airplane Mode"), rows.map { it[2] })
         assertEquals(listOf("Quiet Time", "Timeline Future", "off"), rows.map { it[3] })
         assertEquals(
-            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|Toggle Touch|" +
-                "<app name or uuid>",
+            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Toggle Touch|Timeline Past|Timeline Future|" +
+                "Clear Notifications|<app name or uuid>",
             rows[0][4],
         )
     }
@@ -186,7 +207,7 @@ class WatchPrefsControlTest {
         val row = qlRow()
         assertEquals("Toggle Touch", row[2])
         assertContains(row[4], "|Toggle Touch|")
-        assertEquals("Toggle Touch: touch watches only.", row[7])
+        assertEquals("Toggle Touch: touch watches only. Clear Notifications: PebbleOS 4.38 or later.", row[7])
     }
 
     @Test
@@ -202,6 +223,23 @@ class WatchPrefsControlTest {
         assertEquals("", row[7])
     }
 
+    /** libpebble3's shortcut list (SystemAppIDs.SYSTEM_SHORTCUTS) is the one table: Clear Notifications comes
+     *  from it, and before PebbleOS 4.38 (no such system app; before 4.40 a tap reboots) it is kept off. */
+    @Test
+    fun `clear notifications comes from libpebble3's list and needs 4_38`() {
+        assertEquals(SystemAppIDs.SYSTEM_SHORTCUTS.keys.toList(), QuickLaunchActions.all.map { it.uuid })
+        connect(WatchType.BASALT, "v4.37.0")
+        assertEquals(
+            "error:Clear Notifications needs PebbleOS 4.38 or later, the watch runs v4.37.0",
+            control.setOne("qlUp", "clear-notifications"),
+        )
+        assertTrue(written.isEmpty(), "nothing may reach the watch")
+        connect(WatchType.BASALT, "v4.38.0")
+        assertEquals("ok:Set qlUp = Clear Notifications (syncs to the watch on next connect)",
+            control.setOne("qlUp", "Clear Notifications"))
+        assertEquals(listOf(QuickLaunchSetting(true, SystemAppIDs.CLEAR_NOTIFICATIONS_UUID)), written.map { it.value })
+    }
+
     @Test
     fun `a watch without touch is neither offered nor given toggle touch`() {
         connect(WatchType.FLINT, "v4.41.2")
@@ -211,7 +249,8 @@ class WatchPrefsControlTest {
         val row = qlRow()
         assertEquals("Toggle Touch", row[2], "a value set for another watch still lists by name")
         assertEquals(
-            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|<app name or uuid>",
+            "off|Quiet Time|Backlight|Motion Backlight|Airplane Mode|Timeline Past|Timeline Future|Clear Notifications|" +
+                "<app name or uuid>",
             row[4],
         )
         assertEquals("", row[7])

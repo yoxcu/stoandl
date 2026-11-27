@@ -74,7 +74,7 @@ back unchanged.
 | Calls | `call.dialer_apps` | list | live | read per notification | `calls` |
 | Calls | `contacts.vcard_paths` | list | live | `ContactResolver` re-reads on its file-signature check | `~/.local/share/kpeoplevcard` |
 | Messages from stoandl | `alerts.enabled` and `alerts.pairing`, `alerts.bluetooth`, `alerts.extensions`, `alerts.permissions`, `alerts.battery_full`, `alerts.scan_failed` | toggle | live | read per alert via `alertsAllow` | `true` |
-| Advanced notifications | `notification.sync_to_watch` | toggle | **restart** | decides a Koin binding (`PlatformConfig(syncNotificationApps=…)`) built once in `init()` | `false` |
+| Advanced notifications | `notification.sync_to_watch` | toggle | **restart** | a `JvmHost` parameter (`syncNotificationApps` → libpebble3's `PlatformConfig`) read once when `init()` builds libpebble3 | `false` |
 
 **Messages from stoandl** are what stoandl says *about itself*, mostly on the host desktop (permission
 prompts and the full-battery alert also show on the watch), as opposed to forwarded app notifications.

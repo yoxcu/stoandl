@@ -15,14 +15,18 @@ import de.yoxcu.stoandl.pebble.WatchNotifier
 import de.yoxcu.stoandl.secret.SecretStore
 import de.yoxcu.stoandl.util.ConfFile
 import de.yoxcu.stoandl.util.LenientJson
+import de.yoxcu.stoandl.util.connectedDevice
 import de.yoxcu.stoandl.util.runCommand
+import de.yoxcu.stoandl.util.watchesNow
 import de.yoxcu.stoandl.voice.tts.Synthesis
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.database.entity.QuickLaunchActionSupport
 import io.rebble.libpebblecommon.disk.pbw.PbwApp
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.packets.AppMessage
+import io.rebble.libpebblecommon.plugin.NativePlugin
 import io.rebble.libpebblecommon.services.appmessage.AppMessageData
 import io.rebble.libpebblecommon.services.appmessage.AppMessageResult
 import kotlinx.coroutines.CoroutineScope
@@ -152,7 +156,7 @@ class ExtensionManager(
                     .collect { connected ->
                         if (!connected) return@collect
                         delay(CONNECT_SETTLE_MS)
-                        if (lp.watches.value.any { it is ConnectedPebbleDevice }) {
+                        if (lp.watchesNow().any { it is ConnectedPebbleDevice }) {
                             running.values.forEach { it.onWatchConnected() }
                             // (Re)install declared watchapps for enabled extensions — idempotent, off the
                             // collector so a slow transfer doesn't stall connect/disconnect handling.
@@ -626,9 +630,9 @@ private val KEYRING_WAIT = 2.minutes
 
 /** One supervised extension child: spawn → handshake → relay, restart-with-backoff on exit. Owns a
  *  child scope so [shutdown] cleanly stops the supervise loop, the inbound collectors, and the child. */
-/** Where extensions' plugins go: libpebble3's PluginRegistry in the daemon. */
+/** Where extensions' plugins go: libpebble3's plugin registry (`LibPebble.registerPlugin`) in the daemon. */
 interface ExtensionPluginHost {
-    fun register(plugin: io.rebble.libpebblecommon.plugin.Plugin)
+    fun register(plugin: NativePlugin)
     fun unregister(pluginUuid: Uuid)
 }
 
@@ -792,7 +796,7 @@ private class ExtensionProcess(
                 put("protocolVersion", 1)
                 put("config", buildJsonObject { def.config.forEach { (k, v) -> put(k, v) } })
                 put("watch", buildJsonObject {
-                    put("connected", libPebbleRef.get()?.watches?.value?.any { it is ConnectedPebbleDevice } ?: false)
+                    put("connected", libPebbleRef.get()?.watchesNow()?.any { it is ConnectedPebbleDevice } ?: false)
                 })
             })
         })
@@ -983,8 +987,7 @@ private class ExtensionProcess(
         watchNotifier.retract(itemId)
     }
 
-    private fun connectedDevice(): ConnectedPebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>()?.firstOrNull()
+    private fun connectedDevice(): ConnectedPebbleDevice? = libPebbleRef.connectedDevice<ConnectedPebbleDevice>()
 
     private fun handleRegisterApp(id: JsonElement?, params: JsonObject?) {
         val uuid = params?.str("uuid")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
@@ -1036,7 +1039,19 @@ private class ExtensionProcess(
         val uuid = params?.str("uuid")?.let { runCatching { Uuid.parse(it) }.getOrNull() }
         if (uuid == null) { replyError(id, "$verb: missing/invalid uuid"); return }
         val lp = libPebbleRef.get() ?: run { replyError(id, "no watch"); return }
-        try { if (launch) lp.launchApp(uuid) else lp.stopApp(uuid) } catch (e: Exception) { replyError(id, e.message ?: "$verb failed"); return }
+        try {
+            when {
+                !launch -> lp.stopApp(uuid)
+                else -> {
+                    val targets = launchTargets(uuid, lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>())
+                    when {
+                        targets == null -> lp.launchApp(uuid)
+                        targets.isEmpty() -> { replyError(id, "$verb: $uuid isn't on the connected watch"); return }
+                        else -> targets.forEach { it.launchApp(uuid) }
+                    }
+                }
+            }
+        } catch (e: Exception) { replyError(id, e.message ?: "$verb failed"); return }
         reply(id) { put("ok", true) }
     }
 
@@ -1176,5 +1191,19 @@ private class ExtensionOwner(
                 extra()
             })
         })
+    }
+}
+
+/**
+ * Where an extension's `launchApp` of [uuid] goes: null for an app or an action every watch has (libpebble3's
+ * own `launchApp`, to every connected watch), else the [connected] watches that have the firmware action
+ * [uuid] (Toggle Touch, Clear Notifications), empty when none has it: elsewhere the launch would open an app
+ * that isn't there (before PebbleOS 4.40 such a launch from Quick Launch reboots the watch). The Quick Launch
+ * pref's and upstream's Watch State plugin's rule, libpebble3's [QuickLaunchActionSupport].
+ */
+internal fun launchTargets(uuid: Uuid, connected: List<ConnectedPebbleDevice>): List<ConnectedPebbleDevice>? {
+    if (QuickLaunchActionSupport.of(uuid) == null) return null
+    return connected.filter {
+        QuickLaunchActionSupport.isLaunchableOn(uuid, it.watchInfo.platform.watchType, it.watchInfo.runningFwVersion)
     }
 }

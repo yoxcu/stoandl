@@ -1,6 +1,9 @@
 plugins {
-    kotlin("jvm") version "2.4.10"
-    kotlin("plugin.serialization") version "2.4.10"
+    // Kotlin, Ktor, kotlinx, kermit and Koin come from the fork's catalog (libs/libpebble3/gradle/
+    // libs.versions.toml, `forkLibs` in settings.gradle.kts): the daemon compiles as a friend of the
+    // fork's jvm module (below), so it must build with the same compiler and libraries.
+    alias(forkLibs.plugins.kotlin.jvm)
+    alias(forkLibs.plugins.kotlin.serialization)
     application
     id("com.github.johnrengelman.shadow") version "8.1.1"
 }
@@ -35,28 +38,32 @@ dependencies {
     // libs/libpebble3 composite build, so the coordinate is never resolved against a repository.
     implementation("com.coredevices:libpebble3:composite")
 
-    // Koin DI (needed because libpebble3 exposes it as implementation, not api)
-    implementation("io.insert-koin:koin-core:4.2.2")
+    // Compile-only, and ONLY so the compiler can resolve the supertypes of fork classes the daemon uses:
+    // upstream's public PKJSApp (LibPebble's currentPKJSSession) is a KoinComponent. The daemon never uses
+    // Koin itself (its door into the graph is the fork's JvmHost / createJvmLibPebble); `noKoinInDaemon`
+    // fails `test` and `shadowJar` on any `org.koin.` use in src/, imported or fully qualified. Runtime Koin
+    // is libpebble3's own.
+    compileOnly(forkLibs.koin.core)
 
-    // Ktor HTTP client engine for JVM (libpebble3 uses Ktor but only adds engine in jvmTest).
-    // Also used by the weather sync to query Open-Meteo.
-    implementation("io.ktor:ktor-client-cio:3.5.1")
+    // Ktor HTTP client engine for the daemon's own clients (the weather sync's Open-Meteo queries, …);
+    // libpebble3 keeps its CIO engine an implementation dependency.
+    implementation(forkLibs.ktor.cio)
 
-    // JSON parsing for the Open-Meteo weather response (version matches libpebble3's catalog).
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    // JSON parsing for the Open-Meteo weather response.
+    implementation(forkLibs.serialization)
 
     // iCalendar parsing + RRULE recurrence expansion for calendar sync (pure-JVM, BSD-3, java.time).
     implementation("org.mnode.ical4j:ical4j:4.1.1")
 
     // DBus — listen to org.freedesktop.Notifications on the session bus
-    implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.9.1")
+    implementation(forkLibs.kotlinx.io.core)
 
     implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
     implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation(forkLibs.coroutines)
 
-    implementation("co.touchlab:kermit:2.1.0")
+    implementation(forkLibs.kermit)
 
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
@@ -71,7 +78,43 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+// The daemon (main and test) compiles as a FRIEND of libpebble3's jvm module, so it sees upstream's and
+// the fork's `internal` declarations (upstream made most of its API internal under explicitApi). Where
+// upstream offers a public API the daemon uses it; internals only where nothing public exists. The
+// daemon has no Koin access: the fork's io.rebble.libpebblecommon.host.JvmHost / createJvmLibPebble is
+// its one door into the graph. The filter matches the composite's libpebble3 jvm output (a jar today,
+// a classes dir would match too); matching nothing fails the compile here, not with a wall of
+// "Cannot access ...: it is internal" errors.
+val libpebble3Friend: Provider<FileCollection> = configurations.compileClasspath.map { cp ->
+    cp.filter { it.invariantSeparatorsPath.contains("/libs/libpebble3/libpebble3/build/") }
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    friendPaths.from(libpebble3Friend) // appends: KGP's own test->main friend path stays
+    val friends = libpebble3Friend
+    doFirst {
+        check(!friends.get().isEmpty) {
+            "No libpebble3 jvm output on the compile classpath to make a friend of (expected a path under " +
+                "libs/libpebble3/libpebble3/build/): did the composite's output move?"
+        }
+    }
+}
+
+// The guard behind the compile-only Koin above: the daemon reaches libpebble3's graph only through
+// JvmLibPebble's typed doors, never through Koin.
+val noKoinInDaemon by tasks.registering {
+    val sources = fileTree("src") { include("**/*.kt") }
+    inputs.files(sources).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("sources")
+    doLast {
+        // Any org.koin. reference on a code line, imported or fully qualified (`org.koin.core.Koin` in a type
+        // or a call): Koin is on the compile classpath, so only this keeps it out. Comment lines don't count.
+        val koinUse = Regex("""^(?!\s*(//|\*|/\*)).*\borg\.koin\.""", RegexOption.MULTILINE)
+        val hits = sources.filter { koinUse.containsMatchIn(it.readText()) }.map { it.relativeTo(projectDir) }
+        check(hits.isEmpty()) { "The daemon must not use Koin (use JvmLibPebble's doors); org.koin in: ${hits.joinToString()}" }
+    }
+}
+
 tasks.test {
+    dependsOn(noKoinInDaemon)
     useJUnitPlatform()
     // The address order main() sets, so the tests' sockets resolve and bind as the daemon's do.
     systemProperty("java.net.preferIPv6Addresses", "system")
@@ -96,45 +139,10 @@ val generateVersionFile by tasks.registering {
 sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/version"))
 tasks.named("processResources") { dependsOn(generateVersionFile) }
 
-// Generate the language-pack catalog resource from the libpebble3 submodule's own manifest, so our
-// bundled copy can never drift from the fork. The official Core app embeds the catalog as a
-// triple-quoted JSON string (`LanguagePacksJson`) in LanguagePackRepository.kt — which lives in the
-// Compose `pebble` module stoandl doesn't depend on — so we extract that string verbatim at build
-// time into a classpath resource (read by de.yoxcu.stoandl.language.LanguagePackCatalog). Bumping the
-// submodule automatically refreshes the catalog; there's no hand-maintained copy to forget.
-val generateLanguagePackCatalog by tasks.registering {
-    val source = layout.projectDirectory.file(
-        "libs/libpebble3/pebble/src/commonMain/kotlin/coredevices/pebble/services/LanguagePackRepository.kt"
-    )
-    val outputDir = layout.buildDirectory.dir("generated/language")
-    inputs.file(source)
-    outputs.dir(outputDir)
-    doLast {
-        val src = source.asFile
-        require(src.isFile) {
-            "Language-pack source not found: ${src.path}\nRun: git submodule update --init --recursive"
-        }
-        val text = src.readText()
-        val marker = "LanguagePacksJson = \"\"\""
-        val start = text.indexOf(marker)
-        require(start >= 0) { "`$marker` not found in ${src.name} — has the fork's catalog moved or been renamed?" }
-        val from = start + marker.length
-        val end = text.indexOf("\"\"\"", from)
-        require(end >= 0) { "closing triple-quote for LanguagePacksJson not found in ${src.name}" }
-        // `.trimIndent()` mirrors what the Kotlin source itself does at runtime (`""".trimIndent()`).
-        val json = text.substring(from, end).trimIndent().trim()
-        require(json.startsWith("{") && json.contains("\"languages\"")) {
-            "Extracted language-pack JSON doesn't look right (no \"languages\" array) — check ${src.name}"
-        }
-        val out = outputDir.get().file("language-packs.json").asFile
-        out.parentFile.mkdirs()
-        out.writeText(json + "\n")
-        logger.lifecycle("Generated language-packs.json (${json.length} chars) from ${src.name}")
-    }
-}
-
-sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/language"))
-tasks.named("processResources") { dependsOn(generateLanguagePackCatalog) }
+// The language-pack catalog (src/main/resources/language-packs.json, read by
+// de.yoxcu.stoandl.language.LanguagePackCatalog) is a frozen, checked-in copy: upstream deleted the
+// literal it used to be extracted from (7cf80230, packs moved to a server manifest), and fetching that
+// manifest would be new egress. Its `_origin` key names the source commit.
 
 // Note: the BecomeMonitor no-reply fix (DbusNotificationMonitor.kt) reflects into dbus-java
 // internals, but needs no `--add-opens`: the fat JAR runs on the classpath, where dbus-java is in
@@ -152,6 +160,7 @@ application {
 // Fat JAR for deployment to postmarketOS.
 // Shadow plugin merges META-INF/services/* files so GraalVM Truffle language discovery works.
 tasks.shadowJar {
+    dependsOn(noKoinInDaemon)
     manifest {
         attributes["Main-Class"] = "de.yoxcu.stoandl.MainKt"
         // GraalVM polyglot 25.x ships Multi-Release JARs (META-INF/versions/{9,21}/…). Shadow keeps

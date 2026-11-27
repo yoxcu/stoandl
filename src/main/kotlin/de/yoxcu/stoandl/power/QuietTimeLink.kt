@@ -1,5 +1,6 @@
 package de.yoxcu.stoandl.power
 
+import de.yoxcu.stoandl.util.watchesNow
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.connection.ActiveDevice
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
@@ -60,7 +61,7 @@ private val log = KotlinLogging.logger {}
  * lets them finish before a suspend. Notifications posted while paused reach the watch on reconnect:
  * paused time doesn't count towards the catch-up window (libpebble3 NotificationCatchUp).
  */
-class QuietTimeLink(
+internal class QuietTimeLink(
     private val scope: CoroutineScope,
     private val libPebble: LibPebble,
     private val watchConnector: WatchConnector,
@@ -129,11 +130,11 @@ class QuietTimeLink(
 
     /** For the sleep guard: the pause's own disconnect, or the reconnect right after it, still running. */
     fun pendingDescription(): String? {
-        val active = libPebble.watches.value.any { it is ActiveDevice }
+        val active = libPebble.watchesNow().any { it is ActiveDevice }
         if (hold != null) return if (active) "Quiet Time disconnect" else null
         val released = releasedAtMs ?: return null
         if (System.currentTimeMillis() - released > RECONNECT_GRACE.inWholeMilliseconds ||
-            libPebble.watches.value.any { it is ConnectedPebbleDevice }
+            libPebble.watchesNow().any { it is ConnectedPebbleDevice }
         ) {
             releasedAtMs = null
             return null

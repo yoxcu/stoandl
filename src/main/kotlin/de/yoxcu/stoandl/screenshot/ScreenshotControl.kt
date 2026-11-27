@@ -17,11 +17,10 @@ private val log = KotlinLogging.logger {}
 /**
  * Capture the connected watch's screen to a PNG on the host.
  *
- * libpebble3's [ConnectedPebbleDevice.takeScreenshotPixels] does the protocol work — it asks the watch over
+ * libpebble3's [ConnectedPebbleDevice.takeScreenshot] does the protocol work — it asks the watch over
  * the SCREENSHOT endpoint, reassembles the chunked transfer, and decodes the 1-bit or 8-bit framebuffer into
- * a row-major ARGB `IntArray`. (Its sibling `takeScreenshot()` returns a Compose `ImageBitmap`, which is a
- * null stub on the JVM/desktop build — hence the raw-pixel path.) We encode those pixels with [PngEncoder]
- * (pure-JDK, no AWT) and write the file. Purely local: no network, so no egress opt-in.
+ * a `PebbleBitmap`: row-major, non-premultiplied ARGB pixels. We encode those with [PngEncoder] (pure-JDK,
+ * no AWT) and write the file. Purely local: no network, so no egress opt-in.
  *
  * The capture is a one-shot suspend that completes in a couple of seconds (5 s watch-side timeout); the
  * daemon runs it as a [de.yoxcu.stoandl.pebble.WatchTasks] task, so no D-Bus call waits on it.
@@ -38,9 +37,9 @@ class ScreenshotControl(
     suspend fun capture(out: File): String {
         val dev = device() ?: return "notready:No watch connected"
         return try {
-            val shot = dev.takeScreenshotPixels()
+            val shot = dev.takeScreenshot()
                 ?: return "error:Screenshot failed (watch didn't respond, or a capture is already in progress)"
-            val png = PngEncoder.encode(shot.argb, shot.width, shot.height)
+            val png = PngEncoder.encode(shot.pixels, shot.width, shot.height)
             withContext(Dispatchers.IO) {
                 out.absoluteFile.parentFile?.mkdirs()
                 out.writeBytes(png)

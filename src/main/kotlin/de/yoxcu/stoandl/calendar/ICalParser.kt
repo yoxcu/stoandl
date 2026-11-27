@@ -47,7 +47,7 @@ private val failures = RepeatedLines()
  * makes the syncer's `calendarId + baseEventId + startTime` backingId unique and stable per pin
  * (re-syncs update in place rather than duplicating).
  */
-object ICalParser {
+internal object ICalParser {
     init {
         // Real-world .ics (Google, Nextcloud, Outlook, Calindori) is frequently non-conformant; relax
         // parsing so one quirk doesn't drop a whole calendar. MapTimeZoneCache avoids the default

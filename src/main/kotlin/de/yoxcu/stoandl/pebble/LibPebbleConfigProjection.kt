@@ -17,19 +17,29 @@ import kotlin.time.Duration.Companion.minutes
  * - forward PPoG (`legacyReversedPPoG=false`, `useReversedPpogV2=false`): the phone hosts PPoG as the BLE
  *   peripheral; any reversed PPoG service the watch advertises is ignored;
  * - `lanDevConnection=true`: the developer connection uses the LAN WebSocket server on port 9000, not the
- *   CloudPebble proxy (stoandl has no Rebble token).
+ *   CloudPebble proxy (stoandl has no Rebble token);
+ * - `proactivelyDownloadAppUpdates=false` (upstream: on): no prefetch of a locker app's newer pbw after a
+ *   locker sync; every web call stoandl makes is opt-in. `appUpdateDownloadWifiOnly` only qualifies that
+ *   prefetch, so it stays at its default.
+ *
+ * Left at libpebble3's defaults on purpose: `pkjsRequestsThroughApp` (read by Android's WebView runner
+ * only; stoandl's PKJS requests always go through its own client), `notificationWindowState` (off: the watch
+ * reports no displayed notification, see WatchActionRouter) and `respectDoNotDisturb` (off: nothing is
+ * dropped for the phone's Do Not Disturb, and libpebble3's one-time migration of it into the Respect
+ * Phone Silence watch pref has nothing to migrate).
  *
  * From config: the notification catch-up window (`notification.catch_up_minutes`; libpebble3's
  * NotificationCatchUp), the calendar knobs PhoneCalendarSyncer reads live (`calendar.reminders`,
  * `calendar.show_declined`, `calendar.reminder_vibe`), plugins with their permission policy
- * (`plugins.*`; PluginRegistry, LockerPluginLoader and AppPermissions follow the flow), the locker's
- * face order (`apps.order_faces_by_last_used`) and `music.seek_when_available` (read by Android's music
- * control only; MprisMusicControl applies the same key itself).
+ * (`plugins.*`; `enablePlugins` is the master switch PluginRegistry, LockerPluginLoader and AppPermissions
+ * follow live), the locker's face order (`apps.order_faces_by_last_used`) and `music.seek_when_available`
+ * (read by Android's music control only; MprisMusicControl applies the same key itself).
  */
 fun libPebbleConfigOf(cfg: StoandlConfig): LibPebbleConfig = LibPebbleConfig(
     bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
     watchConfig = WatchConfig(
         lanDevConnection = true,
+        proactivelyDownloadAppUpdates = false,
         calendarReminders = cfg.calendarReminders,
         calendarShowDeclinedEvents = cfg.calendarShowDeclined,
         overrideCalendarVibePattern = cfg.calendarReminderVibe?.let(::vibePatternName),

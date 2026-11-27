@@ -40,5 +40,13 @@ object UserDirs {
             .first { !it.exists() }
     }
 
+    /** The XDG data directories, most important first: `$XDG_DATA_HOME` (else `~/.local/share`), then
+     *  `$XDG_DATA_DIRS` (else `/usr/local/share:/usr/share`), per the base directory spec. */
+    fun dataDirs(env: (String) -> String? = System::getenv, home: String = System.getProperty("user.home")): List<File> {
+        val dataHome = env("XDG_DATA_HOME")?.takeIf { it.isNotBlank() } ?: "$home/.local/share"
+        val dataDirs = env("XDG_DATA_DIRS")?.takeIf { it.isNotBlank() } ?: "/usr/local/share:/usr/share"
+        return (listOf(dataHome) + dataDirs.split(':')).filter { it.startsWith("/") }.map(::File)
+    }
+
     private val STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
 }

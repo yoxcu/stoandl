@@ -3,7 +3,6 @@
 package de.yoxcu.stoandl.plugin
 
 import de.yoxcu.stoandl.secret.SecretStore
-import io.rebble.libpebblecommon.storage.PluginSecrets
 import io.rebble.libpebblecommon.storage.SecureStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -12,10 +11,10 @@ import kotlin.uuid.Uuid
 /**
  * Plugins' `Pebble.secureStorage` on stoandl's secret store (the keyring, else the 0600 `secrets` file, both
  * out of backups): each value under `plugin/<uuid>/<key>`, plus an index of the plugin's keys so [destroy]
- * (the app was removed) can delete them all.
+ * (the app was removed) can delete them all. [forPlugin] is libpebble3's `JvmHost.pluginSecrets`.
  */
-class PluginSecretStore(private val store: SecretStore) : PluginSecrets {
-    override fun forPlugin(pluginUuid: Uuid): SecureStorage = object : SecureStorage {
+internal class PluginSecretStore(private val store: SecretStore) {
+    fun forPlugin(pluginUuid: Uuid): SecureStorage = object : SecureStorage {
         private val prefix = "plugin/$pluginUuid/"
         private val indexRef = "plugin/$pluginUuid"
 

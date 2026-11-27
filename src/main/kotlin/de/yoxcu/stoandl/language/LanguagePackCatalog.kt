@@ -10,11 +10,10 @@ import kotlinx.serialization.Serializable
 private val log = KotlinLogging.logger {}
 
 /**
- * The Pebble language-pack catalog: the same manifest the official Core app ships. It's read from the
- * resource `language-packs.json`, which the Gradle build extracts at compile time from libpebble3's
- * `LanguagePackRepository` (in the Compose `pebble` module stoandl doesn't depend on, so we can't
- * reference it directly) — see `generateLanguagePackCatalog` in build.gradle.kts. Generating it from
- * the submodule means it can't drift from the fork: bump the submodule and the catalog refreshes.
+ * The Pebble language-pack catalog: the manifest the official Core app shipped until upstream 7cf80230
+ * moved it to a server manifest (`LANGUAGE_MANIFEST_URL`). It's read from the resource
+ * `language-packs.json`, a frozen checked-in copy of the last bundled one (its `_origin` key says where
+ * from): fetching the live manifest would be egress just to browse, so a bump no longer refreshes it.
  *
  * Each `.pbl` pack is keyed by (ISO locale, hardware board, source). Most come from Rebble's CDN
  * (`binaries.rebble.io/lp/`); a handful of community packs (Japanese, Hebrew, Bulgarian, …) are

@@ -47,7 +47,7 @@ private val log = KotlinLogging.logger {}
  * Files are append-only and never rotated here — datalog is normally low-volume, but a chatty
  * sensor-logging app can grow them without bound; prune manually if needed.
  */
-class DatalogStore(
+internal class DatalogStore(
     private val datalogging: Datalogging,
     private val scope: CoroutineScope,
     private val baseDir: File = defaultDir(),

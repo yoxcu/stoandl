@@ -12,6 +12,7 @@ import de.yoxcu.stoandl.notification.watchFields
 import de.yoxcu.stoandl.notification.watchText
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.rebble.libpebblecommon.SystemAppIDs
+import io.rebble.libpebblecommon.connection.DisplayedNotificationReplyResult
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.database.asMillisecond
@@ -21,6 +22,8 @@ import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.MuteState
 import io.rebble.libpebblecommon.database.entity.NotificationAppItem
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
+import io.rebble.libpebblecommon.host.JvmNotificationActions
+import io.rebble.libpebblecommon.packets.blobdb.TimelineActionType
 import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
@@ -29,6 +32,7 @@ import io.rebble.libpebblecommon.timeline.toPebbleColor
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -248,7 +252,7 @@ private fun parseMuteState(s: String): MuteState = when (s.lowercase()) {
     else -> MuteState.Never
 }
 
-class WatchNotifier(
+class WatchNotifier internal constructor(
     private val libPebbleRef: java.util.concurrent.atomic.AtomicReference<LibPebble?>,
     private val routeTable: NotifRouteTable,
     // Per-app mute/style store. Always built now (so per_app can be toggled live); whether it's
@@ -410,17 +414,17 @@ class WatchNotifier(
             }
             actions {
                 req.actions.forEach { a ->
-                    action(TimelineItem.Action.Type.Generic) { attributes { title { trimUtf8(a.label, MAX_ACTION_TITLE_BYTES) } } }
+                    action(TimelineActionType.Generic) { attributes { title { trimUtf8(a.label, MAX_ACTION_TITLE_BYTES) } } }
                 }
                 if (reply != null) {
-                    action(TimelineItem.Action.Type.Response) {
+                    action(TimelineActionType.Response) {
                         attributes { title { reply.label }; cannedResponse { reply.cannedReplies } }
                     }
                 }
                 if (styled != null) {
-                    action(TimelineItem.Action.Type.Generic) { attributes { title { "Mute ${styled.name}" } } }
+                    action(TimelineActionType.Generic) { attributes { title { "Mute ${styled.name}" } } }
                 }
-                action(TimelineItem.Action.Type.Dismiss) { attributes { title { "Dismiss" } } }
+                action(TimelineActionType.Dismiss) { attributes { title { "Dismiss" } } }
             }
         }
 
@@ -481,21 +485,34 @@ class WatchNotifier(
 }
 
 /**
- * The single [PlatformNotificationActionHandler] for the daemon. Looks up the [NotifRoute] for the
- * acted-on item, resolves its owner via [NotifOwnerRegistry], and dispatches: Dismiss → drop the route,
+ * The single [PlatformNotificationActionHandler] for the daemon, and its
+ * [io.rebble.libpebblecommon.connection.NotificationReplies] (one object, `JvmHost.notificationActions`).
+ * Looks up the [NotifRoute] for the acted-on item, resolves its owner via [NotifOwnerRegistry], and dispatches: Dismiss → drop the route,
  * then take the item out of our sync set (the watch already removed it) + [NotifOwner.onDismiss]; the Mute action → host-side per-app mute; the Reply action → extract the
  * chosen canned/dictated text and [NotifOwner.onReply]; a named Generic action → [NotifOwner.onAction].
  * Per-item overrides registered via `sendNotification(notif, handlers)` (e.g. FirmwareControl's Update
  * button) still take precedence upstream in libpebble3 and never reach here.
  */
-class WatchActionRouter(
+internal class WatchActionRouter(
     private val routeTable: NotifRouteTable,
     private val owners: NotifOwnerRegistry,
     private val notifAppDao: NotificationAppRealDao?,
     private val timelineNotifDao: TimelineNotificationRealDao,
     private val images: NotificationImageStore? = null,
-) : PlatformNotificationActionHandler {
+) : JvmNotificationActions {
     private val log = KotlinLogging.logger {}
+
+    /** The item the watch shows right now. Only reported when the watch was told
+     *  `SupportsNotificationWindowState`, which stays off (`WatchConfig.notificationWindowState` at its
+     *  default), so nothing is tracked here: there is no displayed-item route yet. */
+    override fun onDisplayedItem(itemId: Uuid?) {}
+
+    /** A reply to "the notification on the wrist" (`LibPebble.replyToDisplayedNotification`; upstream's
+     *  only caller is its ring-agent tool, nothing in stoandl). Without a displayed-item route
+     *  ([onDisplayedItem]) there is no such notification; a wrist reply goes through the Reply action
+     *  instead ([invoke]). */
+    override suspend fun replyToDisplayedNotification(text: String, at: Instant): DisplayedNotificationReplyResult =
+        DisplayedNotificationReplyResult.NoNotificationDisplayed
 
     override suspend fun invoke(
         itemId: Uuid,
@@ -505,8 +522,8 @@ class WatchActionRouter(
         val route = routeTable.get(itemId)
         log.info { "Watch action: type=${action.type} id=${action.actionID} itemId=$itemId owner=${route?.ownerId ?: "?"}" }
 
-        if (action.type == TimelineItem.Action.Type.Dismiss ||
-            action.type == TimelineItem.Action.Type.AncsDismiss
+        if (action.type == TimelineActionType.Dismiss ||
+            action.type == TimelineActionType.AncsDismiss
         ) {
             // The watch has removed the item already; take it out of our sync set so nothing re-sends it.
             // The route goes first: closing the desktop original makes the server report the close, and

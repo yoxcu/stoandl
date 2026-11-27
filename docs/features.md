@@ -127,7 +127,7 @@ _Hardware-verified._
 _Implemented — to be tested ([TESTING.md §5.33j](../TESTING.md), 5.30b):_ the libpebble3 bump brings the
 newer prefs: the Quiet Time weekday/weekend hours (`dndWeekdaySchedule`, a `HH:MM-HH:MM` window that
 needs its `…Enabled` switch on), `dndAutoDismiss`, `lightPreset`, `lightDynamicMode`, `unitsWind` and
-`language`; `langEnglish`, `lightDynamicIntensity` and `dynBacklightMinThreshold` are gone. The
+`language` (removed again upstream with the `de47e36f` bump); `langEnglish`, `lightDynamicIntensity` and `dynBacklightMinThreshold` are gone. The
 notification timeout can't be set below 15 s (shorter ones vanish without a vibe). Text size is
 two settings, `systemTextSize` and `notifTextSize` (upstream PR #443, cherry-picked), which the phone can
 set from fw 4.39; the old `textStyle` is gone.
@@ -142,12 +142,14 @@ and says so on `settings set`, and `stoandl settings` names the release in its d
 
 _Implemented — to be tested ([TESTING.md §5.5q](../TESTING.md)):_ quick-launch buttons also take the
 firmware system actions the official app offers — Quiet Time, Backlight, Motion Backlight, Airplane Mode,
-Timeline Past, Timeline Future — by name in the CLI and config and from the GUI's dropdown, and list them
+Toggle Touch, Timeline Past, Timeline Future, Clear Notifications (libpebble3's `SYSTEM_SHORTCUTS`, in its
+order) — by name in the CLI and config and from the GUI's dropdown, and list them
 by name (the hold-Back and tap-Down defaults showed as raw UUIDs before). _Implemented — to be tested
 ([TESTING.md §5.5r](../TESTING.md)):_ the fw 4.39 Toggle Touch action, offered only for a touch watch (Pebble
 Time 2, Pebble Round 2) on 4.39 or later and marked "touch watches only" while no watch is connected.
 libpebble3 (fork) doesn't send it to a watch without it, which would read it as an uninstalled app (a tap on
-such a button reboots firmware older than 4.40).
+such a button reboots firmware older than 4.40). _Implemented — to be tested ([TESTING.md 5.77r](../TESTING.md)):_
+Clear Notifications (PebbleOS 4.38+, every watch), gated the same way.
 
 ### Bluetooth Classic transport
 
@@ -613,15 +615,17 @@ stoandl language status              # current install state
 
 `list` shows the packs available for the connected watch's board (system-locale first, installed one
 flagged), and falls back to the full catalog — every locale and board, fully offline — when no watch
-is connected, so you can browse before pairing. The catalog is the official Core app's manifest — the
-Gradle build extracts it at compile time from libpebble3's `LanguagePackRepository` into a bundled
-resource, so it can't drift from the fork (bump the submodule → catalog refreshes), with no
-hand-maintained copy. No fork change: the installer is libpebble3's `installLanguagePack(url/path,
+is connected, so you can browse before pairing. The catalog is the official Core app's last in-tree
+manifest, frozen as the resource `language-packs.json` (its `_origin` key names the commit): upstream moved
+the list to a server manifest (`7cf80230`), and fetching it would be new egress, so a submodule bump no
+longer refreshes it. No fork change: the installer is libpebble3's `installLanguagePack(url/path,
 name)` (the same PutBytes machinery as firmware/app sideload); the CLI polls `LanguageStatus` and
 shows a progress bar. Boards match the way the official app does — Core devices (Pebble 2 Duo / Time
 2) share the Diorite (`silk`) packs, classic Pebbles use their own board revision. Sideload + list are
 egress-free; `install` (which downloads from Rebble's CDN / community GitHub) is opt-in egress, off by
-default (`language.download`). Revert to English with `stoandl language install en_US`.
+default (`language.download`). Revert to English with `stoandl language install en_US` (on PebbleOS 4.42+,
+`stoandl language use english`, which keeps the packs: see
+[Several language packs on the watch](#several-language-packs-on-the-watch)).
 _Hardware-verified. [TESTING.md §5.13](../TESTING.md)._ See [configuration.md](configuration.md#language-packs).
 
 ### Firmware updates
@@ -659,8 +663,9 @@ Update notification all flashed flawlessly. [TESTING.md §5.11](../TESTING.md)._
 _Implemented — to be tested ([TESTING.md §5.11e–5.11h](../TESTING.md)):_ "latest" is the highest GitHub
 release, so a backport marked latest (v4.27.3, v4.30.3) no longer hides the newest firmware or gets
 flashed onto a watch in recovery. Flashing an **older** `.pbz` onto a dual-slot Core watch goes through
-recovery: the watch reboots into PRF, and stoandl flashes the same file there when it reconnects (the
-CLI and the GUI follow it; `firmware update` answers `busy:` meanwhile). An update that crosses 4.38.0
+recovery: the watch reboots into PRF, and libpebble3 installs the same file there when it reconnects (since
+the `de47e36f` bump; before, stoandl did; the CLI and the GUI follow it; `firmware update` and
+`firmware sideload` answer `busy:` meanwhile). An update that crosses 4.38.0
 (4.37.0 on a Pebble 2 Duo) says that the built-in translations go away and points to
 `stoandl language sideload`. A download is checked against the SHA-256 the source publishes (GitHub's
 asset digest, the cohorts `sha-256`) before it reaches the watch, and a failed or damaged download shows
@@ -685,13 +690,70 @@ what's still pending. Test plan: [TESTING.md](../TESTING.md).
 
 ### libpebble3 on current upstream
 
-The libpebble3 fork sits on upstream `coredevices/libpebble3` `ec2156cc` (fork branch `stoandl`,
-re-bumped 2026-10-15 from `e6b5138e`, which passed its hardware pass by daily use). The re-bump brings the
-plugin and app-permission machinery (off until stoandl's plugin support lands), the weather pin kind
-(Sunrise/Sunset pins titled in the watch's language on firmware ≥ 4.39) and drops the built-in watch
-languages the firmware removed in 4.38 (Custom and English remain; use a language pack). The database moves
-from schema 47 to 49 on the first start, one way, so take a `stoandl backup` before upgrading. Offline
-everything passes; the hardware rows are _to be tested_ ([TESTING.md §5.44](../TESTING.md)).
+The libpebble3 fork sits on upstream `coredevices/libpebble3` `de47e36f` (fork branch
+`stoandl-bump-de47e36f`, merged 2026-11-26 onto `ec2156cc`, which had been in daily use since 2026-10-20).
+The database moves from schema 49 to 54 on the first start, one way, so take a `stoandl backup` before
+upgrading ([TESTING.md 5.77a](../TESTING.md)). Upstream dropped its JVM support and hid most of its API; the
+fork keeps the JVM target, and the daemon now builds libpebble3 through one host object instead of
+overriding parts of it (nothing a user sets changes). Offline everything passes; the hardware rows are _to be
+tested_ ([TESTING.md §5.77](../TESTING.md)). What changes for a user:
+
+- **New:** find my phone from the watch, the PKJS `WebSocket`, audio streams and permission queries for
+  watchapps, several language packs on one watch (entries below).
+- **Health profile:** a `birth_year` key next to `age` (setting one sets the other). `max_hr` is read-only:
+  libpebble3 derives it from the age (220 − age, at least the elevated heart rate) and the watch got that value
+  whatever was set, so `health profile set max_hr` now refuses another value and the GUI shows it read-only
+  ([TESTING 5.77p](../TESTING.md)).
+- **Watch settings:** 22 new watch prefs from PebbleOS 4.42–4.48 (dark mode and its schedule, the theme
+  highlight colour, the speaker, touch, the temperature unit, hourly and disconnect vibes, notification grouping
+  and more), in new sections Theme, Speaker and Health. The `language` pref is gone: a pack sets the language,
+  and a `watch.language` line logs "Unknown watch pref" and is ignored ([TESTING 5.77n, 5.77q](../TESTING.md)).
+- **Quick Launch:** the firmware's Clear Notifications action (PebbleOS 4.38+), in the order libpebble3 lists
+  the actions ([TESTING 5.77r](../TESTING.md)).
+- **Firmware:** a downgrade through recovery is now libpebble3's to finish; stoandl reports it and refuses
+  another flash meanwhile ([TESTING 5.11e, 5.77h](../TESTING.md)).
+- **Plugins:** the Weather plugin follows the official `weather/location` contract (`weather/hour` is gone);
+  an extension's `launchApp` of a Quick Launch action goes only to a watch that has it
+  ([TESTING 5.77t](../TESTING.md)). The Phone plugin follows NetworkManager by signal instead of reading it
+  every minute ([TESTING 5.77u](../TESTING.md)).
+- **Egress:** upstream's new prefetch of locker app updates is pinned off; nothing new is contacted
+  ([TESTING 5.77v](../TESTING.md)).
+- **Startup:** if libpebble3 never lists the known watches, the daemon exits after 2 minutes so systemd
+  restarts it ([TESTING 5.77w](../TESTING.md)).
+
+### Find my phone
+
+The watch can ring this device: libpebble3's built-in **Find My Phone** plugin (a watchapp subscribing to
+`phone/find_my_phone`, or its `ring`/`stop` actions) plays the freedesktop `alarm-clock-elapsed` sound (else
+`phone-incoming-call`) in a loop through `pw-play` or `paplay`, and shows a "Find my phone" desktop
+notification with **Stop**. It stops when the watch or the plugin says so, on Stop, or after 60 s. No egress
+and no new setting; it is there while `plugins.enabled` is on, like every plugin
+([plugins.md](plugins.md)). Try it with `stoandl plugins invoke "Find My Phone" ring`. Off-device:
+`FindMyPhoneRingerTest`. _Implemented — to be tested ([TESTING.md 5.77s](../TESTING.md))._ (The findphone extension
+([extensions.md](extensions.md)) still works and needs no plugins.)
+
+### PKJS: WebSocket, audio streams, permission queries
+
+Watchapp companion JS gets three APIs the official app's PKJS has: `WebSocket` (on libpebble3's shared client;
+while plugins are on, refused for a host the app's network permission doesn't cover, and counted in its data
+usage), the watch microphone's audio as `audiostream` events (while plugins are on and the app holds the microphone
+permission; the daemon's libspeex decodes it), and
+`Pebble.permissions.query()`, which answers without asking. Every XHR redirect hop is now checked against the
+app's network permission before it is followed, and https→http is never followed. Off-device: fork
+`GraalJsRunnerTest`. _Implemented — to be tested ([TESTING.md 5.77j–l](../TESTING.md))._
+
+### Several language packs on the watch
+
+PebbleOS 4.42 keeps up to four packs and switches between them. `stoandl language installed` lists them
+(built-in English first, the active one marked), `language use <slot|locale|name|english>` switches, and
+`language remove <slot|locale|name>` frees a slot (removing the active pack puts the watch on English). An
+install adds a pack to a free slot and is refused when all four are in use (a catalog install also when
+the locale is already there).
+On older firmware the watch holds one pack, which an install replaces, as before. A second install while one
+runs answers `busy:`, and an install ends `done:` only when the watch is on the new pack. D-Bus
+`LanguagePacks`/`UseLanguage`/`RemoveLanguage` ([dbus-interface.md](dbus-interface.md)); the GUI has no slot
+list yet. Off-device: `LanguageControlStatusTest`. _Implemented — to be tested
+([TESTING.md 5.77n–o](../TESTING.md))._
 
 ### Reply to desktop notifications
 
@@ -1050,7 +1112,7 @@ _Implemented — to be tested ([TESTING.md §4.18](../TESTING.md))._
 
 The official app's plugin system (phone-side data sources and actions for watchfaces and watchapps, with
 app permissions), on the computer: built-in Weather, Music, Calendar, Phone (battery, Wi-Fi/cellular),
-Watch Settings and Watch State; the plugin a `.pbw` ships, run in GraalJS; and extensions that serve
+Watch Settings, Watch State and Find My Phone ([Find my phone](#find-my-phone)); the plugin a `.pbw` ships, run in GraalJS; and extensions that serve
 sources over their pipe. Permission requests are asked on the watch and the desktop (Allow / Deny), and
 answered in the GUI or with `stoandl perms`; plugins' secure storage is in the keyring. A `.pbw`'s own
 settings page talks to its plugin while open, through the daemon's page server. Off by default
@@ -1194,8 +1256,9 @@ update). _Implemented — to be tested ([TESTING.md §5.66, §5.73](../TESTING.m
 
 ### Watch preferences: sections, help, reset
 
-Watch preferences come grouped the way the GUI shows them (Quick launch, Backlight & display, Notifications
-& timeline, Quiet Time, Vibration, Music, Time, units & language, Motion & menus, Advanced), with help text
+Watch preferences come grouped the way the GUI shows them (Quick launch, Backlight & display, Theme,
+Notifications & timeline, Quiet Time, Vibration, Speaker, Music, Time & units, Health, Motion & menus,
+Advanced), with help text
 and "only matters when" rules from the daemon (the backlight timeout and intensity rows need the Advanced
 backlight preset, except on firmware too old to have the preset). *Reset to defaults* (`stoandl settings
 reset`, D-Bus `ResetWatchPrefs`) puts every changed preference back, pinned `watch.*` lines included. The

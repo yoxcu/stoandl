@@ -22,7 +22,7 @@ import kotlin.time.Instant
  * detection time, not ring-start, because `MissedCallSyncer` only pulls calls from the last ~10 s
  * after a change fires — and a call can ring longer than that.
  */
-class MissedCallLog : SystemCallLog {
+internal class MissedCallLog : SystemCallLog {
     private val log = KotlinLogging.logger {}
     private val entries = CopyOnWriteArrayList<MissedCall>()
     private val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 16)

@@ -6,6 +6,7 @@ import io.rebble.libpebblecommon.connection.ConnectedPebbleDeviceInRecovery
 import io.rebble.libpebblecommon.connection.FirmwareUpdateCheckResult
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.PebbleDevice
+import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdateTrigger
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import io.rebble.libpebblecommon.metadata.WatchColor
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
@@ -34,10 +35,12 @@ import kotlin.time.Instant
 
 /**
  * A dual-slot watch can't flash an older firmware from normal firmware: libpebble3 then reboots it
- * into recovery (PRF) without transferring anything, and [FirmwareControl] finishes the downgrade from
- * there. The watch side needs hardware (TESTING 5.11e), but the handoff is decision logic, and a
- * mistake in it either reports a flash that never happened or re-flashes an old `.pbz` at some
- * unrelated recovery visit. So it is driven here through fake watches.
+ * into recovery (PRF) without transferring anything (`WaitingForReboot.viaPrf`) and installs the same
+ * `.pbz` itself once the watch reconnects there (upstream 5f24440b). [FirmwareControl] only reports
+ * that and keeps out of its way. The watch side needs hardware (TESTING 5.11e), but the daemon's part
+ * is decision logic, and a mistake in it either reports a flash that never happened, offers the latest
+ * release mid-downgrade, or flashes a second time next to libpebble3's own recovery install. So it is
+ * driven here through fake watches.
  */
 class FirmwareControlDowngradeTest {
     private val watches = MutableStateFlow<List<PebbleDevice>>(emptyList())
@@ -46,7 +49,7 @@ class FirmwareControlDowngradeTest {
     private val control = FirmwareControl(AtomicReference(fakeLibPebble()), scope, { config })
     private val pbz = File.createTempFile("normal_obelix", ".pbz")
 
-    /** Every sideloadFirmware() call, as "normal <path>" or "recovery <path>". */
+    /** Every sideloadFirmware() call, as "normal <path> <trigger>" or "recovery <path> <trigger>". */
     private val flashed = CopyOnWriteArrayList<String>()
 
     @AfterTest
@@ -56,72 +59,76 @@ class FirmwareControlDowngradeTest {
     }
 
     @Test
-    fun downgradeIsReportedAsPrfAndFlashedFromRecovery() = runBlocking {
-        control.resumeDowngradesInRecovery()
+    fun downgradeIsReportedAsPrfAndInstalledByLibpebble3Alone() = runBlocking {
         watches.value = listOf(watch(DUAL_SLOT_4_38))
         assertEquals("ok:Flashing ${pbz.name}", control.sideload(pbz.path))
-        assertEquals(listOf("normal ${pbz.path}"), flashed)
+        assertEquals(listOf("normal ${pbz.path} Sideload"), flashed)
 
         // libpebble3 decided on the PRF route: rebooting, nothing flashed yet. Not "reboot:" (success).
-        watches.value = listOf(watch(DUAL_SLOT_4_38, FirmwareUpdateStatus.WaitingForReboot(found("v4.37.0"))))
+        watches.value = listOf(watch(DUAL_SLOT_4_38, rebooting(viaPrf = true)))
         assertEquals("prf:v4.37.0", control.status())
-        // The latest release must not be offered meanwhile: one tap would undo the downgrade.
-        awaitUntil { control.update().startsWith("busy:") }
+        withTimeout(5.seconds) { control.statusFlow().first { it == "prf:v4.37.0" } }
+        // The latest release must not be offered meanwhile: one tap would undo the downgrade. Nor
+        // may a second sideload start: libpebble3 would drop it silently.
+        assertTrue(control.update().startsWith("busy:"))
+        assertTrue(control.sideload(pbz.path).startsWith("busy:"))
 
+        // Back in recovery, libpebble3 starts the pending install itself.
         watches.value = emptyList()
-        watches.value = listOf(watch(RECOVERY, recovery = true))
-        awaitUntil { flashed.size == 2 }
-        assertEquals("recovery ${pbz.path}", flashed[1])
+        watches.value = listOf(watch(RECOVERY, FirmwareUpdateStatus.WaitingToStart(found("v4.37.0"), SIDELOAD), recovery = true))
+        assertEquals("waiting:", control.status())
+        assertTrue(control.update().startsWith("busy:"), "in recovery the latest release must not replace the downgrade")
+        watches.value = listOf(watch(RECOVERY, FirmwareUpdateStatus.InProgress(found("v4.37.0"), MutableStateFlow(0.5f), SIDELOAD), recovery = true))
+        withTimeout(5.seconds) { control.statusFlow().first { it == "inprogress:50" } }
+        assertTrue(control.update().startsWith("busy:"))
 
-        // Once only: the next emission for the same recovery session flashes nothing more.
-        watches.value = listOf(watch(RECOVERY, recovery = true))
+        // One owner of the recovery step: stoandl never flashes from recovery on its own.
         delay(200)
-        assertEquals(2, flashed.size)
-        assertTrue(control.update().startsWith("disabled:"), "the pending downgrade was consumed")
+        assertEquals(listOf("normal ${pbz.path} Sideload"), flashed)
     }
 
     @Test
-    fun singleSlotDowngradeIsAnOrdinaryFlash() = runBlocking {
-        control.resumeDowngradesInRecovery()
+    fun aDirectInstallIsAnOrdinaryReboot() = runBlocking {
         watches.value = listOf(watch(SINGLE_SLOT_4_38))
         control.sideload(pbz.path)
-        // Single-slot watches take the older image directly; WaitingForReboot is the usual success.
-        watches.value = listOf(watch(SINGLE_SLOT_4_38, FirmwareUpdateStatus.WaitingForReboot(found("v4.37.0"))))
+        // Single-slot watches take the older image directly; WaitingForReboot is the usual success,
+        // whatever the version: the route is libpebble3's call, not a rule of ours.
+        watches.value = listOf(watch(SINGLE_SLOT_4_38, rebooting(viaPrf = false)))
         assertEquals("reboot:", control.status())
 
         watches.value = emptyList()
         watches.value = listOf(watch(RECOVERY, recovery = true))
         delay(200)
-        assertEquals(listOf("normal ${pbz.path}"), flashed)
+        assertEquals(listOf("normal ${pbz.path} Sideload"), flashed)
+        assertTrue(control.update().startsWith("disabled:"), "nothing pending: update goes to the (off) source")
     }
 
     @Test
-    fun backOnNormalFirmwareDropsThePendingDowngrade() = runBlocking {
-        control.resumeDowngradesInRecovery()
+    fun backOnNormalFirmwareIsATerminalFailure() = runBlocking {
         watches.value = listOf(watch(DUAL_SLOT_4_38))
         control.sideload(pbz.path)
-        watches.value = listOf(watch(DUAL_SLOT_4_38, FirmwareUpdateStatus.WaitingForReboot(found("v4.37.0"))))
-        awaitUntil { control.update().startsWith("busy:") }
+        watches.value = listOf(watch(DUAL_SLOT_4_38, rebooting(viaPrf = true)))
+        assertTrue(control.update().startsWith("busy:"))
 
-        // The watch left recovery without the downgrade (or never got there).
+        // The watch left recovery without the downgrade (or never got there): libpebble3 reports it
+        // as the reconnect's failure. Said as `failed:`, not a plain `idle:` a client following `prf`
+        // would wait out, and on the FirmwareProgress flow as well.
         watches.value = emptyList()
-        watches.value = listOf(watch(DUAL_SLOT_4_38))
-        awaitUntil { control.update().startsWith("disabled:") }
-        // Said as a terminal failure, not a plain `idle:` a client following `prf` would wait out, and
-        // on the FirmwareProgress flow as well.
-        awaitUntil { control.status().startsWith("failed:") }
-        assertTrue("v4.37.0" in control.status(), control.status())
+        watches.value = listOf(watch(DUAL_SLOT_4_38, FirmwareUpdateStatus.NotInProgress.Idle(
+            IllegalStateException(DID_NOT_REBOOT), SIDELOAD)))
+        assertEquals("failed:$DID_NOT_REBOOT", control.status())
         withTimeout(5.seconds) { control.statusFlow().first { it.startsWith("failed:") } }
+        assertTrue(control.update().startsWith("disabled:"), "nothing is in flight any more")
 
-        // A later, unrelated recovery visit must not flash the old .pbz.
+        // A later, unrelated recovery visit flashes nothing.
         watches.value = emptyList()
         watches.value = listOf(watch(RECOVERY, recovery = true))
         delay(200)
-        assertEquals(listOf("normal ${pbz.path}"), flashed)
+        assertEquals(listOf("normal ${pbz.path} Sideload"), flashed)
 
-        // The next flash clears the note.
+        // The next flash is accepted again.
         watches.value = listOf(watch(DUAL_SLOT_4_38))
-        control.sideload(pbz.path)
+        assertEquals("ok:Flashing ${pbz.name}", control.sideload(pbz.path))
         assertEquals("idle:", control.status())
     }
 
@@ -152,7 +159,7 @@ class FirmwareControlDowngradeTest {
                 "getSerial" -> SERIAL
                 "getFirmwareUpdateState" -> state
                 "getWatchInfo" -> watchInfo(running)
-                "sideloadFirmware" -> flashed.add("${if (recovery) "recovery" else "normal"} ${args!![0] as Path}").let { null }
+                "sideloadFirmware" -> flashed.add("${if (recovery) "recovery" else "normal"} ${args!![0] as Path} ${args[1] as FirmwareUpdateTrigger}").let { null }
                 "toString" -> "fake watch $running"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args?.firstOrNull()
@@ -163,6 +170,12 @@ class FirmwareControlDowngradeTest {
 
     private companion object {
         const val SERIAL = "Q000000000001"
+        val SIDELOAD = FirmwareUpdateTrigger.Sideload
+
+        /** libpebble3's own failure for a watch that came back on its normal firmware (continuePending). */
+        const val DID_NOT_REBOOT = "The watch didn't reboot into recovery to install the update"
+
+        fun rebooting(viaPrf: Boolean) = FirmwareUpdateStatus.WaitingForReboot(found("v4.37.0"), SIDELOAD, viaPrf)
 
         fun version(tag: String, dualSlot: Boolean, recovery: Boolean = false) = FirmwareVersion.from(
             tag, isRecovery = recovery, gitHash = "", timestamp = Instant.DISTANT_PAST,
@@ -174,7 +187,7 @@ class FirmwareControlDowngradeTest {
         val RECOVERY = version("v4.9.9", dualSlot = true, recovery = true)
 
         fun found(tag: String) = FirmwareUpdateCheckResult.FoundUpdate(
-            version = version(tag, dualSlot = true), url = "", notes = "Sideloaded", canDowngrade = true,
+            version = version(tag, dualSlot = true), url = "", notes = "Sideloaded", installsDirectly = false,
         )
 
         fun watchInfo(running: FirmwareVersion) = WatchInfo(

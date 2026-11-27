@@ -33,7 +33,7 @@ private const val MAX_STORED = 32
  * Deleted with the notification ([remove]: dismissed on the wrist or elsewhere) and capped at
  * [MAX_STORED]. The directory is in the cache, never in backups or support bundles.
  */
-class NotificationImageStore(private val dir: File) : NotificationImageProvider {
+internal class NotificationImageStore(private val dir: File) : NotificationImageProvider {
     private val log = KotlinLogging.logger {}
 
     /** Store [src] for [itemId]; the aspect (height/width in sixteenths) to announce, or null when it isn't

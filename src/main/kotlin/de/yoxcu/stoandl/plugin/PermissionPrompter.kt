@@ -11,7 +11,7 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.CustomTimelineActionHandler
 import io.rebble.libpebblecommon.database.entity.buildTimelineNotification
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
-import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
+import io.rebble.libpebblecommon.packets.blobdb.TimelineActionType
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -87,9 +87,9 @@ class PermissionPrompter(
                 tinyIcon { TimelineIcon.NotificationFlag }
             }
             actions {
-                action(TimelineItem.Action.Type.Generic) { attributes { title { "Allow" } } }  // actionId 0
-                action(TimelineItem.Action.Type.Generic) { attributes { title { "Deny" } } }   // actionId 1
-                action(TimelineItem.Action.Type.Dismiss) { attributes { title { "Later" } } }
+                action(TimelineActionType.Generic) { attributes { title { "Allow" } } }  // actionId 0
+                action(TimelineActionType.Generic) { attributes { title { "Deny" } } }   // actionId 1
+                action(TimelineActionType.Dismiss) { attributes { title { "Later" } } }
             }
         }
         val handlers = mapOf<UByte, CustomTimelineActionHandler>(

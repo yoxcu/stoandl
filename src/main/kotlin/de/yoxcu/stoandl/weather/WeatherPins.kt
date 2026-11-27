@@ -9,7 +9,8 @@ import io.rebble.libpebblecommon.database.entity.TimelinePin
 import io.rebble.libpebblecommon.database.entity.buildTimelinePin
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
-import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
+import io.rebble.libpebblecommon.packets.blobdb.TimelineActionType
+import io.rebble.libpebblecommon.packets.blobdb.TimelineItemLayout
 import io.rebble.libpebblecommon.weather.WeatherLocationData
 import io.rebble.libpebblecommon.weather.WeatherType
 import kotlin.time.Clock
@@ -158,7 +159,7 @@ internal class WeatherPins(
         val pin = buildTimelinePin(parentId = WEATHER_APP_UUID, timestamp = timestamp) {
             itemID = uuid
             duration = Duration.ZERO
-            layout = TimelineItem.Layout.WeatherPin
+            layout = TimelineItemLayout.WeatherPin
             attributes {
                 title { title }
                 // Firmware >= 4.39 titles the pin by kind, in the watch's language; libpebble3 drops the
@@ -176,7 +177,7 @@ internal class WeatherPins(
                 }
             }
             actions {
-                action(TimelineItem.Action.Type.OpenWatchapp) {
+                action(TimelineActionType.OpenWatchapp) {
                     attributes { title { "More" } }
                 }
             }

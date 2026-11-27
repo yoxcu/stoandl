@@ -97,6 +97,35 @@ class VoiceTest {
     }
 
     @Test
+    fun `libpebble3's audio streams decode through libspeex to little-endian PCM`() {
+        assumeTrue(SpeexDecoder.available, "libspeex not installed")
+        val frames = firmwareFrames(1)
+        val decoder = assertNotNull(LibspeexFrameDecoder.open(VoiceEncoderInfo.Speex(16000, "1.2.1", 9800, 4, 320)))
+        val expected = assertNotNull(SpeexDecoder.open()).use { s -> frames.map { assertNotNull(s.decodeFrame(it)) } }
+        try {
+            frames.zip(expected).forEach { (frame, samples) ->
+                assertContentEquals(samples.toLittleEndianBytes(), decoder.decode(frame.toUByteArray()))
+            }
+            assertNull(decoder.decode(ubyteArrayOf(5u, 1u, 2u)), "a malformed frame is skipped")
+        } finally {
+            decoder.close()
+        }
+    }
+
+    @Test
+    fun `only wideband Speex streams are decoded`() {
+        assertNull(LibspeexFrameDecoder.open(VoiceEncoderInfo.Speex(8000, "1.2.1", 9800, 4, 160)))
+    }
+
+    @Test
+    fun `PCM bytes are little-endian 16-bit`() {
+        assertContentEquals(
+            byteArrayOf(0x34, 0x12, 0xff.toByte(), 0xff.toByte(), 0x00, 0x80.toByte()),
+            shortArrayOf(0x1234, -1, Short.MIN_VALUE).toLittleEndianBytes(),
+        )
+    }
+
+    @Test
     fun `WAV round-trips and resamples`() {
         val pcm = ShortArray(800) { (it * 7).toShort() }
         val (back, rate) = assertNotNull(Wav.decode(Wav.encode(pcm, 8000)))

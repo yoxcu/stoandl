@@ -88,7 +88,7 @@ unchanged). A starter file is shipped at [`packaging/stoandl.conf.example`](../p
 | `weather.enabled` | bool | `true` | Master switch for weather sync, the first row of the GUI's Settings → Weather (`stoandl sync enable\|disable weather` is an alias). Weather runs only when this is on **and** a source is configured — turning it off stops the sync while leaving the locations in place. |
 | `geolocation.enabled` | bool | `false` | Expose the device's GeoClue2 position to watchapps (`navigator.geolocation` in PKJS, location-aware sports/GPS apps). Off by default — it shares your location with whatever watchapp asks. Shares weather's GeoClue provider (one client at a time, one fix cache) and its `weather.gps_desktop_id` identity. See [Geolocation](#geolocation). |
 | `apps.order_faces_by_last_used` | bool | `false` | Move a watchface to the top of the locker order whenever it becomes the active face (libpebble3 `orderWatchfacesByLastUsed`, which the official app turns on at first run). Off by default so the order you set (`stoandl apps order`, the GUI) stays as it was. Live. |
-| `plugins.enabled` | bool | `false` | Plugins: phone-side data sources and actions watchfaces and watchapps use (upstream's plugin system): the built-in ones (weather, music, calendar, phone state, watch settings, watch state), the plugin a `.pbw` ships, and extensions that serve sources. Also turns on app permissions for every watchapp's PKJS. Off by default: no plugin code runs and nothing is fetched. See [plugins.md](plugins.md). |
+| `plugins.enabled` | bool | `false` | Plugins: phone-side data sources and actions watchfaces and watchapps use (upstream's plugin system): the built-in ones (weather, music, calendar, phone state, watch settings, watch state, find my phone: the watch rings this device), the plugin a `.pbw` ships, and extensions that serve sources. Also turns on app permissions for every watchapp's PKJS. Off by default: no plugin code runs and nothing is fetched. See [plugins.md](plugins.md). |
 | `plugins.permission_policy` | string | `ask_if_exfiltrating` | When an app must ask before using a permission: `ask_if_exfiltrating` (only when the data could leave this machine), `always_ask`, or `never_ask` (everything granted; explicit denials stand). |
 | `plugins.ask_legacy_apps` | bool | `false` | Apps made before permissions (no manifest v2) are asked too, instead of keeping internet access and what they declared. |
 | `voice.backend` | string | `off` | Speech to text for the watch's dictation (voice replies, watchapps' dictation) and extensions' voice notes: `off`, `local` (a downloaded model run by whisper.cpp, no egress), `command` (your own engine, no egress) or `http` (an OpenAI-compatible service; the audio leaves the machine). Downloading a model (`stoandl voice download`, the GUI) switches `off` to `local`. See [voice.md](voice.md). |
@@ -665,8 +665,8 @@ watch.dndNotificationBacklight = false   # fw >= 4.41, see below
 
 A quick-launch button (`qlUp`, `qlDown`, `qlSelect`, `qlBack`, the `qlCombo…` holds and the
 `qlSingleClick…` taps) takes `off`, an app name or UUID, or one of the firmware's system actions, as the
-official app offers them: `Quiet Time`, `Backlight`, `Motion Backlight`, `Airplane Mode`,
-`Timeline Past`, `Timeline Future`, `Toggle Touch`. Case, spaces, `-` and `_` don't matter (`quiet-time`). An action name
+official app offers them: `Quiet Time`, `Backlight`, `Motion Backlight`, `Airplane Mode`, `Toggle Touch`,
+`Timeline Past`, `Timeline Future`, `Clear Notifications`. Case, spaces, `-` and `_` don't matter (`quiet-time`). An action name
 wins over an app with the same title; give that app's UUID instead. `stoandl settings ql` lists the
 defaults by name (hold Back: Quiet Time, tap Down: Timeline Future).
 
@@ -676,6 +676,9 @@ watch connected it isn't offered, `settings set` refuses it, and a `watch.ql*` p
 watch connected it is accepted and marked "touch watches only". libpebble3 never sends it to a watch that
 lacks it: that watch would treat it as an uninstalled app, and before PebbleOS 4.40 a tap on that button
 reboots the watch.
+
+`Clear Notifications` clears the watch's notification history. PebbleOS 4.38 and later have it, on every
+watch; older firmware is treated the same way as a watch without touch for `Toggle Touch`.
 
 Text size is two settings: `systemTextSize` (menus and the launcher) and `notifTextSize` (notifications;
 `SameAsSystem` follows the system size). The phone can set them from PebbleOS 4.39 on; older firmware
@@ -826,8 +829,9 @@ and loads the fonts a script needs (Cyrillic, Simplified/Traditional Chinese, Ja
 …). The transfer is libpebble3's (`installLanguagePack` → PutBytes, the same machinery as firmware/app
 sideload); stoandl drives it and shows progress.
 
-The packs come from a built-in **catalog** — the same manifest the official Core app ships, bundled with
-stoandl. See what's available with:
+The packs come from a built-in **catalog** — the official Core app's last in-tree manifest, frozen in
+stoandl (upstream moved the list to a server manifest, which stoandl doesn't fetch: that would be egress).
+See what's available with:
 
 ```sh
 stoandl language list   # packs for your watch's board (installed one marked *), or the full catalog
@@ -872,6 +876,23 @@ default because it makes a network call:
 | `language.download` | `false` | Allow `language install` to download a `.pbl` from the catalog source and install it. (`language list` and `language sideload` never touch the network.) |
 
 To revert to English, install the watch's English pack (`stoandl language install en_US`, or sideload it).
+
+### Several packs (PebbleOS 4.42 and later)
+
+Firmware 4.42 keeps up to four packs on the watch and switches between them; older firmware keeps one, which
+an install replaces.
+
+```sh
+stoandl language installed                 # the packs on the watch: built-in English first, * = active
+stoandl language use de_DE                 # switch to a pack on the watch (slot, locale or name)
+stoandl language use english               # the built-in English; the packs stay
+stoandl language remove 2                  # free a slot (removing the active pack switches to English)
+```
+
+On such a watch an install adds the pack to a free slot and switches to it; it is refused when all four slots
+are in use, and a catalog install when that locale is already on the watch (remove it first). On one-pack firmware `installed`,
+`use` and `remove` answer that the watch holds one pack. The `language` watch pref (English/Custom) is gone
+upstream; `language use english` does what it did, on 4.42 and later.
 `stoandl language status` prints the current state at any time (`idle`, `downloading`, `installing`,
 `done`, `failed`).
 
@@ -944,6 +965,8 @@ timestamps are unix epoch seconds. Both halves are local-only (no egress), so th
 
 **Health profile.** The watch's own tracking settings are not stoandl keys: they live on the watch and
 stoandl edits them with `stoandl health profile set <key> <value>` (GUI: Settings → Health profile).
+`age` and `birth_year` set each other. `max_hr` follows from the age (220 − age, at least the elevated heart
+rate): libpebble3 sends the watch that value whatever was set, so it is read-only.
 `hrm_interval` takes `5min`, `10min`, `30min`, `1h` or `off`. `5min` arrived in PebbleOS 4.39.0, so
 stoandl refuses it unless every connected watch runs 4.39.0 or newer, and asks you to connect the
 watch first when none is; older firmware would treat it as invalid and show and measure 10 minutes. A

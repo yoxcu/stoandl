@@ -39,7 +39,7 @@ private val summaries = RepeatedLines()
  * via [ICalParser]; it must never throw (callers run it inside libpebble3's sync, which has no
  * per-calendar guard).
  */
-class RawCalendar(
+internal class RawCalendar(
     val platformId: String,
     val name: String,
     val accountId: String,
@@ -72,7 +72,7 @@ object SourceId {
 
 /** A configured place to discover calendars. [calendars] enumerates them (cheap; the actual event
  *  read is deferred to each [RawCalendar.fetchEvents]). */
-interface CalendarSource {
+internal interface CalendarSource {
     suspend fun calendars(): List<RawCalendar>
 }
 
@@ -139,7 +139,7 @@ private fun icsPathToCalendars(path: File, accountId: String, health: SourceHeal
 
 /** Local .ics files or directories explicitly listed in config (`calendar.ics_paths`). No egress.
  *  Each configured path is its own source (`ics:<path>`); a directory fans out to one calendar per file. */
-class IcsPathSource(private val paths: List<String>, private val health: SourceHealth) : CalendarSource {
+internal class IcsPathSource(private val paths: List<String>, private val health: SourceHealth) : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> =
         paths.flatMap { p -> icsPathToCalendars(File(p), SourceId.ics(p), health) }
 }
@@ -153,7 +153,7 @@ class IcsPathSource(private val paths: List<String>, private val health: SourceH
  * calendars are files anywhere (a vdirsyncer `singlefile` copy, say) and are found nowhere else. The
  * directory scan adds what that list doesn't name.
  */
-class DiscoverySource : CalendarSource {
+internal class DiscoverySource : CalendarSource {
     override suspend fun calendars(): List<RawCalendar> {
         val listed = calindoriCalendars().filter { it.file.isFile }
             .map { icsFileCalendar(it.file, SourceId.DISCOVER, health = null, name = it.name) }
@@ -238,7 +238,7 @@ fun calendarDiscoveryDirs(): List<File> {
 
 /** A published iCalendar feed fetched over HTTP(S) (e.g. Google/Nextcloud/Outlook "iCal URL").
  *  Opt-in egress (`calendar.ical_urls`). */
-class IcalUrlSource(
+internal class IcalUrlSource(
     private val urls: List<String>,
     private val client: HttpClient,
     private val health: SourceHealth,
@@ -277,7 +277,7 @@ class IcalUrlSource(
  * (`calendar.caldav`). No Digest/OAuth. Use `stoandl calendar disable` to drop discovered calendars
  * you don't want.
  */
-class CalDavSource(
+internal class CalDavSource(
     private val entries: List<Entry>,
     private val client: HttpClient,
     private val secretStore: SecretStore,

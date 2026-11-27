@@ -52,6 +52,24 @@ class WatchPrefTextTest {
         }
     }
 
+    /**
+     * libpebble3 has no descriptions any more (upstream 76fc8f4a), so the table owns them: each names a real
+     * pref (the first test), and the ones prefs had before the bump are still there.
+     */
+    @Test
+    fun `the descriptions are stoandl's and survive the bump`() {
+        assertEquals("Turn on backlight by flicking wrist", WatchPrefText.description(BoolWatchPref.BacklightMotion))
+        assertEquals("Text size for system menus and the launcher", WatchPrefText.description(EnumWatchPref.SystemTextSize))
+        assertEquals("Enable the touchscreen", WatchPrefText.description(BoolWatchPref.TouchEnabled))
+        assertEquals(null, WatchPrefText.description(BoolWatchPref.Clock24h))
+        // The firmware note follows the sentence, once.
+        assertEquals(
+            "Turn on the backlight for notifications during Quiet Time. Needs PebbleOS 4.41 or later.",
+            WatchPrefsControl.describe(BoolWatchPref.QuietTimeNotificationBacklight),
+        )
+        assertEquals("Needs PebbleOS 4.37 or later.", WatchPrefsControl.describe(EnumWatchPref.WindSpeed).substringAfter(". "))
+    }
+
     @Test
     fun `the two text sizes get names of their own`() {
         assertEquals("Menu Text Size", WatchPrefText.name(EnumWatchPref.SystemTextSize))
@@ -72,7 +90,7 @@ class WatchPrefTextTest {
         val rows = control().list().map { it.split('\t') }
         assertTrue(rows.all { it.size == 11 }, rows.toString())
         assertEquals(listOf("qlUp", "lightTimeoutMs", "clock24h"), rows.map { it[0] })
-        assertEquals(listOf("Quick launch", "Backlight & display", "Time, units & language"), rows.map { it[8] })
+        assertEquals(listOf("Quick launch", "Backlight & display", "Time & units"), rows.map { it[8] })
         assertTrue(rows[0][9].startsWith("Choose an app"), rows[0][9])
         assertEquals(listOf("", "lightPreset=Advanced", ""), rows.map { it[10] })
     }

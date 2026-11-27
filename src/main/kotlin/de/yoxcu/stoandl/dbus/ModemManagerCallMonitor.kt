@@ -39,7 +39,7 @@ import kotlin.time.Duration.Companion.seconds
  * — and passed as [Call.contactName]; PhoneControlManager falls back to the number only when it
  * stays unresolved.
  */
-class ModemManagerCallMonitor(
+internal class ModemManagerCallMonitor(
     private val libPebble: LibPebble,
     private val scope: CoroutineScope,
     private val contactResolver: ContactResolver,

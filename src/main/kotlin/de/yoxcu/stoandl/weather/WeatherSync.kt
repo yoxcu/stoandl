@@ -9,6 +9,7 @@ import de.yoxcu.stoandl.power.NoWakeups
 import de.yoxcu.stoandl.power.delayWallClock
 import de.yoxcu.stoandl.util.LenientJson
 import de.yoxcu.stoandl.util.stoandlHttpClient
+import de.yoxcu.stoandl.util.watchesNow
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -155,7 +156,7 @@ class WeatherSync(
             .distinctUntilChanged()
             .drop(1)
             .onEach {
-                if (libPebble.watches.value.any { w -> w is ConnectedPebbleDevice }) {
+                if (libPebble.watchesNow().any { w -> w is ConnectedPebbleDevice }) {
                     log.info { "Watch units changed — refreshing weather" }
                     runCatching { syncNow() }.onFailure { e -> log.warn { "Weather sync after a units change failed: ${e.message}" } }
                 } else {
@@ -174,7 +175,7 @@ class WeatherSync(
                 // Only fetch while a watch is connected — otherwise there's nowhere to deliver the
                 // weather and it just hits the weather API for nothing (e.g. out-of-range overnight).
                 // The on-connect refresh above re-fetches the moment a watch returns.
-                if (libPebble.watches.value.none { it is ConnectedPebbleDevice }) {
+                if (libPebble.watchesNow().none { it is ConnectedPebbleDevice }) {
                     failStreak = 0
                     delayWallClock(intervalMinutes.minutes, wakeups)
                     continue

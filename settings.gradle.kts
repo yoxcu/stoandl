@@ -15,6 +15,11 @@ dependencyResolutionManagement {
         google()
         maven("https://jitpack.io")
     }
+    // The fork's catalog is the one source of the pins the daemon shares with libpebble3 (Kotlin, Ktor,
+    // kotlinx, kermit, Koin): build.gradle.kts reads them as `forkLibs.*`, so a bump moves them together.
+    versionCatalogs {
+        create("forkLibs") { from(files("libs/libpebble3/gradle/libs.versions.toml")) }
+    }
 }
 
 includeBuild("libs/libpebble3") {

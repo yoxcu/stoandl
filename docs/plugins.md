@@ -8,13 +8,16 @@ documentation describes the API for developers: `test-apps/plugins.md` in
 [coredevices/libpebble3](https://github.com/coredevices/libpebble3).
 
 Off by default: `plugins.enabled = false` (`stoandl daemon set plugins.enabled true`, or the GUI's
-Settings → Plugins). Turning it on also turns on **app permissions** for every watchapp's PKJS.
+Settings → Plugins). While it is off no plugin code runs and nothing is fetched for one (upstream removed
+this switch in `bf66a5be`; the fork keeps it). Turning it on also turns on **app permissions** for every
+watchapp's PKJS: its XHRs (every redirect hop) and `WebSocket`s then need the app's network permission,
+and an app's microphone audio stream (refused while plugins are off) its microphone permission.
 
 ## What provides plugins
 
 | Kind | What | Where it comes from |
 |---|---|---|
-| Built-in | **Weather** (`weather/location`, `weather/hour`; reads what stoandl's weather sync fetched, no extra requests), **Music** (`music/track`, play/pause/skip; the MPRIS bridge), **Calendar** (`calendar/event`; the calendar sync, cached between syncs), **Phone** (`phone/phone_state`: battery, Wi-Fi/cellular, cell generation; UPower, NetworkManager, ModemManager), **Watch Settings** and **Watch State** (launch apps) | stoandl / libpebble3 |
+| Built-in | **Weather** (`weather/location`, the official app's contract: now, today's high/low/feels-like and condition, plus the hourly and daily series, UV, precipitation, wind, humidity, sunrise/sunset and the place's UTC offset whenever the forecast carries them; reads what stoandl's weather sync fetched, no extra requests. Upstream removed `weather/hour`: the hours are the `hourly_*` series), **Music** (`music/track`, play/pause/skip; the MPRIS bridge), **Calendar** (`calendar/event`; the calendar sync, cached between syncs), **Phone** (`phone/phone_state`: battery, Wi-Fi/cellular, cell generation; UPower, NetworkManager, ModemManager), **Watch Settings** and **Watch State** (launch apps; a Quick Launch action only on a watch that has it), **Find My Phone** (`phone/find_my_phone` rings this device while subscribed, plus `ring`/`stop` actions; the freedesktop alarm sound through `pw-play`/`paplay` and a desktop notification with Stop, at most 60 s) | stoandl / libpebble3 |
 | App | the `plugin.js` a `.pbw` ships (or a plugin-only `.pbw`), run in GraalJS with `fetch`, `WebSocket`, `navigator.geolocation`, `localStorage` and `Pebble.secureStorage` | `stoandl apps install x.pbw` |
 | Extension | an extension that declares a `plugin` block serves sources and actions over its JSON-RPC pipe ([extensions.md](extensions.md#serving-plugin-sources-and-actions)) | `stoandl ext install` |
 
@@ -85,4 +88,3 @@ the plugin the access token, as the broker would. No connector file, no sign-in.
 
 - **Web sign-in** from a settings page (`Pebble.webSignIn`).
 - The app store's Plugins section: install `.pbw`s yourself.
-- WebSocket from a watchapp's PKJS (plugins have it).

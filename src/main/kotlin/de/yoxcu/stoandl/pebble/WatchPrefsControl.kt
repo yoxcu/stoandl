@@ -7,6 +7,7 @@ import io.rebble.libpebblecommon.SystemAppIDs
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.dao.WatchPreference
 import io.rebble.libpebblecommon.database.entity.BoolWatchPref
+import io.rebble.libpebblecommon.database.entity.ColorWatchPref
 import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.NumberWatchPref
 import io.rebble.libpebblecommon.database.entity.QuickLaunchActionSupport
@@ -17,8 +18,10 @@ import io.rebble.libpebblecommon.database.entity.RgbColorWatchPref
 import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefEnum
+import io.rebble.libpebblecommon.database.entity.minFirmware
 import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.services.FirmwareVersion
+import io.rebble.libpebblecommon.timeline.TimelineColor
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -37,6 +40,12 @@ private val log = KotlinLogging.logger {}
  *
  * [resolveAppUuid]/[appName] bridge quick-launch app references to/from the locker so a button can be
  * mapped by app name as well as UUID.
+ *
+ * One firmware gate: libpebble3's (the fork's `minFirmware`, read in `WatchPrefItem.value()`) decides
+ * whether a key is sent; below its release nothing is, and the record waits for a firmware update.
+ * [tooOldFor] only reads that same table, for the messages here and for skipping pins on connect; it adds
+ * no rule of its own. Upstream's retry of a key the watch answered DataStale (3c417558) covers the keys
+ * without a gate, so the two never act on the same record.
  */
 class WatchPrefsControl(
     private val libPebble: LibPebble,
@@ -182,10 +191,10 @@ class WatchPrefsControl(
             return "needs PebbleOS $min or later, the watch runs ${firmware.stringVersion}"
         }
 
-        /** libpebble3's description, the firmware it needs (from [WatchPref.minFirmware], unless the description
-         *  already says so) and [extra], as sentences. stoandl's longer text is [WatchPrefText.help]. */
+        /** [WatchPrefText.description], the firmware it needs (from libpebble3's `minFirmware`, unless the
+         *  description already says so) and [extra], as sentences. stoandl's longer text is [WatchPrefText.help]. */
         fun describe(pref: WatchPref<*>, extra: String? = null): String {
-            val description = pref.description
+            val description = WatchPrefText.description(pref)
             val needs = pref.minFirmware?.let { "Needs PebbleOS $it or later." }
                 ?.takeUnless { description != null && "PebbleOS ${pref.minFirmware}" in description }
             val notes = listOfNotNull(needs, extra)
@@ -239,6 +248,7 @@ class WatchPrefsControl(
         is EnumWatchPref -> WatchPreference(pref, parseEnum(pref, raw))
         is QuicklaunchWatchPref -> WatchPreference(pref, parseQuickLaunch(raw))
         is RgbColorWatchPref -> WatchPreference(pref, parseColor(pref, raw))
+        is ColorWatchPref -> WatchPreference(pref, parseColorChoice(pref, raw))
         is ScheduleWatchPref -> WatchPreference(pref, parseSchedule(pref, raw))
     }
 
@@ -291,6 +301,19 @@ class WatchPrefsControl(
         return v and 0x00FFFFFFu
     }
 
+    /** The colours [pref] may take: the watch crashes on any other ([ColorWatchPref.availableColors]). */
+    private fun choices(pref: ColorWatchPref): List<TimelineColor> = pref.availableColors ?: TimelineColor.entries
+
+    /** One of [pref]'s [choices], by its name (`VividCerulean`) or display name (`Vivid Cerulean`). */
+    private fun parseColorChoice(pref: ColorWatchPref, raw: String): TimelineColor {
+        val t = raw.trim()
+        return choices(pref).firstOrNull {
+            it.identifier.equals(t, true) || it.name.equals(t, true) || it.displayName.equals(t, true)
+        } ?: throw IllegalArgumentException(
+            "'$raw' is not valid for ${pref.id}; allowed: ${choices(pref).joinToString(", ") { it.identifier }}",
+        )
+    }
+
     /** A daily `HH:MM-HH:MM` window; an end before the start runs overnight (e.g. `22:00-07:00`). */
     private fun parseSchedule(pref: ScheduleWatchPref, raw: String): QuietTimeSchedule =
         QuietTimeSchedule.parse(raw)
@@ -304,6 +327,8 @@ class WatchPrefsControl(
         is EnumWatchPref -> "enum"
         is QuicklaunchWatchPref -> "quicklaunch"
         is RgbColorWatchPref -> "color"
+        // A pick from a fixed list, which is what a client shows an enum as (the "color" type is free RGB).
+        is ColorWatchPref -> "enum"
         is ScheduleWatchPref -> "schedule"
     }
 
@@ -316,6 +341,7 @@ class WatchPrefsControl(
         is EnumWatchPref -> pref.options.joinToString("|") { it.displayName }
         is QuicklaunchWatchPref -> (listOf("off") + offeredActions().map { it.name } + "<app name or uuid>").joinToString("|")
         is RgbColorWatchPref -> "RRGGBB|" + pref.presets.joinToString("|") { it.displayName }
+        is ColorWatchPref -> choices(pref).joinToString("|") { it.displayName }
         is ScheduleWatchPref -> "HH:MM-HH:MM"
     }
 
@@ -328,6 +354,7 @@ class WatchPrefsControl(
             val u = q.uuid
             if (!q.enabled || u == null) "off" else QuickLaunchActions.nameOf(u) ?: u.toString()
         }
+        is ColorWatchPref -> (value as TimelineColor).identifier
         else -> format(pref, value)
     }
 
@@ -340,35 +367,41 @@ class WatchPrefsControl(
             if (!it.enabled || u == null) "off" else (QuickLaunchActions.nameOf(u) ?: appName(u) ?: u.toString())
         } ?: "off"
         is RgbColorWatchPref -> (value as? UInt)?.let { "0x" + it.toString(16).padStart(6, '0').uppercase() } ?: "?"
+        is ColorWatchPref -> (value as? TimelineColor)?.displayName ?: "?"
         is ScheduleWatchPref -> (value as? QuietTimeSchedule)?.encode() ?: "?"
     }
 }
 
 /**
- * The firmware system actions a quick-launch button can run instead of an app, named and ordered as the
- * official app's picker lists them. They have no locker entry, so without this table they parsed as no
- * app at all and listed as a raw UUID (the `qlBack` and `qlSingleClickDown` defaults among them).
- * A name wins over a locker app of the same title; address that app by UUID.
+ * The firmware system actions a quick-launch button can run instead of an app: libpebble3's
+ * [SystemAppIDs.SYSTEM_SHORTCUTS] (what upstream's picker and its Watch State plugin offer), in its order and
+ * with its names, except where stoandl's wording differs ([OVERRIDES]). They have no locker entry, so without
+ * this table they parsed as no app at all and listed as a raw UUID (the `qlBack` and `qlSingleClickDown`
+ * defaults among them). A name wins over a locker app of the same title; address that app by UUID.
  */
 internal object QuickLaunchActions {
     /**
      * [support] is what the firmware needs to have the action (libpebble3's [QuickLaunchActionSupport], null
-     * when every watch has it); [audience] says so in words when no watch is connected to check against.
+     * when every watch has it); [audience] says so in words when no watch is connected to check against
+     * (from [support] unless [OVERRIDES] words it).
      */
-    class Action(val name: String, val uuid: Uuid, val audience: String? = null) {
+    class Action(val name: String, val uuid: Uuid, audience: String? = null) {
         val support: QuickLaunchActionSupport? = QuickLaunchActionSupport.of(uuid)
+        val audience: String? = support?.let { audience ?: "PebbleOS ${it.minFirmware} or later" }
     }
 
-    val all = listOf(
-        Action("Quiet Time", SystemAppIDs.QUIET_TIME_TOGGLE_UUID),
-        Action("Backlight", SystemAppIDs.BACKLIGHT_UUID),
-        Action("Motion Backlight", SystemAppIDs.MOTION_BACKLIGHT_UUID),
-        Action("Airplane Mode", SystemAppIDs.AIRPLANE_MODE_UUID),
-        Action("Timeline Past", SystemAppIDs.TIMELINE_PAST_UUID),
-        Action("Timeline Future", SystemAppIDs.TIMELINE_FUTURE_UUID),
-        // PebbleOS 4.39.0, Pebble Time 2 and Pebble Round 2 only.
-        Action("Toggle Touch", SystemAppIDs.TOUCH_TOGGLE_UUID, audience = "touch watches only"),
+    /** stoandl's name (and audience) where upstream's differs. */
+    private class Override(val name: String, val audience: String? = null)
+
+    private val OVERRIDES = mapOf(
+        // The firmware's own menu calls it Toggle Touch (PebbleOS 4.39.0, Pebble Time 2 and Pebble Round 2 only).
+        SystemAppIDs.TOUCH_TOGGLE_UUID to Override("Toggle Touch", audience = "touch watches only"),
     )
+
+    val all: List<Action> = SystemAppIDs.SYSTEM_SHORTCUTS.map { (uuid, name) ->
+        val o = OVERRIDES[uuid]
+        Action(o?.name ?: name, uuid, o?.audience)
+    }
 
     val names: List<String> = all.map { it.name }
 

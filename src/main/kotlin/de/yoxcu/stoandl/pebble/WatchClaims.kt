@@ -5,8 +5,8 @@ import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 
 /**
- * Everything stoandl claims to the watch about the phone, in one place. libpebble3's JVM module binds
- * neither value; the override module in [PebbleIntegration] binds both from here.
+ * Everything stoandl claims to the watch about the phone, in one place: [PebbleIntegration] hands both
+ * values to libpebble3 in its `JvmHost` (capabilities, platformFlags).
  *
  * Capability bits are claimed unconditionally, never from config: the watch reads them once per session
  * and latches what it learns (an image type answered UNSUPPORTED stays unasked until reconnect). Users

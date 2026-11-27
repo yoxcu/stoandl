@@ -25,6 +25,12 @@ downgrade handling are implemented too. None of it has run on a watch yet: the b
 - dropping live HR via `0x180D` (§5.4);
 - hardware re-tests on the 4.41.x watch.
 
+**libpebble3 `de47e36f` (2026-11-26).** The fork moved onto upstream `de47e36f` (§3, hardware pass
+[TESTING §5.77](TESTING.md)). It changes three items here: libpebble3 now does the downgrade through recovery
+itself (§4.5), the `language` watch pref is gone upstream (packs set the language; on firmware with several
+packs `stoandl language use` switches between them and English), and upstream's 4.39 HRM interval rule replaces
+the daemon's copy.
+
 ## Sources and method
 
 - **Changelog.** The Notion changelog carries notes only for **v4.38.1** in this window. v4.37.0, v4.38.0,
@@ -205,138 +211,138 @@ These are commonMain, self-contained, and a safer interim than the 517-commit bu
 
 ---
 
-## 3. The libpebble3 bump to upstream `433fef18`: runbook
+## 3. Bumping libpebble3: runbook
 
-**Status: done. Built on fork branch `stoandl-bump`, re-bumped onto `ec2156cc` (TESTING §5.44), promoted to `stoandl` on 2026-10-20.**
+**Bumps so far.**
 
-- **Target.** Upstream `e6b5138e`, which is `433fef18` plus one commit (the ar_SA language pack).
-- **Fork history.** The end state was resolved once as a merge, compile-fixed and tested, then rebuilt as a
-  linear history on `e6b5138e`: the 42 pre-squashed fork commits, nine "adapt to upstream" commits, the two
-  deep-sleep commits and 11 `fix(bump)`/test commits. Its tree equals the merge's. Five commits from the
-  deep-sleep work followed (notification catch-up, re-arm settle).
-- **Daemon.** stoandl `ae965a4` moves the gitlink and adapts to the API drift (§3.4) in one commit, so every
-  main commit builds. `.gitmodules` follows `stoandl-bump`.
-- **Verified offline.** The fork's jvmTest (281 tests, one existing `@Ignore`), including a new
-  `KoinGraphTest` and `GraalJsRunnerTest`; the daemon's tests; and a no-watch boot smoke on a private bus,
-  which also migrated a v38 database to v47. The fat JAR keeps `Multi-Release: true` and the merged
-  `META-INF/services`.
-- **Where it differs from the runbook below:** GATT registration stays lazy (§3.3), the connect-time
-  `PPoGReset` write is dropped (§3.3), the fork's extra Classic branch in `PebbleDeviceFactory` is dropped
-  as redundant (it hid known classic watches during an inquiry), `:androidApp` is left out rather than gated, and
-  the Android gate is "standalone build, SDK present and Gradle ≥ 9.5" (AGP 9.3.1's minimum).
-- **Found on the way and fixed.** The PKJS runtime handed watchapp JS `HostAccess.ALL` (reaching
-  `Runtime.exec`); it has an allow-list now. Intercepted XHRs never fired `onload` (`Event is not defined`), a
-  reused `XMLHttpRequest` never sent again, and `console.trace` threw.
+| Upstream base | When | Fork history | Hardware pass |
+| --- | --- | --- | --- |
+| `e6b5138e` (`433fef18` plus the ar_SA pack; 518 commits past `e4180ffc`) | 2026-09-29 | merged once, rebuilt as a linear history on `stoandl-bump`; old tip tagged `stoandl-e4180ffc` | [TESTING §5.33](TESTING.md), signed off by daily use; tip tagged `stoandl-bump-e6b5138e` |
+| `ec2156cc` (plugins, app permissions) | 2026-10-15 | rebased; promoted to `stoandl` on 2026-10-20 | [TESTING §5.44](TESTING.md), daily use; tip `a17e32d5` (tag it `stoandl-ec2156cc` when the next bump is promoted) |
+| `de47e36f` (362 commits) | 2026-11-26 | merged as `dd37ec6a` on `stoandl-bump-de47e36f`, plus the port's fork commit; a merge, so `stoandl` fast-forwards to it | [TESTING §5.77](TESTING.md) |
 
-**Cost (estimate before starting):** about 4–6 engineering days plus 1–2 days of hardware testing, for a bump
-that ships no feature by itself. What follows is the runbook as written before the bump, from `git
-merge-tree` plus a probe rebase; it stays as the map for the next one.
+The runbook for `433fef18` (its file-by-file conflict table, the silent breaks, the daemon drift) is this
+section in `git show d71897b:FIRMWARE-GAPS.md`.
 
-### 3.1 Before starting
+**What changed with `de47e36f`, and why the runbook below is shorter.** Upstream dropped its jvm target, put
+most of the library's API behind `internal` (`explicitApi()`, `d244beae`) and turned `LibPebble.watches` into
+a `Flow`. Rather than re-publicise upstream declarations on every bump, stoandl now consumes the fork this way:
 
-- `stoandl backup`. Room goes from schema 38 to 47 (auto-migrations + `MIGRATION_39_40`, which forces a full
-  locker re-sync). Downgrades are destructive (`fallbackToDestructiveMigrationOnDowngrade`), so rolling the jar
-  back wipes `libpebble3.db`.
-- Work in a scratch clone under `/home/vscode/.cache`, never in `/workspace` (bind mount).
-- Pre-squash the 8 Rhino-era commits into `889a6498` (GraalJS), and fold `0636519d` into `d3cb437e`.
+- **Friend compilation.** The daemon (main and test) compiles as a Kotlin friend of the fork's jvm module (KGP
+  `friendPaths` in `build.gradle.kts`), so it sees `internal` declarations as before `d244beae`. Visibility churn
+  costs nothing. The daemon still uses a public API wherever upstream has one. The pins it shares with the fork
+  come from the fork's version catalog (`forkLibs`).
+- **One host object.** Everything the daemon supplies to libpebble3 is a parameter of the fork's `JvmHost`
+  (`jvmMain/.../host/JvmHost.kt`). It rides in `AppContext`, and only the jvm `platformModule` and the jvm
+  actuals read it. `createJvmLibPebble(host)` (`host/JvmLibPebble.kt`) mirrors `LibPebble3.create`, but writes
+  the host config into `LibPebbleConfigHolder` before the graph is built. There is no Koin override module,
+  no pinned config flow, and no Koin in the daemon (`noKoinInDaemon`). The internal services the daemon reads
+  are typed doors on the returned `JvmLibPebble`.
+- **Tests.** Upstream's `src/androidHostTest` stays byte-identical and is compiled into jvmTest, minus a fenced
+  exclude list in `libpebble3/build.gradle.kts`. The two tests the fork diverges from are twinned as
+  `WatchManagerJvmTest` and `PPoGJvmTest`. jvmTest runs hermetic, on a throwaway `user.home`. `KoinGraphTest`
+  resolves the whole graph through `createJvmLibPebble`. `ForkSurfaceTest` fails on any fork declaration that is
+  `public` but not `public actual`.
+- **Fork-owned jvm.** `jvmMain` has no upstream counterpart since upstream's `69cd6d81`, so it never conflicts.
+  Its files mirror `androidMain` (`X.jvm.kt` at the package path of `X.android.kt`). Speex moved to `nonJvmMain`,
+  because its binding has no jvm variant; on the JVM the daemon's libspeex decodes through
+  `JvmHost.audioDecoder`.
+- **Kept against upstream.** `WatchConfig.enablePlugins` is re-added (default `true`). Upstream's own gates from
+  before `bf66a5be` come back as `// stoandl:` hooks in the plugin registry, its locker loader,
+  `AppPermissions`, `NetworkGate`, voice and the locker, so `plugins.enabled = false` keeps its meaning. The
+  verbatim unknown HRM code, the `minFirmware` gates and the Quick Launch action gates (Toggle Touch, Clear
+  Notifications) stay too.
+- **No longer refreshed by a bump.** The language-pack catalog. Upstream deleted the in-tree list (`7cf80230`),
+  and the daemon's `src/main/resources/language-packs.json` is a frozen copy whose `_origin` key names the
+  commit. Fetching upstream's server manifest instead would be new egress, so it would need an opt-in key.
 
-### 3.2 Textual conflicts (16 files)
+Verified offline for `de47e36f`:
+- fork jvmTest: 119 classes, 666 tests;
+- daemon: 86 classes, 594 tests, none skipped with libspeex present;
+- `shadowJar`: `Multi-Release`, `Enable-Native-Access` and the merged `META-INF/services` are as before;
+- a no-watch boot smoke: it migrated a v49 database holding two known watches to v54 with both rows intact,
+  and CLI output stayed identical apart from the new watch-pref rows;
+- a 150 s `dbus-monitor` run: no periodic calls. It caught a once-a-minute NetworkManager read that the
+  port had introduced (upstream's `AppDataUsage` follows the network monitor for the whole process); that
+  read is now signal-driven.
 
-| File | Resolution | Difficulty |
-| --- | --- | --- |
-| `settings.gradle.kts` | Keep the fork's `ANDROID_HOME` gate; put upstream's new `:androidApp`/`:cactus-native` inside it. `:pebble` stays excluded (stoandl only reads `LanguagePackRepository.kt` as text; the marker is still at `:99`). | trivial |
-| `gradle/libs.versions.toml` | Take upstream (AGP 9.3.1, Kotlin 2.4.10, Koin 4.2.2, Ktor 3.5.1, serialization/coroutines 1.11.0, kotlinx-io 0.9.1, kermit 2.1.0, atomicfu 0.33.0, kable 0.43.1) but keep `jvm-toolchain = "21"` and its comment. | easy |
-| `blobannotations/build.gradle.kts` | Re-implement the gate for the AGP-9 KMP plugin. Configure `android {}` through the extension API: type-safe accessors don't exist for conditionally applied plugins. Drop `iosX64`. | moderate |
-| `libpebble3/build.gradle.kts` (9 hunks) | Start from upstream. Re-wrap the android block, android source sets and `kspAndroidMain` in the gate. Keep `jvmToolchain(25)` + `JVM_21`, the `kspKotlinJvm` hook and the jvmMain dbus-java/Graal deps. Keep the iOS targets (Room codegen). | hard |
-| `PlatformIdentifier.kt` | `data class BlePlatformIdentifier(val peripheral: Peripheral?, val autoConnect: Boolean = false)`. Keep the fork's `expect`; the JVM actual returns `(null, false)`. | moderate |
-| `KableGattClient.{android,ios,jvm}.kt` | Re-apply the fork's actuals with the new signatures. JVM: `refreshServicesNative() = false`, keep `requestMtuNative`. | easy |
-| `ConnectionParams.kt` | Keep the fork's no-write (no `{0x00,0x01}` "the phone manages", so the watch keeps managing) and its once-per-run DEBUG for a missing characteristic; `ConnectionParamsTest` guards it. | trivial |
-| `ppog/PPoG.kt` | Take upstream's structure (`respondToResetRequest`/`initWithResetRequest`, `run(reversed)`). Re-apply the fork's four changes: re-send ResetComplete on a repeated ResetRequest, inbound baseline resync when `lastSentAck == null`, the `if (!closed)` guard, and a 30 s forward-path timeout (reversed stays 12 s). **Watch the positional `run(Boolean)` call:** the parameter changed meaning. | hard |
-| `Datalogging.kt` + `DataLoggingService.kt` | Drop the fork's `records`/`DataLogRecord`. Add `itemType` (and optionally `sessionId`) to upstream's `ThirdPartyDatalogEvent.Batch`: a good upstream PR. | moderate |
-| `di/LibPebbleModule.kt` | Keep the fork's `platformGattConnector` binding (plus a `BlePlatformConfig` arg); keep upstream's scoped `BlePlatformIdentifier` and `QemuTransport`. | easy |
-| `js/PKJSApp.kt` | Take upstream; change its `catch (Exception)` back to `Throwable` (StackOverflowError). | easy |
-| `Pairing.jvm.kt` | Keep the fork's BlueZ implementation; add the `connectionScope` parameter. | trivial |
-| `KableBleScanner.jvm.kt` | Keep the fork's body with the new signatures; add a no-op `configureKableCentral`. | easy |
-| `GattServer.jvm.kt` (rebase-only stop) | Keep the fork's server + GattManager1 self-heal; add a no-op `removeServices()`. | trivial |
+### The steps
 
-### 3.3 Silent breaks (no conflict marker)
+`OLD` is the previous upstream base (`de47e36f` for the next bump), `NEW` the target.
 
-- **`BluezBle.jvm.kt`.** `ConnectedGattClient.subscribeToCharacteristic` gained `onSubscription` (call it after
-  `StartNotify` succeeds; reversed PPoG depends on it). It also needs `refreshServicesNative()`: re-run
-  `discover()` and return true.
-- **`PebbleBle.kt` auto-merges but won't compile.** The fork's post-pairing `registerDevice` references a
-  removed `config`. Drop it (upstream covers it); keep the post-bond `discoverServices()`.
-- **GATT server lifecycle.** Upstream `1d3574d1`/`379e4b77` make service registration *lazy* (first
-  `registerDevice`), and the merge adopts that silently. The watch is sensitive to when the PPoG service appears
-  (see fork `3ae71cb0`). Keep eager `addServices` on JVM, and HW-test daemon-restart → reconnect and first
-  pair.
-  - **Decided otherwise: lazy is kept.** The app is registered before our first `Connect()`, not before the
-    link: a Trusted watch may already be re-linked by bluetoothd after a daemon restart, so eager registration
-    had the same mid-link exposure, only in a narrower window. TESTING 5.33b tests it.
-- **`PPoGReset` is gone upstream.** The connect-time reset-characteristic write disappears with the rebase.
-  HW-test the forward handshake. (It was a no-op on stoandl hardware: `requestedPpogResetViaCharacteristic`
-  was false in all 226 log entries.)
-- **PKJS.** `JsRunner.signalConfigMessage(requestId, json)` is new and abstract; implement it as a JS eval with
-  JSON-encoded args. `PrivatePKJSInterface` needs `pluginRegistry` (inject it via `PKJSModule.jvm.kt`). Port
-  upstream's `startup.js` config-message/plugin hooks.
-- **JVM Koin module (runtime crash, not a compile error).** Add `single { PhoneBatteryMonitor() }`,
-  `single { PhoneNetworkMonitor() }`, `single { PlatformPlugins(emptySet()) }` and
-  `single<NotificationImageProvider> { NoNotificationImages() }`. Upstream's JVM module is `TODO()`, so nothing
-  upstream catches this. Add a test that resolves the whole Koin graph.
+1. **Back up first.** Run `stoandl backup` on every machine that will run the new jar, before it first starts.
+   Room migrates one way: an older jar wipes `libpebble3.db` (`fallbackToDestructiveMigrationOnDowngrade`), and
+   only `stoandl restore` brings the watches, locker and mutes back. Work in a scratch clone under
+   `/home/vscode/.cache`, never in `/workspace` (bind mount).
+2. **Merge.** Branch the fork and `git merge coredevices/master`.
+   - jvmMain, nonJvmMain and `src/jvmTest` (the fork-only tests and the `*JvmTest` twins) never conflict
+     textually.
+   - For `src/androidHostTest` and `src/commonTest`, always take upstream.
+   - Resolve commonMain conflicts against the fork's delta, which
+     `git diff OLD HEAD -- libpebble3/src/commonMain` lists in full. Not every fork hunk carries a
+     `// stoandl:` marker (about 160 of 210 from before `de47e36f` don't); every new hook does.
+   - An upstream commonTest file that a fork test replaced is excluded in `libpebble3/build.gradle.kts`
+     ("upstream commonTest exclude list"), never edited. Today that is only `HrmPreferencesTest.kt`.
+   - Re-derive the Android gate in `settings.gradle.kts` from the catalog's AGP (AGP 9.5.x needs Gradle 9.6).
+     New Android-only modules go inside it. Upstream's `:toolschemagen`/`:toolschemaannotations` stay out.
+3. **Expects.** Run `git diff OLD NEW -- 'libpebble3/src/commonMain/**' | grep -n "expect "`. Each new or
+   changed expect needs a jvm actual, `internal actual` unless its expect is public, and also a nonJvm one if
+   it sits in a file the fork split. The jvm compile confirms it. A new commonMain dependency without a jvm
+   variant goes to `nonJvmMain` (as speex did); check the Maven `.module` files.
+4. **Platform bindings.** Run `git diff OLD NEW -- '*/androidMain/**/di/*' '*/iosMain/**/di/*'`. Each new
+   binding goes into the fork's jvm `platformModule` if it is OS-level. If it needs daemon state or policy, it
+   becomes a new `JvmHost` parameter plus the daemon's object in `PebbleIntegration.kt`. Never a JVM no-op for
+   something the host owns. `KoinGraphTest` stays red until then, naming the type.
+5. **`create()`.** Run `git diff OLD NEW -- '*/connection/LibPebble.kt'`. If `LibPebble3.create` changed,
+   mirror it in `createJvmLibPebble`. Keep the holder update before anything resolves `LibPebble`;
+   `KoinGraphTest.hostConfigWinsOverPersistedPreferences` fails if it moves.
+6. **Double bindings.** Run `git grep -n "single\|factory\|scoped" NEW -- '*/commonMain/**/di/LibPebbleModule.kt'`.
+   Check that no type bound in `LibPebbleModule.jvm.kt` is now also bound in commonMain: that would be a
+   silent Koin override. If one is, delete the jvm binding, or route it through an actual as `createTimeChanged`
+   and `platformAudioFrameDecoder` are.
+7. **PKJS.** Run `git diff OLD NEW -- '*/androidMain/assets/startup.js' '*/androidMain/**/js/*'`. Port the
+   changes to `jvmMain/resources/pkjs/startup.js` (minus WebView-only realm and CSP code) and the host side to
+   `GraalJsRunner`/`JvmPrivatePKJSInterface`/`PKJSModule.jvm.kt`. A new host method goes on the `PKJS_HOST_API`
+   allow-list, and a member of an internal class keeps no modifier, or its mangled name falls off the list.
+   Add a `GraalJsRunnerTest` case. Also diff upstream's commonMain `XMLHTTPRequestManager` and the network
+   gate for changes `JvmXMLHTTPRequestManager` must follow (per-hop checks, data usage).
+8. **Plugin switch.** Run `git diff OLD NEW -- '*/commonMain/**/plugin/*' '*/commonMain/**/permissions/*'`.
+   A new path that runs plugin code, records a permission use or gates the network needs the `enablePlugins`
+   hook its siblings have. `PluginSwitchTest` and `JsPluginHostTest` cover the existing ones.
+9. **Host tests.** Run `git diff OLD NEW --stat -- '*/androidHostTest/**'`.
+   - A new test that needs Android, or whose subject is in androidMain, goes into the exclude list with its
+     reason.
+   - For a twin, port upstream's delta into its `*JvmTest`.
+10. **Defaults.** Diff `LibPebbleConfig.kt` and `WatchConfig`'s defaults. Pin any new egress or behaviour
+    default to today's behaviour in `libPebbleConfigOf` (`pebble/LibPebbleConfigProjection.kt`), with a
+    `LibPebbleConfigProjectionTest` case. `proactivelyDownloadAppUpdates=false` is the example. Egress stays
+    opt-in.
+11. **Gate the fork.** `:libpebble3:libpebble3:jvmTest` must be green, including `KoinGraphTest`,
+    `ForkSurfaceTest` and `GraalJsRunnerTest`. The report must list the compiled androidHostTest classes and
+    none of the excluded ones.
+12. **Daemon.** Move the gitlink, then run `./gradlew test` and `shadowJar`.
+    - Expect errors only for semantic or public-API changes.
+    - If an `internal` declaration became `private` upstream, add a `JvmLibPebble` door or use the public API.
+    - A daemon class that now exposes an internal type gets `internal` (EXPOSED errors).
+    - Regenerate the GUI goldens with `STOANDL_UPDATE_GOLDEN=1 ./gradlew test --tests '*ConfigSchemaTest*' --tests
+      '*WatchPrefTextTest*'` when prefs changed.
+    - Re-check `SqliteNative` when androidx `sqlite-bundled` moves (CLAUDE.md).
+13. **Smoke without a watch.** Boot the new jar on a private session bus over a copy of a real database, after
+    the old jar. Compare the CLI read commands and the WARN/ERROR line sets of both. Check
+    `prefs.xml`/`libpebble.settings` for the pinned values. Watch both buses with `dbus-monitor` for a few
+    minutes: an idle daemon makes no periodic calls.
+14. **Hardware.** Run the bump's TESTING section, the backup row first. Push the fork branch and the gui
+    branch **before** the stoandl commit that records them. Promote the fork branch to `stoandl` (a fast-forward
+    for a merge) once the rows pass. Tag the old tip as the next bisect baseline.
 
-### 3.4 Daemon API drift (one commit)
+Recurring cost after this shape: about 0.5–2 days plus the release's feature ports. That covers the commonMain
+hook conflicts (the dominant part), one mechanical actual per new expect, one `JvmHost` parameter or
+`platformModule` line per new platform binding, and one exclude line per new Android-bound host test.
 
-Not behaviour-neutral: `sideloadFirmware` now takes the PRF route for a downgrade, which §4.5 handles.
-
-- **`PebbleIntegration.kt:353`.** Change to `BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false)`.
-  Also **pin `LibPebbleConfigFlow`**: upstream `PebbleBle` reads `libPebbleConfigFlow.value.bleConfig`, not
-  `BleConfigFlow`, so today's pin would stop protecting the transport choice from persisted Java Preferences.
-- **Interface stubs:**
-  - `MprisMusicControl` gets `supportsAlbumArt = false`, `getAlbumArt(...) = null` and
-    `albumArtUpdated = emptyFlow()`.
-  - `LinuxSystemCalendar` gets `createEvent(...) = null` and `defaultCalendarPlatformId() = null`.
-- **`StoandlWebServices.checkForFirmwareUpdate(watch, force)`.** Also check the call sites of
-  `checkForFirmwareUpdates(force)` and `FirmwareUpdate.checkforFirmwareUpdate(force)`.
-- **`DatalogStore.kt:49,67-74`.** Move to `thirdPartyEvents.filterIsInstance<Batch>()` after the `itemType`
-  patch. Semantics change: health tags are consumed only when `uuid == SYSTEM_APP_UUID`, the buffer is 256 and
-  drops *new* batches when full, and malformed batches are dropped. Re-test §5.8.
-- **`WatchPrefsControl.kt:105,161,169,180`.** Add an `is ScheduleWatchPref` branch to each: parse via
-  `QuietTimeSchedule.parse`, type `schedule`, allowed `HH:MM-HH:MM`, format `encode()`. Add the type to
-  `docs/dbus-interface.md` (ListWatchPrefs record), `gui/tools/mock_stoandl.py` and the GUI (§4.1).
-- **Removed pref ids.** `lightDynamicIntensity`, `langEnglish` and `dynBacklightMinThreshold`: remove them from
-  the conf example, GUI section rules and the mock. A pinned `watch.langEnglish` will log "Unknown watch pref";
-  mention it in the release notes.
-- **`SystemGeolocation.DEFAULT_MAX_AGE`** drops from 30 min to zero, which means more GeoClue requests.
-  Pass an explicit `maximumAge` if that matters.
-- **Outer build pins** (`build.gradle.kts:2-5,42-49`). Kotlin 2.3.10 → 2.4.10, Koin, Ktor, serialization,
-  kotlinx-io, coroutines, kermit.
-
-### 3.5 Toolchain
-
-- **Gradle version.** Upstream's wrapper is Gradle 9.6.1; stoandl's is 8.14.2, and an included build runs on
-  the root's Gradle. First try Kotlin 2.4.10 on Gradle 8.14.2 with AGP 9 kept unapplied by the gate. (Done:
-  it configures. The wrapper moves to 8.14.4, the minimum KGP 2.5 will accept, which also clears KGP 2.4's
-  "deprecated Gradle version" warning.)
-- **If that doesn't configure,** do the deferred Gradle 9 bump in the same change: shadow plugin →
-  `com.gradleup.shadow`, then APKBUILD, CI and `install.sh`. Upside: Gradle ≥9.1 runs on JDK 25, which ends the
-  dual-JDK build.
-
-### 3.6 Hardware regression pass (before promoting)
-
-The rows are [TESTING §5.33](TESTING.md): upgrade in place (Room 38 → 47), a daemon restart while the watch
-stays linked (lazy GATT registration), first pair, suspend/resume and range, Classic, PKJS (Clay, AppMessage,
-XHR, a timeline-pin app), datalog, firmware including the downgrade through recovery, weather, the new
-prefs, health and a quick pass over the rest. §4.5 (downgrade → PRF) is handled.
-
-Once they pass: promote `stoandl-bump` to `stoandl`, point `.gitmodules` back at `stoandl`, and push both
-repos, the fork first (the APKBUILD and CI fetch libpebble3 by commit from GitHub).
-
-### 3.7 Afterwards
-
-Upstream the small commonMain patches (datalog `itemType`, the PPoG resend/resync, the nullable-peripheral
-`BlePlatformIdentifier`) so the next bump is cheaper.
-
-Extra Large text, notification text size and the new vibe patterns are **not** in upstream yet either.
+**Offer upstream** (each would shrink the commonMain delta):
+- `holdDisconnected`, `missedNotificationCatchUpMs`, `hostSuspending` and `WatchLinkActivity`;
+- the datalog `itemType` default;
+- the PPoG resend and resync.
 
 ---
 
@@ -441,6 +447,12 @@ not 4.36 (`a0f41c0eb`). The notes below are the original plan.
     `UpdateFirmware` answers `busy:` and `maybeNotify` stays quiet meanwhile, and the CLI follows the flash
     across the reconnect. The GUI follows the `prf` phase through the reconnect and shows "Rebooting into
     recovery to downgrade…" (stoandl-gui `017a83f`).
+  - **Since `de47e36f` libpebble3 owns the recovery step** (upstream `5f24440b`, `PendingFirmwareInstalls`): it
+    reboots into PRF, installs the slot-0 build there itself on the reconnect, and ends a watch that came back on
+    its normal firmware as an `Idle` failure. stoandl's own re-sideload is deleted (it would have flashed a
+    second time). `prf:` now comes from `WaitingForReboot.viaPrf`; `UpdateFirmware` and `SideloadFirmware`
+    answer `busy:` for as long as the watch's own update state is active. The back-on-normal `failed:` text is
+    libpebble3's. Fork `FirmwareInstallViaPrfTest` covers both paths. To be tested again: TESTING 5.11e, 5.77h.
 - **Optional anywhere: digest check.** The GitHub API returns `digest: sha256:…` per asset; verify downloads
   with it. This needs no bump.
 - **eng-dash (`dash.repebble.com/api/ota/latest`).** An optional opt-in source that gives release notes and

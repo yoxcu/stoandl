@@ -338,8 +338,9 @@ interface StoandlControl : DBusInterface {
      *  `key \t value`; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval`
      *  (`5min`/`10min`/`30min`/`1h`/`off`; setting `5min` needs a connected watch on firmware 4.39.0+, so its
      *  record carries a third field: the intervals [SetHealthProfile] accepts now, `|`-joined), `hrm_activity` (continuous HR during detected walks and runs), `units` (`metric`/`imperial`; also the unit weather is sent in),
-     *  `height_cm`, `weight_kg`, `age`, `gender` (`female`/`male`/`other`), `resting_hr`, `max_hr`.
-     *  Empty if libPebble isn't ready. */
+     *  `height_cm`, `weight_kg`, `age`, `birth_year` (setting either one sets both), `gender`
+     *  (`female`/`male`/`other`), `resting_hr`, `max_hr` (derived, read-only: 220 − age; [SetHealthProfile] refuses
+     *  any other value). Empty if libPebble isn't ready. */
     fun GetHealthProfile(): List<String>
 
     /** Set one [key] of the watch's health profile (see [GetHealthProfile] for keys) to [value] and
@@ -425,9 +426,26 @@ interface StoandlControl : DBusInterface {
     fun InstallLanguage(query: String): String
 
     /** Current language-pack install state of the connected watch: `idle:`, `downloading:<name>`,
-     *  `installing:<percent>`, `done:<name>` (just finished), `failed:<reason>`, or `notready:`.
+     *  `installing:<percent>`, `done:<name>` (just finished, and the watch's language is that pack),
+     *  `failed:<reason>` (also when the watch isn't on the pack afterwards), or `notready:`.
      *  Poll this after [SideloadLanguage]/[InstallLanguage]. */
     fun LanguageStatus(): String
+
+    /** The language packs on the connected watch, for firmware that keeps several (PebbleOS 4.42,
+     *  `SupportsMultipleLanguagePacks`; an install adds one to a free slot of 4): `ok:` then one record per
+     *  line, `slot \t locale \t name \t version \t active(yes|no) \t kind(translation|fonts|unreadable)`
+     *  (none active: built-in English). `unavailable:` on firmware with one pack (an install replaces it),
+     *  `busy:` while an install runs, `notready:`, `error:`. */
+    fun LanguagePacks(): String
+
+    /** Make [pack] (a pack on the watch by slot, locale or name, or `english` for the built-in language;
+     *  the packs stay) the watch's language. `ok:<message>`, `notfound:`, `ambiguous:`, `failed:` (the
+     *  watch refused), `unavailable:`, `busy:`, `notready:`, `error:`. */
+    fun UseLanguage(pack: String): String
+
+    /** Remove [pack] (slot, locale or name) from the watch, freeing its slot; removing the active pack
+     *  switches the watch to English. Same returns as [UseLanguage]. */
+    fun RemoveLanguage(pack: String): String
 
     /** Start capturing the connected watch's screen as a PNG, as the `screenshot` task: to the absolute
      *  [path], or with an empty one to a new `pebble-screenshot-<yyyyMMdd-HHmmss>.png` in the user's

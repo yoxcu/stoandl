@@ -6,7 +6,7 @@ import de.yoxcu.stoandl.plugin.ExtensionBackedPlugin
 import io.rebble.libpebblecommon.plugin.ActionDeclaration
 import io.rebble.libpebblecommon.plugin.ActionResult
 import io.rebble.libpebblecommon.plugin.IconPixelSize
-import io.rebble.libpebblecommon.plugin.Plugin
+import io.rebble.libpebblecommon.plugin.NativePlugin
 import io.rebble.libpebblecommon.plugin.PluginErrors
 import io.rebble.libpebblecommon.plugin.SourceDeclaration
 import io.rebble.libpebblecommon.plugin.SourceEnvelope
@@ -65,6 +65,10 @@ internal fun extensionPluginUuid(name: String): Uuid {
  * extension triggers a fresh read, and so does the declared refresh interval. In libpebble3's registry it is
  * one more plugin, so watchapps, the CLI and the GUI see it like any other. An extension is trusted by
  * being installed; its declared `callerPermissions` guard what watchapps may read or invoke.
+ *
+ * A [NativePlugin], because that is what libpebble3's public `registerPlugin` takes: like a built-in it
+ * never prompts on its own (the extension has no permission checks of its own to ask about), while the
+ * callers' permissions are still enforced by libpebble3 before a read or an action reaches it.
  */
 internal class ExtensionPlugin(
     override val extensionName: String,
@@ -72,7 +76,7 @@ internal class ExtensionPlugin(
     override val name: String,
     private val request: suspend (method: String, params: JsonObject) -> JsonElement,
     private val changes: SharedFlow<Pair<String, String>>,
-) : Plugin, ExtensionBackedPlugin {
+) : NativePlugin, ExtensionBackedPlugin {
     override val pluginUuid: Uuid = manifest.uuid?.let { runCatching { Uuid.parse(it) }.getOrNull() } ?: extensionPluginUuid(extensionName)
     override val description: String = manifest.description
     override val sources: List<SourceDeclaration> = manifest.sources
@@ -87,12 +91,15 @@ internal class ExtensionPlugin(
         item: String,
         properties: List<String>?,
         iconPixelSize: IconPixelSize?,
+        limit: Int?,
     ): Flow<SourceEnvelope> {
         val decl = sources.firstOrNull { it.serves(category, item) } ?: return emptyFlow()
         val params = buildJsonObject {
             put("category", category); put("item", item)
             properties?.let { p -> put("properties", JsonArray(p.map(::JsonPrimitive))) }
             iconPixelSize?.let { put("iconPixelSize", json.encodeToJsonElement(IconPixelSize.serializer(), it)) }
+            // A hint, as for a pbw plugin: libpebble3 drops whatever comes back past it anyway.
+            limit?.let { put("limit", it) }
         }
         return channelFlow {
             suspend fun read() {

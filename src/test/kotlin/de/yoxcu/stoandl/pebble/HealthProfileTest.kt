@@ -11,9 +11,10 @@ import kotlin.test.assertTrue
 
 /** `GetHealthProfile` records and `SetHealthProfile` key parsing. */
 class HealthProfileTest {
+    private val year = 2026
     private val base = HealthSettings(
         heightMm = 1780, weightDag = 7450, trackingEnabled = true, activityInsightsEnabled = false,
-        sleepInsightsEnabled = false, ageYears = 31, gender = HealthGender.Other, imperialUnits = false,
+        sleepInsightsEnabled = false, ageYears = 31, birthYear = 1995, gender = HealthGender.Other, imperialUnits = false,
         hrmEnabled = true, hrmMeasurementInterval = HRMonitoringInterval.TenMin, hrmActivityTrackingEnabled = false,
         restingHr = 58, elevatedHr = 100, maxHr = 189, hrZone1Threshold = 130, hrZone2Threshold = 150,
         hrZone3Threshold = 170,
@@ -22,7 +23,7 @@ class HealthProfileTest {
     private val time2 = mapOf("Time 2" to "v4.41.1")
 
     private fun rows(s: HealthSettings, connected: Map<String, String> = time2) =
-        healthProfileRecords(s, connected).map { it.split('\t') }
+        healthProfileRecords(s, connected, year).map { it.split('\t') }
 
     private fun records(s: HealthSettings) = rows(s).associate { it[0] to it[1] }
 
@@ -39,7 +40,7 @@ class HealthProfileTest {
         assertEquals("other", r["gender"])
         assertEquals(
             listOf("tracking", "activity_insights", "sleep_insights", "hrm", "hrm_interval", "hrm_activity", "units",
-                "height_cm", "weight_kg", "age", "gender", "resting_hr", "max_hr"),
+                "height_cm", "weight_kg", "age", "birth_year", "gender", "resting_hr", "max_hr"),
             rows(base).map { it[0] },
         )
     }
@@ -56,8 +57,44 @@ class HealthProfileTest {
     @Test
     fun `every record round-trips through its own key`() {
         rows(base).forEach { (k, v) ->
-            assertEquals(base, applyHealthProfileKey(base, k, v).getOrThrow(), k)
+            assertEquals(base, applyHealthProfileKey(base, k, v, year).getOrThrow(), k)
         }
+    }
+
+    /** libpebble3 re-derives the age from the birth year on every write, so the two move together. */
+    @Test
+    fun `age and birth year set each other`() {
+        val older = applyHealthProfileKey(base, "age", "40", year).getOrThrow()
+        assertEquals(40 to 1986, older.ageYears to older.birthYear)
+        val born = applyHealthProfileKey(base, "birth_year", "1990", year).getOrThrow()
+        assertEquals(36 to 1990, born.ageYears to born.birthYear)
+        assertContains(applyHealthProfileKey(base, "birth_year", "2026", year).exceptionOrNull()!!.message!!, "1906 to 2025")
+        assertContains(applyHealthProfileKey(base, "age", "0", year).exceptionOrNull()!!.message!!, "1-120")
+        // Before libpebble3 has stored a birth year, the record shows the one the age implies.
+        assertEquals("1995", records(base.copy(birthYear = null))["birth_year"])
+    }
+
+    /** The watch gets 220 - age whatever max_hr says: setting another value must not report success. */
+    @Test
+    fun `max_hr is derived and refuses a value of its own`() {
+        assertEquals(base, applyHealthProfileKey(base, "max_hr", "189", year).getOrThrow())
+        val refused = applyHealthProfileKey(base, "max_hr", "200", year).exceptionOrNull()!!.message!!
+        assertContains(refused, "220 - age, at least the elevated heart rate of 100 bpm")
+        assertContains(refused, "189 bpm")
+        assertContains(refused, "birth_year")
+        // resting_hr still reaches the watch (the zones are derived from it and the age).
+        assertEquals(64, applyHealthProfileKey(base, "resting_hr", "64", year).getOrThrow().restingHr.toInt())
+    }
+
+    /** A new interval upstream adds must get a spelling here, or GetHealthProfile could not name it. */
+    @Test
+    fun `every interval libpebble3 names has a spelling`() {
+        assertEquals(HRMonitoringInterval.entries.toSet(), HRM_INTERVAL_NAMES.map { it.first }.toSet())
+        HRM_INTERVAL_NAMES.forEach { (interval, name) ->
+            assertEquals(interval, applyHealthProfileKey(base, "hrm_interval", name, year).getOrThrow().hrmMeasurementInterval)
+        }
+        // Another key leaves the interval alone, so a code libpebble3 keeps verbatim behind it survives.
+        assertEquals(base.hrmMeasurementInterval, applyHealthProfileKey(base, "units", "imperial", year).getOrThrow().hrmMeasurementInterval)
     }
 
     @Test

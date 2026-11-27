@@ -48,8 +48,8 @@ private const val VOLUME_STEP = 0.1
  *
  * libpebble3's `MusicControlManager` already does the whole bidirectional bridge — it pushes
  * [playbackState] to the watch and routes the watch's button presses back to [play]/[pause]/etc. — so
- * all this class supplies is the platform half: read MPRIS and act on it. (The JVM target binds a
- * no-op [SystemMusicControl]; `PebbleIntegration` overrides it with this when `music.enabled`.)
+ * all this class supplies is the platform half: read MPRIS and act on it. (`PebbleIntegration` hands it
+ * to libpebble3 as `JvmHost.music`, the JVM's only [SystemMusicControl].)
  *
  * **Discovery.** Players own a well-known name `org.mpris.MediaPlayer2.<suffix>`. We enumerate them
  * via `org.freedesktop.DBus.ListNames`/`GetNameOwner` at startup and track appear/disappear through
@@ -66,10 +66,10 @@ private const val VOLUME_STEP = 0.1
  * probably just paused); otherwise the first known player. The chosen player is what the watch shows
  * and what the control buttons act on.
  *
- * Monitoring self-starts on construction (Koin builds this lazily, on the first watch connection) and
+ * Monitoring self-starts on construction (libpebble3 builds this lazily, on the first watch connection) and
  * reconnects on bus errors, mirroring [ModemManagerCallMonitor].
  *
- * **Live config.** This is bound once (Koin caches the single) and reads [configStore] on every event:
+ * **Live config.** This is built once (libpebble3 caches the single) and reads [configStore] on every event:
  * when `music.enabled` is off it publishes no now-playing and ignores button presses (effectively off,
  * without tearing down the bus monitor), and what the watch's volume buttons drive follows `music.volume`
  * live — system/master output ([SystemVolume]) for `system`, the active player's own MPRIS volume for
@@ -77,7 +77,7 @@ private const val VOLUME_STEP = 0.1
  * the custom commands change). [PebbleIntegration] calls [onConfigChanged] after a config write so a
  * just-flipped `music.enabled` reflects immediately rather than waiting for the next player change.
  */
-class MprisMusicControl(
+internal class MprisMusicControl(
     private val scope: CoroutineScope,
     private val configStore: ConfigStore,
 ) : SystemMusicControl {

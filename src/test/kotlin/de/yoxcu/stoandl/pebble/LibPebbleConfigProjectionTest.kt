@@ -21,6 +21,20 @@ class LibPebbleConfigProjectionTest {
     }
 
     @Test
+    fun `no app-update prefetch, and the other new libpebble3 defaults stay as stoandl had them`() {
+        val lp = libPebbleConfigOf(base)
+        assertFalse(lp.watchConfig.proactivelyDownloadAppUpdates, "a web call stoandl never made")
+        assertFalse(lp.watchConfig.notificationWindowState)
+        assertFalse(lp.notificationConfig.respectDoNotDisturb)
+    }
+
+    @Test
+    fun `the plugin switch follows the config`() {
+        assertFalse(libPebbleConfigOf(base.copy(pluginsEnabled = false)).watchConfig.enablePlugins)
+        assertTrue(libPebbleConfigOf(base.copy(pluginsEnabled = true)).watchConfig.enablePlugins)
+    }
+
+    @Test
     fun `calendar knobs follow the config`() {
         val lp = libPebbleConfigOf(base.copy(calendarReminders = false, calendarShowDeclined = true, calendarReminderVibe = "pulses"))
         assertFalse(lp.watchConfig.calendarReminders)

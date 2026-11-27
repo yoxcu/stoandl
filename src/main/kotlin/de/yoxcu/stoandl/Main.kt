@@ -39,6 +39,7 @@ import de.yoxcu.stoandl.firmware.FirmwareControl
 import de.yoxcu.stoandl.language.LanguagePackCatalog
 import de.yoxcu.stoandl.notification.AppNamePlacement
 import io.rebble.libpebblecommon.notification.DefaultVibePattern
+import io.rebble.libpebblecommon.packets.MAX_LANGUAGE_PACKS
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -124,12 +125,19 @@ fun main(args: Array<String>) {
     // shared. The public name comes last (end of pebble.init()), once Control answers.
     serviceConn.requestBusName(STOANDL_INSTANCE_NAME)
 
-    // Before anything opens libpebble3.db (pebble.init() → Koin): musl __isnan shim + a stable copy of
+    // Before anything opens libpebble3.db (pebble.init() → libpebble3): musl __isnan shim + a stable copy of
     // the SQLite JNI library. After the guard name, so only one daemon at a time manages that cache.
     SqliteNative.prepare()
 
     val pebble = PebbleIntegration(notificationBus, scope, serviceConn)
-    pebble.init()
+    try {
+        pebble.init()
+    } catch (e: Exception) {
+        // Exit, not hang: the bus connection's threads would keep a JVM alive whose main thread threw, holding
+        // the instance name with nothing behind it. A non-zero exit is what the service manager acts on.
+        log.error(e) { "stoandl couldn't start: ${e.message}" }
+        exitProcess(EXIT_FAILURE)
+    }
 
     // Start DBus notification monitor and feed into libpebble3
     monitorNotifications()
@@ -187,6 +195,7 @@ private fun printUsage() {
     println("Maintenance")
     row("firmware", "sideload check update status")
     row("language", "list install sideload status")
+    row("", "installed use remove")
     row("screenshot", "[path]")
     row("voice", "status · models · download · use · test · say · stop")
     row("plugins", "list · read · invoke")
@@ -758,7 +767,8 @@ private fun healthProfile(args: List<String>) {
         if (key.isNullOrBlank() || value.isBlank()) {
             System.err.println("Usage: stoandl health profile set <key> <value>\n" +
                 "  keys: tracking, activity_insights, sleep_insights, hrm (on/off), hrm_interval (5min/10min/30min/1h/off; 5min needs fw 4.39.0+), hrm_activity (on/off),\n" +
-                "        units (metric/imperial), height_cm, weight_kg, age, gender (female/male/other), resting_hr, max_hr")
+                "        units (metric/imperial), height_cm, weight_kg, age (sets birth_year), birth_year (sets age), gender (female/male/other), resting_hr\n" +
+                "  max_hr is derived (220 - age) and read-only")
             System.exit(EXIT_USAGE); return
         }
         withControl { control ->
@@ -1069,7 +1079,7 @@ private fun printFirmwareStatusOnce(resp: String) {
         "waiting" -> "Starting firmware transfer…"
         "inprogress" -> "Flashing: $body%"
         "reboot" -> "Transfer complete — watch rebooting to apply"
-        "prf" -> "Downgrade to $body: the watch is rebooting into recovery; stoandl flashes it there once it reconnects"
+        "prf" -> "Downgrade to $body: the watch is rebooting into recovery; it is installed from there once the watch reconnects"
         "failed" -> "Last firmware update failed: ${body.ifEmpty { "unknown error" }}"
         "notready" -> body.ifEmpty { "No watch connected" }
         else -> resp
@@ -1108,7 +1118,7 @@ private fun pollFirmwareStatus(control: StoandlControl) {
             }
             "prf" -> if (!viaRecovery) {
                 viaRecovery = true
-                println("Downgrade to $body: rebooting the watch into recovery; stoandl flashes it there once it reconnects…")
+                println("Downgrade to $body: rebooting the watch into recovery; it is installed from there once the watch reconnects…")
                 // The reboot's disconnect doesn't end this flash; the one from recovery does.
                 sawActivity = false
                 startMs = System.currentTimeMillis()
@@ -2116,8 +2126,23 @@ private fun ctlLanguage(rest: List<String>) {
                 println("Installing ${resp.removePrefix("ok:")} — downloading then transferring to the watch.")
                 pollLanguageStatus(control)
             }
+            "installed", "packs" -> {
+                val (kind, body) = splitStatus(control.LanguagePacks())
+                if (kind != "ok") { System.err.println(body.ifEmpty { kind }); System.exit(EXIT_FAILURE); return@withControl }
+                printLanguagePacks(body)
+            }
+            "use", "remove" -> {
+                val pack = rest.drop(1).joinToString(" ").trim()
+                if (pack.isEmpty()) {
+                    System.err.println(if (sub == "use") "Usage: stoandl language use <slot|locale|name|english>"
+                        else "Usage: stoandl language remove <slot|locale|name>")
+                    System.exit(EXIT_USAGE); return@withControl
+                }
+                handleStatusResponse(if (sub == "use") control.UseLanguage(pack) else control.RemoveLanguage(pack))
+            }
             else -> {
-                System.err.println("Usage: stoandl language [list | sideload <file.pbl> | install <locale|name|id> | status]")
+                System.err.println("Usage: stoandl language [list | sideload <file.pbl> | install <locale|name|id> | status |\n" +
+                    "                         installed | use <slot|locale|name|english> | remove <slot|locale|name>]")
                 System.exit(EXIT_USAGE)
             }
         }
@@ -2138,6 +2163,27 @@ private fun ctlLanguageList() {
     } finally {
         conn.disconnect()
     }
+}
+
+/** `stoandl language installed`: the packs on the watch (LanguagePacks' records), built-in English first. */
+private fun printLanguagePacks(body: String) {
+    val packs = body.lines().filter { it.isNotBlank() }.map { it.split('\t') }
+    val englishActive = packs.none { it.getOrNull(4) == "yes" }
+    println("%-3s %-5s %-7s %s".format("", "SLOT", "LOCALE", "LANGUAGE"))
+    println("%s %-5s %-7s %s".format(if (englishActive) " * " else "   ", "-", "en_US", "English (built in)"))
+    packs.forEach { f ->
+        val kind = when (f.getOrNull(5)) {
+            "fonts" -> "  [fonts only]"
+            "unreadable" -> "  [unreadable]"
+            else -> ""
+        }
+        val mark = if (f.getOrNull(4) == "yes") " * " else "   "
+        println("%s %-5s %-7s %s v%s%s".format(mark, f.getOrElse(0) { "" }, f.getOrElse(1) { "" }, f.getOrElse(2) { "" },
+            f.getOrElse(3) { "" }, kind))
+    }
+    println()
+    println("  * = the watch's language. ${packs.size} of $MAX_LANGUAGE_PACKS slots in use.")
+    println("  Switch: stoandl language use <slot|locale|english> · free a slot: stoandl language remove <slot>")
 }
 
 /** Render the tab-separated records from ListLanguages() as an aligned table. */

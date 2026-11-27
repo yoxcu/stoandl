@@ -46,8 +46,8 @@ private val log = KotlinLogging.logger {}
 private val summaries = RepeatedLines()
 
 /**
- * The Linux implementation of libpebble3's [SystemCalendar]. stoandl registers this (overriding the
- * no-op JVM default) and libpebble3's `PhoneCalendarSyncer` does everything else — windowing, pin
+ * The Linux implementation of libpebble3's [SystemCalendar]. stoandl supplies this (`JvmHost.calendar`,
+ * the JVM's only one) and libpebble3's `PhoneCalendarSyncer` does everything else — windowing, pin
  * build via `CalendarEvent.toTimelinePin`, diffing by backingId, and insert/update/delete on the
  * watch. We only supply calendars + events, and a "something changed" signal.
  *
@@ -56,7 +56,7 @@ private val summaries = RepeatedLines()
  * forward and drops past pins), a filesystem watch on the local .ics directories (near-instant
  * updates), and a manual trigger for the `stoandl calendar sync` CLI. The syncer samples this at 5s.
  */
-class LinuxSystemCalendar(
+internal class LinuxSystemCalendar(
     // Read LIVE on each enumeration (not a fixed snapshot) so adding/editing/removing a source via the
     // GUI/CLI takes effect on the next [requestRefresh] with no daemon restart — mirrors how the weather
     // syncer re-reads its config. Always bound (even when empty), so the FIRST source added live works.

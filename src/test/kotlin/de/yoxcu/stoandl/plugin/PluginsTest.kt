@@ -11,11 +11,16 @@ import io.rebble.libpebblecommon.permissions.AppPermissionStatus
 import io.rebble.libpebblecommon.permissions.PermissionStatus
 import io.rebble.libpebblecommon.plugin.CellGenerations
 import io.rebble.libpebblecommon.plugin.Connections
+import io.rebble.libpebblecommon.plugin.IconPixelSize
+import io.rebble.libpebblecommon.plugin.SourceUpdate
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import kotlin.test.Test
@@ -67,6 +72,32 @@ class PluginsTest {
     }
 
     @Test
+    fun `a subscriber's limit and icon size reach the extension, its answer the subscriber`() = runBlocking<Unit> {
+        val seen = mutableListOf<JsonObject>()
+        val plugin = ExtensionPlugin("matrix", assertNotNull(ExtensionPluginManifest.parse(Json.parseToJsonElement(manifestJson))), "Matrix",
+            request = { method, params ->
+                seen += params
+                if (method == "readSource") Json.parseToJsonElement("""{"pluginUuid":"x","instances":[]}""")
+                else Json.parseToJsonElement("""{"ok":true,"text":"Done"}""")
+            },
+            changes = MutableSharedFlow(),
+        )
+        // Through Plugin's own entry, as libpebble3's PluginClient calls it.
+        val update = plugin.observe("messages", "room", listOf("name"), IconPixelSize(20, 20), limit = 3, prompt = true).first()
+        assertTrue(update is SourceUpdate.Data)
+        val p = seen.single()
+        assertEquals(3, p["limit"]?.jsonPrimitive?.int)
+        assertEquals("name", p["properties"]?.jsonArray?.single()?.jsonPrimitive?.content)
+        assertEquals(20, p["iconPixelSize"]?.jsonObject?.get("w")?.jsonPrimitive?.int)
+        seen.clear()
+        assertEquals(true, plugin.invoke("mark_read", JsonObject(emptyMap()), prompt = false).ok)
+        assertEquals("mark_read", seen.single()["action"]?.jsonPrimitive?.content)
+        seen.clear()
+        plugin.observe("messages", "room").first()
+        assertNull(seen.single()["limit"], "no limit asked for: none sent")
+    }
+
+    @Test
     fun `plugin secrets are kept per plugin and destroyed together`() = runBlocking<Unit> {
         val store = FileSecretStore(Files.createTempFile("secrets", "").toFile())
         val secrets = PluginSecretStore(store)
@@ -96,6 +127,21 @@ class PluginsTest {
         assertEquals("Send data to api.example.com", labelOf("Internet/api.example.com"))
         assertEquals("Your location", labelOf("Location"))
         assertEquals("Control your lights (via Hue)", labelOf("abc:HomeControl", mapOf("abc:HomeControl" to "Control your lights (via Hue)")))
+        // Permissions this libpebble3 added read as words too, with their scope where they have one.
+        assertEquals("Your health data", labelOf("Health"))
+        assertEquals("Use the watch's microphone", labelOf("WatchMicrophone"))
+        assertEquals("Your notifications", labelOf("Notifications"))
+        assertEquals("Your notifications from org.kde.neochat", labelOf("Notifications/org.kde.neochat"))
+        assertEquals("Read /home/u/notes", labelOf("ReadFiles//home/u/notes"))
+        assertEquals("Change your files", labelOf("WriteFiles"))
+        assertEquals("Ring this device to find it", labelOf("FindMyPhone"))
+    }
+
+    @Test
+    fun `an app libpebble3 hasn't read yet lists every row as blocked`() {
+        val rows = listOf(row(appA, "Location"), row(appA, "Calendar", granted = true))
+        assertEquals(listOf("Calendar" to "blocked", "Location" to "blocked"),
+            permissionRecords(rows, emptyList()).map { (r, s) -> r.permission to s })
     }
 
     private val appA = Uuid.parse("11111111-1111-1111-1111-111111111111")
@@ -108,10 +154,10 @@ class PluginsTest {
         val rows = listOf(row(appA, "Location"), row(appA, "Internet/x.org"), row(appA, "Calendar", granted = true),
             row(appA, "Contacts", granted = false), row(appA, "LegacyPebbleKit", granted = true))
         val statuses = listOf(
-            AppPermissionStatus("Location", PermissionStatus.AllowedAutomatically),
-            AppPermissionStatus("Internet/x.org", PermissionStatus.Waiting),
-            AppPermissionStatus("Calendar", PermissionStatus.Granted),
-            AppPermissionStatus("Contacts", PermissionStatus.Denied),
+            AppPermissionStatus(appA, "Location", PermissionStatus.AllowedAutomatically),
+            AppPermissionStatus(appA, "Internet/x.org", PermissionStatus.Waiting),
+            AppPermissionStatus(appA, "Calendar", PermissionStatus.Granted),
+            AppPermissionStatus(appA, "Contacts", PermissionStatus.Denied),
         )
         assertEquals(
             listOf("Calendar" to "granted", "Contacts" to "denied", "Internet/x.org" to "waiting",
@@ -130,11 +176,11 @@ class PluginsTest {
             row(appB, "Contacts", granted = true, at = 1),
         )
         val statuses = mapOf(
-            appA to listOf(AppPermissionStatus("Internet/x.org", PermissionStatus.Waiting),
-                AppPermissionStatus("Location", PermissionStatus.Waiting),
-                AppPermissionStatus("Calendar", PermissionStatus.AllowedAutomatically)),
-            appB to listOf(AppPermissionStatus("Location", PermissionStatus.Waiting),
-                AppPermissionStatus("Contacts", PermissionStatus.Granted)),
+            appA to listOf(AppPermissionStatus(appA, "Internet/x.org", PermissionStatus.Waiting),
+                AppPermissionStatus(appA, "Location", PermissionStatus.Waiting),
+                AppPermissionStatus(appA, "Calendar", PermissionStatus.AllowedAutomatically)),
+            appB to listOf(AppPermissionStatus(appB, "Location", PermissionStatus.Waiting),
+                AppPermissionStatus(appB, "Contacts", PermissionStatus.Granted)),
         )
         val pending = pendingRequests(rows, statuses, running = setOf(appB))
         assertEquals(listOf("Location@A", "Internet/x.org@A", "Location@B"),

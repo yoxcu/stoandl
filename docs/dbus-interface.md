@@ -19,7 +19,7 @@ document is the contract between the daemon and any out-of-process front-end.
 > gdbus introspect --session --dest de.yoxcu.stoandl --object-path /de/yoxcu/stoandl
 > ```
 >
-> A live introspection should show the 119 methods below **plus 11 signals** (see
+> A live introspection should show the 122 methods below **plus 11 signals** (see
 > [Eleven signals](#eleven-signals-augment-polling-no-properties)) and no properties.
 
 ## Service summary
@@ -30,7 +30,7 @@ document is the contract between the daemon and any out-of-process front-end.
 | **Bus name** | `de.yoxcu.stoandl` |
 | **Object path** | `/de/yoxcu/stoandl` |
 | **Interface** | `de.yoxcu.stoandl.Control` |
-| **Methods** | 119 |
+| **Methods** | 122 |
 | **Signals** | **11** — `WatchesChanged`, `FirmwareProgress`, `LockerChanged`, `LanguageProgress`, `ExtensionsChanged`, `ExtensionStateChanged`, `PluginsChanged`, `PermissionRequestsChanged`, `CalendarsChanged`, `ConfigChanged`, `TaskChanged` (reactive layer on top of the poll methods) |
 | **Properties** | **0** |
 | **Activation** | **not** D-Bus-activated — a systemd **user** service ([`packaging/stoandl.service`](../packaging/stoandl.service); also OpenRC via `packaging/stoandl.openrc`). There is no `dbus-1/services/*.service` activation file — a caller that finds the name unowned must start/`enable` the service itself. |
@@ -96,7 +96,7 @@ the public control API — callers never invoke it; BlueZ does.
 
 ### Type signatures
 
-Six types appear across the 119 methods and the signals:
+Six types appear across the 122 methods and the signals:
 
 | Kotlin | D-Bus sig | Plain language |
 |---|---|---|
@@ -249,8 +249,8 @@ description \t section \t help \t requires`. Columns 9–11 (0-based 8–10) wer
 reads eight is unaffected. `name` and `description` are libpebble3's, which match the watch's own menu,
 except where two prefs would share a name: `systemTextSize` reads **Menu Text Size** and `notifTextSize`
 **Notification Text Size**. `section` is the GUI section title, in this order: *Quick launch*, *Backlight &
-display*, *Notifications & timeline*, *Quiet Time*, *Vibration*, *Music*, *Time, units & language*,
-*Motion & menus*, *Advanced* (diagnostic prefs), and *Other* for a pref stoandl doesn't know yet. `help` is
+display*, *Theme*, *Notifications & timeline*, *Quiet Time*, *Vibration*, *Speaker*, *Music*, *Time & units*,
+*Health*, *Motion & menus*, *Advanced* (diagnostic prefs), and *Other* for a pref stoandl doesn't know yet. `help` is
 stoandl's longer text behind the row's help button (may be empty; never repeats `description`). `requires`
 is `id=value` alternatives joined by `|`, in the `current` spelling, when the pref only matters while
 another one has that value (empty: always) — e.g. the light timeout/intensity/dynamic/ambient prefs carry
@@ -264,11 +264,13 @@ lives in `pebble/WatchPrefText.kt`; `gui/tools/watch-pref-text.tsv` is its gener
 is `min..max[ unit]`), **`enum`** (`current` + `allowed` are **display names** like `Standard - Low`,
 not the Kotlin constant — round-trip-safe, `SetWatchPref` accepts either), **`quicklaunch`** (`current`
 is a system action / an app name / `off` / a raw uuid; `allowed` is `off|Quiet Time|Backlight|Motion
-Backlight|Airplane Mode|Timeline Past|Timeline Future|Toggle Touch|<app name or uuid>`: the firmware system actions
-the official app offers, then the literal app placeholder — pick the target by action or app name. An action only
-some watches have (`Toggle Touch`: touch watches on fw 4.39+) is left out while a watch without it is connected,
+Backlight|Airplane Mode|Toggle Touch|Timeline Past|Timeline Future|Clear Notifications|<app name or uuid>`: the
+firmware system actions libpebble3 lists (`SystemAppIDs.SYSTEM_SHORTCUTS`, the official app's picker), then the
+literal app placeholder — pick the target by action or app name. An action only some watches have (`Toggle Touch`:
+touch watches on fw 4.39+; `Clear Notifications`: fw 4.38+) is left out while a watch without it is connected,
 and `SetWatchPref` refuses it then; with no watch connected it is listed, `description` names its audience
-(`Toggle Touch: touch watches only.`) and the `ok:` reply ends `; touch watches only`), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
+(`Toggle Touch: touch watches only. Clear Notifications: PebbleOS 4.38 or later.`) and the `ok:` reply ends
+`; touch watches only` (or `; PebbleOS 4.38 or later`)), **`color`** (`current` is `0xRRGGBB`; `allowed` is `RRGGBB|<preset name>|…`), and
 **`schedule`** (the Quiet Time weekday/weekend hours: `current`/`default` are a 24 h `HH:MM-HH:MM`
 window in the watch's local time, where an end before the start runs overnight; `allowed` is the
 literal `HH:MM-HH:MM`. The hours alone do nothing: the matching `bool` pref
@@ -324,8 +326,8 @@ are **live-mutable** — `NotifAddFilter`/`NotifRemoveFilter` take effect immedi
 | `SyncCalendar` | `() → s` | Re-read calendar sources → update timeline pins. `error:` if calendar isn't enabled. | `calendar sync` |
 | `SyncHealth` | `() → s` | Request fresh health/activity data from the watch and re-project the export. | `health sync` |
 | `HeartRate` | `() → s` | Latest stored heart-rate reading: `ok:<bpm>\t<epochSec>`, `none:` (no sample yet), or `notready:`. Read-only DB lookup (not a live GATT stream); fills from the connect-time health sync. | `health hr` |
-| `GetHealthProfile` | `() → as` | The watch's health **profile** (its own activity-tracking config, in the HealthParams BlobDB — the *write* side, vs the read-only data sync). One `key \t value` per row; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval` (`5min`/`10min`/`30min`/`1h`/`off`; its row has a third field, the intervals `SetHealthProfile` accepts right now, `\|`-joined: `5min` only with every connected watch on fw 4.39.0+, or when it is already the value, so the GUI offers just those), `hrm_activity` (HR during activities: continuous HR in detected walks and runs), `units`, `height_cm`, `weight_kg`, `age`, `gender`, `resting_hr`, `max_hr`. `units` is the watch's metric/imperial setting, and also the unit weather is sent in (there is no separate weather unit). | `health profile` |
-| `SetHealthProfile` | `(s,s) → s` | Set one profile `key` to `value` and sync to the watch. `ok:`/`error:`/`notready:`. Switching `hrm_interval` to `5min` is an `error:` unless every connected watch runs firmware 4.39.0 or newer (and when none is connected). | `health profile set <key> <value>` |
+| `GetHealthProfile` | `() → as` | The watch's health **profile** (its own activity-tracking config, in the HealthParams BlobDB — the *write* side, vs the read-only data sync). One `key \t value` per row; keys: `tracking`, `activity_insights`, `sleep_insights`, `hrm`, `hrm_interval` (`5min`/`10min`/`30min`/`1h`/`off`; its row has a third field, the intervals `SetHealthProfile` accepts right now, `\|`-joined: `5min` only with every connected watch on fw 4.39.0+, or when it is already the value, so the GUI offers just those), `hrm_activity` (HR during activities: continuous HR in detected walks and runs), `units`, `height_cm`, `weight_kg`, `age`, `birth_year` (setting it or `age` sets both; libpebble3 re-derives the age from it on every write), `gender`, `resting_hr`, `max_hr` (derived: 220 − age, at least the elevated heart rate, which is what the watch gets; read-only). `units` is the watch's metric/imperial setting, and also the unit weather is sent in (there is no separate weather unit). | `health profile` |
+| `SetHealthProfile` | `(s,s) → s` | Set one profile `key` to `value` and sync to the watch. `ok:`/`error:`/`notready:`. `age` takes 1–120, `birth_year` the 120 years before this one; `max_hr` accepts only its current value (a record round-trips) and answers `error:max_hr follows from the age …` for any other. Switching `hrm_interval` to `5min` is an `error:` unless every connected watch runs firmware 4.39.0 or newer (and when none is connected). | `health profile set <key> <value>` |
 | `ListCalendars` | `() → as` | Synced calendars: `id \t name \t enabled\|disabled \t accountId`. `accountId` is the owning source's id (see `ListCalendarSources`) so the GUI nests calendars under their account (`discover` for auto-discovered, empty if unknown). | `calendar list` (also bare `calendar`) |
 | `SetCalendarEnabled` | `(s,b) → s` | Enable/disable a single calendar by id or name substring. | `calendar enable\|disable <id\|name>` |
 | `ListCalendarSources` | `() → as` | Editable calendar **sources** (vs the discovered calendars): `id \t type \t url \t username \t label \t lastError \t lastSync`, `type` ∈ {caldav, ical, ics}, `id` self-describing (`caldav:<token>` / `ical:<url>` / `ics:<path>`). `lastError` (appended) is why the source's last read failed, worded for the user (`Sign-in failed (401)`, `Unreachable: …`, `No such file or folder`), empty while it reads fine; `lastSync` (appended) is the epoch seconds of its last good read, empty if none since the daemon started. Password is **never** returned (write-only). | `calendar sources` (a `problem:` and `last sync:` line per source) |
@@ -366,20 +368,24 @@ tracked timestamp; per-source health for calendars is in `ListCalendarSources`.
 |---|---|---|---|
 | `CheckFirmware` | `() → s` | Check the matching source (GitHub for Core, cohorts.rebble.io for classic) for a newer build: `ok:<board>\t<current>\t<latest>\t<asset>\t<yes\|no>\t<source>\t<changelogUrl>` (the 7th field, the PebbleOS changelog page, is a constant present on both `ok:` branches), or `noasset:`/`disabled:`/`notready:`/`error:`. **Cached:** the source's answer is reused for 3 h per source (repo/URL, pre-release setting), board and running firmware version (an `error:` for 1 min), and concurrent callers share one lookup, so a client may call it freely; a cache miss on GitHub still takes seconds on a slow phone link, so call it off the UI thread. The daemon's once-a-day connect-time update notification asks afresh and refreshes the cache, like `UpdateFirmware`; a forced lookup that fails while a good answer under 3 h old is cached answers that one instead of `error:` (GitHub answers 403 once the unauthenticated 60 requests/hour are used up, and a 304 revalidation still counts). | `firmware check` |
 | `CheckFirmwareForce` | `() → s` | `CheckFirmware` that asks the source afresh (and refreshes the cache); joins a lookup already in flight. Same replies. For an explicit user refresh only. Added 2026-10; a client that must work with older daemons falls back to `CheckFirmware` on `UnknownMethod`. | `firmware check --refresh` |
-| `UpdateFirmware` | `() → s` | Re-check the source (never answered from the cache, so it can't act on a stale "up to date"), download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:` (also while a downgrade waits for recovery)/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
-| `SideloadFirmware` | `(s) → s` | Flash a local `.pbz` (absolute daemon-side path), async. Poll `FirmwareStatus`. | `firmware sideload <file.pbz>` / `firmware <file.pbz>` |
-| `FirmwareStatus` | `() → s` | Flash state: `idle:` (or `idle:available <version>` when the last check, cached and at most a few hours old, found newer firmware; it never checks online itself) / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `prf:<version>` (a downgrade on a dual-slot watch: rebooting into recovery with nothing flashed yet; the daemon flashes the same `.pbz` once the watch reconnects there) / `failed:<reason>` (also when the watch comes back on its normal firmware instead of recovery, so the downgrade was dropped; it stays until the next flash) / `notready:`. | `firmware status` (also polled during update/sideload); a `Firmware:` line in `status` |
+| `UpdateFirmware` | `() → s` | Re-check the source (never answered from the cache, so it can't act on a stale "up to date"), download newer firmware and start flashing. `ok:<board>\t<current>\t<latest>\t<asset>` once started; `uptodate:`/`noasset:`/`busy:` (while the watch's own update state is active: an install running, a reboot to apply one, a downgrade waiting for or running in recovery)/`disabled:`/`notready:`/`error:`. Poll `FirmwareStatus`. | `firmware update` |
+| `SideloadFirmware` | `(s) → s` | Flash a local `.pbz` (absolute daemon-side path), async. `ok:`/`busy:` (as `UpdateFirmware`)/`error:`/`notready:`. Poll `FirmwareStatus`. | `firmware sideload <file.pbz>` / `firmware <file.pbz>` |
+| `FirmwareStatus` | `() → s` | Flash state: `idle:` (or `idle:available <version>` when the last check, cached and at most a few hours old, found newer firmware; it never checks online itself) / `downloading:<asset>` / `waiting:` / `inprogress:<percent>` / `reboot:` (success) / `prf:<version>` (a downgrade on a dual-slot watch: rebooting into recovery with nothing flashed yet; libpebble3 installs the same `.pbz` once the watch reconnects there) / `failed:<reason>` (also when the watch comes back on its normal firmware instead of recovery, so the downgrade was dropped: libpebble3's `The watch didn't reboot into recovery to install the update`; it stays until the next flash) / `notready:`. | `firmware status` (also polled during update/sideload); a `Firmware:` line in `status` |
 
 ### Language packs (`stoandl language`)
 
 | Method | In → Out | Purpose | CLI |
 |---|---|---|---|
 | `ListLanguages` | `() → as` | Catalog packs for the watch's board, one record each (see below). | `language list` (also bare `language`; soft — falls back to the offline bundled catalog) |
-| `InstallLanguage` | `(s) → s` | Auto-pick (locale/name/id; blank = system locale), download and install. `ok:<displayName>` once started; `notfound:`/`disabled:`/`notready:`/`error:`. Poll `LanguageStatus`. | `language install <locale\|name\|id>` |
-| `SideloadLanguage` | `(s) → s` | Install a local `.pbl` (absolute daemon-side path), async. Poll `LanguageStatus`. | `language sideload <file.pbl>` (alias `add`) |
-| `LanguageStatus` | `() → s` | Install state: `idle:` / `downloading:<name>` / `installing:<percent>` / `done:<name>` / `failed:<reason>` / `notready:`. | `language status` (also polled during install/sideload) |
+| `InstallLanguage` | `(s) → s` | Auto-pick (locale/name/id; blank = system locale), download and install. `ok:<displayName>` once started; `notfound:`/`disabled:`/`notready:`/`busy:` (an install runs: libpebble3 would drop a second one)/`error:` (also, on firmware with several packs: every slot in use, or the locale already on the watch). Poll `LanguageStatus`. | `language install <locale\|name\|id>` |
+| `SideloadLanguage` | `(s) → s` | Install a local `.pbl` (absolute daemon-side path), async. Same refusals as `InstallLanguage` (no locale check: a `.pbl`'s locale isn't known before it's installed). Poll `LanguageStatus`. | `language sideload <file.pbl>` (alias `add`) |
+| `LanguageStatus` | `() → s` | Install state: `idle:` / `downloading:<name>` / `installing:<percent>` / `done:<name>` (the watch's language is that pack) / `failed:<reason>` (also when the watch is on another language after the install: a failure, or an added pack the watch didn't switch to) / `notready:`. | `language status` (also polled during install/sideload) |
+| `LanguagePacks` | `() → s` | The packs on the watch, for firmware that keeps several (PebbleOS 4.42, `SupportsMultipleLanguagePacks`: an install adds a pack to a free slot of 4 and switches to it; older firmware keeps one, which an install replaces). `ok:` then one record per line (below; none active = built-in English); `unavailable:` (one-pack firmware) / `busy:` / `notready:` / `error:`. | `language installed` (alias `packs`) |
+| `UseLanguage` | `(s) → s` | Make a pack on the watch (slot, locale or name; a unique part of a name) the watch's language, or `english` for the built-in one (the packs stay; what the removed `language` watch pref's English/Custom did). `ok:` / `notfound:` / `ambiguous:` / `failed:` (the watch refused) / `unavailable:` / `busy:` / `notready:` / `error:` (a fonts-only slot). | `language use <slot\|locale\|name\|english>` |
+| `RemoveLanguage` | `(s) → s` | Remove a pack from the watch (slot, locale or name), freeing its slot; removing the active one switches the watch to English. Same returns as `UseLanguage`. | `language remove <slot\|locale\|name>` |
 
 `ListLanguages` record: `id \t isoLocal \t displayName \t installed(yes\|no) \t source(rebble\|github)`.
+`LanguagePacks` record: `slot \t locale \t name \t version \t active(yes\|no) \t kind(translation\|fonts\|unreadable)`.
 
 ### Diagnostics (`stoandl screenshot`/`logs`/`support`)
 
@@ -463,7 +469,7 @@ config backend, was removed.)
 | `PluginList` | `() → as` | Installed plugins while `plugins.enabled` is on (empty while off): `uuid\tkind\tname\tdescription\tsources\tactions`; kind ∈ {builtin, pbw, extension}; sources `category/item` and actions comma-separated. | `plugins [list]` |
 | `PluginRead` | `(sss) → s` | One envelope of `category/item`, preferably from a plugin uuid (empty = any): `ok:<envelope JSON>` / `off:` / `notfound:` / `notready:` / `error:`. Blocks up to 15 s. Acts for the user: callers' permission checks don't apply (logged). | `plugins read <category>/<item> [plugin]` |
 | `PluginInvoke` | `(sss) → s` | Invoke an action of a plugin (uuid or name) with JSON args: `ok:<text>` / `failed:<code> <message>` / `off:` / `notfound:` / `error:`. Acts for the user. | `plugins invoke <plugin> <action> [json]` |
-| `PermList` | `(s) → as` | The permissions an app (name or uuid) asked for or was given: `key\tstatus\tkind\tlabel\tlastUsedMs`; status is the effective one (libpebble3 `appPermissionStatuses`): `granted` / `denied` (decided), `auto` (undecided, allowed by `plugins.permission_policy`), `waiting` (undecided, must ask) or `blocked` (refused regardless: Legacy PebbleKit off, global internet for an app that declares its domains, app not installed); kind ∈ {read, write, exfiltrating}. | `perms list <app>` |
+| `PermList` | `(s) → as` | The permissions an app (name or uuid) asked for or was given: `key\tstatus\tkind\tlabel\tlastUsedMs`; status is the effective one (libpebble3 `appPermissionStatuses`): `granted` / `denied` (decided), `auto` (undecided, allowed by `plugins.permission_policy`), `waiting` (undecided, must ask) or `blocked` (refused regardless: Legacy PebbleKit off, global internet for an app that declares its domains, app not installed); kind ∈ {read, write, exfiltrating, dangerous} (`dangerous`: upstream's kind for `Notifications`). | `perms list <app>` |
 | `PermPending` | `() → as` | Requests waiting for an answer from every installed app, running or not: `appUuid\tappName\tkey\tlabel\trequestedAtMs\trunning\tseen` (`true`/`false`). Only running apps' unseen requests are prompted on the watch and desktop; `seen` = put off with `later`. | `perms [pending]` |
 | `PermSet` | `(sss) → s` | Answer a permission: `(app, key, allow|deny|reset|later)` → `ok:` / `notfound:` / `ambiguous:` / `error:`. `later` stops asking about a waiting request without deciding it (libpebble3 `markPermissionRequestsSeen`; empty key = all of the app's); `reset` makes it undecided and unseen again. | `perms allow|deny|reset <app> <key>`, `perms later <app> [key]` |
 
@@ -531,6 +537,7 @@ per-service masters (notifications, weather, calendar, music, health, dnd) are o
 | `ListCalendars` | `id` · `name` · `enabled`/`disabled` · `accountId`(owning source id, `discover`, or empty) |
 | `ListCalendarSources` | `id`(`caldav:`/`ical:`/`ics:`…) · `type`(caldav/ical/ics) · `url` · `username` · `label` · `lastError` · `lastSync`(epoch s or empty) — never the password |
 | `ListLanguages` | `id` · `isoLocal` · `displayName` · `installed`(yes/no) · `source`(rebble/github) |
+| `LanguagePacks` (after `ok:`, one per line) | `slot` · `locale` · `name` · `version` · `active`(yes/no) · `kind`(translation/fonts/unreadable) |
 | `NotifList` | `name` · `muteLabel` · `color` · `icon` · `vibe` · `lastNotifiedEpochSeconds` · `appNamePlacement`(small/subtitle/off, empty = global) · `images`(off, empty = global) |
 | `NotifListFilters` | `pattern` · `action`(allow/block) |
 | `NotifStyleChoices` | `kind`(vibe/icon) · `value` · `label`; a vibe adds `ms,ms,…` · `builtin`/`custom` |
@@ -788,7 +795,9 @@ playing on this computer, and *Try a recording…* through `Transcribe`).
 support bundle, reset recovery/factory.*
 
 **Satisfied by:** firmware `CheckFirmware`/`UpdateFirmware`/`SideloadFirmware`/`FirmwareStatus`;
-language `ListLanguages`/`InstallLanguage`/`SideloadLanguage`/`LanguageStatus`; `TakeScreenshot`;
+language `ListLanguages`/`InstallLanguage`/`SideloadLanguage`/`LanguageStatus`, and on firmware with several
+packs `LanguagePacks`/`UseLanguage`/`RemoveLanguage` (GUI gap: the watch-details Language section has no slot
+list, switch or remove yet; the CLI has them); `TakeScreenshot`;
 `GatherLogs`/`GetCoreDump`/`WatchInfoText`; `ResetIntoRecovery`/`FactoryReset`.
 
 **QoL wave, done in the GUI (G2, G9, G10):** sideload, screenshot, watch logs and core dump run as

@@ -288,8 +288,9 @@ in its `initialize` result, in the same shape as a `.pbw`'s plugin manifest:
     "sources":[{"category":"messages","items":["room"],"properties":{"name":["shortText"],"unread":["numericValue","shortText"]},
                 "supportsMultiple":true,"callerPermissions":[{"name":"Notifications"}],"suggestedRefreshIntervalSec":60}],
     "actions":[{"name":"mark_read","targets":["messages/room"],"callerPermissions":[{"name":"Notifications"}]}]}}}
-// host -> ext: a read (when something subscribes, on sourceChanged, and every suggestedRefreshIntervalSec)
-{"jsonrpc":"2.0","id":5,"method":"readSource","params":{"category":"messages","item":"room","properties":["name","unread"]}}
+// host -> ext: a read (when something subscribes, on sourceChanged, and every suggestedRefreshIntervalSec);
+// "properties", "iconPixelSize" {w,h} and "limit" (the most instances wanted) only when the subscriber gave them
+{"jsonrpc":"2.0","id":5,"method":"readSource","params":{"category":"messages","item":"room","properties":["name","unread"],"limit":5}}
 {"jsonrpc":"2.0","id":5,"result":{"instances":[{"instanceId":"!abc","properties":{"name":{"shortText":{"text":"Family"}},
   "unread":{"numericValue":{"value":3},"shortText":{"text":"3"}}}}]}}
 // host -> ext: an action

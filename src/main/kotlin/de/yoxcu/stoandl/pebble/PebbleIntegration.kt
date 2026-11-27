@@ -86,7 +86,6 @@ import de.yoxcu.stoandl.weather.WeatherSync
 import de.yoxcu.stoandl.weather.WeatherPlaces
 import de.yoxcu.stoandl.contacts.ContactResolver
 import de.yoxcu.stoandl.contacts.DialerNameCache
-import io.rebble.libpebblecommon.calls.SystemCallLog
 import de.yoxcu.stoandl.dbus.STOANDL_DESKTOP_ONLY_APP
 import de.yoxcu.stoandl.dbus.STOANDL_BUS_NAME
 import de.yoxcu.stoandl.dbus.STOANDL_OBJECT_PATH
@@ -95,9 +94,20 @@ import de.yoxcu.stoandl.dbus.sendDesktopNotification
 import de.yoxcu.stoandl.dbus.timeSlowCalls
 import de.yoxcu.stoandl.util.openSessionBus
 import de.yoxcu.stoandl.util.unwrapVariant
+import de.yoxcu.stoandl.util.StoandlLibPebble
+import de.yoxcu.stoandl.util.watchesNow
+import de.yoxcu.stoandl.voice.LibspeexFrameDecoder
+import io.rebble.libpebblecommon.calls.SystemCallFilter
+import io.rebble.libpebblecommon.connection.DisplayedNotificationReplyResult
+import io.rebble.libpebblecommon.database.entity.BaseAction
+import io.rebble.libpebblecommon.host.JvmHost
+import io.rebble.libpebblecommon.host.JvmLibPebble
+import io.rebble.libpebblecommon.host.JvmNotificationActions
+import io.rebble.libpebblecommon.host.createJvmLibPebble
+import io.rebble.libpebblecommon.packets.blobdb.TimelineItem
+import io.rebble.libpebblecommon.plugin.NativePlugin
+import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.rebble.libpebblecommon.BleConfig
-import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.connection.CommonConnectedDevice
 import de.yoxcu.stoandl.util.connectedDevice
@@ -111,14 +121,8 @@ import io.rebble.libpebblecommon.locker.AppType
 import io.rebble.libpebblecommon.music.PlaybackState
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.locker.LockerWrapper
-import io.rebble.libpebblecommon.LibPebbleConfig
-import io.rebble.libpebblecommon.LibPebbleConfigFlow
-import io.rebble.libpebblecommon.NotificationConfig
-import io.rebble.libpebblecommon.NotificationConfigFlow
 import io.rebble.libpebblecommon.WatchConfig
-import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.ActiveDevice
-import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.BleDiscoveredPebbleDevice
 import io.rebble.libpebblecommon.connection.ConnectingPebbleDevice
 import io.rebble.libpebblecommon.connection.KnownPebbleDevice
@@ -134,20 +138,11 @@ import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.PhoneCapabilities
 import io.rebble.libpebblecommon.connection.PlatformFlags
-import io.rebble.libpebblecommon.imaging.NotificationImageProvider
-import io.rebble.libpebblecommon.plugin.PlatformPlugins
-import io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao
-import io.rebble.libpebblecommon.plugin.MusicPlugin
 import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
 import io.rebble.libpebblecommon.plugin.PhoneNetworkMonitor
-import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.database.dao.HealthSettingsEntryRealDao
-import io.rebble.libpebblecommon.database.dao.NotificationAppRealDao
-import io.rebble.libpebblecommon.database.dao.TimelineNotificationRealDao
 import io.rebble.libpebblecommon.database.entity.MuteState
 import io.rebble.libpebblecommon.database.entity.NotificationAppItem
-import io.rebble.libpebblecommon.di.PlatformConfig
-import io.rebble.libpebblecommon.di.initKoin
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
@@ -156,7 +151,6 @@ import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.metadata.supportsHrm
 import io.rebble.libpebblecommon.services.DailySleep
 import io.rebble.libpebblecommon.services.WatchInfo
-import io.rebble.libpebblecommon.time.TimeChanged
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.TextStyle
@@ -166,6 +160,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -176,6 +172,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -200,7 +198,6 @@ import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.UInt32
 import org.freedesktop.dbus.types.Variant
-import org.koin.dsl.module
 import kotlin.random.Random
 import kotlin.random.nextUInt
 import kotlin.time.Duration.Companion.days
@@ -230,10 +227,15 @@ import de.yoxcu.stoandl.secret.LayeredSecretStore
 import de.yoxcu.stoandl.secret.SecretServiceStore
 import de.yoxcu.stoandl.secret.SecretStore
 import io.rebble.libpebblecommon.calendar.SystemCalendar
-import io.rebble.libpebblecommon.util.SystemGeolocation
 import java.io.File
 
 private const val MAX_CONNECTION_ATTEMPTS = 5
+// libpebble3 loads its known watches from its database right after init(); startup waits for them (an
+// empty list meanwhile would make every known watch look new), logs if it takes longer than the first,
+// and gives up (the daemon exits, so its service manager sees it) after the second: a load that failed, a
+// database migration that threw, shows only as no list at all.
+private val KNOWN_WATCHES_WARN = 10.seconds
+private val KNOWN_WATCHES_GIVE_UP = 2.minutes
 // libpebble3's HealthParams BlobDB key for the watch's metric/imperial units (the firmware's own name).
 private const val UNITS_DISTANCE_KEY = "unitsDistance"
 private const val PAIRING_WINDOW_MS = 120_000L  // 2 minutes
@@ -341,7 +343,7 @@ class PebbleIntegration(
     private val scope: CoroutineScope,
     private val serviceConn: DBusConnection,
 ) {
-    private lateinit var libPebble: LibPebble
+    private lateinit var libPebble: StoandlLibPebble
     private lateinit var healthSettingsDao: HealthSettingsEntryRealDao
     private lateinit var watchConnector: WatchConnector
     private lateinit var firmwareControl: FirmwareControl
@@ -363,7 +365,7 @@ class PebbleIntegration(
     private val geoClue = GeoClueProviders({ config.weatherGpsDesktopId }) { id -> GeoClueLocationProvider(id, wakeups()) }
     private val healthExporterRef = AtomicReference<HealthExporter?>(null)
     // Battery insights (see docs). Heartbeat is the primary source and is fed straight from the
-    // WebServices override, so its ref is a plain field (initialised before init() wires initKoin);
+    // WebServices stoandl hands libpebble3, so its ref is a plain field (initialised before init() builds it);
     // the GATT-level series is a fallback started/stopped by applyBattery. Both null when disabled.
     private val batteryStoreRef = AtomicReference<BatteryStore?>(null)
     private val heartbeatStoreRef = AtomicReference<HeartbeatStore?>(null)
@@ -387,8 +389,6 @@ class PebbleIntegration(
     private var appliedConfig: StoandlConfig = configStore.current()
     /** Pictures attached to notifications: stored when sent, served when the watch pulls them. */
     private val notificationImages = NotificationImageStore(File(CacheDirs.root(), "images/notifications"))
-    /** libpebble3's config, pinned under all four config flows; re-projected from stoandl.conf on change. */
-    private val pinnedConfig = MutableStateFlow(libPebbleConfigOf(configStore.current()))
     // Global allow/block notification filters (own file under configDir; live-mutable via D-Bus).
     private val notificationFilters = NotificationFilters(File(StoandlConfig.configDir(), "notification-filters"))
     // Per-app overrides of notification.app_name (own file under configDir; set live via NotifSetAppName).
@@ -425,11 +425,13 @@ class PebbleIntegration(
             }
         }
     }
-    // libpebble3's Koin context, set in init(): for its DAOs.
-    private val koinRef = AtomicReference<org.koin.core.Koin?>(null)
+    // libpebble3's internal services (its DAOs, the plugin registry's instances, …), set in init().
+    private lateinit var jvm: JvmLibPebble
+    private fun jvmOrNull(): JvmLibPebble? = if (::jvm.isInitialized) jvm else null
     private val pluginControl = PluginControl(
         libPebble = { libPebbleRef.get() },
-        permissionDao = { koinRef.get()?.get<LockerAppPermissionDao>() },
+        plugins = { jvmOrNull()?.plugins().orEmpty() },
+        permissionDao = { jvmOrNull()?.appPermissions },
         appName = { uuid -> libPebbleRef.get()?.let { lp -> allApps(lp).firstOrNull { it.properties.id == uuid }?.properties?.title } },
         enabled = { configStore.current().pluginsEnabled },
     )
@@ -451,7 +453,8 @@ class PebbleIntegration(
             scope = scope,
         )
     }
-    // The single MPRIS music bridge (Koin-bound once; gated live on music.enabled). Set in init().
+    // The single MPRIS music bridge (built once by libpebble3 through JvmHost.music; gated live on
+    // music.enabled). Set when libpebble3 first asks for it.
     private var mprisMusicControl: MprisMusicControl? = null
     // The shared notification send choke point (assigned in init()); passed to StoandlControlImpl so
     // SendTestNotification can inject through the same path desktop/extension notifications use.
@@ -490,8 +493,8 @@ class PebbleIntegration(
     @Volatile private var notifConn: DBusConnection? = null
     private val notificationActions = ConcurrentHashMap<UInt32, (String) -> Unit>()
     // Suspend awareness — logind delay lock around watch deliveries + the resume signal the wall-clock
-    // schedulers ride on; see [SleepGuard]. Built in init() right after Koin (before the syncers that
-    // take its resume signal), started once libPebble is up.
+    // schedulers ride on; see [SleepGuard]. Built in init() right after libpebble3's graph (before the
+    // syncers that take its resume signal), started once libPebble is up.
     private var sleepGuard: SleepGuard? = null
     private var routeStore: NotifRouteStore? = null
     // Built before the sleep guard (libpebble3's graph needs it first); it reaches the guard when a session starts.
@@ -533,13 +536,7 @@ class PebbleIntegration(
             },
         )
 
-        // libpebble3's config is a projection of stoandl.conf (forward PPoG, lanDevConnection, the catch-up
-        // window, the calendar knobs; see libPebbleConfigOf). The LibPebble-, Ble-, Watch- and
-        // NotificationConfigFlow are all pinned to [pinnedConfig] in the override module below, so a
-        // persisted Java Preferences value (LibPebbleConfigHolder loads storage over our default) can't undo
-        // them, and [reconcile] re-projects it after every config change.
-        val libPebbleConfig = pinnedConfig.value
-        // PKJS weather for classic watchfaces (Yahoo YQL, OWM 2.5), bound once into libpebble3's graph;
+        // PKJS weather for classic watchfaces (Yahoo YQL, OWM 2.5), handed to libpebble3 once;
         // weather.intercept_pkjs is read per request.
         val pkjsWeatherHttp = stoandlHttpClient()
         val openMeteoNow = OpenMeteoNow(pkjsWeatherHttp)
@@ -550,26 +547,118 @@ class PebbleIntegration(
             search = openMeteoNow,
         )
         val interceptPkjs = { configStore.current().weatherInterceptPkjs }
-        val koin = initKoin(
-            defaultConfig = libPebbleConfig,
+
+        // The single notification choke point + its action router (Phase 0 of the extension system):
+        // both the desktop bridge and every extension push through `watchNotifier`, and every watch-side
+        // action routes back through `watchActionRouter` via the shared `routeTable`. The desktop owner
+        // holds the watch-item → D-Bus-id map so a wrist dismiss can CloseNotification the original.
+        // In-memory route table, bounded by age and count. The watch offers actions from its history too
+        // (watchClaims advertises SupportsTwoWayDismissal), so routes outlive the popup.
+        val routeTable = NotifRouteTable()
+        val desktopOwner = DesktopNotifOwner(
+            routeTable,
+            syncDismissals = { configStore.current().notificationSyncDismissals },
+            // watchNotifier needs libpebble3's DAOs, so it is built once the graph is; a desktop close only
+            // reaches this after libPebble.init().
+            retract = { watchNotifier.retract(it) },
+        )
+        // Routes survive a daemon restart: wrist actions from the watch's history keep working.
+        routeStore = NotifRouteStore(File(CacheDirs.root(), "notification-routes.json"), routeTable, scope, desktopOwner::routeEpoch)
+        desktopOwner.resumeRoutes(routeStore?.load())
+        val notifOwners = NotifOwnerRegistry().apply { register(desktopOwner) }
+        // Watch-side notification actions and wrist replies: libpebble3's graph takes them as it is built,
+        // the router behind them needs the graph's DAOs (attached below, before anything connects).
+        val wristActions = LateNotificationActions()
+
+        // The Linux calendar reader — always built (reads its sources live from config), so a source
+        // added later via the GUI/CLI syncs with no restart. libpebble3's PhoneCalendarSyncer reads it
+        // and handles all pin creation/diffing/deletion itself.
+        val calendarSync = buildCalendarSync()
+        calendarSyncRef.set(calendarSync)
+        // The phone's battery and radios for the built-in Phone plugin (UPower, NetworkManager, ModemManager).
+        val phoneState by lazy { PhoneState(::wakeups) }
+
+        // libpebble3, built from everything stoandl supplies (JvmHost). Its config is a projection of
+        // stoandl.conf (forward PPoG, lanDevConnection, the catch-up window, the calendar and plugin knobs; see
+        // libPebbleConfigOf), written over whatever an earlier run persisted before the graph is built;
+        // [reconcile] re-projects it after every config change (libPebble.updateConfig). Each service below
+        // is built when libpebble3 first asks for it.
+        val jvm = createJvmLibPebble(JvmHost(
+            config = libPebbleConfigOf(configStore.current()),
             webServices = StoandlWebServices(heartbeatStoreRef, batteryFullAlert::onHeartbeat),
-            // Plugins' secure storage on our secret store (keyring, else the 0600 secrets file).
-            appContext = AppContext(pluginSecrets = PluginSecretStore(secretStore)),
             tokenProvider = NoOpTokenProvider,
             proxyTokenProvider = MutableStateFlow(null),
-            transcriptionProvider = voiceProvider,
-            injectedPKJSHttpInterceptors = InjectedPKJSHttpInterceptors(listOf(
+            transcription = voiceProvider,
+            pkjsInterceptors = InjectedPKJSHttpInterceptors(listOf(
                 OpenWeather25Interceptor(interceptPkjs, openMeteoNow, pkjsPlaces, ktorPassThrough(pkjsWeatherHttp)),
                 YahooWeatherInterceptor(interceptPkjs, openMeteoNow, pkjsPlaces),
             )),
             // Plugins' Pebble.oauth with the user's own OAuth apps (<configDir>/oauth/<slug>.conf).
-            pluginOAuthApi = LocalPluginOAuth(File(StoandlConfig.configDir(), "oauth"), secretStore) { title, url ->
+            pluginOAuth = LocalPluginOAuth(File(StoandlConfig.configDir(), "oauth"), secretStore) { title, url ->
                 try { ProcessBuilder("xdg-open", url).start() } catch (e: Exception) { log.info { "Can't open a browser: ${e.message}" } }
                 sendDesktopPrompt(title, "Sign in in your browser: $url", emptyList()) {}
             },
-        )
-        koinRef.set(koin)
-        linkActivity = koin.get()
+            // What the phone claims to the watch in the PhoneAppVersion handshake: capability bits and OS
+            // type (Android: on OSType.Unknown the firmware never engages its music endpoint, confirmed by
+            // a btmon capture against the Android app).
+            capabilities = PhoneCapabilities(WatchClaims.phoneCapabilities),
+            platformFlags = PlatformFlags(WatchClaims.platformFlags),
+            // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
+            // write-back); off keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
+            syncNotificationApps = config.notificationSyncToWatch,
+            notificationSource = {
+                DbusNotificationListenerConnection(
+                    notificationFlow, scope,
+                    // Read live so editing call.dialer_apps takes effect on the next notification.
+                    dialerApps = { config.dialerApps },
+                    dialerNameCache = dialerNameCache,
+                    watchNotifier = { this.watchNotifier },
+                    desktopOwner = desktopOwner,
+                    openActionOn = { configStore.current().notificationOpenAction },
+                )
+            },
+            // Route every watch-side notification action to whoever sent it (desktop bridge or an
+            // extension) via the shared routeTable: Dismiss marks the item read + closes the originating
+            // desktop notification over D-Bus / fires the extension's onDismiss; the "Mute" action mutes
+            // host-side; Reply/named actions reach the owner.
+            notificationActions = { wristActions },
+            // A systemd-timedated watcher, so a host timezone change while the watch stays connected
+            // re-pushes the clock (SetUTC); otherwise the watch only learns the time at connect.
+            timeChanged = { TimedateTimeChanged() },
+            // The MPRIS bridge: the watch's Music app shows now-playing and its buttons drive the desktop
+            // player. Built once and gated live on music.enabled — it reads the config store per event, so
+            // turning music control on/off (and switching the volume target) takes effect without a restart.
+            // libpebble3's Music plugin (now playing, play/pause, skip) sits on the same object.
+            music = { MprisMusicControl(scope, configStore).also { mprisMusicControl = it } },
+            // PhoneCalendarSyncer turns desktop calendar events into watch timeline pins. The reader gates
+            // on calendar.enabled live (no events while off → pins removed; refresh on re-enable) and
+            // exposes nothing until a source is configured.
+            calendar = { calendarSync },
+            // Backs MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
+            callLog = { missedCallLog },
+            callFilter = { EveryCallRings },
+            // Serve notification pictures from our store (the watch pulls them over the imaging endpoint).
+            notificationImages = { notificationImages },
+            // GeoClue2 for watchapps' navigator.geolocation (PKJS) and location-aware sports/GPS apps. The
+            // GeoClue provider is only created when a watchapp first asks, and it is weather's (one client
+            // at a time, one fix cache). Off (the default), the watchapp's error says it's disabled (opt-in).
+            geolocation = { LiveGeolocation(enabled = { config.geolocation }, provider = geoClue::current) },
+            phoneBattery = { PhoneBatteryMonitor(phoneState.batteryLevel) },
+            phoneNetwork = { PhoneNetworkMonitor(phoneState.cellGeneration, phoneState.connection) },
+            // A watchapp's audio stream to its companion JS, on the libspeex dictation decodes with.
+            audioDecoder = { LibspeexFrameDecoder },
+            // Find my phone (libpebble3's FindMyPhone plugin): the freedesktop alarm sound, with a Stop button.
+            phoneSound = {
+                FindMyPhoneRinger(notify = { onStop ->
+                    val id = sendDesktopPrompt("Find my phone", "Your watch is ringing this phone.", listOf("stop" to "Stop")) { onStop() }
+                    AutoCloseable { closeDesktopNotification(id) }
+                })
+            },
+            // Plugins' secure storage on our secret store (keyring, else the 0600 secrets file).
+            pluginSecrets = PluginSecretStore(secretStore)::forPlugin,
+        ))
+        this.jvm = jvm
+        linkActivity = jvm.linkActivity
         sleepGuard = SleepGuard(
             scope = scope,
             linkActivity = linkActivity,
@@ -579,18 +668,11 @@ class PebbleIntegration(
             beforeSleep = ::beforeSleep,
         )
 
-        // The single notification choke point + its action router (Phase 0 of the extension system):
-        // both the desktop bridge and every extension push through `watchNotifier`, and every watch-side
-        // action routes back through `watchActionRouter` via the shared `routeTable`. The desktop owner
-        // holds the watch-item → D-Bus-id map so a wrist dismiss can CloseNotification the original.
         // Always built now — `notification.per_app` is toggled live (consulted per-push in WatchNotifier),
         // so the store must always exist; it's just not consulted while per_app is off.
-        val notifDao = koin.get<NotificationAppRealDao>()
-        val timelineNotifDao = koin.get<TimelineNotificationRealDao>()
-        // In-memory route table, bounded by age and count. The watch offers actions from its history too
-        // (watchClaims advertises SupportsTwoWayDismissal), so routes outlive the popup.
-        val routeTable = NotifRouteTable()
-        vibePatterns = VibePatterns(koin.get())
+        val notifDao = jvm.notificationApps
+        val timelineNotifDao = jvm.timelineNotifications
+        vibePatterns = VibePatterns(jvm.vibePatterns)
         configEnvironment = configEnvironment.copy(
             customVibeNames = { runBlocking { vibePatterns.custom().keys.toList() } },
             todoLists = ::todoListOptions,
@@ -600,16 +682,7 @@ class PebbleIntegration(
             notificationImages, vibePatterns::custom, deviceInUse = SessionLock::inUse,
             mutedUntil = { globalMute.mutedUntil() },
         )
-        val desktopOwner = DesktopNotifOwner(
-            routeTable,
-            syncDismissals = { configStore.current().notificationSyncDismissals },
-            retract = watchNotifier::retract,
-        )
-        // Routes survive a daemon restart: wrist actions from the watch's history keep working.
-        routeStore = NotifRouteStore(File(CacheDirs.root(), "notification-routes.json"), routeTable, scope, desktopOwner::routeEpoch)
-        desktopOwner.resumeRoutes(routeStore?.load())
-        val notifOwners = NotifOwnerRegistry().apply { register(desktopOwner) }
-        val watchActionRouter = WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao, notificationImages)
+        wristActions.attach(WatchActionRouter(routeTable, notifOwners, notifDao, timelineNotifDao, notificationImages))
         // Extension supervisor: constructed now (so the control service can reach it); started below.
         extensionManager = ExtensionManager(
             extDir = File(StoandlConfig.configDir(), "ext"),
@@ -631,12 +704,12 @@ class PebbleIntegration(
             prepareSynthesize = ttsService::prepare,
             addTodo = ::addTodo,
             pluginHost = object : ExtensionPluginHost {
-                override fun register(plugin: io.rebble.libpebblecommon.plugin.Plugin) {
-                    koinRef.get()?.get<io.rebble.libpebblecommon.plugin.PluginRegistry>()?.registerPlugin(plugin)
+                override fun register(plugin: NativePlugin) {
+                    libPebble.registerPlugin(plugin)
                     emit(StoandlControl.PluginsChanged(STOANDL_OBJECT_PATH))
                 }
                 override fun unregister(pluginUuid: kotlin.uuid.Uuid) {
-                    koinRef.get()?.get<io.rebble.libpebblecommon.plugin.PluginRegistry>()?.unregisterPlugin(pluginUuid)
+                    libPebble.unregisterPlugin(pluginUuid)
                     emit(StoandlControl.PluginsChanged(STOANDL_OBJECT_PATH))
                 }
             },
@@ -644,108 +717,21 @@ class PebbleIntegration(
             holdAwake = { why -> sleepGuard?.holdAwake(why) ?: AutoCloseable {} },
         )
 
-        // The Linux calendar reader — always built (reads its sources live from config), so a source
-        // added later via the GUI/CLI syncs with no restart. libpebble3's PhoneCalendarSyncer reads it
-        // and handles all pin creation/diffing/deletion itself.
-        val calendarSync = buildCalendarSync()
-        calendarSyncRef.set(calendarSync)
-
-        // Override modules: use our DBus notification bridge, and pin LibPebble-/Ble-/WatchConfigFlow so
-        // any persisted Java Preferences value cannot override forward PPoG / lanDevConnection=true.
-        koin.loadModules(listOf(module {
-            single<NotificationListenerConnection> {
-                DbusNotificationListenerConnection(
-                    notificationFlow, scope,
-                    // Read live so editing call.dialer_apps takes effect on the next notification.
-                    dialerApps = { config.dialerApps },
-                    dialerNameCache = dialerNameCache,
-                    watchNotifier = watchNotifier,
-                    desktopOwner = desktopOwner,
-                    openActionOn = { configStore.current().notificationOpenAction },
-                )
-            }
-            // Sync the per-app list + mute states to the watch (Notifications settings menu + wrist
-            // write-back). Overrides the JVM module's PlatformConfig(syncNotificationApps = false),
-            // which otherwise keeps notificationAppRealDao out of the BlobDB sync set. BLE-only.
-            if (config.notificationSyncToWatch) single { PlatformConfig(syncNotificationApps = true) }
-            // Pin the transport to forward PPoG. PebbleBle picks the transport from LibPebbleConfigFlow;
-            // PPoG reads BleConfigFlow. Pinning only the latter would leave the transport choice to the
-            // storage-backed LibPebbleConfigHolder.
-            single { LibPebbleConfigFlow(pinnedConfig) }
-            single { BleConfigFlow(pinnedConfig) }
-            // Pin lanDevConnection=true so the developer connection uses the LAN server (port 9000),
-            // not the CloudPebble proxy. Overrides the JVM module's storage-backed WatchConfigFlow.
-            single { WatchConfigFlow(pinnedConfig) }
-            // Pin the notification catch-up window (notification.catch_up_minutes) the same way; the other
-            // NotificationConfig fields are libpebble3's defaults, which is all stoandl ever persisted.
-            single { NotificationConfigFlow(pinnedConfig) }
-            // Route every watch-side notification action to whoever sent it (desktop bridge or an
-            // extension) via the shared routeTable: Dismiss marks the item read + closes the originating
-            // desktop notification over D-Bus / fires the extension's onDismiss; the "Mute" action mutes
-            // host-side; Reply/named actions reach the owner. Without this binding the JVM module's no-op
-            // handler runs and watch→host actions silently do nothing. (Don't drop this line — it was
-            // once clobbered by an unrelated refactor.)
-            single<PlatformNotificationActionHandler> { watchActionRouter }
-            // Replace the no-op JVM TimeChanged with a systemd-timedated watcher so a host timezone
-            // change while the watch stays connected re-pushes the clock (SetUTC). Without this the
-            // watch only learns the time at connect (the negotiator's updateTime()).
-            single<TimeChanged> { TimedateTimeChanged() }
-            // What the phone claims to the watch in the PhoneAppVersion handshake: capability bits and OS
-            // type (Android: on OSType.Unknown the firmware never engages its music endpoint, confirmed by
-            // a btmon capture against the Android app). libpebble3's JVM module binds neither.
-            single { PhoneCapabilities(WatchClaims.phoneCapabilities) }
-            // Serve notification pictures from our store (the watch pulls them over the imaging endpoint).
-            single<NotificationImageProvider> { notificationImages }
-            single { PlatformFlags(WatchClaims.platformFlags) }
-            // Back MissedCallSyncer with our ModemManager-fed log so missed calls become timeline pins.
-            single<SystemCallLog> { missedCallLog }
-            // Replace the no-op JVM SystemMusicControl with the MPRIS bridge so the watch's Music app
-            // shows now-playing and its buttons drive the desktop player. Bound once (Koin caches it) and
-            // gated live on music.enabled — it reads the config store per-event, so turning music control
-            // on/off (and switching the volume target) takes effect without a restart.
-            single<SystemMusicControl> { MprisMusicControl(scope, configStore).also { mprisMusicControl = it } }
-            // Built-in plugins only this platform offers: Music on top of the MPRIS bridge (now playing, play/
-            // pause, skip). Weather is registered after init (it needs LibPebble); Calendar, Phone and Watch
-            // Settings are libpebble3's common set.
-            single { PlatformPlugins(setOf(MusicPlugin(get()))) }
-            // The phone's battery and radios for the built-in Phone plugin (UPower, NetworkManager, ModemManager).
-            single { PhoneState(::wakeups) }
-            single { PhoneBatteryMonitor(get<PhoneState>().batteryLevel) }
-            single { PhoneNetworkMonitor(get<PhoneState>().cellGeneration, get<PhoneState>().connection) }
-            // Replace the no-op JVM SystemCalendar with the Linux reader (always bound; it reads its
-            // sources live), so PhoneCalendarSyncer turns desktop calendar events into watch timeline
-            // pins. The reader gates on calendar.enabled live (no events while off → pins removed; refresh
-            // on re-enable) and exposes nothing until a source is configured.
-            single<SystemCalendar> { calendarSync }
-            // Replace the no-op JVM SystemGeolocation with a GeoClue2-backed one so watchapps'
-            // navigator.geolocation (PKJS) and location-aware sports/GPS apps get a real fix. Lazy:
-            // the GeoClue provider is only created when a watchapp first asks for location. Shares the
-            // weather GeoClue provider (one client at a time, one fix cache). When off
-            // (the default), bind DisabledGeolocation instead of leaving libpebble3's no-op so the
-            // watchapp's error says it's disabled (opt-in), not the misleading "Not supported on Linux".
-            single<SystemGeolocation> {
-                LiveGeolocation(
-                    enabled = { config.geolocation },
-                    provider = geoClue::current,
-                )
-            }
-        }), allowOverride = true)
-
-        libPebble = koin.get()
+        libPebble = StoandlLibPebble(jvm.libPebble)
         libPebbleRef.set(libPebble)
-        healthSettingsDao = koin.get()
+        healthSettingsDao = jvm.healthSettings
         firmwareControl = FirmwareControl(libPebbleRef, scope, { config }, notifyDesktop = { summary, body, label, onAction ->
             // Desktop-only (not bridged to the watch): the watch gets a direct notif too.
             sendActionableNotification(summary, body, label, onInvoke = onAction)
         })
-        languageControl = LanguageControl(libPebbleRef) { config }
+        languageControl = LanguageControl(libPebbleRef, scope) { config }
         screenshotControl = ScreenshotControl(libPebbleRef)
         logsControl = LogsControl(libPebbleRef)
         debugControl = DebugControl(libPebbleRef)
         developerControl = DeveloperControl(libPebbleRef)
         // Always built (the per-app store always exists now); per_app only gates enforcement in push().
-        notificationAppsControl = NotificationAppsControl(koin.get(), appNamePlacements, vibePatterns::custom)
-        watchConnector = koin.get()
+        notificationAppsControl = NotificationAppsControl(jvm.notificationApps, appNamePlacements, vibePatterns::custom)
+        watchConnector = jvm.watchConnector
         manualDisconnect = ManualDisconnect(
             connector = watchConnector,
             marker = File(StoandlConfig.configDir(), "watch-disconnected"),
@@ -763,13 +749,16 @@ class PebbleIntegration(
             wakeups = wakeups(),
         ).also { it.start() }
         libPebble.init()
-        // Built-in plugins that need LibPebble itself (a Koin binding would be a cycle: LibPebble takes
-        // the PluginRegistry). They serve only while plugins.enabled is on (PluginRegistry gates lookups).
-        libPebble.registerPlugin(WeatherPlugin(libPebble, libPebble, kotlin.time.Clock.System))
+        // From here every stoandl reader shares one StateFlow of the watches, holding the known watches from
+        // its first value on (libpebble3 emits nothing until it loaded them).
+        libPebble.loadWatches(scope, warnAfter = KNOWN_WATCHES_WARN, giveUpAfter = KNOWN_WATCHES_GIVE_UP)
+        // Built-in plugins that need LibPebble itself (libpebble3's graph builds LibPebble from the plugin
+        // registry). They serve only while plugins.enabled is on (the registry gates lookups).
+        libPebble.registerPlugin(WeatherPlugin(libPebble))
         // Plugin subscriptions re-poll on the coroutine clock, which stops during suspend: re-read on resume.
         scope.launch {
             wakeups().collect {
-                libPebble.getAllPlugins().forEach { p ->
+                jvm.plugins().forEach { p ->
                     when (p) {
                         is io.rebble.libpebblecommon.plugin.JsPlugin -> p.refreshAllSources()
                         is de.yoxcu.stoandl.ext.ExtensionPlugin -> p.refreshAllSources()
@@ -785,10 +774,7 @@ class PebbleIntegration(
             allowed = { alertsAllow { c -> c.alertsPermissions } },
             appNamePlacement = { config.notificationAppName },
             desktopPrompt = { summary, body, actions, onAction -> sendDesktopPrompt(summary, body, actions, onAction = onAction) },
-            closeDesktop = { id ->
-                notifConn?.getRemoteObject("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
-                    FreedesktopNotifications::class.java)?.CloseNotification(id)
-            },
+            closeDesktop = ::closeDesktopNotification,
         ).start()
         sleepGuard?.start()
         startTransferKeepAwake()
@@ -813,14 +799,14 @@ class PebbleIntegration(
         // watchNotifier choke point as desktop notifications, so per-app mute/style applies to them too.
         // (Constructed above; started here, after libPebble is up.) Managed live via `stoandl ext`.
         extensionManager.start()
+        // A downgrade the watch can't boot directly goes through recovery (PRF); libpebble3 finishes it there
+        // on its own (PendingFirmwareInstalls), so there is nothing to resume here.
         startFirmwareNotifier()
-        // A downgrade on a dual-slot watch reboots into recovery first; finish it from there.
-        firmwareControl.resumeDowngradesInRecovery()
         startDeveloperAutostart()
         // Persist custom-watchapp datalog frames (PebbleKit DataLogging) to NDJSON. libpebble3 emits
         // them on Datalogging.thirdPartyEvents; without a subscriber they're simply dropped (as before).
         if (config.datalog) {
-            DatalogStore(koin.get(), scope).start()
+            DatalogStore(jvm.datalogging, scope).start()
         } else {
             log.info { "Datalog capture disabled (datalog.enabled=false)" }
         }
@@ -830,8 +816,8 @@ class PebbleIntegration(
         // Battery insights: capture the hourly analytics heartbeat (primary) + a GATT-level fallback.
         applyBattery()
         batteryFullAlert.start(libPebble.watches, scope)
-        // The MPRIS SystemMusicControl is installed via Koin override above and self-starts when first
-        // injected (on the first watch connect); nothing to start here, just report the state.
+        // The MPRIS SystemMusicControl is handed to libpebble3 above (JvmHost.music) and self-starts when
+        // libpebble3 first uses it; nothing to start here, just report the state.
         log.info {
             if (config.musicControl) "Music control enabled (MPRIS → watch Music app; volume: ${config.musicVolume.name.lowercase()})"
             else "Music control disabled (music.enabled=false)"
@@ -866,7 +852,7 @@ class PebbleIntegration(
             // Drop the BLE link at the BlueZ level (watch sees us go down → re-advertises), but do NOT
             // use requestDisconnection(): it persists connectGoal=false, which makes the next launch
             // refuse to reconnect to its own watch until a manual re-pair.
-            libPebble.watches.value.forEach { device ->
+            loadedWatches().forEach { device ->
                 (device.identifier as? PebbleBleIdentifier)?.let { id ->
                     bluezObjectPath(id.asString)?.let { withContext(Dispatchers.IO) { disconnectBluezDevice(it) } }
                 }
@@ -913,7 +899,7 @@ class PebbleIntegration(
                 val btOn = libPebble.bluetoothEnabled.value.enabled()
                 val windowOpen = pairingGate.isOpen()
                 val disturbs = windowOpen && PairingWindow.discoveryDisturbs(
-                    inquiry = true, withContext(Dispatchers.IO) { connectingWatches(libPebble.watches.value, readLink = true) },
+                    inquiry = true, withContext(Dispatchers.IO) { connectingWatches(libPebble.watchesNow(), readLink = true) },
                 )
                 if (btOn && PairingWindow.scanAllowed(windowOpen, disturbs, linkActivity.hostSuspending.value)) {
                     if (!libPebble.isScanningClassic.value) {
@@ -1038,7 +1024,7 @@ class PebbleIntegration(
                 // torn down. A watch that is already connected doesn't stop it: that's how a second watch
                 // is paired. A bonded watch needs no scan — it reconnects via the connector's standing
                 // Device1.Connect() (BlueZ's kernel auto-connect).
-                val devices = libPebble.watches.value
+                val devices = libPebble.watchesNow()
                 val connectInFlight = PairingWindow.discoveryDisturbs(inquiry = false, connectingWatches(devices, readLink = false))
                 // The display doesn't matter: a pairing window is always an explicit, time-limited
                 // request — `watch pair` over ssh with the display off included — and closes on success,
@@ -1085,7 +1071,9 @@ class PebbleIntegration(
      *  failure also goes into the open pairing window's PairStatus and, if it repeats, a desktop alert
      *  (`alerts.scan_failed`), so `watch pair` says why it finds nothing. */
     private fun startUserFacingErrors() {
-        libPebble.userFacingErrors.onEach { error ->
+        // Buffered: this collector suspends (a desktop alert), and libpebble3's error stream drops an event for
+        // every subscriber while one lags, a language pack's failure among them (LanguageControl).
+        libPebble.userFacingErrors.buffer(Channel.UNLIMITED).onEach { error ->
             if (error !is UserFacingError.FailedToScan) {
                 log.warn { "libpebble3: ${error.message}" }
                 return@onEach
@@ -1168,7 +1156,7 @@ class PebbleIntegration(
             try {
                 while (true) {
                     delay(DISCOVERY_WARN_INTERVAL)
-                    val devices = libPebble.watches.value
+                    val devices = libPebble.watchesNow()
                     val btOn = libPebble.bluetoothEnabled.value.enabled()
                     // Deep-sleep hosts: a discovery session left open while the display is off makes the
                     // controller report every advertiser nearby — with the watch link kept across suspend,
@@ -1315,7 +1303,7 @@ class PebbleIntegration(
                 while (true) {
                     delay(15.seconds)
                     val now = System.currentTimeMillis()
-                    val watchByPath = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
+                    val watchByPath = libPebble.watchesNow().filterIsInstance<KnownPebbleDevice>()
                         .filter { it !is ConnectedPebbleDevice }
                         .mapNotNull { w ->
                             (w.identifier as? PebbleBleIdentifier)?.asString
@@ -1468,7 +1456,7 @@ class PebbleIntegration(
     /** The Pebble libpebble3 has (known, or found by a pairing window's scan) at BlueZ device path
      *  [device], or null for any other device. */
     private fun pebbleAt(device: String): PebbleDevice? =
-        libPebbleRef.get()?.watches?.value?.firstOrNull { d ->
+        loadedWatches().firstOrNull { d ->
             when (val id = d.identifier) {
                 is PebbleBleIdentifier -> bluezObjectPath(id.asString) == device
                 is PebbleBtClassicIdentifier ->
@@ -1476,6 +1464,11 @@ class PebbleIntegration(
                 else -> false
             }
         }
+
+    /** The watches once libpebble3 has loaded them, else none: for the BlueZ agent and shutdown, which can
+     *  run while init() is still building libpebble3. */
+    private fun loadedWatches(): List<PebbleDevice> =
+        if (::libPebble.isInitialized) libPebble.watchesIfLoaded().orEmpty() else emptyList()
 
     /** Whether the pairing agent may let [device] bond: only a Pebble ([pebbleAt]) and only while a
      *  pairing window is open. The agent is the system's default one, so without this any nearby device
@@ -1494,7 +1487,7 @@ class PebbleIntegration(
     /** Re-pair ONE specific watch by name: forget just it (state + Trusted intent + BlueZ bond) and
      *  open the pairing window — used by the broken-bond notification's Re-pair button. Multi-watch safe. */
     private fun repairByName(name: String) {
-        val match = libPebble.watches.value.filterIsInstance<KnownPebbleDevice>()
+        val match = libPebble.watchesNow().filterIsInstance<KnownPebbleDevice>()
             .firstOrNull { it.displayName().equals(name, ignoreCase = true) } ?: return
         (match.identifier as? PebbleBleIdentifier)?.let { id ->
             bluezObjectPath(id.asString)?.let(::removeBluezBond)
@@ -1625,6 +1618,14 @@ class PebbleIntegration(
         }
     }
 
+    /** Withdraws a notification [sendDesktopPrompt] showed (nothing for id 0, one it couldn't show). */
+    private fun closeDesktopNotification(id: UInt32) {
+        if (id.toLong() == 0L) return
+        notificationActions.remove(id)
+        notifConn?.getRemoteObject("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+            FreedesktopNotifications::class.java)?.CloseNotification(id)
+    }
+
     private fun startCallMonitor() {
         try {
             ModemManagerCallMonitor(libPebble, scope, contactResolver, dialerNameCache, missedCallLog).start()
@@ -1710,7 +1711,7 @@ class PebbleIntegration(
             isEnabled = { config.calendarEnabled },
             onSync = { stampSync("calendar") },
             onRefresh = { scope.launch { todoWriter.flush() } },
-            wakeups = wakeups(),
+            wakeups = lateWakeups,
         )
 
     /** The one path a to-do takes (an extension's `addTodo`, D-Bus `AddTodo`): read its due, then write it. */
@@ -1780,6 +1781,11 @@ class PebbleIntegration(
     /** Resume signal for the wall-clock schedulers (weather, calendar, firmware check); see [SleepGuard]. */
     private fun wakeups(): Flow<Unit> = sleepGuard?.resumed ?: NoWakeups
 
+    /** [wakeups] for an object built before the sleep guard (libpebble3's graph takes it, the guard needs the
+     *  graph): looked up at each collection, which only starts once libpebble3 runs, so the guard's resumes
+     *  reach it. */
+    private val lateWakeups: Flow<Unit> = flow { emitAll(wakeups()) }
+
     /** What a suspend should still wait for — polled by [SleepGuard] after logind's PrepareForSleep(true).
      *  Null when nothing is owed to or awaited from the watch.
      *
@@ -1823,7 +1829,7 @@ class PebbleIntegration(
 
     /** For the sleep guard: the manual disconnect's own teardown, still running. */
     private fun manualDisconnectPending(): String? =
-        if (manualDisconnect.held && libPebble.watches.value.any { it is ActiveDevice }) "manual disconnect" else null
+        if (manualDisconnect.held && libPebble.watchesNow().any { it is ActiveDevice }) "manual disconnect" else null
 
     /** Why the watch link must stay up whatever the Quiet Time pause wants, or null. */
     private fun linkNeeded(): String? = when {
@@ -1882,7 +1888,7 @@ class PebbleIntegration(
 
     private suspend fun pushDatalogSendState(enabled: Boolean, why: String, force: Boolean = false) {
         if (!force && datalogSendState == enabled) return
-        val watches = libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>()
+        val watches = libPebble.watchesNow().filterIsInstance<ConnectedPebbleDevice>()
         if (watches.isEmpty()) return
         val pausedFor = datalogPause.update(enabled, System.currentTimeMillis())
         watches.forEach { w ->
@@ -1922,13 +1928,13 @@ class PebbleIntegration(
             appName = { uuid -> allApps(libPebble).firstOrNull { it.properties.id == uuid }?.properties?.title },
             syncPinnedPref = ::syncPinnedWatchPref,
             connectedFirmware = {
-                libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
+                libPebble.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
             },
             connectedWatchType = {
-                libPebble.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.platform?.watchType
+                libPebble.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.platform?.watchType
             },
             lastKnownFirmware = {
-                val watches = libPebble.watches.value
+                val watches = libPebble.watchesNow()
                 watches.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.runningFwVersion
                     ?: watches.filterIsInstance<KnownPebbleDevice>().maxByOrNull { it.lastConnected }
                         ?.let { WatchPrefsControl.firmwareOf(it.runningFwVersion) }
@@ -2026,7 +2032,7 @@ class PebbleIntegration(
         scope.launch {
             while (true) {
                 delayWallClock(1.days, wakeups())
-                if (shouldNotify() && libPebble.watches.value.any { it is ConnectedPebbleDevice }) {
+                if (shouldNotify() && libPebble.watchesNow().any { it is ConnectedPebbleDevice }) {
                     firmwareControl.maybeNotify(dailyMs)
                 }
             }
@@ -2132,8 +2138,9 @@ class PebbleIntegration(
 
     /** Re-apply a sync service against the (just-reloaded) config — the live half of SetSyncEnabled/SetConfig. */
     private fun reconcile(service: String) {
-        // Fields libpebble3 reads live (the calendar knobs) follow stoandl.conf at once.
-        pinnedConfig.value = libPebbleConfigOf(configStore.current())
+        // Fields libpebble3 reads live (the calendar and plugin knobs) follow stoandl.conf at once. Written only
+        // on a change: libpebble3 persists every update.
+        libPebbleConfigOf(configStore.current()).let { if (it != libPebble.config.value) libPebble.updateConfig(it) }
         when (service) {
             "weather" -> applyWeather()
             "calendar" -> applyCalendar()
@@ -2482,7 +2489,7 @@ class PebbleIntegration(
         extensionManager.onChanged = { emit(StoandlControl.ExtensionsChanged(STOANDL_OBJECT_PATH)) }
         // PluginsChanged / PermissionRequestsChanged: pokes over libpebble3's flows (the registry's built-ins
         // + locker plugins, and the pending permission requests).
-        combine(libPebble.nativePlugins(), libPebble.getAllLockerUuids(), pinnedConfig) { native, uuids, cfg ->
+        combine(libPebble.nativePlugins(), libPebble.getAllLockerUuids(), libPebble.config) { native, uuids, cfg ->
             "${cfg.watchConfig.enablePlugins}|${native.size}|${uuids.size}"
         }
             .distinctUntilChanged()
@@ -2493,10 +2500,9 @@ class PebbleIntegration(
         combine(
             libPebble.activePermissionRequests().map { reqs -> reqs.map { "${it.appUuid}|${it.permission}" }.sorted() },
             libPebble.appsWithPendingPermissionRequests,
-            koinRef.get()?.get<LockerAppPermissionDao>()?.allFlow()
-                ?.map { rows -> rows.filter { it.granted == null }.map { "${it.appUuid}|${it.permission}|${it.seenAtMs != null}" } }
-                ?: flowOf(emptyList()),
-            pinnedConfig.map { it.watchConfig },
+            jvm.appPermissions.allFlow()
+                .map { rows -> rows.filter { it.granted == null }.map { "${it.appUuid}|${it.permission}|${it.seenAtMs != null}" } },
+            libPebble.config.map { it.watchConfig },
         ) { active, apps, undecided, wc -> listOf(active, apps, undecided, wc) }
             .distinctUntilChanged()
             .drop(1)
@@ -2638,8 +2644,10 @@ private class DbusNotificationListenerConnection(
     private val dialerApps: () -> List<String>,
     private val dialerNameCache: DialerNameCache,
     // The shared choke point: per-app tracking/mute/style + build + send + route now live here, used by
-    // extensions too. This bridge just turns a desktop notification into a [NotifRequest].
-    private val watchNotifier: WatchNotifier,
+    // extensions too. This bridge just turns a desktop notification into a [NotifRequest]. A supplier:
+    // libpebble3 builds this bridge with its graph, the notifier only after (it needs the graph's DAOs);
+    // nothing is forwarded before init().
+    private val watchNotifier: () -> WatchNotifier,
     // Delivers wrist dismiss/reply/actions back to the desktop, and tracks server restarts and closes.
     private val desktopOwner: DesktopNotifOwner,
     /** `notification.open_action`, read per notification. */
@@ -2698,7 +2706,7 @@ private class DbusNotificationListenerConnection(
         // image in the body (Chromium on Plasma). Not the sender's avatar.
         val image = (notification.attachment ?: if (markup) firstImageSrc(notification.body) else null)
             ?.let(ImageSource::parse)
-        watchNotifier.push(
+        watchNotifier().push(
             NotifRequest(
                 appName = notification.appName,
                 title = notification.summary,
@@ -2714,6 +2722,40 @@ private class DbusNotificationListenerConnection(
             ownerToken = ref.encode(),
         )
     }
+}
+
+/**
+ * libpebble3's watch-side notification actions and wrist replies ([JvmNotificationActions]) before the
+ * [WatchActionRouter] behind them exists: libpebble3's graph takes them as it is built, and the router needs
+ * the graph's DAOs. [attach] runs right after the graph is built, before libPebble.init(), so no watch can
+ * act on a notification before it.
+ */
+private class LateNotificationActions : JvmNotificationActions {
+    @Volatile private var router: JvmNotificationActions? = null
+
+    fun attach(target: JvmNotificationActions) {
+        check(router == null) { "notification actions already attached" }
+        router = target
+    }
+
+    private fun target(): JvmNotificationActions = router ?: error("watch notification action before the router was attached")
+
+    override suspend fun invoke(itemId: Uuid, action: BaseAction, attributes: List<TimelineItem.Attribute>): TimelineActionResult =
+        target().invoke(itemId, action, attributes)
+
+    override fun onDisplayedItem(itemId: Uuid?) = target().onDisplayedItem(itemId)
+
+    override suspend fun replyToDisplayedNotification(text: String, at: kotlin.time.Instant): DisplayedNotificationReplyResult =
+        target().replyToDisplayedNotification(text, at)
+}
+
+/**
+ * Whether the phone's Do Not Disturb lets a call ring the watch, which libpebble3 asks while the watch's
+ * Respect Phone Silence pref is on. stoandl has no call filter of its own: every call rings, as before
+ * libpebble3 asked.
+ */
+private object EveryCallRings : SystemCallFilter {
+    override suspend fun allowsCall(number: String): Boolean = true
 }
 
 /** App actions offered on the wrist besides Reply, Open, Mute and Dismiss. */
@@ -3379,6 +3421,18 @@ private class StoandlControlImpl(
 
     override fun LanguageStatus(): String = languageControl.status()
 
+    override fun LanguagePacks(): String = languageControl.packs()
+
+    override fun UseLanguage(pack: String): String {
+        log.info { "UseLanguage: '$pack'" }
+        return languageControl.use(pack)
+    }
+
+    override fun RemoveLanguage(pack: String): String {
+        log.info { "RemoveLanguage: '$pack'" }
+        return languageControl.remove(pack)
+    }
+
     override fun TakeScreenshot(path: String): String =
         startTransfer(WatchTasks.Kind.SCREENSHOT, path, "Capturing the watch screen", screenshotControl::capture)
 
@@ -3405,7 +3459,7 @@ private class StoandlControlImpl(
 
     override fun Battery(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val dev = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
         val level = dev.batteryLevel ?: return "unknown:${dev.displayName()}"
         return "ok:${dev.displayName()}\t$level"
@@ -3504,7 +3558,7 @@ private class StoandlControlImpl(
      *  matches none (e.g. querying a disconnected watch's history), the serial is null and the raw query
      *  is used as the GATT-series key. */
     private fun resolveWatch(query: String): Pair<String, String?> {
-        val devices = libPebbleRef.get()?.watches?.value?.filterIsInstance<ConnectedPebbleDevice>().orEmpty()
+        val devices = libPebbleRef.get()?.watchesNow()?.filterIsInstance<ConnectedPebbleDevice>().orEmpty()
         val dev = if (query.isBlank()) devices.firstOrNull()
         else devices.firstOrNull { it.displayName().equals(query, ignoreCase = true) }
             ?: devices.firstOrNull { it.displayName().contains(query, ignoreCase = true) }
@@ -3521,7 +3575,7 @@ private class StoandlControlImpl(
 
     override fun SyncHealth(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val dev = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
         // Full sync: ask the watch to replay ALL stored history, not just data newer than our latest
         // timestamp. Incremental (the on-connect path) keys off healthDao.getLatestTimestamp(), so once
@@ -3558,7 +3612,7 @@ private class StoandlControlImpl(
 
     /** Each connected watch's display name → its running firmware tag, for the health-profile gates. */
     private fun connectedFirmwareTags(lp: LibPebble): Map<String, String> =
-        lp.watches.value.filterIsInstance<ConnectedPebbleDevice>()
+        lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>()
             .associate { it.displayName() to it.watchInfo.runningFwVersion.stringVersion }
 
     override fun SetHealthProfile(key: String, value: String): String {
@@ -3795,7 +3849,7 @@ private class StoandlControlImpl(
     /** Whether to surface heart-rate UI: the connected watch has an HRM, or there's stored HR data.
      *  Shared by [GetHealthSummary] and [GetHealthSeries] so the summary flag and the series never disagree. */
     private suspend fun hrIsAvailable(lp: LibPebble, dayStart: Long, dayEnd: Long): Boolean {
-        val color = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.color
+        val color = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()?.watchInfo?.color
         if (color != null && color.supportsHrm()) return true
         return lp.getAverageHeartRate(dayStart, dayEnd) != null || lp.getLatestHeartRateReading() != null
     }
@@ -3859,7 +3913,7 @@ private class StoandlControlImpl(
 
     override fun NotifVibeTest(spec: String): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val dev = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
         val reset = spec.trim().lowercase() in STYLE_RESET_WORDS
         val custom = runBlocking { vibePatterns.custom() }
@@ -4031,7 +4085,7 @@ private class StoandlControlImpl(
 
     override fun RunningApp(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val dev = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
         val uuid = dev.runningApp.value ?: return "none:"
         val title = allApps(lp).firstOrNull { it.properties.id == uuid }?.properties?.title ?: "(unknown)"
@@ -4180,7 +4234,7 @@ private class StoandlControlImpl(
 
     /** Every live PKJS session across all connected watches (empty when libPebble isn't ready). */
     private fun currentPkjsApps(): List<PKJSApp> =
-        libPebbleRef.get()?.watches?.value
+        libPebbleRef.get()?.watchesNow()
             ?.filterIsInstance<ConnectedPebbleDevice>()
             ?.flatMap { it.currentCompanionAppSessions.value }?.filterIsInstance<PKJSApp>()
             ?: emptyList()
@@ -4305,7 +4359,7 @@ private class StoandlControlImpl(
         // Repair re-pairs, ends the window by connecting — see PairingWindow.NewWatch), which are bonded (so
         // the bond poll only fires on NEW bonds, BLE and Classic), and which watch holds the goal (it gets
         // the goal back if the window ends without its new watch, see PairingWindow.restoreGoalTo).
-        val devices = lp.watches.value
+        val devices = lp.watchesNow()
         val knownAtOpen = devices.filterIsInstance<KnownPebbleDevice>().map { it.identifier.asString }.toSet()
         val connectedAtOpen = connectedIds(devices).toSet()
         val goalHolderAtOpen = (devices.firstOrNull { it is ConnectedPebbleDevice }
@@ -4373,7 +4427,7 @@ private class StoandlControlImpl(
                 // adapter is disabled, so a bond read can only fail and would spam the log every 2 s for
                 // the whole pairing window. The window stays open, so polling resumes once BT comes back.
                 if (!btOn()) continue
-                val newlyBonded = withContext(Dispatchers.IO) { bondedIds(lp.watches.value, skip = alreadyBonded) }
+                val newlyBonded = withContext(Dispatchers.IO) { bondedIds(lp.watchesNow(), skip = alreadyBonded) }
                 if (newlyBonded.isNotEmpty()) result.complete("ok:Paired")
             }
         }
@@ -4397,7 +4451,7 @@ private class StoandlControlImpl(
         // A new watch that was found but never connected may have taken the goal (declined, timed out): give
         // it back to the watch that had it, or nobody reconnects that one (single-watch mode).
         PairingWindow.restoreGoalTo(newState, goalHolderAtOpen)?.let { id ->
-            val holder = lp.watches.value.firstOrNull { it.identifier.asString == id }
+            val holder = lp.watchesNow().firstOrNull { it.identifier.asString == id }
             if (holder != null && holder !is ConnectedPebbleDevice) {
                 log.info { "Pairing ended without a new watch — handing the connection back to ${holder.displayName()}" }
                 holder.connect()
@@ -4417,7 +4471,7 @@ private class StoandlControlImpl(
 
     override fun Unpair(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
-        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        val known = lp.watchesNow().filterIsInstance<KnownPebbleDevice>()
 
         // Targeted: `unpair <name>` forgets just the matching watch (exact-then-unique-substring, like
         // `repair`), leaving any other watches untouched (multi-watch safe).
@@ -4500,7 +4554,7 @@ private class StoandlControlImpl(
         // An empty name would substring-match every watch, and forget a lone one unasked.
         if (watch.isBlank()) return "error:Name the watch to re-pair"
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
-        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        val known = lp.watchesNow().filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
         // Substring match (case-insensitive) so 'repair B349' matches "Pebble B349" — no need to type
         // (and shell-escape) the full name. Prefer an exact match if one exists; else require a unique
@@ -4524,14 +4578,14 @@ private class StoandlControlImpl(
 
     override fun Connect(watch: String): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
-        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        val known = lp.watchesNow().filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "error:No known watches — use 'stoandl watch pair' to add one"
         if (watch.isBlank()) {
             val resumed = manualDisconnect.resume()
             // Nobody holds the goal (a failed pairing cleared it, or its watch was unpaired): give it back. A
             // holder is any connecting or connected watch, a new one still pairing (not yet known) included.
             val candidates = known.map { GoalCandidate(it.identifier.asString, it.lastConnected.toEpochMilliseconds()) }
-            val goalHeld = lp.watches.value.any { it is ActiveDevice }
+            val goalHeld = lp.watchesNow().any { it is ActiveDevice }
             val target = resumeGoalTo(candidates, goalHeld, btOn(), pairingGate.isOpen())
                 ?.let { id -> known.first { it.identifier.asString == id } }
             target?.let {
@@ -4569,7 +4623,7 @@ private class StoandlControlImpl(
 
     override fun Disconnect(): String {
         val lp = libPebbleRef.get() ?: return "error:Daemon not ready"
-        val active = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val active = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
         if (watchUpdateRunning()) return "error:A firmware or language update is running — disconnect when it's done"
         if (pairingGate.isOpen()) return "error:A pairing window is open — disconnect when it's closed"
         if (!manualDisconnect.disconnect()) return "ok:Watch connection already paused"
@@ -4584,12 +4638,12 @@ private class StoandlControlImpl(
 
     override fun ListWatches(): List<String> {
         val lp = libPebbleRef.get() ?: return emptyList()
-        return lp.watches.value.filterIsInstance<KnownPebbleDevice>().map(::watchRecord)
+        return lp.watchesNow().filterIsInstance<KnownPebbleDevice>().map(::watchRecord)
     }
 
     override fun WatchDetails(): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val dev = lp.watches.value.filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
+        val dev = lp.watchesNow().filterIsInstance<ConnectedPebbleDevice>().firstOrNull()
             ?: return "notready:No watch connected"
         val info = dev.watchInfo
         // "code" has no libpebble3 source — use the BLE advert-name suffix ("Pebble … B349" → "B349"),
@@ -4611,7 +4665,7 @@ private class StoandlControlImpl(
 
     override fun SetWatchNickname(query: String, nickname: String): String {
         val lp = libPebbleRef.get() ?: return "notready:libPebble not ready"
-        val known = lp.watches.value.filterIsInstance<KnownPebbleDevice>()
+        val known = lp.watchesNow().filterIsInstance<KnownPebbleDevice>()
         if (known.isEmpty()) return "notfound:No known watches — use 'stoandl watch pair' to add one"
         val match = when (val m = matchOneWatch(known, query)) {
             is WatchMatch.One -> m.device

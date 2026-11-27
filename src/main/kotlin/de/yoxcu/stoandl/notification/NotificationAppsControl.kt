@@ -33,7 +33,7 @@ private val log = KotlinLogging.logger {}
  * `ambiguous:<msg>` / `error:<msg>`). App lookups match a substring of the app name or package
  * (case-insensitive), erroring on zero or multiple matches — the same ergonomics as `repair`.
  */
-class NotificationAppsControl(
+class NotificationAppsControl internal constructor(
     private val dao: NotificationAppRealDao,
     // Per-app overrides of notification.app_name (stoandl's own file, keyed like the DAO's packageName).
     private val appNames: AppNamePlacements,

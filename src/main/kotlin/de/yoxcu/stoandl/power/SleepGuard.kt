@@ -72,7 +72,7 @@ private const val LOGIN1_MANAGER = "org.freedesktop.login1.Manager"
  * The PrepareForSleep subscription (and [resumed]) works even with the lock disabled
  * (`power.sleep_guard = false`); if the system bus is unavailable the guard is inert.
  */
-class SleepGuard(
+internal class SleepGuard(
     private val scope: CoroutineScope,
     private val linkActivity: WatchLinkActivity,
     private val holdLock: Boolean,

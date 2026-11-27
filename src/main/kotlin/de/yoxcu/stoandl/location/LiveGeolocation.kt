@@ -14,12 +14,12 @@ import kotlin.time.Instant
 /**
  * Linux implementation of libpebble3's [SystemGeolocation] hook, backed by GeoClue2. This is what makes
  * watchapps' `navigator.geolocation` (PKJS) and location-aware sports/GPS apps work — the shared
- * `GeolocationInterface` in libpebble3 injects this and dispatches fixes back into the JS context. Replaces
- * the JVM module's no-op binding (which returns "Not supported on Linux").
+ * `GeolocationInterface` in libpebble3 injects this and dispatches fixes back into the JS context. stoandl
+ * supplies it as `JvmHost.geolocation`.
  *
  * [enabled] (`geolocation.enabled`) is read **live** on every request and every watch tick: when off, the
  * request gets [DisabledGeolocation]'s opt-in error. That lets the Settings toggle take effect without a
- * daemon restart — the Koin binding is fixed (cached single), but the behaviour behind it is not.
+ * daemon restart — libpebble3's binding is fixed (cached single), but the behaviour behind it is not.
  * [provider] is [GeoClueProviders.current], which builds the provider on first use (so nothing is created
  * until a watchapp actually asks for location while enabled) and rebuilds it when `weather.gps_desktop_id`
  * changes. This class never stops a provider: the holder owns it.

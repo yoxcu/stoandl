@@ -1,13 +1,15 @@
 package de.yoxcu.stoandl.pebble
 
-import de.yoxcu.stoandl.firmware.FirmwareTag
 import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
 import io.rebble.libpebblecommon.database.entity.HealthGender
+import io.rebble.libpebblecommon.database.entity.currentYear
 import io.rebble.libpebblecommon.health.HealthSettings
 import java.util.Locale
 
-/** The `hrm_interval` spelling of each interval, in display order. */
-private val HRM_INTERVAL_NAMES = listOf(
+/** The `hrm_interval` spelling of each interval, in display order. A code the watch sent that libpebble3
+ *  can't name never reaches this table: libpebble3 keeps it verbatim on the wire and shows the last named
+ *  interval here (the fork's `HrmPreferencesValue.unknownMeasurementInterval`). */
+internal val HRM_INTERVAL_NAMES = listOf(
     HRMonitoringInterval.FiveMin to "5min",
     HRMonitoringInterval.TenMin to "10min",
     HRMonitoringInterval.ThirtyMin to "30min",
@@ -20,9 +22,15 @@ private fun HRMonitoringInterval.profileName() = HRM_INTERVAL_NAMES.first { it.f
 /**
  * The `key \t value` records of `GetHealthProfile`, in display order. The `hrm_interval` record has a
  * third field: the intervals `SetHealthProfile` accepts right now, `|`-joined ([connected] as for
- * [healthProfileRefusal]), so a client offers only those.
+ * [healthProfileRefusal]), so a client offers only those. `birth_year` is [HealthSettings.birthYear], or
+ * the one [age][HealthSettings.ageYears] implies in [year] while libpebble3 hasn't stored one yet.
+ * `max_hr` is derived (see [applyHealthProfileKey]).
  */
-internal fun healthProfileRecords(s: HealthSettings, connected: Map<String, String>): List<String> {
+internal fun healthProfileRecords(
+    s: HealthSettings,
+    connected: Map<String, String>,
+    year: Int = currentYear(),
+): List<String> {
     fun b(v: Boolean) = if (v) "on" else "off"
     val choices = HRM_INTERVAL_NAMES
         .filter { (interval, _) -> intervalRefusal(s.hrmMeasurementInterval, interval, connected) == null }
@@ -38,14 +46,29 @@ internal fun healthProfileRecords(s: HealthSettings, connected: Map<String, Stri
         "height_cm\t${s.heightMm / 10}",
         "weight_kg\t${String.format(Locale.ROOT, "%.1f", s.weightDag / 100.0)}",
         "age\t${s.ageYears}",
+        "birth_year\t${s.birthYear ?: (year - s.ageYears)}",
         "gender\t${s.gender.name.lowercase()}",
         "resting_hr\t${s.restingHr}",
         "max_hr\t${s.maxHr}",
     )
 }
 
-/** [cur] with one `SetHealthProfile` key applied, or an error message for the caller to report. */
-internal fun applyHealthProfileKey(cur: HealthSettings, key: String, value: String): Result<HealthSettings> {
+/**
+ * [cur] with one `SetHealthProfile` key applied, or an error message for the caller to report.
+ *
+ * The profile's age is libpebble3's birth year: it re-derives the age from [HealthSettings.birthYear] on
+ * every write (upstream 6a1b3357), so `age` and `birth_year` both set the two together, in [year]. The
+ * maximum heart rate (and the zones) follow from the age, 220 − age but at least the elevated heart rate
+ * (libpebble3's `HeartRatePreferencesValue.forAge`), and libpebble3 writes that whatever
+ * it is given, so `max_hr` is read-only: its current value is taken as a no-op (a record round-trips), any
+ * other is refused instead of reported as set.
+ */
+internal fun applyHealthProfileKey(
+    cur: HealthSettings,
+    key: String,
+    value: String,
+    year: Int = currentYear(),
+): Result<HealthSettings> {
     fun err(msg: String): Result<HealthSettings> = Result.failure(IllegalArgumentException(msg))
     fun bool(v: String): Boolean? = when (v.trim().lowercase()) {
         "on", "true", "yes", "1", "enabled" -> true
@@ -77,7 +100,11 @@ internal fun applyHealthProfileKey(cur: HealthSettings, key: String, value: Stri
             ?: return err("Expected a number (cm)")) * 10).toInt().toShort())
         "weight_kg", "weight" -> cur.copy(weightDag = ((v.toDoubleOrNull()
             ?: return err("Expected a number (kg)")) * 100).toInt().toShort())
-        "age" -> cur.copy(ageYears = v.toIntOrNull() ?: return err("Expected a whole number (years)"))
+        "age" -> (v.toIntOrNull()?.takeIf { it in 1..120 } ?: return err("Expected a whole number of years (1-120)"))
+            .let { age -> cur.copy(ageYears = age, birthYear = year - age) }
+        "birth_year" -> (v.toIntOrNull()?.takeIf { it in (year - 120)..(year - 1) }
+            ?: return err("Expected a year from ${year - 120} to ${year - 1}"))
+            .let { born -> cur.copy(birthYear = born, ageYears = year - born) }
         "gender" -> cur.copy(gender = when (v.lowercase()) {
             "female", "f" -> HealthGender.Female
             "male", "m" -> HealthGender.Male
@@ -85,14 +112,20 @@ internal fun applyHealthProfileKey(cur: HealthSettings, key: String, value: Stri
             else -> return err("Expected female/male/other")
         })
         "resting_hr" -> cur.copy(restingHr = (v.toIntOrNull() ?: return err("Expected a number (bpm)")).toShort())
-        "max_hr" -> cur.copy(maxHr = (v.toIntOrNull() ?: return err("Expected a number (bpm)")).toShort())
+        "max_hr" -> {
+            val bpm = v.toIntOrNull() ?: return err("Expected a number (bpm)")
+            if (bpm != cur.maxHr.toInt()) {
+                // libpebble3's HeartRatePreferencesValue.forAge: 220 - age, at least the elevated heart rate.
+                return err("max_hr follows from the age (220 - age, at least the elevated heart rate of " +
+                    "${cur.elevatedHr} bpm; now ${cur.maxHr} bpm) and the watch gets that value whatever is set; " +
+                    "change age or birth_year instead")
+            }
+            cur
+        }
         else -> return err("Unknown health key '$key' (see 'stoandl health profile')")
     }
     return Result.success(next)
 }
-
-/** The firmware that added the 5-minute heart-rate interval (PebbleOS 2edd1c78c). */
-private val FW_HRM_FIVE_MIN = FirmwareTag(listOf(4, 39, 0, 0), null)
 
 /**
  * Why [next] must not go to the watch, or null when it may. [connected] maps each connected watch's
@@ -117,9 +150,9 @@ private fun intervalRefusal(
     if (connected.isEmpty()) {
         return "Connect the watch first: 5min needs firmware 4.39.0 or newer, and stoandl checks the watch's version before sending it"
     }
+    // libpebble3's own rule for the interval (HRMonitoringInterval.isSupportedBy), not a copy of it.
     val old = connected.entries.firstOrNull { (_, fw) ->
-        val tag = FirmwareTag.parse(fw)
-        tag == null || tag.compareNumbers(FW_HRM_FIVE_MIN) < 0
+        WatchPrefsControl.firmwareOf(fw)?.let(next::isSupportedBy) != true
     } ?: return null
     return "${old.key} runs firmware ${old.value}; the 5-minute interval needs 4.39.0 or newer (update the firmware, or pick 10min)"
 }

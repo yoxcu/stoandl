@@ -23,7 +23,7 @@ private val log = KotlinLogging.logger {}
  * [marker] records the pause; [persist] (connection.disconnect_persists, read live) decides whether a
  * daemon restart honours it ([restore]) — the official app's Disconnect lasts across restarts too.
  */
-class ManualDisconnect(
+internal class ManualDisconnect(
     private val connector: WatchConnector,
     private val marker: File,
     private val persist: () -> Boolean,
