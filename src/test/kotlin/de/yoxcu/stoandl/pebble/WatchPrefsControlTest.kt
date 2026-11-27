@@ -9,6 +9,7 @@ import io.rebble.libpebblecommon.database.entity.EnumWatchPref
 import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting
 import io.rebble.libpebblecommon.database.entity.QuicklaunchWatchPref
 import io.rebble.libpebblecommon.metadata.WatchType
+import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import kotlinx.coroutines.flow.flowOf
@@ -35,12 +36,14 @@ class WatchPrefsControlTest {
     private val musicUuid = Uuid.parse("1f03293d-47af-4f28-b960-f2b02a6dd757")
     private var firmware: FirmwareVersion? = null
     private var watchType: WatchType? = null
+    private var capabilities: Set<ProtocolCapsFlag>? = null
     private val control = WatchPrefsControl(
         fakeLibPebble(),
         resolveAppUuid = { if (it.equals("Music", true)) musicUuid else null },
         appName = { if (it == musicUuid) "Music" else null },
         connectedFirmware = { firmware },
         connectedWatchType = { watchType },
+        connectedCapabilities = { capabilities },
     )
 
     @Test
@@ -280,6 +283,69 @@ class WatchPrefsControlTest {
         control.applyConfigured(pins)
         assertEquals(listOf("qlUp", "qlDown"), written.map { it.pref.id })
         assertEquals(QuickLaunchSetting(true, touchUuid), written.first().value)
+    }
+
+    // ---- `language`: one-pack firmware only (the fork's gate; upstream b117d9a4 dropped the pref) -------------
+
+    private val multiPack = setOf(ProtocolCapsFlag.SupportsMultipleLanguagePacks)
+
+    private fun languageRows(): List<List<String>> {
+        listed = listOf(WatchPreference(EnumWatchPref.Language, null), WatchPreference(BoolWatchPref.Clock24h, null))
+        return control.list().map { it.split('\t') }
+    }
+
+    @Test
+    fun `a one-pack watch is offered the language pref and switched to English`() {
+        firmware = fw("v4.41.1")
+        capabilities = emptySet()
+        val row = languageRows().first { it[0] == "language" }
+        assertEquals(listOf("language", "enum", "Custom (Language Pack)", "Custom (Language Pack)", "Custom (Language Pack)|English"), row.take(5))
+        assertEquals("Choose Custom to use the installed language pack. Needs PebbleOS 4.28 or later.", row[7])
+        assertEquals("Time, units & language", row[8])
+        assertEquals(
+            "ok:Set language = English (syncs to the watch on next connect)",
+            control.setOne("language", "english"),
+        )
+        assertEquals(listOf<Any?>(EnumWatchPref.Language.options.last()), written.map { it.value })
+        assertTrue(control.setOne("language", "Custom (Language Pack)").startsWith("ok:"), "and back")
+    }
+
+    @Test
+    fun `a multi-pack watch is neither offered nor set the language pref`() {
+        firmware = fw("v4.42.0")
+        capabilities = multiPack
+        assertEquals(listOf("clock24h"), languageRows().map { it[0] })
+        assertEquals(
+            "error:Not setting language: the watch keeps several language packs; switch with " +
+                "'stoandl language use english' (or a pack)",
+            control.setOne("language", "English"),
+        )
+        assertTrue(written.isEmpty(), "nothing may reach the watch")
+    }
+
+    @Test
+    fun `with no watch known the language pref stays listed`() {
+        assertEquals(listOf("language", "clock24h"), languageRows().map { it[0] })
+    }
+
+    @Test
+    fun `a language pin applies on one-pack firmware from 4_28 only`() {
+        val pins = mapOf("language" to "English", "clock24h" to "true")
+        firmware = fw("v4.27.4")
+        capabilities = emptySet()
+        control.applyConfigured(pins)
+        assertEquals(listOf("clock24h"), written.map { it.pref.id }, "too old: the key isn't whitelisted yet")
+
+        written.clear()
+        firmware = fw("v4.28.0")
+        control.applyConfigured(pins)
+        assertEquals(listOf("language", "clock24h"), written.map { it.pref.id })
+
+        written.clear()
+        firmware = fw("v4.42.0")
+        capabilities = multiPack
+        control.applyConfigured(pins)
+        assertEquals(listOf("clock24h"), written.map { it.pref.id }, "multi-pack: the key holds a pack slot")
     }
 
     private fun fw(tag: String) = FirmwareVersion.from(

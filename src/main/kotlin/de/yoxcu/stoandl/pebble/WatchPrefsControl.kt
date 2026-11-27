@@ -18,8 +18,11 @@ import io.rebble.libpebblecommon.database.entity.RgbColorWatchPref
 import io.rebble.libpebblecommon.database.entity.ScheduleWatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPref
 import io.rebble.libpebblecommon.database.entity.WatchPrefEnum
+import io.rebble.libpebblecommon.database.entity.isReadBy
 import io.rebble.libpebblecommon.database.entity.minFirmware
+import io.rebble.libpebblecommon.database.entity.retiredBy
 import io.rebble.libpebblecommon.metadata.WatchType
+import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.timeline.TimelineColor
 import kotlinx.coroutines.flow.first
@@ -45,7 +48,9 @@ private val log = KotlinLogging.logger {}
  * whether a key is sent; below its release nothing is, and the record waits for a firmware update.
  * [tooOldFor] only reads that same table, for the messages here and for skipping pins on connect; it adds
  * no rule of its own. Upstream's retry of a key the watch answered DataStale (3c417558) covers the keys
- * without a gate, so the two never act on the same record.
+ * without a gate, so the two never act on the same record. The fork's second gate, `retiredBy`, is a
+ * capability whose firmware reads the key as something else (`language` on multi-pack firmware);
+ * [retiredOn] reads it, and such a pref is neither listed, set nor applied for that watch.
  */
 class WatchPrefsControl(
     private val libPebble: LibPebble,
@@ -69,6 +74,10 @@ class WatchPrefsControl(
     /** The connected watch's firmware, else the one the most recently connected watch ran: [list]'s requires
      *  clauses should not change while the watch is away. Null when no watch has been seen. */
     private val lastKnownFirmware: () -> FirmwareVersion? = connectedFirmware,
+    /** The connected watch's capabilities, or null when none is connected (or in tests). */
+    private val connectedCapabilities: () -> Set<ProtocolCapsFlag>? = { null },
+    /** The connected watch's capabilities, else the most recently connected watch's, as [lastKnownFirmware]. */
+    private val lastKnownCapabilities: () -> Set<ProtocolCapsFlag>? = connectedCapabilities,
 ) {
     /** `<id>@<firmware>` pins already reported as too new for the watch, so a reconnect logs them at DEBUG. */
     private val tooNewReported: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -79,15 +88,16 @@ class WatchPrefsControl(
     fun applyConfigured(prefs: Map<String, String>) {
         if (prefs.isEmpty()) return
         val firmware = connectedFirmware()
+        val capabilities = connectedCapabilities()
         prefs.forEach { (id, raw) ->
             val pref = WatchPref.from(id)
             if (pref == null) {
                 log.warn { "Unknown watch pref '$id' in config — ignoring (try 'stoandl settings')" }
                 return@forEach
             }
-            val tooOld = tooOldFor(pref, firmware)
-            if (tooOld != null) {
-                val message = "Not applying watch pref $id: $tooOld"
+            val notTaken = tooOldFor(pref, firmware) ?: retiredOn(pref, capabilities)
+            if (notTaken != null) {
+                val message = "Not applying watch pref $id: $notTaken"
                 if (tooNewReported.add("$id@${firmware?.stringVersion}")) log.info { message } else log.debug { message }
                 return@forEach
             }
@@ -110,6 +120,7 @@ class WatchPrefsControl(
     /** Set a single pref now (CLI). Returns a status-prefixed `ok:`/`error:` string. */
     fun setOne(id: String, raw: String): String {
         val pref = WatchPref.from(id) ?: return "error:Unknown watch pref '$id' (see 'stoandl settings')"
+        retiredOn(pref, lastKnownCapabilities())?.let { return "error:Not setting $id: $it" }
         return try {
             val wp = parse(pref, raw)
             cannotRun(wp)?.let { return "error:$it" }
@@ -131,7 +142,7 @@ class WatchPrefsControl(
     /** Every pref that has another value set back to its default; a pinned `watch.<id>` follows, as in
      *  [setOne]. */
     fun resetAll(): String {
-        val current = loadPrefs() ?: return "notready:Watch settings aren't loaded yet"
+        val current = loadPrefs()?.let(::readByLastKnownWatch) ?: return "notready:Watch settings aren't loaded yet"
         val changed = current.filter { it.valueOrDefault() != it.pref.defaultValue }.map { it.pref }
         changed.forEach { pref ->
             libPebble.setWatchPref(defaultOf(pref))
@@ -146,10 +157,11 @@ class WatchPrefsControl(
      * \t debug \t name \t description \t section \t help \t requires`. A requires clause naming a pref the
      * watch's firmware ([lastKnownFirmware]) is too old for is left out: that firmware ignores it, so it gates
      * nothing. So is one naming a pref only some firmware has while no firmware is known, rather than lock
-     * rows that may be the user's to set.
+     * rows that may be the user's to set. A pref the watch ([lastKnownCapabilities]) reads as something else
+     * ([retiredOn]) is left out.
      */
     fun list(): List<String> {
-        val current = loadPrefs() ?: return emptyList()
+        val current = loadPrefs()?.let(::readByLastKnownWatch) ?: return emptyList()
         val firmware = lastKnownFirmware()
         return current.sortedBy { WatchPrefText.sectionIndex(WatchPrefText.section(it.pref)) }.map { wp ->
             val pref = wp.pref
@@ -174,6 +186,12 @@ class WatchPrefsControl(
 
     private fun <T> defaultOf(pref: WatchPref<T>): WatchPreference<T> = WatchPreference(pref, pref.defaultValue)
 
+    /** [prefs] without those the last known watch reads as something else; all of them when no watch is known. */
+    private fun readByLastKnownWatch(prefs: List<WatchPreference<*>>): List<WatchPreference<*>> {
+        val capabilities = lastKnownCapabilities() ?: return prefs
+        return prefs.filter { it.pref.isReadBy(capabilities) }
+    }
+
     private fun loadPrefs(): List<WatchPreference<*>>? =
         runBlocking { withTimeoutOrNull(5_000) { libPebble.watchPrefs.first() } }
 
@@ -189,6 +207,17 @@ class WatchPrefsControl(
             val min = pref.minFirmware ?: return null
             if (firmware == null || min.isMetBy(firmware)) return null
             return "needs PebbleOS $min or later, the watch runs ${firmware.stringVersion}"
+        }
+
+        /** Why a watch with [capabilities] doesn't take [pref] (its firmware reads the key as something else),
+         *  or null when it does or no watch is known. */
+        fun retiredOn(pref: WatchPref<*>, capabilities: Set<ProtocolCapsFlag>?): String? {
+            if (capabilities == null || pref.isReadBy(capabilities)) return null
+            return when (val capability = pref.retiredBy) {
+                ProtocolCapsFlag.SupportsMultipleLanguagePacks ->
+                    "the watch keeps several language packs; switch with 'stoandl language use english' (or a pack)"
+                else -> "the watch's firmware ($capability) reads the key as something else"
+            }
         }
 
         /** [WatchPrefText.description], the firmware it needs (from libpebble3's `minFirmware`, unless the

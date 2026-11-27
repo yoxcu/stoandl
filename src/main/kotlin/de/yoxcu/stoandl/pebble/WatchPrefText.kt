@@ -10,9 +10,9 @@ import io.rebble.libpebblecommon.database.entity.WatchPref
  * libpebble3's names stay as they are: they match the watch's own Settings menu. Only two are overridden,
  * where two prefs would read the same in one list. The descriptions are stoandl's since libpebble3 dropped
  * `WatchPref.description` (upstream 76fc8f4a moved them into its app's string resources): upstream's
- * English `watch_pref_*_desc` texts, plus three of the fork's own that upstream never had. A pref this
- * table doesn't know yet (a newer libpebble3) lands in [OTHER]; a diagnostic one in [ADVANCED], which the
- * GUI collapses.
+ * English `watch_pref_*_desc` texts, upstream's former `language` text, plus three of the fork's own that
+ * upstream never had. A pref this table doesn't know yet (a newer libpebble3) lands in [OTHER]; a diagnostic
+ * one in [ADVANCED], which the GUI collapses.
  */
 internal object WatchPrefText {
     const val ADVANCED = "Advanced"
@@ -21,7 +21,7 @@ internal object WatchPrefText {
     /** Section titles in display order. */
     val SECTIONS = listOf(
         "Quick launch", "Backlight & display", "Theme", "Notifications & timeline", "Quiet Time", "Vibration",
-        "Speaker", "Music", "Time & units", "Health", "Motion & menus", ADVANCED, OTHER,
+        "Speaker", "Music", "Time, units & language", "Health", "Motion & menus", ADVANCED, OTHER,
     )
 
     private val sectionOf: Map<String, String> = buildMap {
@@ -46,7 +46,7 @@ internal object WatchPrefText {
             "vibeScoreHourly", "vibeScoreOnDisconnect")
         section("Speaker", "speakerMuted", "speakerVolume")
         section("Music", "musicShowVolumeControls", "musicShowProgressBar", "musicShowAlbumArt")
-        section("Time & units", "clock24h", "timezoneSource", "unitsWind", "unitsTemperature")
+        section("Time, units & language", "clock24h", "timezoneSource", "unitsWind", "unitsTemperature", "language")
         section("Health", "activityInsightsStyle")
         section("Motion & menus", "stationaryMode", "menuScrollWrapAround", "menuScrollVibeBehavior")
     }
@@ -72,6 +72,7 @@ internal object WatchPrefText {
         put("vibeScoreNotifications", "Single apps can have their own pattern on the Alerts tab.")
         put("musicShowAlbumArt", "Uses the cover stoandl sends from your player.")
         put("timezoneSource", "stoandl updates the watch when this device's time zone changes.")
+        put("language", "Install packs under Firmware & language or on the Watch tab.")
         put("notifRespectPhoneSilence", "stoandl marks no notification as silenced, so this changes nothing; " +
             "Mirror Do Not Disturb (Notifications) follows your desktop instead.")
         put("lightColorSunriseMinute", MINUTE_OF_DAY_HELP)
@@ -140,6 +141,8 @@ internal object WatchPrefText {
         "systemTextSize" to "Text size for system menus and the launcher",
         "notifTextSize" to "Text size for notifications",
         "lightAmbientThreshold" to "Controls how low ambient light needs to be to enable backlight (if using Ambient Light Sensor)",
+        // Upstream's own text (b8b9341b) from before b117d9a4 dropped the pref; the fork keeps it for one-pack firmware.
+        "language" to "Choose Custom to use the installed language pack.",
     )
 
     /** Names that would otherwise read the same in one list ("Text Size" twice). */

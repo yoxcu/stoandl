@@ -249,8 +249,10 @@ description \t section \t help \t requires`. Columns 9–11 (0-based 8–10) wer
 reads eight is unaffected. `name` and `description` are libpebble3's, which match the watch's own menu,
 except where two prefs would share a name: `systemTextSize` reads **Menu Text Size** and `notifTextSize`
 **Notification Text Size**. `section` is the GUI section title, in this order: *Quick launch*, *Backlight &
-display*, *Theme*, *Notifications & timeline*, *Quiet Time*, *Vibration*, *Speaker*, *Music*, *Time & units*,
-*Health*, *Motion & menus*, *Advanced* (diagnostic prefs), and *Other* for a pref stoandl doesn't know yet. `help` is
+display*, *Theme*, *Notifications & timeline*, *Quiet Time*, *Vibration*, *Speaker*, *Music*, *Time, units &
+language*, *Health*, *Motion & menus*, *Advanced* (diagnostic prefs), and *Other* for a pref stoandl doesn't know
+yet. A pref the watch's firmware reads as something else is left out (`language` on multi-pack firmware, 4.42 and
+later; judged by the connected, else the last connected watch). `help` is
 stoandl's longer text behind the row's help button (may be empty; never repeats `description`). `requires`
 is `id=value` alternatives joined by `|`, in the `current` spelling, when the pref only matters while
 another one has that value (empty: always) — e.g. the light timeout/intensity/dynamic/ambient prefs carry
@@ -381,7 +383,7 @@ tracked timestamp; per-source health for calendars is in `ListCalendarSources`.
 | `SideloadLanguage` | `(s) → s` | Install a local `.pbl` (absolute daemon-side path), async. Same refusals as `InstallLanguage` (no locale check: a `.pbl`'s locale isn't known before it's installed). Poll `LanguageStatus`. | `language sideload <file.pbl>` (alias `add`) |
 | `LanguageStatus` | `() → s` | Install state: `idle:` / `downloading:<name>` / `installing:<percent>` / `done:<name>` (the watch's language is that pack) / `failed:<reason>` (also when the watch is on another language after the install: a failure, or an added pack the watch didn't switch to) / `notready:`. | `language status` (also polled during install/sideload) |
 | `LanguagePacks` | `() → s` | The packs on the watch, for firmware that keeps several (PebbleOS 4.42, `SupportsMultipleLanguagePacks`: an install adds a pack to a free slot of 4 and switches to it; older firmware keeps one, which an install replaces). `ok:` then one record per line (below; none active = built-in English); `unavailable:` (one-pack firmware) / `busy:` / `notready:` / `error:`. | `language installed` (alias `packs`) |
-| `UseLanguage` | `(s) → s` | Make a pack on the watch (slot, locale or name; a unique part of a name) the watch's language, or `english` for the built-in one (the packs stay; what the removed `language` watch pref's English/Custom did). `ok:` / `notfound:` / `ambiguous:` / `failed:` (the watch refused) / `unavailable:` / `busy:` / `notready:` / `error:` (a fonts-only slot). | `language use <slot\|locale\|name\|english>` |
+| `UseLanguage` | `(s) → s` | Make a pack on the watch (slot, locale or name; a unique part of a name) the watch's language, or `english` for the built-in one (the packs stay; what the `language` watch pref's English/Custom does on one-pack firmware, where only that pref switches). `ok:` / `notfound:` / `ambiguous:` / `failed:` (the watch refused) / `unavailable:` / `busy:` / `notready:` / `error:` (a fonts-only slot). | `language use <slot\|locale\|name\|english>` |
 | `RemoveLanguage` | `(s) → s` | Remove a pack from the watch (slot, locale or name), freeing its slot; removing the active one switches the watch to English. Same returns as `UseLanguage`. | `language remove <slot\|locale\|name>` |
 
 `ListLanguages` record: `id \t isoLocal \t displayName \t installed(yes\|no) \t source(rebble\|github)`.

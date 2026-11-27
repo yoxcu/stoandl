@@ -706,8 +706,10 @@ tested_ ([TESTING.md §5.77](../TESTING.md)). What changes for a user:
   ([TESTING 5.77p](../TESTING.md)).
 - **Watch settings:** 22 new watch prefs from PebbleOS 4.42–4.48 (dark mode and its schedule, the theme
   highlight colour, the speaker, touch, the temperature unit, hourly and disconnect vibes, notification grouping
-  and more), in new sections Theme, Speaker and Health. The `language` pref is gone: a pack sets the language,
-  and a `watch.language` line logs "Unknown watch pref" and is ignored ([TESTING 5.77n, 5.77q](../TESTING.md)).
+  and more), in new sections Theme, Speaker and Health. Upstream dropped the `language` pref (English/Custom);
+  the fork keeps it for one-pack firmware (4.28 until multi-pack, 4.42), the only way back to English there
+  while the pack stays. On 4.42 and later it isn't offered: `language use` switches
+  ([TESTING 5.77n, 5.77q, 5.77x](../TESTING.md)).
 - **Quick Launch:** the firmware's Clear Notifications action (PebbleOS 4.38+), in the order libpebble3 lists
   the actions ([TESTING 5.77r](../TESTING.md)).
 - **Firmware:** a downgrade through recovery is now libpebble3's to finish; stoandl reports it and refuses
@@ -1257,7 +1259,7 @@ update). _Implemented — to be tested ([TESTING.md §5.66, §5.73](../TESTING.m
 ### Watch preferences: sections, help, reset
 
 Watch preferences come grouped the way the GUI shows them (Quick launch, Backlight & display, Theme,
-Notifications & timeline, Quiet Time, Vibration, Speaker, Music, Time & units, Health, Motion & menus,
+Notifications & timeline, Quiet Time, Vibration, Speaker, Music, Time, units & language, Health, Motion & menus,
 Advanced), with help text
 and "only matters when" rules from the daemon (the backlight timeout and intensity rows need the Advanced
 backlight preset, except on firmware too old to have the preset). *Reset to defaults* (`stoandl settings

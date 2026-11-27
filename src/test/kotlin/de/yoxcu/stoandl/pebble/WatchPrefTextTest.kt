@@ -62,6 +62,9 @@ class WatchPrefTextTest {
         assertEquals("Text size for system menus and the launcher", WatchPrefText.description(EnumWatchPref.SystemTextSize))
         assertEquals("Enable the touchscreen", WatchPrefText.description(BoolWatchPref.TouchEnabled))
         assertEquals(null, WatchPrefText.description(BoolWatchPref.Clock24h))
+        // The fork keeps `language` for one-pack firmware, with the text it had before upstream dropped it.
+        assertEquals("Choose Custom to use the installed language pack.", WatchPrefText.description(EnumWatchPref.Language))
+        assertEquals("Time, units & language", WatchPrefText.section(EnumWatchPref.Language))
         // The firmware note follows the sentence, once.
         assertEquals(
             "Turn on the backlight for notifications during Quiet Time. Needs PebbleOS 4.41 or later.",
@@ -90,7 +93,7 @@ class WatchPrefTextTest {
         val rows = control().list().map { it.split('\t') }
         assertTrue(rows.all { it.size == 11 }, rows.toString())
         assertEquals(listOf("qlUp", "lightTimeoutMs", "clock24h"), rows.map { it[0] })
-        assertEquals(listOf("Quick launch", "Backlight & display", "Time & units"), rows.map { it[8] })
+        assertEquals(listOf("Quick launch", "Backlight & display", "Time, units & language"), rows.map { it[8] })
         assertTrue(rows[0][9].startsWith("Choose an app"), rows[0][9])
         assertEquals(listOf("", "lightPreset=Advanced", ""), rows.map { it[10] })
     }

@@ -891,8 +891,10 @@ stoandl language remove 2                  # free a slot (removing the active pa
 
 On such a watch an install adds the pack to a free slot and switches to it; it is refused when all four slots
 are in use, and a catalog install when that locale is already on the watch (remove it first). On one-pack firmware `installed`,
-`use` and `remove` answer that the watch holds one pack. The `language` watch pref (English/Custom) is gone
-upstream; `language use english` does what it did, on 4.42 and later.
+`use` and `remove` answer that the watch holds one pack. There the `language` watch pref (English/Custom,
+`stoandl settings set language English`, PebbleOS 4.28 and later) switches between English and the pack;
+upstream dropped it, the fork keeps it for one-pack firmware only. On 4.42 and later it isn't listed or sent
+(the firmware uses the key for the active pack's slot), and `language use english` does what it did.
 `stoandl language status` prints the current state at any time (`idle`, `downloading`, `installing`,
 `done`, `failed`).
 
